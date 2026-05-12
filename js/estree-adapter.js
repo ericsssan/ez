@@ -1016,6 +1016,25 @@ const _BODY_UNSET = Object.create(null);
 // and from false/0/"" (valid for boolean/number/string literals).
 const _VALUE_UNSET = Object.create(null);
 
+// External cache for SYNTHETIC nodes (constructed objects that don't exist in
+// the buffer — e.g., a method's synthetic FunctionExpression value, the
+// synthetic TSTypeParameterDeclaration / TSTypeParameterInstantiation
+// wrappers). Synthetic identity must be stable across reads
+// (`node.value === node.value`), and these caches used to live as own
+// properties on the NodeView (`this._syntheticFn`, `this._typeParameters`,
+// etc.). That mixed two failure modes: cache poisoning via mutation
+// (e.g. invokeMethodFnHandlers mutating fn.range) and IC pollution from
+// fields that aren't part of the buffer-backed shape. Moving them out:
+//   • bugs from mutation of cached synth fields don't poison other NodeViews
+//   • NodeView's own-property surface stays buffer-only
+//   • per-tag constructor families can shed the synth-cache fields entirely
+const _synthCache = new WeakMap();
+function _getSynth(node) {
+  let s = _synthCache.get(node);
+  if (!s) { s = Object.create(null); _synthCache.set(node, s); }
+  return s;
+}
+
 // ── TypeScript synthetic node helpers ─────────────────────────
 
 /** Read packed modifiers from MethodData. Returns 0 if node has no modifiers. */
@@ -1567,10 +1586,14 @@ const NodeProto = {
         t === T.constructor_def || t === T.computed_method_def ||
         t === T.computed_getter_def || t === T.computed_setter_def) {
       // Method/getter/setter — return a synthetic FunctionExpression.
-      // Cache the synthetic to ensure identity equality: node.parent.value === node
-      // (no-setter-return checks `parent.value === node` — must be the same object).
-      if (this._syntheticFn !== undefined) {
-        v = this._syntheticFn;
+      // Cache externally (per-NodeView WeakMap) so rules can rely on
+      // identity (`node.parent.value === node`) without polluting the
+      // NodeView's own-property surface — that prevented IC monomorphism
+      // and was the source of the invokeMethodFnHandlers range-mutation
+      // bug class.
+      const _synthBundle = _getSynth(this);
+      if (_synthBundle.fn !== undefined) {
+        v = _synthBundle.fn;
       } else {
         const md = ast.extraMethodData(ast.nodeRhs(this._i));
         const mods = md.modifiers;
@@ -1635,7 +1658,7 @@ const NodeProto = {
           }
         }
         if (body) body._parent = synth;
-        this._syntheticFn = synth;
+        _synthBundle.fn = synth;
         v = synth;
       }
     } else if (t === T.template_element) {
@@ -2012,7 +2035,8 @@ const NodeProto = {
    * CallExpression, NewExpression
    */
   get arguments() {
-    if (this._arguments !== undefined) return this._arguments;
+    const _synthBundle = _getSynth(this);
+    if (_synthBundle.args !== undefined) return _synthBundle.args;
     const t = this._tag;
     const ast = this._ast;
     const rhs = ast.nodeRhs(this._i);
@@ -2026,7 +2050,7 @@ const NodeProto = {
         if (idx !== NONE) result.push(nodeViewChain(ast, idx));
       }
     } else if (t === T.new_expr) {
-      if (rhs === NONE) { this._arguments = []; return []; }
+      if (rhs === NONE) { _synthBundle.args = []; return []; }
       const sub = ast.extraSubRange(rhs);
       result = [];
       const e = ast._extraData;
@@ -2035,7 +2059,7 @@ const NodeProto = {
         if (idx !== NONE) result.push(nodeViewChain(ast, idx));
       }
     }
-    this._arguments = result;
+    _synthBundle.args = result;
     return result;
   },
 
@@ -2214,14 +2238,15 @@ const NodeProto = {
    * Detected by scanning backward from the method/property for @ tokens.
    */
   get decorators() {
-    if (this._decorators !== undefined) return this._decorators;
+    const _synthBundle = _getSynth(this);
+    if (_synthBundle.dec !== undefined) return _synthBundle.dec;
     const t = this._tag;
     // TS param/pattern nodes can have decorators (TSParameterProperty), return [] when none
     if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
         t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
         t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def &&
         t !== T.class_decl && t !== T.class_expr && t !== T.ts_parameter_property) {
-      this._decorators = [];
+      _synthBundle.dec = [];
       return [];
     }
     const ast = this._ast;
@@ -2281,7 +2306,7 @@ const NodeProto = {
       }
     }
     const result = decorators.length > 0 ? decorators : [];
-    this._decorators = result;
+    _synthBundle.dec = result;
     return result;
   },
 
@@ -2582,7 +2607,8 @@ const NodeProto = {
   },
 
   get typeArguments() {
-    if (this._typeArgs !== undefined) return this._typeArgs;
+    const _synthBundle = _getSynth(this);
+    if (_synthBundle.ta !== undefined) return _synthBundle.ta;
     const tag = this._tag;
     // CallExpression / NewExpression with a TSInstantiationExpression callee:
     // hoist typeArguments from the wrapper to match @typescript-eslint shape.
@@ -2590,7 +2616,7 @@ const NodeProto = {
       const lhs = this._ast.nodeLhs(this._i);
       if (lhs !== NONE && this._ast._nodeTags[lhs] === T.ts_instantiation_expr) {
         const wrapperRhs = this._ast.nodeRhs(lhs);
-        if (wrapperRhs === NONE) { this._typeArgs = null; return null; }
+        if (wrapperRhs === NONE) { _synthBundle.ta = null; return null; }
         const sub = this._ast.extraSubRange(wrapperRhs);
         const params = this._ast._nodesFromRange(sub.start, sub.end);
         const src = this._ast.source;
@@ -2605,15 +2631,15 @@ const NodeProto = {
         }
         const synth = _syntheticNode('TSTypeParameterInstantiation', tStart, tEnd, { params, parent: this }, this._ast);
         for (const p of params) p._parent = synth;
-        this._typeArgs = synth;
+        _synthBundle.ta = synth;
         return synth;
       }
-      this._typeArgs = null;
+      _synthBundle.ta = null;
       return null;
     }
-    if (tag !== T.ts_type_reference && tag !== T.ts_instantiation_expr) { this._typeArgs = undefined; return undefined; }
+    if (tag !== T.ts_type_reference && tag !== T.ts_instantiation_expr) { _synthBundle.ta = undefined; return undefined; }
     const rhs = this._ast.nodeRhs(this._i);
-    if (rhs === NONE) { this._typeArgs = null; return null; }
+    if (rhs === NONE) { _synthBundle.ta = null; return null; }
     const sub = this._ast.extraSubRange(rhs);
     const params = this._ast._nodesFromRange(sub.start, sub.end);
     // Range = the `<...>` slice, not the whole TSTypeReference. Walk back from
@@ -2633,7 +2659,7 @@ const NodeProto = {
     const synth = _syntheticNode('TSTypeParameterInstantiation', tStart, tEnd, { params, parent: this }, this._ast);
     // Set each param's parent to the TSTypeParameterInstantiation
     for (const p of params) p._parent = synth;
-    this._typeArgs = synth;
+    _synthBundle.ta = synth;
     return synth;
   },
 
@@ -2683,7 +2709,8 @@ const NodeProto = {
    * Returns null when there are no type parameters.
    */
   get typeParameters() {
-    if (this._typeParameters !== undefined) return this._typeParameters;
+    const _synthBundle = _getSynth(this);
+    if (_synthBundle.tp !== undefined) return _synthBundle.tp;
     const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
@@ -2715,7 +2742,7 @@ const NodeProto = {
     } else {
       return null;
     }
-    if (tp_start === undefined || tp_start >= tp_end) { this._typeParameters = null; return null; }
+    if (tp_start === undefined || tp_start >= tp_end) { _synthBundle.tp = null; return null; }
     const params = [];
     let rangeStart = Infinity, rangeEnd = 0;
     for (let i = tp_start; i < tp_end; i++) {
@@ -2769,7 +2796,7 @@ const NodeProto = {
       rangeEnd === 0 ? this.end : rangeEnd,
       { params, parent: this }, ast);
     for (const p of params) p._parent = result;
-    this._typeParameters = result;
+    _synthBundle.tp = result;
     return result;
   },
 
@@ -2828,7 +2855,8 @@ const NodeProto = {
    * Returns array of NodeViews.
    */
   get params() {
-    if (this._params !== undefined) return this._params;
+    const _synthBundle = _getSynth(this);
+    if (_synthBundle.params !== undefined) return _synthBundle.params;
     const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
@@ -2844,15 +2872,15 @@ const NodeProto = {
       const d = ast.extraArrowData(lhs);
       result = ast._nodesFromRange(d.params_start, d.params_end);
     } else if (t === T.ts_function_type || t === T.ts_constructor_type) {
-      if (lhs === NONE) { this._params = []; return []; }
+      if (lhs === NONE) { _synthBundle.params = []; return []; }
       const d = ast.extraFnData(lhs);
       result = ast._nodesFromRange(d.params, d.params_end);
     } else if (t === T.ts_call_signature || t === T.ts_construct_signature || t === T.ts_method_signature) {
-      if (lhs === NONE) { this._params = []; return []; }
+      if (lhs === NONE) { _synthBundle.params = []; return []; }
       const d = ast.extraInterfaceSigData(lhs);
       result = ast._nodesFromRange(d.params_start, d.params_end);
     }
-    this._params = result;
+    _synthBundle.params = result;
     return result;
   },
 
@@ -3295,7 +3323,8 @@ const NodeProto = {
    * tags also short-circuit on subsequent reads.
    */
   get elements() {
-    if (this._elements !== _BODY_UNSET) return this._elements;
+    const _synthBundle = _getSynth(this);
+    if (_synthBundle.elements !== undefined) return _synthBundle.elements;
     const t = this._tag;
     const ast = this._ast;
     let result = undefined;
@@ -3318,7 +3347,7 @@ const NodeProto = {
         }
       }
     }
-    this._elements = result;
+    _synthBundle.elements = result;
     return result;
   },
 
@@ -3391,7 +3420,8 @@ const NodeProto = {
    * typescript.js).
    */
   get properties() {
-    if (this._properties !== _BODY_UNSET) return this._properties;
+    const _synthBundle = _getSynth(this);
+    if (_synthBundle.props !== undefined) return _synthBundle.props;
     const t = this._tag;
     const ast = this._ast;
     let result = undefined;
@@ -3420,7 +3450,7 @@ const NodeProto = {
       });
       }
     }
-    this._properties = result;
+    _synthBundle.props = result;
     return result;
   },
 
@@ -4402,12 +4432,10 @@ function _NodeView(ast, idx, tag, type) {
   this._value = _VALUE_UNSET;
   this._init = _INIT_UNSET;
   this._cachedName = undefined;
-  this._params = undefined;
-  this._typeParameters = undefined;
-  this._arguments = undefined;
-  this._decorators = undefined;
-  this._elements = _BODY_UNSET;
-  this._properties = _BODY_UNSET;
+  // _params, _typeParameters, _arguments, _decorators, _elements, _properties
+  // moved to external `_synthCache` (WeakMap-keyed). Synthetic-node identity
+  // is preserved without polluting the NodeView's own-property surface; rule
+  // ICs stay monomorphic across the buffer-backed shape.
 }
 _NodeView.prototype = NodeProto;
 
@@ -4424,9 +4452,8 @@ function _NodeView_LRN(ast, idx, tag, type) {  // ['left','right','name']
   this.type = type; this._loc = null;
   this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
-  this._cachedName = undefined; this._params = undefined;
-  this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
-  this._elements = _BODY_UNSET; this._properties = _BODY_UNSET;
+  this._cachedName = undefined;
+  // synth caches externalized — see _NodeView comment.
 }
 // Identifier name extraction — pulled out of the `get name` getter so we
 // can eager-fill `name` as an own property at construction time for
@@ -4457,27 +4484,23 @@ function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']  (T.identifie
   // prototype getter. `_cachedName` is dropped from this ctor since the
   // lazy-cache path is unreachable for these tags.
   this.name = _computeIdentifierName(ast, idx);
-  this._params = undefined;
-  this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
-  this._elements = _BODY_UNSET; this._properties = _BODY_UNSET;
+  // synth caches externalized — see _NodeView comment.
 }
 function _NodeView_N(ast, idx, tag, type) {    // ['name']  (T.assignment_pattern)
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
   this.type = type; this._loc = null;
   this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
-  this._cachedName = undefined; this._params = undefined;
-  this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
-  this._elements = _BODY_UNSET; this._properties = _BODY_UNSET;
+  this._cachedName = undefined;
+  // synth caches externalized — see _NodeView comment.
 }
 function _NodeView_LNT(ast, idx, tag, type) {  // ['left','name','typeAnnotation']  (T.ts_parameter_property)
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
   this.type = type; this._loc = null;
   this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
-  this._cachedName = undefined; this._params = undefined;
-  this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
-  this._elements = _BODY_UNSET; this._properties = _BODY_UNSET;
+  this._cachedName = undefined;
+  // synth caches externalized — see _NodeView comment.
 }
 _NodeView_LRN.prototype = _getTypeProto(T.rest_element);
 _NodeView_LR.prototype  = _getTypeProto(T.identifier);
