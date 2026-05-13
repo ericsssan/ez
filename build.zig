@@ -563,26 +563,25 @@ pub fn build(b: *std.Build) void {
     const bench_be_step = b.step("bench-backend", "Zig backend profile (lex+parse+resolve+traversal+writebuf)");
     bench_be_step.dependOn(&bench_be_cmd.step);
 
-    // ── Bun-subprocess linter pool ───────────────────────────────
-    // Zig host + N forked Bun processes; vendored Bun binary embedded via
-    // @embedFile at src/bun/bun-aarch64-darwin (symlinked from
-    // vendor/bun/bun-aarch64-darwin). Currently macOS-arm64 only — wider
-    // platform coverage needs the per-target Bun binaries vendored.
+    // ── ezlint: Zig host + N forked Bun processes ───────────────
+    // Vendored Bun binary embedded via @embedFile at src/bun/bun-aarch64-darwin
+    // (symlinked from vendor/bun/bun-aarch64-darwin). Currently macOS-arm64
+    // only — wider platform coverage needs the per-target Bun binaries vendored.
     //
     // ReleaseFast for the host by default — Debug Zig is 5-10× slower for
     // the parser/CFG hot loops. Override with -Doptimize=Debug for host
-    // debugging; the JS workers (bun-worker.js) run in Bun regardless.
+    // debugging; the JS workers (worker.js) run in Bun regardless.
     if (target.result.os.tag == .macos) {
-        const bun_optimize = if (optimize == .Debug) std.builtin.OptimizeMode.ReleaseFast else optimize;
+        const ezlint_optimize = if (optimize == .Debug) std.builtin.OptimizeMode.ReleaseFast else optimize;
 
-        const bun_pool_mod = b.createModule(.{
-            .root_source_file = b.path("src/bun/bun_lint_pool.zig"),
+        const ezlint_mod = b.createModule(.{
+            .root_source_file = b.path("src/bun/lint_pool.zig"),
             .target = target,
-            .optimize = bun_optimize,
+            .optimize = ezlint_optimize,
         });
-        bun_pool_mod.link_libc = true;
-        bun_pool_mod.addImport("ez", test_mod);
-        const bun_pool = b.addExecutable(.{ .name = "bun-lint-pool", .root_module = bun_pool_mod });
-        b.installArtifact(bun_pool);
+        ezlint_mod.link_libc = true;
+        ezlint_mod.addImport("ez", test_mod);
+        const ezlint = b.addExecutable(.{ .name = "ezlint", .root_module = ezlint_mod });
+        b.installArtifact(ezlint);
     }
 }

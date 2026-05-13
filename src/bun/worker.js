@@ -1,4 +1,4 @@
-// Bun worker — long-lived child of bun-lint-pool's Zig host.
+// Bun worker — long-lived child of ezlint's Zig host.
 //
 // Long-lived process model:
 //   • startup: load eslint-runner + adapter + rules once, send READY frame

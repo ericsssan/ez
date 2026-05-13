@@ -1,8 +1,8 @@
-// Bun-subprocess linter pool — Zig host + N forked Bun processes.
+// ezlint — Zig host + N forked Bun processes.
 //
 // Architecture:
 //   • Zig parses the source ONCE on the main thread.
-//   • N long-lived Bun subprocesses, each running src/bun/bun-worker.js.
+//   • N long-lived Bun subprocesses, each running src/bun/worker.js.
 //   • Each pair of pipes (host→child stdin, child→host stdout) is dedicated
 //     to one worker. The host writes framed jobs, reads framed responses.
 //   • Wire format: 4-byte LE length + 1 byte opcode + payload. The same
@@ -54,7 +54,7 @@ fn msSince(t0: i128) f64 {
     return @as(f64, @floatFromInt(nanosNow() - t0)) / 1_000_000.0;
 }
 
-// ── Wire opcodes (must match bun-worker.js) ───────────────────────────────
+// ── Wire opcodes (must match worker.js) ───────────────────────────────────
 const OP_INIT: u8 = 0x01;
 const OP_LINT: u8 = 0x02;
 const OP_GET_RECOMMENDED: u8 = 0x03;
@@ -502,7 +502,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     if (source_path == null) {
-        std.debug.print("usage: bun-lint-pool <source_path> [n_workers=4] [--recommended] [--batch-size=N]\n", .{});
+        std.debug.print("usage: ezlint <source_path> [n_workers=4] [--recommended] [--batch-size=N]\n", .{});
         return;
     }
     const src_path = source_path.?;
@@ -519,9 +519,9 @@ pub fn main(init: std.process.Init) !void {
     });
 
     // Path to the worker JS. Resolved against the process's cwd by the child
-    // (the spawned Bun inherits our cwd). Must run bun-lint-pool from the
-    // repo root for now; later we'll embed the worker JS too.
-    const worker_js_path: [:0]const u8 = "src/bun/bun-worker.js";
+    // (the spawned Bun inherits our cwd). Must run ezlint from the repo
+    // root for now; later we'll embed the worker JS too.
+    const worker_js_path: [:0]const u8 = "src/bun/worker.js";
 
     // Parse source.
     const source = try Io.Dir.cwd().readFileAlloc(io, src_path, alloc, Io.Limit.limited(64 * 1024 * 1024));
