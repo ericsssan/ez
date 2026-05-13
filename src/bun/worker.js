@@ -29,9 +29,15 @@ const ROOT = path.resolve(__dirname, "../..");
 const { runPlugins } = require(path.join(ROOT, "js/eslint-runner.js"));
 const { AstView, setTagNames } = require(path.join(ROOT, "js/estree-adapter.js"));
 
-// Same 64 eslint:recommended rules as the JSC runner. Loaded eagerly because
-// Bun's require is fast and we want module-init out of the way before the
-// host starts timing.
+// Vendor ESLint rules. Tried wiring up ez's pattern-rewritten bundle
+// (js/.ez-dist/rules.bundle.js) — bundle loads cleanly under Bun (unlike
+// JSC which couldn't resolve the typescript transitive deps), but
+// per-iter wall was unchanged AND per-worker init grew +900ms (1028 vs
+// 115 before) from loading the typescript compiler transitively. For
+// one-shot lints this is pure cost. The pattern rewrites that help with
+// allocations don't help us here because runner-level caches already
+// dominate. Sticking with raw vendor rules — self-contained, no extra
+// transitive deps, no init regression.
 const RULE_MODULES = {
   "constructor-super": require(path.join(ROOT, "tests/conformance/eslint/lib/rules/constructor-super.js")),
   "for-direction": require(path.join(ROOT, "tests/conformance/eslint/lib/rules/for-direction.js")),
