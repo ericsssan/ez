@@ -485,7 +485,12 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var source_path: ?[]const u8 = null;
-    var n_workers: u32 = 4;
+    // Default to 2 workers — sweet spot for CI single-shot lint:
+    //   1w:  908ms lint, 1.46s total (rule load not amortized at all)
+    //   2w:  775ms lint, 1.29s total ← BEST
+    //   4w: 1000ms lint, 1.52s total (rule-load contention dominates)
+    // Worker boot ~485ms each; runs in parallel with parse + AST publish.
+    var n_workers: u32 = 2;
     var recommended = false;
     var batch_size_arg: u32 = 0;
     var positional: u32 = 0;
@@ -517,13 +522,13 @@ pub fn main(init: std.process.Init) !void {
             source_path = a;
             positional += 1;
         } else if (positional == 1) {
-            n_workers = std.fmt.parseInt(u32, a, 10) catch 4;
+            n_workers = std.fmt.parseInt(u32, a, 10) catch 2;
             positional += 1;
         }
     }
     if (source_path == null) {
         std.debug.print(
-            \\usage: ezlint <source_path> [n_workers=4] [flags]
+            \\usage: ezlint <source_path> [n_workers=2] [flags]
             \\
             \\flags:
             \\  --recommended         use eslint:recommended preset (64 rules)
@@ -576,6 +581,43 @@ pub fn main(init: std.process.Init) !void {
     // root for now; later we'll embed the worker JS too.
     const worker_js_path: [:0]const u8 = "src/bun/worker.js";
 
+    // Build tag-names JSON for INIT frames. (No dependency on parse output —
+    // built from a static layout constant.)
+    const tag_names_json = try buildTagNamesJson(alloc);
+    defer alloc.free(tag_names_json);
+
+    // Spawn pool init in a background thread so it overlaps with parse +
+    // native rules + AST publish. Worker boot is the slowest serial step
+    // (~485ms cold). The OS scheduler handles the spawned children while we
+    // keep parsing on the main thread.
+    const t_pool_init = nanosNow();
+    const PoolInitCtx = struct {
+        alloc: std.mem.Allocator,
+        n_workers: u32,
+        bun_path: [:0]const u8,
+        worker_js_path: [:0]const u8,
+        tag_names_json: []const u8,
+        pool: ?Pool = null,
+        err: ?anyerror = null,
+        done_ns: i128 = 0,
+        fn run(ctx: *@This()) void {
+            if (Pool.init(ctx.alloc, ctx.n_workers, ctx.bun_path, ctx.worker_js_path, ctx.tag_names_json)) |p| {
+                ctx.pool = p;
+            } else |e| {
+                ctx.err = e;
+            }
+            ctx.done_ns = nanosNow();
+        }
+    };
+    var pool_ctx: PoolInitCtx = .{
+        .alloc = alloc,
+        .n_workers = n_workers,
+        .bun_path = bun_path,
+        .worker_js_path = worker_js_path,
+        .tag_names_json = tag_names_json,
+    };
+    const pool_thread = try std.Thread.spawn(.{}, PoolInitCtx.run, .{&pool_ctx});
+
     // Parse source.
     const source = try Io.Dir.cwd().readFileAlloc(io, src_path, alloc, Io.Limit.limited(64 * 1024 * 1024));
     defer alloc.free(source);
@@ -605,13 +647,21 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Build tag-names JSON for INIT frames.
-    const tag_names_json = try buildTagNamesJson(alloc);
-    defer alloc.free(tag_names_json);
+    // Publish the AST to /tmp now (no pool dependency). This overlaps with
+    // worker boot still running in the background thread.
+    const t_publish = nanosNow();
+    const ast_path = try publishAstToFile(alloc, ast_bytes);
+    defer alloc.free(ast_path);
+    std.debug.print("[main] published AST → {s} ({d:.1}MB) in {d:.1}ms\n", .{
+        ast_path,
+        @as(f64, @floatFromInt(ast_bytes.len)) / (1024.0 * 1024.0),
+        msSince(t_publish),
+    });
 
-    // Spawn pool.
-    const t_pool_init = nanosNow();
-    var pool = try Pool.init(alloc, n_workers, bun_path, worker_js_path, tag_names_json);
+    // Wait for pool init to finish (typically already done by now).
+    pool_thread.join();
+    if (pool_ctx.err) |e| return e;
+    var pool = pool_ctx.pool.?;
     defer pool.deinit();
     std.debug.print("[main] pool init in {d:.1}ms (per-worker: ", .{msSince(t_pool_init)});
     for (pool.workers) |*w| std.debug.print("{d:.0}ms ", .{w.init_ms});
@@ -658,18 +708,6 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("[main] queue: {d} rules in {d} batches (size {d})\n", .{ rules_storage.len, batches.len, batch_size });
 
     var queue: WorkQueue = .{ .batches = batches };
-
-    // Publish the AST to /tmp once. Workers Bun.mmap this file rather than
-    // receiving 8.7MB×N via stdin per iter. The file stays in OS page cache
-    // across iters so the per-call mmap is microseconds.
-    const t_publish = nanosNow();
-    const ast_path = try publishAstToFile(alloc, ast_bytes);
-    defer alloc.free(ast_path);
-    std.debug.print("[main] published AST → {s} ({d:.1}MB) in {d:.1}ms\n", .{
-        ast_path,
-        @as(f64, @floatFromInt(ast_bytes.len)) / (1024.0 * 1024.0),
-        msSince(t_publish),
-    });
 
     // Lint loop. Default 1 iter (real lint); set --iters=N to benchmark.
     var times_ms = try alloc.alloc(f64, iters);
