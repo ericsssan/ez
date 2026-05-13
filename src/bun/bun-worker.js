@@ -220,29 +220,76 @@ function writeFrame(opcode, payload) {
 }
 
 // ── Linting ────────────────────────────────────────────────────────────────
-function runLint(astBytes, ruleNames, filename) {
-  // The astBytes Buffer was produced by _takeBytes via Buffer.allocUnsafe(n)
-  // — for n=8.7MB this lands a fresh ArrayBuffer with the Buffer view at
-  // byteOffset 0. Pass the underlying ArrayBuffer directly: a .slice() would
-  // copy ~8MB on every call (the 60s/iter pathology we already fixed in the
-  // stream reader; this slice was the last remaining 8MB copy per call).
+// Plugin/array caching tried and reverted: eslint-runner's
+// `_cachedVMPlugins === plugins` short-circuit skips create() re-runs for
+// "shared-handlers" rules, but several such rules close over the previous
+// call's context.sourceCode — stale state turns into 40 missing diags on
+// our recommended-preset workload (945 → 904). Keep the array fresh.
+//
+// We DO cache the immutable derived structures (rule config + idx-by-name
+// map) since those don't trip the identity check.
+const _ruleSubsetCache = new Map(); // csvKey → { resolved, ruleConfig, ruleIdxByName }
+
+function _getRuleSubset(ruleNames) {
+  const resolved = (ruleNames.length === 1 && ruleNames[0] === "__recommended") ? RECOMMENDED : ruleNames;
+  const key = resolved.join(",");
+  let cached = _ruleSubsetCache.get(key);
+  if (cached) return cached;
+  const filtered = resolved.filter((n) => RULE_MODULES[n]);
+  const ruleConfig = Object.fromEntries(filtered.map((n) => [n, "error"]));
+  const ruleIdxByName = Object.create(null);
+  for (let i = 0; i < filtered.length; i++) ruleIdxByName[filtered[i]] = i;
+  cached = { resolved: filtered, ruleConfig, ruleIdxByName };
+  _ruleSubsetCache.set(key, cached);
+  return cached;
+}
+
+// Cache the AstView per astPath — eslint-runner's internal caches
+// (`_sharedCaches`, `_nodeCachePool`, plugin recipes) are keyed on AstView
+// object identity, so reusing the view across LINT calls turns cold rebuild
+// paths into hot-cache hits. Wall drops from ~812ms to ~544ms on the
+// same-file-N-iters benchmark.
+//
+// CORRECTNESS CAVEAT: with the cache on, no-useless-assignment reports +1
+// diag (146 vs 145, total 946 vs 945 on typescript.js). Cause: per-call
+// scope/segment state that the rule reads from cached scope objects in
+// _sharedCaches. Cold path resets it; cached path inherits it. Same class
+// of cache-state interaction we documented for the streaming/non-streaming
+// CFG paths. For correctness-strict runs leave the cache off.
+//
+// Opt in via BUN_WORKER_AST_CACHE=1. Off by default to keep diag-count
+// parity with jsc-lint-pool (945) and perf_hunt (944).
+const _astViewCache = new Map(); // astPath → AstView
+const _AST_CACHE_ENABLED = !!process.env.BUN_WORKER_AST_CACHE;
+
+function _getAstView(astPath, astBytes) {
+  if (_AST_CACHE_ENABLED && astPath) {
+    const cached = _astViewCache.get(astPath);
+    if (cached) return cached;
+  }
   if (astBytes.byteOffset !== 0) throw new Error("ast buffer has non-zero byteOffset");
-  const ast = new AstView(astBytes.buffer);
+  const view = new AstView(astBytes.buffer);
+  if (_AST_CACHE_ENABLED && astPath) _astViewCache.set(astPath, view);
+  return view;
+}
+
+function runLint(astBytes, ruleNames, filename, astPath) {
+  const ast = _getAstView(astPath, astBytes);
   const tagNames = globalThis.__ez_tag_names || [];
 
-  const resolvedRules = (ruleNames.length === 1 && ruleNames[0] === "__recommended") ? RECOMMENDED : ruleNames;
-  const plugins = [];
-  const usedRuleNames = [];
-  for (const name of resolvedRules) {
-    const mod = RULE_MODULES[name];
-    if (!mod) continue;
-    plugins.push({
-      meta: { name, defaultOptions: mod.meta?.defaultOptions, schema: mod.meta?.schema },
+  const { resolved, ruleConfig, ruleIdxByName } = _getRuleSubset(ruleNames);
+  // Build a FRESH plugins array every call (see note on _ruleSubsetCache).
+  // The inner per-rule descriptors are cheap to recreate and re-running
+  // create() per call is what keeps shared-handlers rules from carrying
+  // stale closures across calls.
+  const plugins = new Array(resolved.length);
+  for (let i = 0; i < resolved.length; i++) {
+    const mod = RULE_MODULES[resolved[i]];
+    plugins[i] = {
+      meta: { name: resolved[i], defaultOptions: mod.meta?.defaultOptions, schema: mod.meta?.schema },
       create: mod.create || mod,
-    });
-    usedRuleNames.push(name);
+    };
   }
-  const ruleConfig = Object.fromEntries(usedRuleNames.map((n) => [n, "error"]));
 
   const reports = runPlugins(ast, plugins, {
     tagNames,
@@ -251,8 +298,6 @@ function runLint(astBytes, ruleNames, filename) {
     errorBudget: Infinity,
   });
 
-  const ruleIdxByName = Object.create(null);
-  for (let i = 0; i < usedRuleNames.length; i++) ruleIdxByName[usedRuleNames[i]] = i;
   const out = new Uint32Array(reports.length * 3);
   for (let i = 0; i < reports.length; i++) {
     const r = reports[i];
@@ -260,6 +305,11 @@ function runLint(astBytes, ruleNames, filename) {
     out[i * 3 + 1] = r.line || (r.loc?.start?.line ?? 0);
     const col1 = r.column ?? r.loc?.start?.column ?? 0;
     out[i * 3 + 2] = col1 > 0 ? col1 - 1 : 0;
+  }
+  if (process.env.BUN_WORKER_RULE_COUNTS) {
+    const counts = Object.create(null);
+    for (const r of reports) counts[r.ruleId] = (counts[r.ruleId] || 0) + 1;
+    process.stderr.write(`[w${process.pid}] rule-counts: ${JSON.stringify(counts)}\n`);
   }
   return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
@@ -401,7 +451,7 @@ function runLint(astBytes, ruleNames, filename) {
           astBuf = astFrame.payload;
         }
         const t_lint = process.hrtime.bigint();
-        const result = runLint(astBuf, spec.rules, spec.filename);
+        const result = runLint(astBuf, spec.rules, spec.filename, spec.astPath);
         const t_write = process.hrtime.bigint();
         writeFrame(REPLY_DIAGS, result);
         // Hint GC at end of each LINT. Without this, accumulating heap from
