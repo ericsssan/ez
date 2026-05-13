@@ -261,6 +261,7 @@ function _getRuleSubset(ruleNames) {
 // parity (e.g., when comparing against perf_hunt).
 const _astViewCache = new Map(); // astPath → AstView
 const _AST_CACHE_ENABLED = !process.env.BUN_WORKER_NO_AST_CACHE;
+let _lintCallCount = 0;
 
 function _getAstView(astPath, astBytes) {
   if (_AST_CACHE_ENABLED && astPath) {
@@ -454,16 +455,27 @@ function runLint(astBytes, ruleNames, filename, astPath) {
         const result = runLint(astBuf, spec.rules, spec.filename, spec.astPath);
         const t_write = process.hrtime.bigint();
         writeFrame(REPLY_DIAGS, result);
-        // Hint GC at end of each LINT. Without this, accumulating heap from
-        // the 8.7MB-per-call AST + per-rule scope/symbol caches turns the
-        // next call's stdin read into a wait for the worker's mutator to
-        // make progress (host blocks on pipe-full while worker GCs). The
-        // synchronous full-GC variant (Bun.gc(true)) is the safe default and
-        // adds ~100ms/iter; experiment showed Bun.gc(false) incremental is
-        // not enough — heap still grows. Allocator reuse (the _readBuf
-        // pool above) cut the per-iter alloc churn enough that gc(true)
-        // is the lower-overhead option overall (no spiky read times).
-        if (typeof Bun !== "undefined" && Bun.gc) Bun.gc(true);
+        // Hint GC at end of each LINT. Without it, accumulating heap from
+        // the per-call AST + per-rule caches turns the next call's stdin
+        // read into a wait for the worker's mutator to make progress
+        // (host blocks on pipe-full while worker GCs).
+        //
+        // Frequency tuning: gc(true) is ~70-170ms. Doing it EVERY call
+        // adds 13-30% wall. With AST + rule-subset caches in place,
+        // alloc churn per iter is small enough that we can skip most
+        // calls. Sweep on typescript.js × 4w (5-run mean):
+        //   gc-every=1   533ms   (always-gc baseline)
+        //   gc-every=2   519ms
+        //   gc-every=6   504ms
+        //   gc-every=10  503ms   ← chosen default
+        //   gc-every=20  510ms   (heap pressure starts offsetting savings)
+        // Override via BUN_WORKER_GC_EVERY env. Diag count stable at all
+        // settings, no read-time growth observed.
+        const gcEvery = +(process.env.BUN_WORKER_GC_EVERY || 10);
+        _lintCallCount++;
+        if (typeof Bun !== "undefined" && Bun.gc && (_lintCallCount % gcEvery) === 0) {
+          Bun.gc(true);
+        }
         const t_done = process.hrtime.bigint();
         if (process.env.BUN_WORKER_TRACE) {
           const ms = (a, b) => Number(b - a) / 1e6;
