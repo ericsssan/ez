@@ -563,136 +563,22 @@ pub fn build(b: *std.Build) void {
     const bench_be_step = b.step("bench-backend", "Zig backend profile (lex+parse+resolve+traversal+writebuf)");
     bench_be_step.dependOn(&bench_be_cmd.step);
 
-    // ── Phase 0: JSC + Zig hello world (macOS only) ───────────
-    // Validates the toolchain: link JavaScriptCore.framework, eval JS from Zig,
-    // read result back. macOS-only initial cut; Linux/Windows will need libjsc
-    // built from source in a later phase.
-    const is_macos = target.result.os.tag == .macos;
-    if (is_macos) {
-        // ReleaseFast for JSC binaries by default — Debug Zig is 5-10× slower
-        // for the parser/CFG hot loops (595ms vs 76ms parse on typescript.js),
-        // and the JSC embedding path is fundamentally a performance experiment.
-        // Override with -Doptimize=Debug if debugging Zig logic.
-        const jsc_optimize = if (optimize == .Debug) std.builtin.OptimizeMode.ReleaseFast else optimize;
+    // ── Bun-subprocess linter pool ───────────────────────────────
+    // Zig host + N forked Bun processes; vendored Bun binary embedded via
+    // @embedFile at src/bun/bun-aarch64-darwin (symlinked from
+    // vendor/bun/bun-aarch64-darwin). Currently macOS-arm64 only — wider
+    // platform coverage needs the per-target Bun binaries vendored.
+    //
+    // ReleaseFast for the host by default — Debug Zig is 5-10× slower for
+    // the parser/CFG hot loops. Override with -Doptimize=Debug for host
+    // debugging; the JS workers (bun-worker.js) run in Bun regardless.
+    if (target.result.os.tag == .macos) {
+        const bun_optimize = if (optimize == .Debug) std.builtin.OptimizeMode.ReleaseFast else optimize;
 
-        const jsc_hello_mod = b.createModule(.{
-            .root_source_file = b.path("src/jsc/hello.zig"),
-            .target = target,
-            .optimize = jsc_optimize,
-        });
-        // Link the JavaScriptCore framework (system-provided on macOS).
-        jsc_hello_mod.linkFramework("JavaScriptCore", .{});
-        // We need libc since Zig's @cImport pulls in C headers.
-        jsc_hello_mod.link_libc = true;
-
-        const jsc_hello = b.addExecutable(.{
-            .name = "jsc-hello",
-            .root_module = jsc_hello_mod,
-        });
-        b.installArtifact(jsc_hello);
-
-        const jsc_hello_run = b.addRunArtifact(jsc_hello);
-        jsc_hello_run.step.dependOn(b.getInstallStep());
-        const jsc_hello_step = b.step("jsc-hello", "Build the JSC hello-world executable");
-        jsc_hello_step.dependOn(&jsc_hello.step);
-        const jsc_hello_run_step = b.step("jsc-hello-run", "Run the JSC hello-world executable");
-        jsc_hello_run_step.dependOn(&jsc_hello_run.step);
-
-        // ── Phase 1: load runner bundle in JSC ───────────────
-        const jsc_lint_mod = b.createModule(.{
-            .root_source_file = b.path("src/jsc/lint_one.zig"),
-            .target = target,
-            .optimize = jsc_optimize,
-        });
-        jsc_lint_mod.linkFramework("JavaScriptCore", .{});
-        jsc_lint_mod.link_libc = true;
-        // Bring in ez's parser so we can produce a real AST buffer from this binary.
-        jsc_lint_mod.addImport("ez", test_mod);
-        const jsc_lint = b.addExecutable(.{
-            .name = "jsc-lint-one",
-            .root_module = jsc_lint_mod,
-        });
-        b.installArtifact(jsc_lint);
-
-        // Ad-hoc codesign the INSTALLED copy with JIT entitlement. Apple's
-        // JavaScriptCore.framework refuses to JIT in unentitled processes
-        // (LLInt-only is ~10-30× slower). For distribution we'd vendor a
-        // WebKit JSC build that doesn't have this restriction; for dev this
-        // is the cheap unlock.
-        // codesign with JIT entitlement. Must run AFTER install copies the
-        // binary to zig-out/bin/, so the install copy carries the signature.
-        // Run via `zig build jsc-lint-one-sign` after `zig build`; can't be
-        // chained into b.default_step because install IS default_step
-        // (would create a dependency loop).
-        const sign_jsc_lint = b.addSystemCommand(&.{
-            "codesign",       "--force",                 "--sign",    "-",
-            "--entitlements", "src/jsc/ez.entitlements", "--options", "runtime",
-            "zig-out/bin/jsc-lint-one",
-        });
-        sign_jsc_lint.step.dependOn(b.getInstallStep());
-        const sign_step = b.step("jsc-lint-one-sign", "Sign jsc-lint-one with JIT entitlement (run AFTER `zig build`)");
-        sign_step.dependOn(&sign_jsc_lint.step);
-        const jsc_lint_run = b.addRunArtifact(jsc_lint);
-        jsc_lint_run.step.dependOn(b.getInstallStep());
-        const jsc_lint_step = b.step("jsc-lint-one", "Build the JSC bundle-loader probe");
-        jsc_lint_step.dependOn(&jsc_lint.step);
-        const jsc_lint_run_step = b.step("jsc-lint-one-run", "Run the JSC bundle-loader probe");
-        jsc_lint_run_step.dependOn(&jsc_lint_run.step);
-
-        const cg_mod = b.createModule(.{
-            .root_source_file = b.path("src/jsc/check_globals.zig"),
-            .target = target,
-            .optimize = jsc_optimize,
-        });
-        cg_mod.linkFramework("JavaScriptCore", .{});
-        cg_mod.link_libc = true;
-        const cg = b.addExecutable(.{ .name = "jsc-check-globals", .root_module = cg_mod });
-        b.installArtifact(cg);
-
-        // ── Phase 2: multi-context lint pool ─────────────────
-        const jsc_pool_mod = b.createModule(.{
-            .root_source_file = b.path("src/jsc/lint_pool.zig"),
-            .target = target,
-            .optimize = jsc_optimize,
-        });
-        jsc_pool_mod.linkFramework("JavaScriptCore", .{});
-        jsc_pool_mod.link_libc = true;
-        jsc_pool_mod.addImport("ez", test_mod);
-        const jsc_pool = b.addExecutable(.{ .name = "jsc-lint-pool", .root_module = jsc_pool_mod });
-        // Use addInstallArtifact (not installArtifact) so we can chain a sign
-        // step after JUST this artifact's install, then wire it back into the
-        // global install step. Plain `b.installArtifact` would only attach to
-        // the global install, leaving no anchor for sign to depend on without
-        // creating a cycle.
-        const install_pool = b.addInstallArtifact(jsc_pool, .{});
-
-        const sign_pool = b.addSystemCommand(&.{
-            "codesign",       "--force",                 "--sign",    "-",
-            "--entitlements", "src/jsc/ez.entitlements", "--options", "runtime",
-            "zig-out/bin/jsc-lint-pool",
-        });
-        sign_pool.step.dependOn(&install_pool.step);
-
-        // Wire signing into the DEFAULT install step. Without this, plain
-        // `zig build` would replace the executable without re-attaching the
-        // JIT entitlement — JSC then falls back to LLInt-only execution and
-        // rule passes run 5-10× slower (found via sample(1) — all stacks
-        // were LLInt symbols where DFG/B3 JIT'd frames should appear).
-        b.getInstallStep().dependOn(&sign_pool.step);
-
-        const sign_pool_step = b.step("jsc-lint-pool-sign", "Sign jsc-lint-pool with JIT entitlement");
-        sign_pool_step.dependOn(&sign_pool.step);
-
-        // ── Bun-subprocess variant ───────────────────────────────────────
-        // Same Zig-as-host architecture as jsc-lint-pool, but workers are
-        // forked Bun processes (vendored copy embedded via @embedFile at
-        // vendor/bun/bun-aarch64-darwin). No Apple-framework dependency, no
-        // codesign entitlement needed — Bun handles its own JIT inside the
-        // spawned process.
         const bun_pool_mod = b.createModule(.{
             .root_source_file = b.path("src/bun/bun_lint_pool.zig"),
             .target = target,
-            .optimize = jsc_optimize,
+            .optimize = bun_optimize,
         });
         bun_pool_mod.link_libc = true;
         bun_pool_mod.addImport("ez", test_mod);

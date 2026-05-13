@@ -1,4 +1,4 @@
-// Bun worker for the Bun-subprocess-pool variant of jsc-lint-pool.
+// Bun worker — long-lived child of bun-lint-pool's Zig host.
 //
 // Long-lived process model:
 //   • startup: load eslint-runner + adapter + rules once, send READY frame
@@ -258,7 +258,7 @@ function _getRuleSubset(ruleNames) {
 // follow-up in eslint-runner; not blocking the perf shipping.
 //
 // Default ON. Disable with BUN_WORKER_NO_AST_CACHE=1 for strict diag
-// parity (e.g., when comparing against jsc-lint-pool / perf_hunt).
+// parity (e.g., when comparing against perf_hunt).
 const _astViewCache = new Map(); // astPath → AstView
 const _AST_CACHE_ENABLED = !process.env.BUN_WORKER_NO_AST_CACHE;
 

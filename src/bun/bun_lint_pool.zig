@@ -1,4 +1,4 @@
-// Bun-subprocess linter pool — the Bun-runtime variant of jsc/lint_pool.zig.
+// Bun-subprocess linter pool — Zig host + N forked Bun processes.
 //
 // Architecture:
 //   • Zig parses the source ONCE on the main thread.
@@ -7,20 +7,15 @@
 //     to one worker. The host writes framed jobs, reads framed responses.
 //   • Wire format: 4-byte LE length + 1 byte opcode + payload. The same
 //     format the worker script uses on its end.
+//   • The 8.7MB AST is published to /tmp/ez-ast-<pid>.bin once; workers
+//     Bun.mmap it. No per-iter AST IPC.
 //
-// Compared to jsc/lint_pool.zig (which embeds JSC contexts in-process),
-// this variant ships Bun as a vendored asset (`vendor/bun/<arch>-<os>`) and
-// shells out via stdin/stdout. Trade-offs:
-//   + No Apple-framework dependency, no JIT entitlement story — Bun
-//     handles its own JIT inside the spawned process.
-//   + Each worker runs in a completely separate VM heap with its own GC —
-//     same isolation as multi-context JSC, plus subprocess-level fault
-//     isolation.
-//   – Subprocess startup is heavier than JSC context creation (50-100ms
-//     vs ~85ms — but parallelizable).
-//   – AST is shipped fresh down each worker's stdin per iter. For an 8.7MB
-//     AST × 4 workers that's ~35MB of pipe traffic per iter; measure
-//     whether this is a real cost before optimizing to mmap.
+// Why per-process (vs in-process JSC contexts): independent VMs avoid
+// shared-allocator and JIT-metadata contention; each worker has its own
+// GC and JIT compiler threads; no Apple JavaScriptCore.framework
+// dependency; no JIT-entitlement codesign story (Bun handles JIT
+// internally). Trade-off: subprocess startup is heavier (~100ms each
+// in parallel) but amortized over the long-running pool.
 
 const std = @import("std");
 const Io = std.Io;
@@ -168,7 +163,7 @@ fn spawnWorker(bun_path: [:0]const u8, worker_js_path: [:0]const u8) !SpawnResul
     };
 }
 
-// ── Work queue (work-stealing — same shape as jsc-lint-pool's) ────────────
+// ── Work queue (work-stealing) ────────────────────────────────────────────
 const WorkQueue = struct {
     batches: []const []const []const u8,
     next_idx: std.atomic.Value(u32) = .init(0),
