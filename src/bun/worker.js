@@ -268,6 +268,7 @@ function _getRuleSubset(ruleNames) {
 const _astViewCache = new Map(); // astPath → AstView
 const _AST_CACHE_ENABLED = !process.env.BUN_WORKER_NO_AST_CACHE;
 let _lintCallCount = 0;
+let _diagOutBuf = new Uint32Array(4096); // initial 4096 u32 = 1365 diag triples
 
 function _getAstView(astPath, astBytes) {
   if (_AST_CACHE_ENABLED && astPath) {
@@ -305,7 +306,17 @@ function runLint(astBytes, ruleNames, filename, astPath) {
     errorBudget: Infinity,
   });
 
-  const out = new Uint32Array(reports.length * 3);
+  // Reused diag-output buffer, grown geometrically. Avoids a fresh
+  // Uint32Array allocation per LINT — small but per-call so it adds up
+  // across iters. Caller copies bytes into the stdout frame
+  // immediately, so handing out a subarray view is safe.
+  const needed = reports.length * 3;
+  if (_diagOutBuf.length < needed) {
+    let cap = _diagOutBuf.length || 64;
+    while (cap < needed) cap *= 2;
+    _diagOutBuf = new Uint32Array(cap);
+  }
+  const out = _diagOutBuf.subarray(0, needed);
   for (let i = 0; i < reports.length; i++) {
     const r = reports[i];
     out[i * 3 + 0] = ruleIdxByName[r.ruleId] ?? 0;
