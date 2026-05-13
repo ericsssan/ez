@@ -193,6 +193,11 @@ const Job = struct {
     ast_buf: []const u8,
     filename: []const u8,
     queue: *WorkQueue,
+    /// When non-null, workers receive the AST via Bun.mmap on this path
+    /// instead of the legacy stdin-frame protocol. Eliminates 8.7MB×N of
+    /// pipe traffic per iter — the mmap'd file stays in OS page cache so
+    /// re-mmaps across iters are essentially free.
+    ast_path: ?[:0]const u8 = null,
 };
 
 const Worker = struct {
@@ -296,14 +301,16 @@ const Worker = struct {
         self.batches_done = 0;
 
         while (job.queue.pull()) |rule_names| {
-            try self.runBatch(job.ast_buf, rule_names, job.filename);
+            try self.runBatch(job, rule_names);
             self.batches_done += 1;
         }
         self.last_lint_ms = msSince(t0);
     }
 
-    fn runBatch(self: *Worker, ast: []const u8, rule_names: []const []const u8, filename: []const u8) !void {
-        // Build JSON spec: { rules: [...], filename: "...", profile: false }
+    fn runBatch(self: *Worker, job: Job, rule_names: []const []const u8) !void {
+        // Build JSON spec. Two shapes depending on AST-delivery mode:
+        //   { rules:[...], filename:"...", astPath:"/tmp/..." }   (mmap mode)
+        //   { rules:[...], filename:"..." }                       (frame mode)
         var spec_buf: std.ArrayList(u8) = .empty;
         defer spec_buf.deinit(self.alloc);
         try spec_buf.appendSlice(self.alloc, "{\"rules\":[");
@@ -314,13 +321,23 @@ const Worker = struct {
             try spec_buf.append(self.alloc, '"');
         }
         try spec_buf.appendSlice(self.alloc, "],\"filename\":\"");
-        try spec_buf.appendSlice(self.alloc, filename);
-        try spec_buf.appendSlice(self.alloc, "\"}");
+        try spec_buf.appendSlice(self.alloc, job.filename);
+        try spec_buf.append(self.alloc, '"');
+        if (job.ast_path) |p| {
+            try spec_buf.appendSlice(self.alloc, ",\"astPath\":\"");
+            try spec_buf.appendSlice(self.alloc, p);
+            try spec_buf.append(self.alloc, '"');
+        }
+        try spec_buf.append(self.alloc, '}');
 
-        // Wire: LINT frame (opcode + spec JSON), immediately followed by an
-        // AST frame (opcode is ignored on the worker side here).
+        // Wire: LINT frame (opcode + spec JSON). When job.ast_path is null
+        // we follow with a second frame containing the raw AST bytes
+        // (legacy in-band delivery). When set, the worker mmaps the file —
+        // no second frame needed.
         try writeFrame(self.fd_in, OP_LINT, spec_buf.items);
-        try writeFrame(self.fd_in, OP_LINT, ast);
+        if (job.ast_path == null) {
+            try writeFrame(self.fd_in, OP_LINT, job.ast_buf);
+        }
 
         // Read DIAGS reply.
         const reply = try readFrame(self.fd_out, self.alloc);
@@ -411,10 +428,16 @@ const Pool = struct {
         self.alloc.free(self.workers);
     }
 
-    fn lintQueue(self: *Pool, ast: []const u8, queue: *WorkQueue, filename: []const u8) !u32 {
+    fn lintQueue(
+        self: *Pool,
+        ast: []const u8,
+        queue: *WorkQueue,
+        filename: []const u8,
+        ast_path: ?[:0]const u8,
+    ) !u32 {
         queue.reset();
         for (self.workers) |*w| {
-            w.job = .{ .ast_buf = ast, .filename = filename, .queue = queue };
+            w.job = .{ .ast_buf = ast, .filename = filename, .queue = queue, .ast_path = ast_path };
             w.state.store(STATE_WORK_READY, .release);
         }
         var total: u32 = 0;
@@ -426,6 +449,20 @@ const Pool = struct {
         return total;
     }
 };
+
+// Publish AST bytes to a temp file so workers can Bun.mmap it — eliminates
+// pipe-shipping of the AST per worker per iter. Returns the (zero-terminated)
+// path; caller owns the buffer. The file path embeds our pid so multiple
+// concurrent ez instances don't collide.
+fn publishAstToFile(alloc: std.mem.Allocator, ast: []const u8) ![:0]u8 {
+    var path_buf: [256]u8 = undefined;
+    const path_z = try std.fmt.bufPrintZ(&path_buf, "/tmp/ez-ast-{d}.bin", .{getpid()});
+    const fd = std.c.open(@ptrCast(path_z.ptr), .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(c_uint, 0o600));
+    if (fd < 0) return error.OpenFailed;
+    defer _ = std.c.close(fd);
+    try writeAll(fd, ast);
+    return try alloc.dupeZ(u8, path_z);
+}
 
 // ── Build tag-names JSON ──────────────────────────────────────────────────
 fn buildTagNamesJson(alloc: std.mem.Allocator) ![]u8 {
@@ -546,6 +583,18 @@ pub fn main(init: std.process.Init) !void {
 
     var queue: WorkQueue = .{ .batches = batches };
 
+    // Publish the AST to /tmp once. Workers Bun.mmap this file rather than
+    // receiving 8.7MB×N via stdin per iter. The file stays in OS page cache
+    // across iters so the per-call mmap is microseconds.
+    const t_publish = nanosNow();
+    const ast_path = try publishAstToFile(alloc, ast_bytes);
+    defer alloc.free(ast_path);
+    std.debug.print("[main] published AST → {s} ({d:.1}MB) in {d:.1}ms\n", .{
+        ast_path,
+        @as(f64, @floatFromInt(ast_bytes.len)) / (1024.0 * 1024.0),
+        msSince(t_publish),
+    });
+
     // Lint loop (steady state).
     const iters: usize = 20;
     var times_ms = try alloc.alloc(f64, iters);
@@ -554,7 +603,7 @@ pub fn main(init: std.process.Init) !void {
     var iter: usize = 0;
     while (iter < iters) : (iter += 1) {
         const t0 = nanosNow();
-        total_diags = try pool.lintQueue(ast_bytes, &queue, src_path);
+        total_diags = try pool.lintQueue(ast_bytes, &queue, src_path, ast_path);
         times_ms[iter] = msSince(t0);
     }
 

@@ -383,13 +383,25 @@ function runLint(astBytes, ruleNames, filename) {
     } else if (op === OP_LINT) {
       try {
         const spec = JSON.parse(head.payload.toString("utf-8"));
-        // AST arrives as the very next frame (opcode ignored — the LINT
-        // protocol always pairs a JSON spec frame with an AST-bytes frame).
+        // Two AST-delivery modes:
+        //   spec.astPath set   → mmap the file (zero IPC; the file stays in
+        //                        OS page cache across iters, so re-mmaps are
+        //                        ~free)
+        //   spec.astPath unset → AST arrives as the next frame's payload
+        //                        (legacy path)
         const t_read = process.hrtime.bigint();
-        const astFrameR = readFrame();
-        const astFrame = astFrameR.then ? await astFrameR : astFrameR;
+        let astBuf;
+        if (spec.astPath) {
+          // Bun.mmap returns a Uint8Array view backed by the mapped file;
+          // implicitly munmap'd on GC.
+          astBuf = Bun.mmap(spec.astPath);
+        } else {
+          const astFrameR = readFrame();
+          const astFrame = astFrameR.then ? await astFrameR : astFrameR;
+          astBuf = astFrame.payload;
+        }
         const t_lint = process.hrtime.bigint();
-        const result = runLint(astFrame.payload, spec.rules, spec.filename);
+        const result = runLint(astBuf, spec.rules, spec.filename);
         const t_write = process.hrtime.bigint();
         writeFrame(REPLY_DIAGS, result);
         // Hint GC at end of each LINT. Without this, accumulating heap from
