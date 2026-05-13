@@ -22,6 +22,8 @@ const semantic_mod = @import("semantic.zig");
 const event_resolver = @import("event_resolver.zig");
 const js_buffer = @import("js_buffer.zig");
 const token_mod = @import("token.zig");
+const linter_mod = @import("../linter/linter.zig");
+const Location = @import("./span.zig").Location;
 
 const Language = token_mod.Language;
 const Parser = parser_mod.Parser;
@@ -31,6 +33,13 @@ pub const ParseError = error{
     SourceStartTooLow,
     ParseFailed,
 } || std.mem.Allocator.Error;
+
+/// Compact diagnostic shape for native rules run during parseToBuffer.
+pub const NativeDiag = struct {
+    rule_name: []const u8,
+    line: u32,
+    col: u32,
+};
 
 /// Parse source text already written to `buf_ptr[source_start..source_start+source_len]`
 /// into a binary AST buffer at `buf_ptr[0..source_start]`. Header is written
@@ -48,6 +57,11 @@ pub fn parseToBuffer(
     language: Language,
     is_module: bool,
     sem_arena: *std.heap.ArenaAllocator,
+    /// Optional output for native-rule diagnostics. When non-null, the
+    /// native linter runs after sem and appends `(rule_name, line, col)`
+    /// triples here (allocated in `sem_arena`'s allocator). Caller can
+    /// exclude those rule names from the JS plugin set.
+    out_native_diags: ?*std.ArrayList(NativeDiag),
 ) !u32 {
     if (source_start + source_len > buf_len) return error.BufferTooSmall;
     if (source_start < js_buffer.HEADER_SIZE) return error.SourceStartTooLow;
@@ -89,6 +103,25 @@ pub fn parseToBuffer(
     const er_opts = event_resolver.Options{ .globals = "" };
     var sem = try event_resolver.resolveFull(sem_arena.allocator(), &tree, tree.scope_events, er_opts);
     semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
+
+    // ── Native rules (opt-in) ──
+    // When the caller asks for native diags, run the symbol-phase rule
+    // pipeline here. `lintSymbolRuleOnly` bypasses inline_globals and
+    // node_max_toks (which this rule doesn't read), so the overhead is
+    // just the rule's own ~15ms on typescript.js.
+    if (out_native_diags) |diags_out| {
+        sem.parent_indices = traversal.parents;
+        const sem_alloc = sem_arena.allocator();
+        const diag_list = try linter_mod.lintSymbolRuleOnly(sem_alloc, &tree, &sem, language, "no-useless-assignment");
+        for (diag_list) |d| {
+            const loc = Location.fromLineStarts(lex_result.line_starts, source, d.span.start);
+            try diags_out.append(sem_alloc, .{
+                .rule_name = "no-useless-assignment",
+                .line = loc.line + 1,
+                .col = loc.column,
+            });
+        }
+    }
 
     // ── Write semantic data into bump (also writes CFG graph inline) ──
     const sem_off = try js_buffer.writeSemanticData(

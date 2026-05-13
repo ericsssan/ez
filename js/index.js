@@ -468,11 +468,31 @@ function parseAndLintNative(filePath, options = {}) {
 
 let _nativeRulesMap = null;
 
-// Native Zig rules are disabled: every rule goes through the JS runner.
-// The Zig binding's native rules are still compiled in but never registered
-// here, so api.js / differential runner / hybrid path all fall through to JS.
+// Pull the full list from the binding so callers can address rules by
+// their canonical names (e.g. "no-useless-assignment") instead of the
+// "native-rule-N" fallback strings. Used by the differential test runner
+// to filter native diagnostics by rule.
 function getNativeRules() {
-  if (_nativeRulesMap === null) _nativeRulesMap = new Map();
+  if (_nativeRulesMap !== null) return _nativeRulesMap;
+  _nativeRulesMap = new Map();
+  try {
+    const b = loadBinding();
+    if (typeof b.getNativeRules === "function") {
+      const arr = b.getNativeRules();
+      for (let i = 0; i < arr.length; i++) {
+        const r = arr[i];
+        if (r && r.name) {
+          _nativeRulesMap.set(r.name, {
+            index: r.index ?? i,
+            category: r.category ?? null,
+            defaultSeverity: r.defaultSeverity ?? null,
+          });
+        }
+      }
+    }
+  } catch (_) {
+    // Fall through with an empty map if the binding is unavailable.
+  }
   return _nativeRulesMap;
 }
 

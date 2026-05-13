@@ -584,12 +584,21 @@ pub fn main(init: std.process.Init) !void {
     const t_parse = nanosNow();
     var sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer sem_arena.deinit();
-    _ = try parse_to_buffer.parseToBuffer(ast_bytes.ptr, total_buf_len, source_start, source_len, .js, true, &sem_arena);
-    std.debug.print("[main] parsed {s} ({d:.1}MB src) in {d:.1}ms\n", .{
+    var native_diags: std.ArrayList(parse_to_buffer.NativeDiag) = .empty;
+    _ = try parse_to_buffer.parseToBuffer(ast_bytes.ptr, total_buf_len, source_start, source_len, .js, true, &sem_arena, &native_diags);
+    const native_diag_count: u32 = @intCast(native_diags.items.len);
+    std.debug.print("[main] parsed {s} ({d:.1}MB src) in {d:.1}ms — {d} native diags\n", .{
         src_path,
         @as(f64, @floatFromInt(source.len)) / (1024.0 * 1024.0),
         msSince(t_parse),
+        native_diag_count,
     });
+    // Dump native diag locations when EZ_DUMP_NATIVE_DIAGS=1.
+    if (std.c.getenv("EZ_DUMP_NATIVE_DIAGS")) |_| {
+        for (native_diags.items) |nd| {
+            std.debug.print("NATIVE {s}:{d}:{d} {s}\n", .{ src_path, nd.line, nd.col, nd.rule_name });
+        }
+    }
 
     // Build tag-names JSON for INIT frames.
     const tag_names_json = try buildTagNamesJson(alloc);
@@ -609,8 +618,27 @@ pub fn main(init: std.process.Init) !void {
     if (recommended) {
         const rec = pool.workers[0].recommended_rules orelse return error.NoRecommendedRules;
         alloc.free(rules_storage);
-        rules_storage = try alloc.alloc([]const u8, rec.len);
-        for (rec, 0..) |s, i| rules_storage[i] = s;
+        // EZ_DUMP_JS_NUA_ONLY=1 → run only no-useless-assignment in workers
+        // (so the JS rule's diag locations can be diffed against native).
+        const dump_js_only = std.c.getenv("EZ_DUMP_JS_NUA_ONLY") != null;
+        if (dump_js_only) {
+            rules_storage = try alloc.alloc([]const u8, 1);
+            rules_storage[0] = "no-useless-assignment";
+        } else {
+            // Drop no-useless-assignment from the worker batch — the native
+            // rule already produced its diags during parse.
+            var keep_count: usize = 0;
+            for (rec) |s| {
+                if (!std.mem.eql(u8, s, "no-useless-assignment")) keep_count += 1;
+            }
+            rules_storage = try alloc.alloc([]const u8, keep_count);
+            var ki: usize = 0;
+            for (rec) |s| {
+                if (std.mem.eql(u8, s, "no-useless-assignment")) continue;
+                rules_storage[ki] = s;
+                ki += 1;
+            }
+        }
     } else {
         alloc.free(rules_storage);
         rules_storage = try alloc.alloc([]const u8, 1);
@@ -647,6 +675,7 @@ pub fn main(init: std.process.Init) !void {
     while (iter < iters) : (iter += 1) {
         const t0 = nanosNow();
         total_diags = try pool.lintQueue(ast_bytes, &queue, src_path, ast_path);
+        total_diags += native_diag_count;
         times_ms[iter] = msSince(t0);
     }
 

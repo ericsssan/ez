@@ -317,12 +317,16 @@ function runLint(astBytes, ruleNames, filename, astPath) {
     _diagOutBuf = new Uint32Array(cap);
   }
   const out = _diagOutBuf.subarray(0, needed);
+  const dumpJsDiags = process.env.EZ_DUMP_JS_DIAGS;
   for (let i = 0; i < reports.length; i++) {
     const r = reports[i];
     out[i * 3 + 0] = ruleIdxByName[r.ruleId] ?? 0;
     out[i * 3 + 1] = r.line || (r.loc?.start?.line ?? 0);
     const col1 = r.column ?? r.loc?.start?.column ?? 0;
     out[i * 3 + 2] = col1 > 0 ? col1 - 1 : 0;
+    if (dumpJsDiags && r.ruleId === "no-useless-assignment") {
+      process.stderr.write(`JS ${filename}:${out[i*3+1]}:${out[i*3+2]} ${r.ruleId}\n`);
+    }
   }
   if (process.env.BUN_WORKER_RULE_COUNTS) {
     const counts = Object.create(null);

@@ -312,6 +312,49 @@ pub fn lint(
     return diagnostics.toOwnedSlice(allocator);
 }
 
+/// Run one symbol-phase rule in isolation, bypassing the inline_globals
+/// scan and node_max_toks table that `lint()` builds for every call.
+/// Reports fall back to single-token spans (which is what symbol-phase
+/// rules emit anyway). Useful when a host has already run semantic and
+/// wants a fast pre-pass for native rules at parse time.
+pub fn lintSymbolRuleOnly(
+    allocator: std.mem.Allocator,
+    tree: *const Ast,
+    semantic: *const SemanticResult,
+    language: Language,
+    rule_name: []const u8,
+) ![]const LintDiagnostic {
+    @setRuntimeSafety(false);
+
+    var rule_idx: usize = registry.count;
+    inline for (registry.all_rules, 0..) |Rule, i| {
+        if (std.mem.eql(u8, Rule.meta.name, rule_name)) rule_idx = i;
+    }
+    if (rule_idx >= registry.count) return error.UnknownRule;
+    if (!langMatches(lang_flags[rule_idx], language)) return &[_]LintDiagnostic{};
+    const fn_ptr = symbol_fns[rule_idx] orelse return &[_]LintDiagnostic{};
+
+    var diagnostics: std.ArrayList(LintDiagnostic) = .empty;
+    errdefer diagnostics.deinit(allocator);
+
+    var ctx = LintContext{
+        .ast = tree,
+        .semantic = semantic,
+        .diagnostics = &diagnostics,
+        .allocator = allocator,
+        .language = language,
+        .settings = null,
+        .language_options = null,
+        .inline_globals = &[_]@import("lint_context.zig").InlineGlobalEntry{},
+        .node_max_toks = &[_]u32{},
+    };
+    ctx.severity_override = .@"error";
+    ctx.current_rule_index = @intCast(rule_idx);
+    fn_ptr(&ctx);
+
+    return diagnostics.toOwnedSlice(allocator);
+}
+
 /// Returns true if any rule requiring semantic data is enabled.
 /// This covers:
 ///   - Rules with `runOnSymbols` (symbol-phase rules)

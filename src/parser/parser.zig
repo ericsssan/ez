@@ -1074,16 +1074,64 @@ pub const Parser = struct {
         if (decl_node == .none) return;
         const d = self.node_data_ptr[decl_node.toInt()];
         try self.emitDeclaresFromPattern(d.lhs, kind);
-        // For simple identifier bindings with an initializer, also emit a write
-        // reference.  This matches eslint-scope's behavior: declaration + init is
-        // a write reference, enabling liveness analysis to flag useless initial
-        // values.  Destructuring is excluded due to complex event-ordering issues
-        // with default-value expressions that reference sibling bindings.
+        // For bindings with an initializer, emit a write_init reference for each
+        // leaf binding identifier.  This matches eslint-scope's behavior:
+        // declaration + init is a write reference, enabling liveness analysis to
+        // flag useless initial values (e.g. no-useless-assignment).
         if (d.rhs != .none and d.lhs != .none) {
             const binding_tag = self.node_tags_ptr[@intFromEnum(d.lhs)];
             if (binding_tag == .identifier) {
                 try self.emitReference(.write_init, d.lhs);
+            } else {
+                try self.emitWriteInitsFromPattern(d.lhs);
             }
+        }
+    }
+
+    /// Walk a binding pattern and emit a write_init reference for each leaf
+    /// identifier binding.  Used by destructuring declarators.
+    fn emitWriteInitsFromPattern(self: *Parser, node: NodeIndex) std.mem.Allocator.Error!void {
+        if (node == .none) return;
+        const idx = @intFromEnum(node);
+        if (idx >= self.nodes.len) return;
+        const tag = self.node_tags_ptr[idx];
+        const data = self.node_data_ptr[idx];
+        switch (tag) {
+            .identifier => try self.emitReference(.write_init, node),
+            .assignment_pattern => try self.emitWriteInitsFromPattern(data.lhs),
+            .rest_element => try self.emitWriteInitsFromPattern(data.lhs),
+            .ts_parameter_property => try self.emitWriteInitsFromPattern(data.lhs),
+            .array_pattern => {
+                const start = @intFromEnum(data.lhs);
+                const end = @intFromEnum(data.rhs);
+                if (start <= end and end <= self.extra_data.items.len) {
+                    for (self.extra_data.items[start..end]) |raw| {
+                        const child: NodeIndex = @enumFromInt(raw);
+                        try self.emitWriteInitsFromPattern(child);
+                    }
+                }
+            },
+            .object_pattern => {
+                const start = @intFromEnum(data.lhs);
+                const end = @intFromEnum(data.rhs);
+                if (start <= end and end <= self.extra_data.items.len) {
+                    for (self.extra_data.items[start..end]) |raw| {
+                        const prop_node: NodeIndex = @enumFromInt(raw);
+                        if (prop_node == .none) continue;
+                        const pidx = @intFromEnum(prop_node);
+                        if (pidx >= self.nodes.len) continue;
+                        const ptag = self.node_tags_ptr[pidx];
+                        const pdata = self.node_data_ptr[pidx];
+                        switch (ptag) {
+                            .property, .computed_property => try self.emitWriteInitsFromPattern(pdata.rhs),
+                            .shorthand_property => try self.emitWriteInitsFromPattern(pdata.lhs),
+                            .rest_element => try self.emitWriteInitsFromPattern(pdata.lhs),
+                            else => {},
+                        }
+                    }
+                }
+            },
+            else => {},
         }
     }
 

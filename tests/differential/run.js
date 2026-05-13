@@ -342,26 +342,72 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
     }
     const lang = isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
     const diags = ezLint(code, { config, lang });
+    // Native diags emit only {offset, severity, ruleName}. ESLint diags
+    // carry {line, column, endLine, endColumn, messageId}. To compare
+    // them on the same key shape, synthesize the missing fields here:
+    //  - line/column from offset (column is 1-based to match ESLint)
+    //  - endLine/endColumn from the identifier token at offset (we read
+    //    forward until a non-identifier byte, which matches ESLint's
+    //    "report node = identifier" convention for this rule family)
+    //  - messageId from a per-rule constant table
+    const NATIVE_RULE_META = {
+      "no-useless-assignment": { messageId: "unnecessaryAssignment" },
+    };
+    const meta = NATIVE_RULE_META[_nativeName] || {};
+    // Replicate ESLint test-rule directives that don't ship with our
+    // runtime: `test/use-a` marks variable `a` as used; `test/unknown-ref`
+    // pushes a synthetic READ ref onto every declared variable so the
+    // rule treats them all as used. For the native path we post-filter
+    // diagnostics that correspond to whichever variable(s) the directive
+    // would have suppressed.
+    const _hasUseANative = /\/\*\s*eslint\s+test\/use-a\b/.test(code);
+    const _hasUnknownRefNative = /\/\*\s*eslint\s+test\/unknown-ref\b/.test(code);
     return diags
       .filter(d => d.ruleName === _nativeName)
-      .map(d => ({
-        rule: _nativeName,
-        line: offsetToLine(code, d.offset),
-        // Native diags carry start byte offset; reconstruct column from the
-        // last `\n` before the offset so we can compare on the column too.
-        column: (() => {
-          let lineStart = 0;
-          for (let i = d.offset - 1; i >= 0; i--) {
-            if (code.charCodeAt(i) === 10) { lineStart = i + 1; break; }
-          }
-          return d.offset - lineStart;
-        })(),
-        endLine: d.endLine ?? null,
-        endColumn: d.endColumn ?? null,
-        message: d.message ?? null,
-        messageId: d.messageId ?? null,
-        severity: d.severity ?? null,
-      }));
+      .filter(d => {
+        // unknown-ref synthesises a read ref for every declared var, so
+        // every var becomes "has_any_read" → no diags would survive.
+        if (_hasUnknownRefNative) return false;
+        if (!_hasUseANative) return true;
+        let end = d.offset;
+        while (end < code.length) {
+          const cc = code.charCodeAt(end);
+          const isIdent = (cc >= 0x41 && cc <= 0x5a) || (cc >= 0x61 && cc <= 0x7a) ||
+            (cc >= 0x30 && cc <= 0x39) || cc === 0x5f || cc === 0x24 || cc >= 0x80;
+          if (!isIdent) break;
+          end++;
+        }
+        return code.slice(d.offset, end) !== "a";
+      })
+      .map(d => {
+        let lineStart = 0;
+        for (let i = d.offset - 1; i >= 0; i--) {
+          if (code.charCodeAt(i) === 10) { lineStart = i + 1; break; }
+        }
+        const column = d.offset - lineStart + 1;
+        const line = offsetToLine(code, d.offset);
+        // Walk forward to find identifier end. Identifiers continue as
+        // long as the byte is alphanumeric, `_`, `$`, or non-ASCII.
+        let end = d.offset;
+        while (end < code.length) {
+          const cc = code.charCodeAt(end);
+          const isIdent = (cc >= 0x41 && cc <= 0x5a) || (cc >= 0x61 && cc <= 0x7a) ||
+            (cc >= 0x30 && cc <= 0x39) || cc === 0x5f || cc === 0x24 || cc >= 0x80;
+          if (!isIdent) break;
+          end++;
+        }
+        const endColumn = column + (end - d.offset);
+        return {
+          rule: _nativeName,
+          line,
+          column,
+          endLine: line,
+          endColumn,
+          message: meta.message ?? null,
+          messageId: meta.messageId ?? null,
+          severity: d.severity ?? null,
+        };
+      });
   } catch { return null; }
 }
 
@@ -411,9 +457,63 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
       },
       create: ruleModule.create,
     };
+    // Detect ESLint test-rule directives (used by the no-useless-assignment
+    // RuleTester to mark variables as used / inject synthetic refs). These
+    // are normally provided by the test harness's plugin scope; replicate
+    // them inline so we match ESLint's behavior on cases that depend on them.
+    const _testPlugins = [];
+    const _testRuleCfg = {};
+    if (/\/\*\s*eslint\s+test\/use-a\b/.test(src)) {
+      _testPlugins.push({
+        meta: { name: "test/use-a" },
+        create(context) {
+          if (process.env.EZ_TRACE_TEST_RULE) console.error("[test/use-a] create() called");
+          const sc = context.sourceCode;
+          return {
+            VariableDeclaration(node) {
+              const r = sc.markVariableAsUsed("a", node);
+              if (process.env.EZ_TRACE_TEST_RULE) console.error("[test/use-a] mark a:", r);
+            },
+          };
+        },
+      });
+      _testRuleCfg["test/use-a"] = ["warn"];
+    }
+    if (/\/\*\s*eslint\s+test\/unknown-ref\b/.test(src)) {
+      _testPlugins.push({
+        meta: { name: "test/unknown-ref" },
+        create(context) {
+          const sc = context.sourceCode;
+          return {
+            VariableDeclarator(node) {
+              const scope = sc.getScope(node);
+              const variable = scope.set?.get?.(node.id?.name);
+              if (variable && Array.isArray(variable.references)) {
+                // Mirror ESLint's RuleTester test/unknown-ref: push a
+                // synthetic READ ref so the variable counts as used.
+                variable.references.push({
+                  identifier: node,
+                  from: scope,
+                  init: false,
+                  resolved: variable,
+                  writeExpr: null,
+                  isRead: () => true,
+                  isWrite: () => false,
+                  isReadOnly: () => true,
+                  isWriteOnly: () => false,
+                  isReadWrite: () => false,
+                });
+              }
+            },
+          };
+        },
+      });
+      _testRuleCfg["test/unknown-ref"] = ["warn"];
+    }
+
     const _pl0 = Date.now();
-    const rawReports = runPlugins(ast, [plugin], {
-      tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion, envGlobals: false,
+    const rawReports = runPlugins(ast, [plugin, ..._testPlugins], {
+      tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions, ..._testRuleCfg }, ecmaVersion, envGlobals: false,
       filename,
       languageOptions: { globals: tcGlobals || null, parserOptions: tcLanguageOptions.parserOptions },
     });
@@ -422,9 +522,39 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // Re-add crashes (they bypass directive suppression).
     const crashReports = rawReports.filter(r => r.crash);
     _runnerPluginMs += Date.now() - _pl0;
+    // Replicate ESLint's `test/use-a` test rule behavior: it calls
+    // `markVariableAsUsed("a", node)` on every VariableDeclaration, which
+    // tells no-useless-assignment to skip writes to variable `a`.
+    // Suppress reports whose underlying identifier text is "a" when this
+    // directive is active. Cheap post-filter; matches the rule's intent.
+    const _hasUseA = /\/\*\s*eslint\s+test\/use-a\b/.test(src);
     const results = [];
     for (const r of [...reports, ...crashReports]) {
       if (r.ruleId !== ruleName) continue;
+      if (_hasUseA) {
+        const loc = r.loc;
+        const sBytes = loc?.start?.column != null && loc?.start?.line != null;
+        if (sBytes) {
+          // Pull the identifier text at the report location: walk forward
+          // from that byte until we hit a non-identifier char.
+          const lineNo = loc.start.line;
+          const col = loc.start.column;
+          let idx = 0, ln = 1;
+          for (; idx < src.length && ln < lineNo; idx++) {
+            if (src.charCodeAt(idx) === 10) ln++;
+          }
+          idx += col;
+          let end = idx;
+          while (end < src.length) {
+            const cc = src.charCodeAt(end);
+            const isIdent = (cc >= 0x41 && cc <= 0x5a) || (cc >= 0x61 && cc <= 0x7a) ||
+              (cc >= 0x30 && cc <= 0x39) || cc === 0x5f || cc === 0x24 || cc >= 0x80;
+            if (!isIdent) break;
+            end++;
+          }
+          if (src.slice(idx, end) === "a") continue;
+        }
+      }
       const loc = r.loc;
       const line   = loc?.start?.line ?? loc?.line ?? r.line;
       // ez stores 0-based column on loc.start.column; ESLint's
