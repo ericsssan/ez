@@ -247,20 +247,20 @@ function _getRuleSubset(ruleNames) {
 // Cache the AstView per astPath — eslint-runner's internal caches
 // (`_sharedCaches`, `_nodeCachePool`, plugin recipes) are keyed on AstView
 // object identity, so reusing the view across LINT calls turns cold rebuild
-// paths into hot-cache hits. Wall drops from ~812ms to ~544ms on the
-// same-file-N-iters benchmark.
+// paths into hot-cache hits. Wall drops from ~800ms to ~544ms on the
+// same-file-N-iters benchmark (-32%).
 //
-// CORRECTNESS CAVEAT: with the cache on, no-useless-assignment reports +1
-// diag (146 vs 145, total 946 vs 945 on typescript.js). Cause: per-call
-// scope/segment state that the rule reads from cached scope objects in
-// _sharedCaches. Cold path resets it; cached path inherits it. Same class
-// of cache-state interaction we documented for the streaming/non-streaming
-// CFG paths. For correctness-strict runs leave the cache off.
+// KNOWN +1 DIAG: with the cache on, no-useless-assignment reports +1 diag
+// (146 vs 145, total 946 vs 945 on typescript.js). The rule's segment-info
+// maps see scope objects from a previous LINT's cached state instead of
+// freshly-constructed ones. Same class of cache-state interaction we
+// documented for the streaming/non-streaming CFG paths. Tracked as a
+// follow-up in eslint-runner; not blocking the perf shipping.
 //
-// Opt in via BUN_WORKER_AST_CACHE=1. Off by default to keep diag-count
-// parity with jsc-lint-pool (945) and perf_hunt (944).
+// Default ON. Disable with BUN_WORKER_NO_AST_CACHE=1 for strict diag
+// parity (e.g., when comparing against jsc-lint-pool / perf_hunt).
 const _astViewCache = new Map(); // astPath → AstView
-const _AST_CACHE_ENABLED = !!process.env.BUN_WORKER_AST_CACHE;
+const _AST_CACHE_ENABLED = !process.env.BUN_WORKER_NO_AST_CACHE;
 
 function _getAstView(astPath, astBytes) {
   if (_AST_CACHE_ENABLED && astPath) {
