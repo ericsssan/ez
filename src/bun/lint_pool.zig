@@ -647,11 +647,14 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Publish the AST to /tmp now (no pool dependency). This overlaps with
-    // worker boot still running in the background thread.
+    // Publish the AST to /tmp. Auto-deleted on exit (defer unlink) — no
+    // accumulation of orphan files in /tmp across runs. Workers Bun.mmap by
+    // path; the kernel page cache keeps the bytes in RAM, so the "file" is
+    // essentially a RAM-resident shared buffer for our run.
     const t_publish = nanosNow();
     const ast_path = try publishAstToFile(alloc, ast_bytes);
     defer alloc.free(ast_path);
+    defer _ = std.c.unlink(@ptrCast(ast_path.ptr));
     std.debug.print("[main] published AST → {s} ({d:.1}MB) in {d:.1}ms\n", .{
         ast_path,
         @as(f64, @floatFromInt(ast_bytes.len)) / (1024.0 * 1024.0),
