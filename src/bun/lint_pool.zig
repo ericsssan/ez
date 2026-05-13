@@ -40,6 +40,7 @@ extern "c" fn _exit(status: c_int) noreturn;
 extern "c" fn waitpid(pid: i32, status: ?*c_int, options: c_int) i32;
 extern "c" fn fchmod(fd: i32, mode: c_uint) c_int;
 extern "c" fn getpid() i32;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 const STDIN_FD: i32 = 0;
 const STDOUT_FD: i32 = 1;
@@ -488,11 +489,26 @@ pub fn main(init: std.process.Init) !void {
     var recommended = false;
     var batch_size_arg: u32 = 0;
     var positional: u32 = 0;
+    var trace_workers = false;
+    var stats_workers = false;
+    var profile_workers = false;
+    var no_ast_cache = false;
+    var gc_every_arg: ?[]const u8 = null;
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--recommended")) {
             recommended = true;
         } else if (std.mem.startsWith(u8, a, "--batch-size=")) {
             batch_size_arg = std.fmt.parseInt(u32, a["--batch-size=".len..], 10) catch 0;
+        } else if (std.mem.eql(u8, a, "--trace")) {
+            trace_workers = true;
+        } else if (std.mem.eql(u8, a, "--stats")) {
+            stats_workers = true;
+        } else if (std.mem.eql(u8, a, "--profile")) {
+            profile_workers = true;
+        } else if (std.mem.eql(u8, a, "--no-ast-cache")) {
+            no_ast_cache = true;
+        } else if (std.mem.startsWith(u8, a, "--gc-every=")) {
+            gc_every_arg = a["--gc-every=".len..];
         } else if (positional == 0) {
             source_path = a;
             positional += 1;
@@ -502,11 +518,43 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     if (source_path == null) {
-        std.debug.print("usage: ezlint <source_path> [n_workers=4] [--recommended] [--batch-size=N]\n", .{});
+        std.debug.print(
+            \\usage: ezlint <source_path> [n_workers=4] [flags]
+            \\
+            \\flags:
+            \\  --recommended         use eslint:recommended preset (64 rules)
+            \\  --batch-size=N        rules per batch (default ceil(n_rules/n_workers))
+            \\
+            \\diagnostic flags (sets BUN_WORKER_* env on children):
+            \\  --trace               per-LINT timing on stderr (read/lint/write ms)
+            \\  --stats               heap + JIT compile counters at shutdown
+            \\  --profile             JSC sampling profiler (~6× wall, leaf summary)
+            \\
+            \\tuning flags:
+            \\  --no-ast-cache        disable AstView cache (strict diag-count parity)
+            \\  --gc-every=N          GC every N LINT calls (default 10)
+            \\
+        , .{});
         return;
     }
     const src_path = source_path.?;
-    std.debug.print("[main] n_workers={d} recommended={any}\n", .{ n_workers, recommended });
+
+    // Propagate diagnostic / tuning flags to children via env. Children
+    // inherit the parent's env across fork+exec, so setenv before spawning
+    // is enough.
+    if (trace_workers) _ = setenv("BUN_WORKER_TRACE", "1", 1);
+    if (stats_workers) _ = setenv("BUN_WORKER_STATS", "1", 1);
+    if (profile_workers) _ = setenv("BUN_WORKER_PROFILE", "1", 1);
+    if (no_ast_cache) _ = setenv("BUN_WORKER_NO_AST_CACHE", "1", 1);
+    if (gc_every_arg) |v| {
+        var z: [16]u8 = undefined;
+        const zs = std.fmt.bufPrintZ(&z, "{s}", .{v}) catch unreachable;
+        _ = setenv("BUN_WORKER_GC_EVERY", zs.ptr, 1);
+    }
+
+    std.debug.print("[main] n_workers={d} recommended={any} trace={any} stats={any} profile={any}\n", .{
+        n_workers, recommended, trace_workers, stats_workers, profile_workers,
+    });
 
     // Extract the embedded Bun binary to /tmp.
     const t_bun = nanosNow();
