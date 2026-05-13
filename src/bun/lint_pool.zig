@@ -494,11 +494,15 @@ pub fn main(init: std.process.Init) !void {
     var profile_workers = false;
     var no_ast_cache = false;
     var gc_every_arg: ?[]const u8 = null;
+    var iters: u32 = 1;
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--recommended")) {
             recommended = true;
         } else if (std.mem.startsWith(u8, a, "--batch-size=")) {
             batch_size_arg = std.fmt.parseInt(u32, a["--batch-size=".len..], 10) catch 0;
+        } else if (std.mem.startsWith(u8, a, "--iters=")) {
+            iters = std.fmt.parseInt(u32, a["--iters=".len..], 10) catch 1;
+            if (iters == 0) iters = 1;
         } else if (std.mem.eql(u8, a, "--trace")) {
             trace_workers = true;
         } else if (std.mem.eql(u8, a, "--stats")) {
@@ -524,6 +528,7 @@ pub fn main(init: std.process.Init) !void {
             \\flags:
             \\  --recommended         use eslint:recommended preset (64 rules)
             \\  --batch-size=N        rules per batch (default ceil(n_rules/n_workers))
+            \\  --iters=N             run lint N times (default 1; >1 for benchmarking)
             \\
             \\diagnostic flags (sets BUN_WORKER_* env on children):
             \\  --trace               per-LINT timing on stderr (read/lint/write ms)
@@ -666,12 +671,11 @@ pub fn main(init: std.process.Init) !void {
         msSince(t_publish),
     });
 
-    // Lint loop (steady state).
-    const iters: usize = 20;
+    // Lint loop. Default 1 iter (real lint); set --iters=N to benchmark.
     var times_ms = try alloc.alloc(f64, iters);
     defer alloc.free(times_ms);
     var total_diags: u32 = 0;
-    var iter: usize = 0;
+    var iter: u32 = 0;
     while (iter < iters) : (iter += 1) {
         const t0 = nanosNow();
         total_diags = try pool.lintQueue(ast_bytes, &queue, src_path, ast_path);
@@ -679,15 +683,22 @@ pub fn main(init: std.process.Init) !void {
         times_ms[iter] = msSince(t0);
     }
 
-    std.debug.print("\n[main] lint timings (n_workers={d}):\n", .{n_workers});
-    var sum: f64 = 0;
-    for (times_ms, 0..) |t, i| {
-        std.debug.print("  iter {d:>2}: {d:>6.1}ms\n", .{ i, t });
-        sum += t;
+    if (iters == 1) {
+        std.debug.print("\n[main] lint wall: {d:.1}ms  diags: {d}  (n_workers={d})\n", .{ times_ms[0], total_diags, n_workers });
+        for (pool.workers) |*w| {
+            std.debug.print("  w{d}: batches={d:>2}  lint={d:>6.1}ms\n", .{ w.id, w.batches_done, w.last_lint_ms });
+        }
+    } else {
+        std.debug.print("\n[main] lint timings (n_workers={d}):\n", .{n_workers});
+        var sum: f64 = 0;
+        for (times_ms, 0..) |t, i| {
+            std.debug.print("  iter {d:>2}: {d:>6.1}ms\n", .{ i, t });
+            sum += t;
+        }
+        std.debug.print("[main] last iter per-worker:\n", .{});
+        for (pool.workers) |*w| {
+            std.debug.print("  w{d}: batches={d:>2}  lint={d:>6.1}ms\n", .{ w.id, w.batches_done, w.last_lint_ms });
+        }
+        std.debug.print("[main] avg wall: {d:.1}ms  diags: {d}\n", .{ sum / @as(f64, @floatFromInt(iters)), total_diags });
     }
-    std.debug.print("[main] last iter per-worker:\n", .{});
-    for (pool.workers) |*w| {
-        std.debug.print("  w{d}: batches={d:>2}  lint={d:>6.1}ms\n", .{ w.id, w.batches_done, w.last_lint_ms });
-    }
-    std.debug.print("[main] avg wall: {d:.1}ms  diags: {d}\n", .{ sum / @as(f64, @floatFromInt(iters)), total_diags });
 }

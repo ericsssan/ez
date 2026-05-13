@@ -299,12 +299,33 @@ function runLint(astBytes, ruleNames, filename, astPath) {
     };
   }
 
-  const reports = runPlugins(ast, plugins, {
-    tagNames,
-    filename: filename || "<input>",
-    ruleConfig,
-    errorBudget: Infinity,
-  });
+  let reports;
+  if (process.env.BUN_WORKER_RULE_MS) {
+    // Per-rule timing: run each rule in isolation. Slower overall, only for
+    // diagnostics. Cumulative ms aggregated across calls in globalThis.__ez_rule_ms.
+    if (!globalThis.__ez_rule_ms) globalThis.__ez_rule_ms = Object.create(null);
+    const acc = globalThis.__ez_rule_ms;
+    reports = [];
+    for (let i = 0; i < plugins.length; i++) {
+      const t0 = process.hrtime.bigint();
+      const sub = runPlugins(ast, [plugins[i]], {
+        tagNames,
+        filename: filename || "<input>",
+        ruleConfig,
+        errorBudget: Infinity,
+      });
+      const dt = Number(process.hrtime.bigint() - t0) / 1e6;
+      acc[plugins[i].meta.name] = (acc[plugins[i].meta.name] || 0) + dt;
+      for (const r of sub) reports.push(r);
+    }
+  } else {
+    reports = runPlugins(ast, plugins, {
+      tagNames,
+      filename: filename || "<input>",
+      ruleConfig,
+      errorBudget: Infinity,
+    });
+  }
 
   // Reused diag-output buffer, grown geometrically. Avoids a fresh
   // Uint32Array allocation per LINT — small but per-call so it adds up
@@ -444,6 +465,13 @@ function runLint(astBytes, ruleNames, filename, astPath) {
     if (op === OP_SHUTDOWN) {
       if (globalThis.__ez_dump_stats) globalThis.__ez_dump_stats();
       if (_profilerActive && globalThis.__ez_dump_profile) globalThis.__ez_dump_profile();
+      if (globalThis.__ez_rule_ms) {
+        const pairs = Object.entries(globalThis.__ez_rule_ms).sort((a, b) => b[1] - a[1]);
+        process.stderr.write(`[w${process.pid}] rule-ms (cumulative):\n`);
+        for (const [name, ms] of pairs) {
+          process.stderr.write(`  ${ms.toFixed(1).padStart(8)}ms  ${name}\n`);
+        }
+      }
       process.exit(0);
     } else if (op === OP_INIT) {
       const spec = JSON.parse(head.payload.toString("utf-8"));
