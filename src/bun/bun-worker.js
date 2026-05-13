@@ -170,19 +170,42 @@ function _takeBytes(n) {
   return _readBuf.subarray(0, n);
 }
 
+// Returns Buffer (sync — fast path when data already buffered) or
+// Promise<Buffer> (slow path — waiting on more data from stdin). Callers
+// must thenable-check via `r.then ? await r : r` to avoid creating a
+// microtask for the sync case. Worth it: profile showed
+// `processTicksAndRejections` dominating leaf samples — every `await`
+// schedules a microtask that the drainer has to walk.
 function readBytes(n) {
-  if (_pendingBytes >= n) return Promise.resolve(_takeBytes(n));
+  if (_pendingBytes >= n) return _takeBytes(n);
   return new Promise((resolve) => _waiters.push({ needed: n, resolve }));
 }
 
 // Unified frame: 4-byte LE length + 1-byte opcode + payload bytes.
 // Same shape both directions; host and worker share this format.
-async function readFrame() {
-  const hdr = await readBytes(5);
+//
+// Returns {opcode, payload} synchronously when both header and payload are
+// already buffered, or a Promise<{opcode, payload}> otherwise. The async
+// branches use `.then()` chaining (not async/await) so that each branch
+// adds at most one microtask — `async function readFrame()` would add two
+// (one for the function wrapper, one per await).
+function readFrame() {
+  const hdrR = readBytes(5);
+  if (hdrR.then) {
+    return hdrR.then((hdr) => _readFrameAfterHeader(hdr));
+  }
+  return _readFrameAfterHeader(hdrR);
+}
+
+function _readFrameAfterHeader(hdr) {
   const len = hdr.readUInt32LE(0);
   const opcode = hdr[4];
-  const payload = len === 0 ? Buffer.alloc(0) : await readBytes(len);
-  return { opcode, payload };
+  if (len === 0) return { opcode, payload: Buffer.alloc(0) };
+  const payloadR = readBytes(len);
+  if (payloadR.then) {
+    return payloadR.then((payload) => ({ opcode, payload }));
+  }
+  return { opcode, payload: payloadR };
 }
 
 // ── Output framing ─────────────────────────────────────────────────────────
@@ -340,7 +363,11 @@ function runLint(astBytes, ruleNames, filename) {
   writeFrame(REPLY_OK, null);
 
   while (true) {
-    const head = await readFrame();
+    // Sync-fast-path: when the next frame's bytes are already buffered we
+    // skip the await (and the microtask it implies). The header alone is
+    // 5 bytes, almost always already in pending when we loop back here.
+    const headR = readFrame();
+    const head = headR.then ? await headR : headR;
     const op = head.opcode;
     if (op === OP_SHUTDOWN) {
       if (globalThis.__ez_dump_stats) globalThis.__ez_dump_stats();
@@ -359,7 +386,8 @@ function runLint(astBytes, ruleNames, filename) {
         // AST arrives as the very next frame (opcode ignored — the LINT
         // protocol always pairs a JSON spec frame with an AST-bytes frame).
         const t_read = process.hrtime.bigint();
-        const astFrame = await readFrame();
+        const astFrameR = readFrame();
+        const astFrame = astFrameR.then ? await astFrameR : astFrameR;
         const t_lint = process.hrtime.bigint();
         const result = runLint(astFrame.payload, spec.rules, spec.filename);
         const t_write = process.hrtime.bigint();
