@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("node:fs");
 const { AstView, setTagNames, reset: resetView } = require("./estree-adapter");
 
 // ── Load native binding ──────────────────────────────────────────
@@ -440,12 +441,29 @@ function parseAndLintNative(filePath, options = {}) {
   if (_lintOutBuf.byteLength < 64 * 1024) _lintOutBuf = new ArrayBuffer(128 * 1024);
 
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+  // The AST is roughly 30× the source size for our buffer layout (matches the
+  // heuristic in src/bun/lint_pool.zig: `source_len * 30` for the bump budget).
+  // Stat upfront so the first NAPI call has enough headroom to avoid the
+  // grow-and-retry round trip on big files.  AST overrun isn't reported in
+  // the buf[0] needed-hint protocol — only source-too-small is — so the
+  // retry path can't recover from a too-tight initial allocation.
+  let stat;
+  try { stat = fs.statSync(filePath); } catch (_) { stat = null; }
+  if (stat && stat.size > 0) {
+    const wanted = Math.max(DEFAULT_BUFFER_SIZE, stat.size * 32 + HEADER_SIZE);
+    if (!sharedBuffer || sharedBuffer.byteLength < wanted) {
+      sharedBuffer = ensureBufferBytes(wanted);
+    }
+  }
   let buf = sharedBuffer || ensureBufferBytes(DEFAULT_BUFFER_SIZE);
   let bytesUsed = b.parseAndLintFile(buf, filePath, lang, _lintOutBuf, configBuf);
   if (bytesUsed === 0) {
     const needed = new DataView(buf).getUint32(0, true);
     if (needed > 0 && needed + HEADER_SIZE > buf.byteLength) {
-      buf = ensureBufferBytes(needed + HEADER_SIZE);
+      // Use the same 32× heuristic on the retry too — `needed` here is the
+      // source file size, not the AST size; growing to source+HEADER alone
+      // would overflow on the actual parse.
+      buf = ensureBufferBytes(needed * 32 + HEADER_SIZE);
       sharedBuffer = buf;
       bytesUsed = b.parseAndLintFile(buf, filePath, lang, _lintOutBuf, configBuf);
     }
