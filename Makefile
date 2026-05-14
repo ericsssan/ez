@@ -1,7 +1,7 @@
 ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.3028+a85495ca2/files/zig
 LINK_FLAGS :=
 
-.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi submodules
+.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi ezlint submodules
 
 test: test-unit test-linter test-recovery test-config
 
@@ -58,6 +58,21 @@ build:
 
 napi:
 	zig build napi
+
+# ezlint: standalone CLI binary built by `bun build --compile`.
+# Bun is bundled into the binary itself — no runtime Bun/Node dependency at
+# install time.  Inputs: src/bun/lint.js (entry) + src/bun/lint-worker.js
+# (worker — listed as a second entry so Bun follows it into the bundle even
+# though `new URL("./lint-worker.js", import.meta.url)` is the runtime spawn).
+# `--packages=bundle` inlines node_modules deps; src/bun/recommended-rules.js
+# uses static requires so the rule modules + transitive deps come along.
+EZ_BUN_TARGET ?= bun-darwin-arm64
+ezlint: napi
+	@mkdir -p dist
+	bun build --compile --packages=bundle --target=$(EZ_BUN_TARGET) \
+	  ./src/bun/lint.js ./src/bun/lint-worker.js \
+	  --outfile=dist/ezlint
+	@ls -lh dist/ezlint
 
 submodules:
 	git submodule update --init --depth 1

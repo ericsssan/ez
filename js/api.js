@@ -132,7 +132,19 @@ async function _resolveConfigImpl(config = {}) {
 
   // Always load core rules that are referenced in the config (or all if no config)
   const coreOnly = ruleFilters.size > 0 ? ruleFilters : undefined;
-  allPluginDescs.push(...loadCoreRules({ only: coreOnly }));
+  // Allow callers to supply pre-required rule descriptors instead of going
+  // through loadCoreRules (which uses dynamic require paths that `bun build
+  // --compile` can't follow into the standalone binary).  The CLI binary
+  // entry uses this to ship a static-import set of recommended rules; the
+  // library API (no corePlugins) keeps the bundle path.
+  if (Array.isArray(config.corePlugins) && config.corePlugins.length > 0) {
+    for (const desc of config.corePlugins) {
+      if (coreOnly && !coreOnly.has(desc.meta?.name)) continue;
+      allPluginDescs.push(desc);
+    }
+  } else {
+    allPluginDescs.push(...loadCoreRules({ only: coreOnly }));
+  }
 
   for (const entry of pluginPkgs) {
     if (typeof entry === "string") {

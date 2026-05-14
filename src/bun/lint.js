@@ -18,11 +18,17 @@
 
 "use strict";
 
-const path = require("node:path");
-
 const tStart = performance.now();
 
-const { createFileLinter } = require(path.resolve(__dirname, "../../js/api.js"));
+// Static relative require (NOT path.resolve(__dirname, ...)) so `bun build
+// --compile` can follow the dependency graph and inline everything into the
+// standalone binary.  Dynamic requires would leave api.js + its transitive
+// closure (rules.bundle.js, eslint-visitor-keys, etc.) outside the bundle.
+const { createFileLinter } = require("../../js/api.js");
+// Static, pre-required rule descriptors — replaces api.js's loadCoreRules
+// for the standalone binary so `bun build --compile` can follow the
+// dependency graph.  See src/bun/recommended-rules.js for the rationale.
+const { DESCRIPTORS: CORE_PLUGINS } = require("./recommended-rules.js");
 
 // ESLint v9 :recommended rule set — single source of truth on the JS side.
 const ESLINT_RECOMMENDED = [
@@ -197,7 +203,7 @@ class WorkerPool {
   const wantInline = args.workers === 0 || args.files.length === 1;
 
   if (wantInline) {
-    const lintFile = await createFileLinter({ rules });
+    const lintFile = await createFileLinter({ rules, corePlugins: CORE_PLUGINS });
     const tReady = performance.now();
     for (const file of args.files) {
       let diags;

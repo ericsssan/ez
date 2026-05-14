@@ -16,8 +16,10 @@
 
 "use strict";
 
-const path = require("node:path");
-const { createFileLinter } = require(path.resolve(__dirname, "../../js/api.js"));
+// Static relative require (see lint.js for rationale) so `bun build --compile`
+// inlines api.js and its transitive closure into this worker's bundle too.
+const { createFileLinter } = require("../../js/api.js");
+const { DESCRIPTORS: CORE_PLUGINS } = require("./recommended-rules.js");
 
 let lintFile = null;
 
@@ -28,7 +30,7 @@ self.onmessage = async (event) => {
       // _resolveConfig is async (it walks for eslint.config.js); we await
       // before signalling ready so the main thread doesn't dispatch lint
       // tasks before the worker can handle them.
-      lintFile = await createFileLinter({ rules: msg.rules });
+      lintFile = await createFileLinter({ rules: msg.rules, corePlugins: CORE_PLUGINS });
       self.postMessage({ type: "ready" });
       break;
     }
