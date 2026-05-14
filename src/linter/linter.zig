@@ -355,6 +355,106 @@ pub fn lintSymbolRuleOnly(
     return diagnostics.toOwnedSlice(allocator);
 }
 
+/// Run a named subset of native rules — both node-walk (Phase 1) and
+/// symbol-phase (Phase 2). Intended as the parse-time fast-path for
+/// rules where native parity has been validated; the host is then
+/// responsible for skipping those rule names in any JS worker batch
+/// so we don't double-emit.
+///
+/// Names that don't match a registered rule are silently skipped.
+pub fn lintRulesByName(
+    allocator: std.mem.Allocator,
+    tree: *const Ast,
+    semantic: *const SemanticResult,
+    language: Language,
+    rule_names_to_run: []const []const u8,
+) ![]const LintDiagnostic {
+    @setRuntimeSafety(false);
+
+    // Resolve names → rule indices. O(n × m) but n ≤ 64 and m ≤ 250.
+    var enabled = [_]bool{false} ** registry.count;
+    var any_enabled = false;
+    for (rule_names_to_run) |want| {
+        inline for (registry.all_rules, 0..) |Rule, i| {
+            if (std.mem.eql(u8, Rule.meta.name, want)) {
+                enabled[i] = true;
+                any_enabled = true;
+            }
+        }
+    }
+    if (!any_enabled) return &[_]LintDiagnostic{};
+
+    var diagnostics: std.ArrayList(LintDiagnostic) = .empty;
+    errdefer diagnostics.deinit(allocator);
+
+    const inline_globals = try @import("lint_context.zig").scanInlineGlobals(allocator, tree.source);
+    defer allocator.free(inline_globals);
+
+    // Same node_max_toks pass as `lint()`. Required for any node-walk rule
+    // that reads ctx.nodeSpan().end.
+    const node_max_toks: []u32 = blk: {
+        const n = tree.nodes.len;
+        const mt = try allocator.alloc(u32, n);
+        @memcpy(mt, tree.nodes.items(.main_token));
+        const parents = semantic.parent_indices;
+        if (parents.len == n) {
+            const NONE = std.math.maxInt(u32);
+            for (1..n) |i| {
+                const p = parents[i];
+                if (p != NONE and mt[i] > mt[p]) mt[p] = mt[i];
+            }
+        }
+        break :blk mt;
+    };
+    defer allocator.free(node_max_toks);
+
+    var ctx = LintContext{
+        .ast = tree,
+        .semantic = semantic,
+        .diagnostics = &diagnostics,
+        .allocator = allocator,
+        .language = language,
+        .settings = null,
+        .language_options = null,
+        .inline_globals = inline_globals,
+        .node_max_toks = node_max_toks,
+    };
+
+    // Phase 1: node walk via CSR dispatch.
+    const node_count: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < node_count) : (i += 1) {
+        const idx = NodeIndex.fromInt(i);
+        const tag_int: u32 = @intFromEnum(tree.nodeTag(idx));
+        const start = dispatch_table.offsets[tag_int];
+        const end = dispatch_table.offsets[tag_int + 1];
+        for (dispatch_table.data[start..end]) |rule_idx| {
+            if (!enabled[rule_idx]) continue;
+            if (!langMatches(lang_flags[rule_idx], language)) continue;
+            ctx.severity_override = .@"error";
+            ctx.current_rule_index = @intCast(rule_idx);
+            ctx.rule_options = null;
+            ctx.rule_options2 = null;
+            run_fns[rule_idx](idx, &ctx);
+        }
+    }
+    ctx.severity_override = null;
+
+    // Phase 2: symbol-phase rules.
+    for (0..registry.count) |rule_idx| {
+        if (!enabled[rule_idx]) continue;
+        if (!langMatches(lang_flags[rule_idx], language)) continue;
+        const fn_ptr = symbol_fns[rule_idx] orelse continue;
+        ctx.severity_override = .@"error";
+        ctx.current_rule_index = @intCast(rule_idx);
+        ctx.rule_options = null;
+        fn_ptr(&ctx);
+    }
+    ctx.severity_override = null;
+
+    return diagnostics.toOwnedSlice(allocator);
+}
+
 /// Returns true if any rule requiring semantic data is enabled.
 /// This covers:
 ///   - Rules with `runOnSymbols` (symbol-phase rules)

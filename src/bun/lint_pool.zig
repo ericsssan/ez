@@ -683,16 +683,35 @@ pub fn main(init: std.process.Init) !void {
             rules_storage = try alloc.alloc([]const u8, 1);
             rules_storage[0] = "no-useless-assignment";
         } else {
-            // Drop no-useless-assignment from the worker batch — the native
-            // rule already produced its diags during parse.
+            // Drop rules that already ran natively at parse time. MUST stay
+            // in sync with parse_to_buffer.NATIVE_PARSE_TIME_RULES — every
+            // entry there should be in this list and vice versa, otherwise
+            // we get either double-emit or missing diags.
+            const NATIVE_RULES_TO_SKIP = [_][]const u8{
+                "no-useless-assignment",
+                "no-debugger",
+                "no-with",
+                "no-octal",
+                "no-delete-var",
+                "no-compare-neg-zero",
+                "no-case-declarations",
+            };
             var keep_count: usize = 0;
             for (rec) |s| {
-                if (!std.mem.eql(u8, s, "no-useless-assignment")) keep_count += 1;
+                var skip = false;
+                for (NATIVE_RULES_TO_SKIP) |n| {
+                    if (std.mem.eql(u8, s, n)) { skip = true; break; }
+                }
+                if (!skip) keep_count += 1;
             }
             rules_storage = try alloc.alloc([]const u8, keep_count);
             var ki: usize = 0;
             for (rec) |s| {
-                if (std.mem.eql(u8, s, "no-useless-assignment")) continue;
+                var skip = false;
+                for (NATIVE_RULES_TO_SKIP) |n| {
+                    if (std.mem.eql(u8, s, n)) { skip = true; break; }
+                }
+                if (skip) continue;
                 rules_storage[ki] = s;
                 ki += 1;
             }

@@ -88,7 +88,15 @@ function main(argv) {
   for (const [name] of nativeRules) {
     const src = findRuleSource(name, jsRoot);
     if (!src) { rows.push({ name, status: "js-source-missing" }); continue; }
-    const r = extractRule(src);
+    let r;
+    try { r = extractRule(src); }
+    catch (e) {
+      // AstView API drift / NODE_CTOR holes / parser crashes — record so the
+      // run completes. Bit-rot recovery, NOT silent error swallowing — these
+      // rows surface as `extract-crashed` in the report and need fixing.
+      rows.push({ name, status: "extract-crashed", reason: (e?.message || String(e)).split("\n")[0], category: "crash:extract" });
+      continue;
+    }
     if (!r.ok) {
       rows.push({ name, status: "extract-failed", reason: r.unsupported, category: categorize(r.unsupported) });
       continue;

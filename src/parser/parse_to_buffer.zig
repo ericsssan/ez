@@ -105,18 +105,48 @@ pub fn parseToBuffer(
     semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
 
     // ── Native rules (opt-in) ──
-    // When the caller asks for native diags, run the symbol-phase rule
-    // pipeline here. `lintSymbolRuleOnly` bypasses inline_globals and
-    // node_max_toks (which this rule doesn't read), so the overhead is
-    // just the rule's own ~15ms on typescript.js.
+    // When the caller asks for native diags, dispatch the native rules listed
+    // in `native_rule_filter` (or just `no-useless-assignment` for back-compat
+    // when null is passed). Only listed rules run; the host is responsible
+    // for ensuring those same rules are dropped from any JS worker batch so
+    // we don't double-emit.
+    //
+    // Each rule fires only on AST tags it subscribes to (CSR dispatch in
+    // linter.lint), so cost scales with the number of enabled rules, not
+    // the size of the registry.
     if (out_native_diags) |diags_out| {
         sem.parent_indices = traversal.parents;
         const sem_alloc = sem_arena.allocator();
-        const diag_list = try linter_mod.lintSymbolRuleOnly(sem_alloc, &tree, &sem, language, "no-useless-assignment");
+        // Validated overlap with eslint:recommended where the native impl is
+        // confirmed to match the JS rule's diagnostics. Each one added here
+        // MUST also be dropped from the JS worker batch (see lint_pool.zig)
+        // to avoid double-emission. Grow this list one rule at a time as
+        // parity is verified against the differential test corpus.
+        // Rules that intersect with eslint:recommended AND have a native
+        // impl whose parity vs JS has been validated (differential test
+        // 100% on rule-specific corpus). Each rule here saves the JS
+        // worker from running it.
+        // NOTE: no-eq-null is NOT in this list — it's not part of
+        // eslint:recommended, and adding it caused the user to see
+        // ~1600 unwanted diagnostics on typescript.js.
+        const NATIVE_PARSE_TIME_RULES = [_][]const u8{
+            "no-useless-assignment",
+            "no-debugger",
+            "no-with",
+            "no-octal",
+            "no-delete-var",
+            "no-compare-neg-zero",
+            "no-case-declarations",
+        };
+        const diag_list = try linter_mod.lintRulesByName(sem_alloc, &tree, &sem, language, &NATIVE_PARSE_TIME_RULES);
         for (diag_list) |d| {
             const loc = Location.fromLineStarts(lex_result.line_starts, source, d.span.start);
+            const rule_name = if (d.rule_index < linter_mod.rule_names.len)
+                linter_mod.rule_names[d.rule_index]
+            else
+                "<unknown>";
             try diags_out.append(sem_alloc, .{
-                .rule_name = "no-useless-assignment",
+                .rule_name = rule_name,
                 .line = loc.line + 1,
                 .col = loc.column,
             });
