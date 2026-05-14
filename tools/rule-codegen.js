@@ -160,8 +160,9 @@ function emit(rule) {
 
   const hasSymbolHandler = rule.handlers.some(h => h.kind === "for-each-unresolved-global-ref");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
+  const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -171,7 +172,7 @@ function emit(rule) {
 
   // For-each-node handlers supply their own relevant_tags from their selector.
   let relevantTags;
-  if (hasSymbolHandler || hasReadonlyGlobalHandler) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler) {
     relevantTags = [];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
@@ -196,7 +197,7 @@ function emit(rule) {
   out.push(`const Node = ast.Node;`);
   out.push(`const LintContext = @import("../../lint_context.zig").LintContext;`);
   out.push(`const RuleMeta = @import("../rule.zig").RuleMeta;`);
-  if (hasSymbolHandler || hasReadonlyGlobalHandler) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler) {
     out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
     out.push(`const ReferenceId = ref_mod.ReferenceId;`);
   }
@@ -352,6 +353,24 @@ function emit(rule) {
         throw new Error(`unknown handler kind in readonly-global rule: ${h.kind}`);
       }
     }
+  } else if (hasWriteRefBindingHandler) {
+    out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
+    out.push(``);
+    // Merge the binding-kind sets across every handler in the rule so we can
+    // emit a single runOnSymbols that walks the reference table once.
+    const merged = new Set();
+    let hasNameData = false;
+    let messageId = null;
+    for (const h of rule.handlers) {
+      if (h.kind !== "for-each-write-ref-of-binding") {
+        throw new Error(`unsupported mixed handler kind in write-ref-binding rule: ${h.kind}`);
+      }
+      for (const b of h.bindingKinds) merged.add(b);
+      hasNameData = hasNameData || !!h.hasNameData;
+      messageId = messageId ?? h.messageId;
+    }
+    for (const line of emitWriteRefOfBindingHandler({ bindingKinds: [...merged], messageId, hasNameData }, ctx))
+      out.push(line);
   } else if (hasNodeHandler) {
     // for-each-node: emit run(<nodeBinding>, ctx) with each handler's body
     const nodeHandlers = rule.handlers.filter(h => h.kind === "for-each-node");
@@ -557,6 +576,59 @@ function emitReadonlyGlobalWriteRefHandler(handler, _ctx) {
   // messageId + data — message text is reconstructed at output time from
   // the rule's meta.messages.  The `name` interpolation is already implicit
   // in the reported identifier's source text.
+  lines.push(`        ctx.report(id_node);`);
+  lines.push(`        prev_reported_node = id_node;`);
+  lines.push(`    }`);
+  lines.push(`}`);
+  return lines;
+}
+
+// Emit symbol-phase handler for the "for-each-write-ref-of-binding" shape.
+// Lowering of no-class-assign / no-func-assign / no-const-assign / no-ex-assign
+// (and any rule with the same getDeclaredVariables → getModifyingReferences
+// pipeline).  Walk every reference, keep modifying writes whose target symbol
+// has a binding kind in the configured set, and report at the identifier site.
+//
+// The single walk replaces ESLint's per-handler iteration over
+// getDeclaredVariables(node) for each ClassDeclaration / FunctionDeclaration /
+// VariableDeclaration / CatchClause node — same observable result because
+// we filter by binding kind, which is exactly the property
+// getDeclaredVariables would have isolated.
+function emitWriteRefOfBindingHandler(handler, _ctx) {
+  const lines = [];
+  // bindingKinds entries are Zig enum literals already (e.g. `class_decl`,
+  // `@"const"`); join into a switch arm.
+  const arms = handler.bindingKinds.map(k => `.${k}`).join(", ");
+  lines.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
+  // (`run` already emitted above by caller — keep emitter self-contained for clarity.)
+  // Note: the caller emitted `pub fn run(...)` before invoking us; we leave
+  // the line above out — it's only here in the comment as a reminder.
+  // (Actual emission below starts at runOnSymbols.)
+  lines.length = 0;
+  lines.push(`pub fn runOnSymbols(ctx: *const LintContext) void {`);
+  lines.push(`    const refs = ctx.references();`);
+  lines.push(`    const symbols = ctx.symbols();`);
+  lines.push(`    const count = refs.count();`);
+  lines.push(`    var prev_reported_node: NodeIndex = .none;`);
+  lines.push(`    var r: u32 = 0;`);
+  lines.push(`    while (r < count) : (r += 1) {`);
+  lines.push(`        const ref_id = ReferenceId.fromInt(r);`);
+  lines.push(`        const kind = refs.getKind(ref_id);`);
+  lines.push(`        // ESLint's getModifyingReferences = isWrite() && !init.`);
+  lines.push(`        // Our .write_init kind == ESLint's reference.init === true.`);
+  lines.push(`        if (!kind.isWrite()) continue;`);
+  lines.push(`        if (kind == .write_init) continue;`);
+  lines.push(`        const sym_id = refs.getSymbol(ref_id);`);
+  lines.push(`        if (sym_id == .none) continue;`);
+  lines.push(`        switch (symbols.getBindingKind(sym_id)) {`);
+  lines.push(`            ${arms} => {},`);
+  lines.push(`            else => continue,`);
+  lines.push(`        }`);
+  lines.push(`        const id_node = refs.getNode(ref_id);`);
+  lines.push(`        if (id_node == .none) continue;`);
+  lines.push(`        // Destructuring with defaults can yield two write references that share`);
+  lines.push(`        // their identifier node ({Foo = 0} pattern); suppress the duplicate.`);
+  lines.push(`        if (id_node == prev_reported_node) continue;`);
   lines.push(`        ctx.report(id_node);`);
   lines.push(`        prev_reported_node = id_node;`);
   lines.push(`    }`);

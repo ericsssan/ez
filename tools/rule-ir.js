@@ -195,7 +195,8 @@ function validateRule(rule) {
     if (h.kind != null) {
       if (h.kind !== "for-each-unresolved-global-ref" &&
           h.kind !== "for-each-node" &&
-          h.kind !== "for-each-readonly-global-write-ref")
+          h.kind !== "for-each-readonly-global-write-ref" &&
+          h.kind !== "for-each-write-ref-of-binding")
         return fail(`unsupported handler kind '${h.kind}'`, path);
       if (h.kind === "for-each-unresolved-global-ref") {
         if (typeof h.namesConstant !== "string")
@@ -220,6 +221,15 @@ function validateRule(rule) {
           return fail("handler.exceptionsOption must be string or null", path);
         // body is empty by construction — the lowering is fully determined
         // by messageId / exceptionsOption / hasNameData.
+        continue;
+      }
+      if (h.kind === "for-each-write-ref-of-binding") {
+        if (typeof h.messageId !== "string")
+          return fail("handler.messageId must be string", path);
+        if (!Array.isArray(h.bindingKinds) || h.bindingKinds.length === 0)
+          return fail("handler.bindingKinds must be non-empty string[]", path);
+        for (const k of h.bindingKinds)
+          if (typeof k !== "string") return fail("bindingKinds entries must be strings", path);
         continue;
       }
     }

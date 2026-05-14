@@ -305,6 +305,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoNewFuncHandler,
       extractNewExpressionShadowHandler,
       extractReadonlyGlobalAssignHandler,
+      extractDeclaredVariableModifyingRefHandler, // sprint #2
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -730,6 +731,257 @@ function matchCheckReferenceTest(node, refName, idxName, refsName, idBinding) {
   const isIdBinding = (n) => n.type === "Identifier" && n.name === idBinding;
   if (!((isPrevIdent(rhs.left) && isIdBinding(rhs.right)) || (isPrevIdent(rhs.right) && isIdBinding(rhs.left)))) return false;
   return true;
+}
+
+// Sprint #2 — recognize the family of "rebind-of-declared-variable" rules:
+// no-class-assign, no-func-assign, no-const-assign, no-ex-assign all share
+// a structural shape:
+//
+//   <SELECTOR>(node) {
+//     [if (<KIND_GUARD>(node.kind)) {]      // no-const-assign only
+//       sourceCode.getDeclaredVariables(node).forEach(checkVariable);
+//     [}]
+//   }
+//
+//   function checkVariable(variable) {
+//     [if (variable.defs[0].type === "FunctionName") {]   // no-func-assign only
+//       astUtils.getModifyingReferences(variable.references).forEach(ref => {
+//         context.report({ node: ref.identifier, messageId: "<MSG>",
+//                          [data: { name: ref.identifier.name }] });
+//       });
+//     [}]
+//   }
+//
+// Each rule's handler→checkVariable chain may have an extra indirection
+// (no-func-assign's checkReference helper that just unwraps the references
+// list before calling getModifyingReferences).  We inline through it.
+//
+// We map the selector to the binding kinds the rule cares about:
+//   ClassDeclaration       → class_decl
+//   ClassExpression        → class_expr_name
+//   FunctionDeclaration    → function_decl, function_decl_annex_b
+//   FunctionExpression     → fn_expr_name
+//   VariableDeclaration    → @"const" (only when inside the CONSTANT_BINDINGS guard)
+//   CatchClause            → catch_param
+//
+// The resulting IR handler kind is `for-each-write-ref-of-binding`; codegen
+// merges all such handlers in a single rule into ONE runOnSymbols that
+// walks the reference table once and filters by binding kind.
+function extractDeclaredVariableModifyingRefHandler(rawHandler, stmts, { ctxName }) {
+  // Selector → binding kinds mapping (Zig enum identifiers).
+  const SELECTOR_TO_BINDING_KINDS = {
+    ClassDeclaration:    ["class_decl"],
+    ClassExpression:     ["class_expr_name"],
+    FunctionDeclaration: ["function_decl", "function_decl_annex_b"],
+    FunctionExpression:  ["fn_expr_name"],
+    CatchClause:         ["catch_param"],
+    // VariableDeclaration handled separately (needs CONSTANT_BINDINGS guard).
+  };
+  const stash = rawHandler.__createBody;
+  if (!stash) return { ok: false };
+
+  // For VariableDeclaration we expect `if (<KIND_GUARD>(node.kind)) <body>`.
+  // That guard pins the rule to const/let; without it the recognizer bails so
+  // a rule that happens to share the iteration shape but has different intent
+  // doesn't get force-fit.
+  let bindingKinds;
+  let inner = stmts;
+  if (rawHandler.selector === "VariableDeclaration") {
+    if (stmts.length !== 1 || stmts[0].type !== "IfStatement") return { ok: false };
+    const ifStmt = stmts[0];
+    // Test must be `<CONST_SET>.has(node.kind)` — verify the constant set is
+    // const-flavoured (covers ESLint's modern CONSTANT_BINDINGS that includes
+    // "const", "using", "await using"; for our IR we only emit @"const" because
+    // ezlint doesn't yet model `using` declarations as a separate binding kind).
+    const test = ifStmt.test;
+    if (test.type !== "CallExpression" || test.arguments.length !== 1) return { ok: false };
+    if (test.callee.type !== "MemberExpression" || test.callee.computed) return { ok: false };
+    if (test.callee.property?.type !== "Identifier" || test.callee.property.name !== "has") return { ok: false };
+    const arg = test.arguments[0];
+    if (arg.type !== "MemberExpression" || arg.computed) return { ok: false };
+    if (arg.object?.type !== "Identifier" || arg.object.name !== rawHandler.nodeParam) return { ok: false };
+    if (arg.property?.type !== "Identifier" || arg.property.name !== "kind") return { ok: false };
+    bindingKinds = ["@\"const\""];
+    inner = ifStmt.consequent?.type === "BlockStatement" ? ifStmt.consequent.body : [ifStmt.consequent];
+  } else {
+    bindingKinds = SELECTOR_TO_BINDING_KINDS[rawHandler.selector];
+    if (!bindingKinds) return { ok: false };
+  }
+
+  // Inner statements must be exactly one: the `getDeclaredVariables(node).forEach(<checkVariableName>)`.
+  if (inner.length !== 1 || inner[0].type !== "ExpressionStatement") return { ok: false };
+  const fe = inner[0].expression;
+  const cvName = matchGetDeclaredVariablesForEach(fe, ctxName, rawHandler.nodeParam);
+  if (!cvName) return { ok: false };
+  // Resolve the helper chain to the inner reportShape.
+  const reportShape = resolveCheckVariableReportShape(cvName, stash, ctxName);
+  if (!reportShape) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      selector: rawHandler.selector,
+      kind: "for-each-write-ref-of-binding",
+      bindingKinds,
+      messageId: reportShape.messageId,
+      hasNameData: reportShape.hasNameData,
+      body: [],
+    },
+  };
+}
+
+// Match `[sourceCode|ctx.sourceCode].getDeclaredVariables(node).forEach(<callee>)`.
+// Returns the callee identifier name on success, null otherwise.
+function matchGetDeclaredVariablesForEach(call, ctxName, nodeParam) {
+  if (call.type !== "CallExpression" || call.arguments.length !== 1) return null;
+  if (call.callee.type !== "MemberExpression" || call.callee.computed) return null;
+  if (call.callee.property?.type !== "Identifier" || call.callee.property.name !== "forEach") return null;
+  const inner = call.callee.object;
+  if (inner?.type !== "CallExpression" || inner.arguments.length !== 1) return null;
+  if (inner.callee.type !== "MemberExpression" || inner.callee.computed) return null;
+  if (inner.callee.property?.type !== "Identifier" || inner.callee.property.name !== "getDeclaredVariables") return null;
+  // sourceCode receiver: bare `sourceCode`, the local name bound from `context.sourceCode`,
+  // or the direct `<ctx>.sourceCode` member access.
+  const recv = inner.callee.object;
+  const isLocalSourceCode = recv?.type === "Identifier" && recv.name === "sourceCode";
+  const isCtxSourceCode = recv?.type === "MemberExpression" && !recv.computed
+    && recv.object?.type === "Identifier" && recv.object.name === ctxName
+    && recv.property?.type === "Identifier" && recv.property.name === "sourceCode";
+  if (!isLocalSourceCode && !isCtxSourceCode) return null;
+  // Argument must be the handler's `node` parameter.
+  const argId = inner.arguments[0];
+  if (argId.type !== "Identifier" || argId.name !== nodeParam) return null;
+  // The forEach callee — bare identifier (a sibling helper name).
+  if (call.arguments[0].type !== "Identifier") return null;
+  return call.arguments[0].name;
+}
+
+// Walk the helper chain starting at `cvName` looking for the report() call
+// nested inside an `astUtils.getModifyingReferences(...).forEach(reference => ...)`.
+// Returns { messageId, hasNameData } on match, null on any deviation.
+function resolveCheckVariableReportShape(cvName, createBodyStmts, ctxName) {
+  const cvFn = createBodyStmts.find(s => s.type === "FunctionDeclaration" && s.id?.name === cvName);
+  if (!cvFn || cvFn.params.length !== 1 || cvFn.params[0].type !== "Identifier") return null;
+  const varName = cvFn.params[0].name;
+  let body = cvFn.body?.body;
+  if (!body) return null;
+
+  // Skip optional FunctionName guard (no-func-assign): `if (variable.defs[0].type === "FunctionName") <call>`
+  // The recognizer accepts the guard verbatim — the binding-kind filter we
+  // emit (function_decl/fn_expr_name, no parameters) makes the runtime
+  // equivalent automatic.
+  if (body.length === 1 && body[0].type === "IfStatement"
+      && matchFunctionNameDefsCheck(body[0].test, varName)) {
+    body = body[0].consequent?.type === "BlockStatement"
+      ? body[0].consequent.body : [body[0].consequent];
+  }
+  if (body.length !== 1 || body[0].type !== "ExpressionStatement") return null;
+  const call = body[0].expression;
+
+  // Either: <utils>.getModifyingReferences(variable.references).forEach(<lambda>)
+  // OR:    <checkReferenceName>(variable.references)  → unwraps once
+  if (call.type === "CallExpression" && call.callee.type === "Identifier" && call.arguments.length === 1) {
+    // Indirection: `checkReference(variable.references)` then chase that helper.
+    const arg = call.arguments[0];
+    if (!isMemberOfIdentifier(arg, varName, "references")) return null;
+    return resolveCheckReferenceShape(call.callee.name, createBodyStmts, ctxName);
+  }
+  return matchGetModifyingRefsForEachReport(call, varName, ctxName, /*refsParamName*/ null);
+}
+
+// `<varName>.defs[0].type === "FunctionName"`
+function matchFunctionNameDefsCheck(node, varName) {
+  if (node.type !== "BinaryExpression" || node.operator !== "===") return false;
+  const isDefsType = (n) =>
+    n.type === "MemberExpression" && !n.computed &&
+    n.property?.type === "Identifier" && n.property.name === "type" &&
+    n.object?.type === "MemberExpression" && n.object.computed &&
+    n.object.property?.type === "Literal" && n.object.property.value === 0 &&
+    n.object.object?.type === "MemberExpression" && !n.object.object.computed &&
+    n.object.object.property?.type === "Identifier" && n.object.object.property.name === "defs" &&
+    n.object.object.object?.type === "Identifier" && n.object.object.object.name === varName;
+  const isFunctionName = (n) => n.type === "Literal" && n.value === "FunctionName";
+  return (isDefsType(node.left) && isFunctionName(node.right)) ||
+         (isDefsType(node.right) && isFunctionName(node.left));
+}
+
+// Helper for the indirection case: `checkReference(refs) { ... }`.
+function resolveCheckReferenceShape(name, createBodyStmts, ctxName) {
+  const fn = createBodyStmts.find(s => s.type === "FunctionDeclaration" && s.id?.name === name);
+  if (!fn || fn.params.length !== 1 || fn.params[0].type !== "Identifier") return null;
+  const refsParam = fn.params[0].name;
+  const body = fn.body?.body;
+  if (!body || body.length !== 1 || body[0].type !== "ExpressionStatement") return null;
+  return matchGetModifyingRefsForEachReport(body[0].expression, /*varName*/ null, ctxName, refsParam);
+}
+
+// Match `<utils>.getModifyingReferences(<refsExpr>).forEach(reference => context.report({...}))`.
+// `refsExpr` must be either `<varName>.references` (when called from
+// checkVariable) or the bare `<refsParamName>` (when called from checkReference).
+function matchGetModifyingRefsForEachReport(call, varName, ctxName, refsParamName) {
+  if (call.type !== "CallExpression" || call.arguments.length !== 1) return null;
+  if (call.callee.type !== "MemberExpression" || call.callee.computed) return null;
+  if (call.callee.property?.type !== "Identifier" || call.callee.property.name !== "forEach") return null;
+  const inner = call.callee.object;
+  if (inner?.type !== "CallExpression" || inner.arguments.length !== 1) return null;
+  if (inner.callee.type !== "MemberExpression" || inner.callee.computed) return null;
+  if (inner.callee.property?.type !== "Identifier" || inner.callee.property.name !== "getModifyingReferences") return null;
+  // Receiver is treated opaquely — astUtils, utils, etc. — we only care that
+  // the call site matches the canonical filter shape, not which module it
+  // came from.  This keeps the recognizer robust against import renames.
+  const arg = inner.arguments[0];
+  if (refsParamName) {
+    if (arg.type !== "Identifier" || arg.name !== refsParamName) return null;
+  } else {
+    if (!isMemberOfIdentifier(arg, varName, "references")) return null;
+  }
+  // The forEach callback.
+  const cb = call.arguments[0];
+  if (!isFunctionLike(cb) || cb.params.length === 0 || cb.params[0].type !== "Identifier") return null;
+  const refParam = cb.params[0].name;
+  const cbStmts = getFunctionBodyStatements(cb);
+  if (!cbStmts || cbStmts.length !== 1) return null;
+  const stmt = cbStmts[0];
+  if (stmt.type !== "ExpressionStatement") return null;
+  return matchReportCallShape(stmt.expression, ctxName, refParam);
+}
+
+// `context.report({ node: <ref>.identifier, messageId: "X"[, data: { name: <ref>.identifier.name }] })`.
+function matchReportCallShape(call, ctxName, refParam) {
+  if (call.type !== "CallExpression" || call.arguments.length !== 1) return null;
+  if (call.callee.type !== "MemberExpression" || call.callee.computed) return null;
+  if (call.callee.object?.type !== "Identifier" || call.callee.object.name !== ctxName) return null;
+  if (call.callee.property?.type !== "Identifier" || call.callee.property.name !== "report") return null;
+  const obj = call.arguments[0];
+  if (obj.type !== "ObjectExpression") return null;
+  let messageId = null;
+  let hasNameData = false;
+  let nodeOk = false;
+  for (const prop of obj.properties) {
+    if (prop.type !== "Property" || prop.key?.type !== "Identifier") return null;
+    const k = prop.key.name;
+    if (k === "node") {
+      // node: reference.identifier
+      if (!isMemberOfIdentifier(prop.value, refParam, "identifier")) return null;
+      nodeOk = true;
+    } else if (k === "messageId") {
+      if (prop.value?.type !== "Literal" || typeof prop.value.value !== "string") return null;
+      messageId = prop.value.value;
+    } else if (k === "data") {
+      if (prop.value?.type !== "ObjectExpression" || prop.value.properties.length !== 1) return null;
+      const p2 = prop.value.properties[0];
+      if (p2.type !== "Property" || p2.key?.type !== "Identifier" || p2.key.name !== "name") return null;
+      const v = p2.value;
+      // data: { name: reference.identifier.name }
+      if (v?.type !== "MemberExpression" || v.computed) return null;
+      if (v.property?.type !== "Identifier" || v.property.name !== "name") return null;
+      if (!isMemberOfIdentifier(v.object, refParam, "identifier")) return null;
+      hasNameData = true;
+    } else {
+      return null;
+    }
+  }
+  if (!nodeOk || !messageId) return null;
+  return { messageId, hasNameData };
 }
 
 // Recognize the "scope-shadowing check on callee of NewExpression" pattern:
