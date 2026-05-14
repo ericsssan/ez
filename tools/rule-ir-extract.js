@@ -3283,6 +3283,18 @@ function extractExpr(expr, scope) {
       }
       return { ok: false, reason: "unsupported CallExpression shape" };
     }
+    case "ConditionalExpression": {
+      // `cond ? then : else` — emitted as IR `op: "ternary"`. Codegen turns
+      // this into a Zig `if (cond) then else else_branch` or sequential
+      // bool-folding depending on context.
+      const c = extractExpr(expr.test, scope);
+      if (!c.ok) return c;
+      const t = extractExpr(expr.consequent, scope);
+      if (!t.ok) return t;
+      const e = extractExpr(expr.alternate, scope);
+      if (!e.ok) return e;
+      return { ok: true, expr: { op: "ternary", cond: c.expr, then: t.expr, else: e.expr } };
+    }
     default:
       return { ok: false, reason: `unsupported expr type ${expr.type}` };
   }

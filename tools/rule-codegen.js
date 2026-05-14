@@ -1165,6 +1165,15 @@ function emitExpr(e, ctx) {
       return `ctx.tokenHasSpaceBetween(${emitExpr(e.a, ctx)}, ${emitExpr(e.b, ctx)})`;
     case "tokens-same-line":
       return `!ctx.tokenHasNewlineBefore(${emitExpr(e.b, ctx)})`;
+    case "ternary": {
+      // `cond ? then : else` — Zig's ternary equivalent is the if-as-expression form.
+      // For boolean-typed branches we keep them as-is; for value branches the
+      // if-expression returns the value directly.
+      const c = emitAsBool(e.cond, ctx);
+      const t = emitExpr(e.then, ctx);
+      const f = emitExpr(e.else, ctx);
+      return `(if (${c}) ${t} else ${f})`;
+    }
     default:
       throw new Error(`unhandled expr op: ${e.op}`);
   }
