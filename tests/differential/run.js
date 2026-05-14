@@ -17,6 +17,10 @@ if (typeof Bun === "undefined") {
  *
  * Flags:
  *   --save-baseline  Write current results as tests/differential/baseline.json
+ *   --native-only    Skip the JS-runner side; score only native (NAPI) results.
+ *                    Faster iteration when working on native rules. Incompatible
+ *                    with --save-baseline (would overwrite runner+hybrid sections
+ *                    with zeros).
  *   --strict         Fail on any mismatch regardless of baseline
  *   --rule <name>    Run only this rule; show all failing cases with code snippets
  *   --fails          Show code snippets for up to 3 failing cases per rule
@@ -50,6 +54,19 @@ const showFails    = args.includes("--fails") || args.includes("--show-fails");
 const verboseAll   = args.includes("--verbose") || args.includes("-v");
 const jsonOutput   = args.includes("--json");
 const benchEslint  = args.includes("--bench-eslint");
+// --native-only: skip JS-runner comparison entirely; only run + score native (NAPI).
+// Useful when iterating on native rules — drops a slow runtime ~step from each case
+// and avoids regression noise from the JS runner side that's unrelated to native work.
+const nativeOnly   = args.includes("--native-only");
+if (nativeOnly && saveBaseline) {
+  process.stderr.write("error: --native-only is incompatible with --save-baseline (would overwrite runner+hybrid stats with zeros)\n");
+  process.exit(2);
+}
+if (nativeOnly) {
+  // Native scoring is gated on EZ_RUN_NATIVE — opt the user in implicitly so
+  // --native-only doesn't silently no-op when the env var isn't set.
+  process.env.EZ_RUN_NATIVE = "1";
+}
 const _ruleIdx     = args.indexOf("--rule");
 const filterRule   = _ruleIdx >= 0 ? args[_ruleIdx + 1] : null;
 const _diffIdx     = args.indexOf("--diff");
@@ -619,6 +636,12 @@ function _mkKey(d) {
     fixKey,
   ].join(SEP);
 }
+// Location-only diagnostic key — drops messageId/fix from the hash.  Used by
+// --native-only because ezlint's NAPI path emits bare span+severity diagnostics
+// (no messageId/message text); a strict key would flag every match as FN+FP.
+function _mkKeyLoc(d) {
+  return [d.rule, d.line ?? "", d.column ?? "", d.endLine ?? "", d.endColumn ?? ""].join(SEP);
+}
 function _splitKey(k) {
   const p = k.split(SEP);
   return { rule: p[0], line: +p[1], column: p[2] ? +p[2] : null, endLine: p[3] ? +p[3] : null, endColumn: p[4] ? +p[4] : null };
@@ -926,14 +949,17 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const espreeResult = tc.eslintResult;
       if (!espreeResult) { skipEspreeParse++; continue; }
 
-      const _rt0 = performance.now();
-      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
-      const _rtDelta = performance.now() - _rt0;
+      // --native-only: skip every JS-runner code path (runner result, A/B
+      // ESLint timing, runner stats accumulation, runner fix verification).
+      // Native block below still runs and is scored against the oracle.
+      const _rt0 = nativeOnly ? 0 : performance.now();
+      const runnerResult = nativeOnly ? [] : runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
+      const _rtDelta = nativeOnly ? 0 : (performance.now() - _rt0);
       runnerOnlyMs += _rtDelta;
       _ruleRunnerMs += _rtDelta;
 
       // A/B timing: run ESLint on the same case (opt-in via --bench-eslint)
-      if (benchEslint) {
+      if (benchEslint && !nativeOnly) {
         const _et0 = performance.now();
         const ecmaVersion = tc.languageOptions?.ecmaVersion ?? 2022;
         const jsxEnabled = !!(tc.languageOptions?.parserOptions?.ecmaFeatures?.jsx);
@@ -962,71 +988,79 @@ if (fs.existsSync(ESLINT_ROOT)) {
         }
       }
 
-      if (runnerResult === null) { crash++; continue; }
+      const _isTsCase = isTypeScript || !!tc.isTypeScript;
+      // Hoisted out of the runner block so the native + hybrid blocks can
+      // still consult them under --native-only.
+      // Use the location-only key under --native-only so the NAPI path's
+      // bare diagnostics (no messageId) match ESLint's full diagnostics.
+      const espreeKeys = new Set(espreeResult.map(nativeOnly ? _mkKeyLoc : _mkKey));
+      let runnerNormal = [];
 
-      // Separate crashes from normal results
-      const runnerCrashes = runnerResult.filter(r => r.crash);
-      const runnerNormal  = runnerResult.filter(r => !r.crash);
-      if (runnerCrashes.length > 0) {
-        crash += runnerCrashes.length;
-        if (_showCases) {
-          for (const c of runnerCrashes) {
-            failedCases.push({ tcIdx, kind: "crash", crashMsg: c.crash, code: tc.code, options: tc.options, sourceType });
+      if (!nativeOnly) {
+        if (runnerResult === null) { crash++; continue; }
+
+        // Separate crashes from normal results
+        const runnerCrashes = runnerResult.filter(r => r.crash);
+        runnerNormal = runnerResult.filter(r => !r.crash);
+        if (runnerCrashes.length > 0) {
+          crash += runnerCrashes.length;
+          if (_showCases) {
+            for (const c of runnerCrashes) {
+              failedCases.push({ tcIdx, kind: "crash", crashMsg: c.crash, code: tc.code, options: tc.options, sourceType });
+            }
           }
         }
-      }
 
-      const espreeKeys = new Set(espreeResult.map(_mkKey));
-      const runnerKeys = new Set(runnerNormal.map(_mkKey));
-      const caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
-      const caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
+        const runnerKeys = new Set(runnerNormal.map(_mkKey));
+        const caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
+        const caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
 
-      runnerCases++;
-      if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) {
-        pass++;
-        if (verboseAll && _showCases) {
-          const diags = espreeResult.map(r => r.line);
-          console.log(`    [${tcIdx}] PASS  diags=${diags.length ? diags.join(",") : "none"}`);
-        }
-      } else {
-        fn += caseFn; fp += caseFp;
-        if (_showCases && (caseFn > 0 || caseFp > 0)) {
-          failedCases.push({
-            tcIdx,
-            kind: "runner",
-            espreeLines: espreeResult.map(r => r.line),
-            ourLines:    runnerNormal.map(r => r.line),
-            espreeDiags: espreeResult,
-            ourDiags:    runnerNormal,
-            code: tc.code,
-            options: tc.options,
-            sourceType,
-            filename: tc.filename,
-          });
-        }
-      }
-
-      // TS vs JS tracking
-      const _isTsCase = isTypeScript || !!tc.isTypeScript;
-      if (_isTsCase) { tsCases++; if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) tsPass++; }
-      else { jsCases++; if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) jsPass++; }
-
-      // Fix verification: compare runner autofix output vs ESLint autofix output.
-      // Only check cases where diagnostics match (caseFn===0, caseFp===0) so fix
-      // comparison is meaningful — otherwise different diagnostics produce different fixes.
-      if (tc.eslintFixes && caseFn === 0 && caseFp === 0) {
-        ruleFixable++;
-        // Apply ESLint fixes to get expected output
-        const eslintFixed = _applyFixes(tc.code, tc.eslintFixes);
-        // Apply runner fixes to get our output
-        const runnerFixes = runnerNormal.filter(r => r.fix).flatMap(r => r.fix);
-        if (runnerFixes.length > 0) {
-          const runnerFixed = _applyFixes(tc.code, runnerFixes);
-          if (runnerFixed === eslintFixed) ruleFixMatch++;
-          else ruleFixMismatch++;
+        runnerCases++;
+        if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) {
+          pass++;
+          if (verboseAll && _showCases) {
+            const diags = espreeResult.map(r => r.line);
+            console.log(`    [${tcIdx}] PASS  diags=${diags.length ? diags.join(",") : "none"}`);
+          }
         } else {
-          // Runner didn't produce fixes but ESLint did — mismatch
-          ruleFixMismatch++;
+          fn += caseFn; fp += caseFp;
+          if (_showCases && (caseFn > 0 || caseFp > 0)) {
+            failedCases.push({
+              tcIdx,
+              kind: "runner",
+              espreeLines: espreeResult.map(r => r.line),
+              ourLines:    runnerNormal.map(r => r.line),
+              espreeDiags: espreeResult,
+              ourDiags:    runnerNormal,
+              code: tc.code,
+              options: tc.options,
+              sourceType,
+              filename: tc.filename,
+            });
+          }
+        }
+
+        // TS vs JS tracking
+        if (_isTsCase) { tsCases++; if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) tsPass++; }
+        else { jsCases++; if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) jsPass++; }
+
+        // Fix verification: compare runner autofix output vs ESLint autofix output.
+        // Only check cases where diagnostics match (caseFn===0, caseFp===0) so fix
+        // comparison is meaningful — otherwise different diagnostics produce different fixes.
+        if (tc.eslintFixes && caseFn === 0 && caseFp === 0) {
+          ruleFixable++;
+          // Apply ESLint fixes to get expected output
+          const eslintFixed = _applyFixes(tc.code, tc.eslintFixes);
+          // Apply runner fixes to get our output
+          const runnerFixes = runnerNormal.filter(r => r.fix).flatMap(r => r.fix);
+          if (runnerFixes.length > 0) {
+            const runnerFixed = _applyFixes(tc.code, runnerFixes);
+            if (runnerFixed === eslintFixed) ruleFixMatch++;
+            else ruleFixMismatch++;
+          } else {
+            // Runner didn't produce fixes but ESLint did — mismatch
+            ruleFixMismatch++;
+          }
         }
       }
 
@@ -1053,7 +1087,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
         // Native results carry the SAME extended fields as runner now;
         // normalize ruleName so @typescript-eslint/X compares to its
         // core counterpart's oracle entry.
-        const nativeKeys = new Set(nativeResult.map(r => _mkKey({ ...r, rule: ruleName })));
+        const _mkKeyForNative = nativeOnly ? _mkKeyLoc : _mkKey;
+        const nativeKeys = new Set(nativeResult.map(r => _mkKeyForNative({ ...r, rule: ruleName })));
         const caseNativeFn = [...espreeKeys].filter(k => !nativeKeys.has(k)).length;
         const caseNativeFp = [...nativeKeys].filter(k => !espreeKeys.has(k)).length;
         if (caseNativeFn === 0 && caseNativeFp === 0) {
@@ -1100,7 +1135,9 @@ if (fs.existsSync(ESLINT_ROOT)) {
 
       // Hybrid comparison: prefer native when usable AND rule has native impl, else runner.
       // Mirrors production path in api.js: native rules via Zig, JS-only rules via runner.
-      if (nativeAvailable) {
+      // Skip under --native-only — the runner fallback isn't computed and mixing in [] would
+      // produce spurious FN against the oracle.
+      if (nativeAvailable && !nativeOnly) {
         hybridCases++;
         const hybridResult = (_ruleHasNativeImpl && nativeUsable) ? nativeResult : runnerNormal;
         // Normalize to ruleName (same reason as nativeKeys normalization above).
@@ -1241,7 +1278,11 @@ if (fs.existsSync(ESLINT_ROOT)) {
         ].filter(Boolean).join(", ");
         const nativeStr = `native ${nativePass}/${nativeTotal}${nativeDetail ? ` (${nativeDetail})` : ""}`;
         const hybridStr = `hybrid ${hybridPass}/${hybridTotal}${hybridDetail ? ` (${hybridDetail})` : ""}`;
-        console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}  ${hybridStr}`);
+        if (nativeOnly) {
+          console.log(`  ${status} ${ruleName}: ${nativeStr}`);
+        } else {
+          console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}  ${hybridStr}`);
+        }
       } else {
         console.log(`  ${status} ${ruleName}: ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`);
       }
@@ -1352,11 +1393,15 @@ if (fs.existsSync(ESLINT_ROOT)) {
     const runnerGaps = totalCases - totalPass;
     const nativeGaps = _nativeTotal - totalNativePass;
     const hybridGaps = _hybridTotal - totalHybridPass;
-    console.log(`\nCorpus runner:  ${totalPass}/${totalCases} pass (${runnerPct}%), ${totalSkip} skipped, ${totalCrash} crashes, ${runnerGaps} gaps`);
-    console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s)  [parse: ${(_runnerParseMs/1000).toFixed(2)}s, js-rules: ${(_runnerPluginMs/1000).toFixed(2)}s]`);
-    console.log(`Corpus native:  ${totalNativePass}/${_nativeTotal} pass (${nativePct}%), ${totalNativeSkip} skipped, ${totalNativeCrash} crashes, ${nativeGaps} gaps`);
+    if (!nativeOnly) {
+      console.log(`\nCorpus runner:  ${totalPass}/${totalCases} pass (${runnerPct}%), ${totalSkip} skipped, ${totalCrash} crashes, ${runnerGaps} gaps`);
+      console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s)  [parse: ${(_runnerParseMs/1000).toFixed(2)}s, js-rules: ${(_runnerPluginMs/1000).toFixed(2)}s]`);
+    }
+    console.log(`${nativeOnly ? "\n" : ""}Corpus native:  ${totalNativePass}/${_nativeTotal} pass (${nativePct}%), ${totalNativeSkip} skipped, ${totalNativeCrash} crashes, ${nativeGaps} gaps${nativeOnly ? " [--native-only]" : ""}`);
     console.log(`  linting: ${(nativeOnlyMs/1000).toFixed(2)}s  (${nativeCasesSec} cases/s)`);
-    console.log(`Corpus hybrid:  ${totalHybridPass}/${_hybridTotal} pass (${hybridPct}%), ${hybridGaps} gaps  (native when available, runner fallback)`);
+    if (!nativeOnly) {
+      console.log(`Corpus hybrid:  ${totalHybridPass}/${_hybridTotal} pass (${hybridPct}%), ${hybridGaps} gaps  (native when available, runner fallback)`);
+    }
     if (benchEslint) console.log(`Corpus eslint:  ${(eslintOnlyMs/1000).toFixed(2)}s  (runner/eslint ratio: ${(runnerOnlyMs / eslintOnlyMs).toFixed(2)}x)`);
 
     if (_ruleTimes.length > 0 && !filterRule) {
@@ -1455,6 +1500,9 @@ if (fs.existsSync(ESLINT_ROOT)) {
       }
     }
   } else {
+    // Note: --native-only forces EZ_RUN_NATIVE=1 above, so the nativeAvailable
+    // branch handles its corpus summary; this fallback only runs when native is
+    // truly unavailable (no NAPI binary).
     const pct = totalCases > 0 ? (totalPass / totalCases * 100).toFixed(1) : "0";
     console.log(`\nCorpus: ${totalPass}/${totalCases} pass (${pct}%), ${totalSkip} skipped, ${totalCrash} crashes  (${(runnerMs/1000).toFixed(2)}s)`);
   }
@@ -1475,7 +1523,9 @@ const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(0);
 console.log(`\nTotal time: ${elapsed}s  |  RSS: ${rss} MB  heap: ${heap}/${heapTotal} MB`);
 
 // Perf regression check (>30% throughput drop vs baseline).
-if (!saveBaseline && baseline?.perf?.runnerCasesPerSec > 0 && newBaseline.perf?.runnerCasesPerSec > 0) {
+// Skip both checks under --native-only — runner stats are zero by construction
+// and native throughput swings wildly when the runner isn't sharing a hot VM.
+if (!saveBaseline && !nativeOnly && baseline?.perf?.runnerCasesPerSec > 0 && newBaseline.perf?.runnerCasesPerSec > 0) {
   const perfRatio = newBaseline.perf.runnerCasesPerSec / baseline.perf.runnerCasesPerSec;
   if (perfRatio < 0.7) {
     anyRegression = true;
@@ -1486,7 +1536,7 @@ if (!saveBaseline && baseline?.perf?.runnerCasesPerSec > 0 && newBaseline.perf?.
     });
   }
 }
-if (!saveBaseline && baseline?.perf?.nativeCasesPerSec > 0 && newBaseline.perf?.nativeCasesPerSec > 0) {
+if (!saveBaseline && !nativeOnly && baseline?.perf?.nativeCasesPerSec > 0 && newBaseline.perf?.nativeCasesPerSec > 0) {
   const perfRatio = newBaseline.perf.nativeCasesPerSec / baseline.perf.nativeCasesPerSec;
   if (perfRatio < 0.7) {
     anyRegression = true;
