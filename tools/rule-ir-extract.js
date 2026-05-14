@@ -304,6 +304,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractSingleNameGlobalRefHandler,
       extractNoNewFuncHandler,
       extractNewExpressionShadowHandler,
+      extractReadonlyGlobalAssignHandler, // sprint #1 — see TODO at fn def
     ];
     let handled = false;
     for (const rec of recognizers) {
@@ -456,6 +457,73 @@ function extractGlobalRefHandler(rawHandler, stmts, { ctxName, constants, helper
       body,
     },
   };
+}
+
+// Recognize no-global-assign's pattern (sprint #1, IN PROGRESS):
+//
+//   Program(node) {
+//     const globalScope = sourceCode.getScope(node);
+//     globalScope.variables.forEach(checkVariable);
+//   }
+//
+//   // Where checkVariable / checkReference are local function declarations:
+//   function checkVariable(variable) {
+//     if (variable.writeable === false && !exceptions.includes(variable.name)) {
+//       variable.references.forEach(checkReference);
+//     }
+//   }
+//   function checkReference(reference, index, references) {
+//     const identifier = reference.identifier;
+//     if (reference.init === false && reference.isWrite() &&
+//         (index === 0 || references[index - 1].identifier !== identifier)) {
+//       context.report({ node: identifier, messageId: "...", data: { name: identifier.name } });
+//     }
+//   }
+//
+// IR shape (proposed — emitter not yet implemented):
+//   {
+//     selector: "Program",
+//     kind: "for-each-readonly-global-write-ref",
+//     exceptionsOption: "exceptions",            // option name; null if no option
+//     refIdentifierBinding: "__ref_identifier__",
+//     messageId: "globalShouldNotBeModified",
+//     dataInterpolation: { name: "identifier.name" },
+//   }
+//
+// Required infrastructure (NOT YET BUILT — this stub returns ok:false):
+//   1. Helper-function inliner that recognizes checkReference/checkVariable shapes
+//      → enhance `extractHandlers`'s helper extraction loop (currently only
+//        handles 4 helper shapes: NodeTypePredicate, ReportIfHelper,
+//        DirectReportHelper, BoolPredicateHelper). Need: ScopeIterHelper,
+//        RefIterHelper.
+//   2. New IR ops: variable.writeable, variable.name, variable.references,
+//      reference.init, reference.isWrite(), reference.identifier
+//   3. New codegen kind in rule-codegen.js that emits Zig:
+//        for (ctx.scopes().globalScope().symbols()) |sym_id| {
+//            if (!ctx.symbols().isReadOnly(sym_id)) continue;
+//            if (containsStr(exceptions, ctx.symbols().getName(sym_id))) continue;
+//            const refs = ctx.references().forSymbol(sym_id);
+//            for (refs, 0..) |ref, i| {
+//                if (ctx.references().getKind(ref) != .write) continue;
+//                if (ctx.references().isInit(ref)) continue;
+//                if (i > 0 and ctx.references().getNode(refs[i - 1]) ==
+//                    ctx.references().getNode(ref)) continue;
+//                ctx.reportData(ctx.references().getNode(ref), .global_should_not_be_modified,
+//                    .{ .name = ctx.tokenText(...) });
+//            }
+//        }
+//   4. Verify Zig runtime has: ctx.scopes().globalScope(), symbols.isReadOnly(),
+//      references.forSymbol(), references.isInit(), data interpolation in
+//      ctx.reportData(). Add stubs as needed.
+//
+// Estimated effort to land end-to-end: 1-2 weeks of focused work.
+function extractReadonlyGlobalAssignHandler(rawHandler, _stmts, _ctx) {
+  // Stub. Returns ok:false until the infrastructure above is built. The
+  // dispatch in extractHandlers tries this then falls through to the
+  // generic extractor (which fails with "call not on context" today —
+  // unchanged behavior).
+  if (rawHandler.selector !== "Program") return { ok: false };
+  return { ok: false, reason: "for-each-readonly-global-write-ref recognizer not yet implemented (sprint #1 in progress)" };
 }
 
 // Recognize the "scope-shadowing check on callee of NewExpression" pattern:
