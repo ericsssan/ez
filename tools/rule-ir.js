@@ -193,7 +193,9 @@ function validateRule(rule) {
     // Optional handler kind — e.g. "for-each-unresolved-global-ref" — triggers
     // a symbol-phase emit instead of the default AST-walk dispatch.
     if (h.kind != null) {
-      if (h.kind !== "for-each-unresolved-global-ref" && h.kind !== "for-each-node")
+      if (h.kind !== "for-each-unresolved-global-ref" &&
+          h.kind !== "for-each-node" &&
+          h.kind !== "for-each-readonly-global-write-ref")
         return fail(`unsupported handler kind '${h.kind}'`, path);
       if (h.kind === "for-each-unresolved-global-ref") {
         if (typeof h.namesConstant !== "string")
@@ -210,6 +212,15 @@ function validateRule(rule) {
       if (h.kind === "for-each-node") {
         if (typeof h.nodeBinding !== "string")
           return fail("handler.nodeBinding must be string", path);
+      }
+      if (h.kind === "for-each-readonly-global-write-ref") {
+        if (typeof h.messageId !== "string")
+          return fail("handler.messageId must be string", path);
+        if (h.exceptionsOption != null && typeof h.exceptionsOption !== "string")
+          return fail("handler.exceptionsOption must be string or null", path);
+        // body is empty by construction — the lowering is fully determined
+        // by messageId / exceptionsOption / hasNameData.
+        continue;
       }
     }
     if (!Array.isArray(h.body)) return fail("body must be array", path);

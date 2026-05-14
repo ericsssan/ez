@@ -159,8 +159,9 @@ function emit(rule) {
   if (!v.ok) throw new Error(`invalid IR: ${v.reason} at ${v.path}`);
 
   const hasSymbolHandler = rule.handlers.some(h => h.kind === "for-each-unresolved-global-ref");
+  const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -170,7 +171,7 @@ function emit(rule) {
 
   // For-each-node handlers supply their own relevant_tags from their selector.
   let relevantTags;
-  if (hasSymbolHandler) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler) {
     relevantTags = [];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
@@ -195,7 +196,7 @@ function emit(rule) {
   out.push(`const Node = ast.Node;`);
   out.push(`const LintContext = @import("../../lint_context.zig").LintContext;`);
   out.push(`const RuleMeta = @import("../rule.zig").RuleMeta;`);
-  if (hasSymbolHandler) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler) {
     out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
     out.push(`const ReferenceId = ref_mod.ReferenceId;`);
   }
@@ -339,6 +340,16 @@ function emit(rule) {
         for (const line of emitUnresolvedGlobalRefHandler(h, ctx)) out.push(line);
       } else {
         throw new Error(`unknown handler kind in symbol-phase rule: ${h.kind}`);
+      }
+    }
+  } else if (hasReadonlyGlobalHandler) {
+    out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
+    out.push(``);
+    for (const h of rule.handlers) {
+      if (h.kind === "for-each-readonly-global-write-ref") {
+        for (const line of emitReadonlyGlobalWriteRefHandler(h, ctx)) out.push(line);
+      } else {
+        throw new Error(`unknown handler kind in readonly-global rule: ${h.kind}`);
       }
     }
   } else if (hasNodeHandler) {
@@ -490,6 +501,64 @@ function emitUnresolvedGlobalRefHandler(handler, ctx) {
     lines.push(`        const __mc_call = methodChainCall(ctx, __ref_identifier__, ${methodsConst}[0..]);`);
     lines.push(`        if (__mc_call != .none) ctx.report(__mc_call);`);
   }
+  lines.push(`    }`);
+  lines.push(`}`);
+  return lines;
+}
+
+// Emit symbol-phase handler for the "for-each-readonly-global-write-ref" shape.
+// Lowering of no-global-assign and structurally-identical rules: walk every
+// reference in the file, keep writes that target a read-only global, dedup
+// against the previous write to the same identifier node (the JS rule's
+// `references[index - 1].identifier !== identifier` guard for destructuring
+// with defaults), and report at the identifier site with `{ name }` data.
+//
+// Notes vs ESLint scope analysis:
+//   * ESLint groups references per `Variable` and walks `globalScope.variables`.
+//     We walk all references and key on the identifier's *token text* — same
+//     observable result for built-in / configured globals because their names
+//     are uniquely owned at global scope, but it lets us avoid materializing
+//     a global-scope variable list.
+//   * `reference.init === false` filters out variable-declaration initializers.
+//     Initializers in our model resolve to the local declaration, never to a
+//     readonly global, so the filter is implicit (we only see refs whose name
+//     matches a readonly global, which by definition isn't being declared).
+//   * `reference.isWrite()` matches both pure writes (`x = 1`) and combined
+//     read-writes (`x++`, `x += 1`).  Our `ReferenceKind.isWrite()` matches
+//     the same set (`.write` + `.read_write` + `.write_init`).
+function emitReadonlyGlobalWriteRefHandler(handler, _ctx) {
+  const lines = [];
+  const exceptionsKey = handler.exceptionsOption; // option name (e.g. "exceptions") or null
+  lines.push(`pub fn runOnSymbols(ctx: *const LintContext) void {`);
+  lines.push(`    const refs = ctx.references();`);
+  lines.push(`    const count = refs.count();`);
+  lines.push(`    var prev_reported_node: NodeIndex = .none;`);
+  lines.push(`    var r: u32 = 0;`);
+  lines.push(`    while (r < count) : (r += 1) {`);
+  lines.push(`        const ref_id = ReferenceId.fromInt(r);`);
+  lines.push(`        const kind = refs.getKind(ref_id);`);
+  lines.push(`        if (!kind.isWrite()) continue;`);
+  lines.push(`        // Skip variable-declaration initializers — those write to a fresh local`);
+  lines.push(`        // binding, not to the global.  ESLint encodes this as reference.init=true.`);
+  lines.push(`        if (kind == .write_init) continue;`);
+  lines.push(`        const id_node = refs.getNode(ref_id);`);
+  lines.push(`        if (id_node == .none) continue;`);
+  lines.push(`        // Identifier nodes carry the name as their main-token text.`);
+  lines.push(`        const name = ctx.tokenText(ctx.nodeMainToken(id_node));`);
+  lines.push(`        if (!ctx.globalIsReadOnly(name)) continue;`);
+  if (exceptionsKey) {
+    lines.push(`        // Honour { ${exceptionsKey}: [...] } option — names listed there are exempt.`);
+    lines.push(`        if (ctx.optionArrayContains("${exceptionsKey}", name)) continue;`);
+  }
+  lines.push(`        // Destructuring with defaults can yield two write references that share`);
+  lines.push(`        // their identifier node ({Foo = 0} pattern).  Suppress the duplicate.`);
+  lines.push(`        if (id_node == prev_reported_node) continue;`);
+  // Note: ezlint diagnostics carry rule_index + span + severity but not
+  // messageId + data — message text is reconstructed at output time from
+  // the rule's meta.messages.  The `name` interpolation is already implicit
+  // in the reported identifier's source text.
+  lines.push(`        ctx.report(id_node);`);
+  lines.push(`        prev_reported_node = id_node;`);
   lines.push(`    }`);
   lines.push(`}`);
   return lines;

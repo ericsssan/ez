@@ -33,7 +33,7 @@ const no_duplicate_case = @import("correctness/no_duplicate_case.zig");
 const no_empty_pattern = @import("correctness/no_empty_pattern.zig");
 const no_ex_assign = @import("correctness/no_ex_assign.zig");
 const no_fallthrough = @import("correctness/no_fallthrough.zig");
-const no_global_assign = @import("correctness/no_global_assign.zig");
+const no_global_assign = @import("style/no_global_assign.zig");
 const no_inner_declarations = @import("correctness/no_inner_declarations.zig");
 const no_irregular_whitespace = @import("correctness/no_irregular_whitespace.zig");
 const no_new_symbol = @import("correctness/no_new_symbol.zig");
@@ -294,7 +294,7 @@ pub const all_rules = .{
     // no_empty_pattern, // runner >> native (runner 31, native 25, 6 FP!!); fall back
     no_ex_assign,
     no_fallthrough,
-    // no_global_assign, // runner >> native (runner 18, native 9, gap 9, 1 FP); fall back to JS runner
+    no_global_assign,
     // no_inner_declarations, // native has 6 FP making hybrid 61 vs runner 67; fall back to JS runner
     // no_irregular_whitespace, // runner >> native (runner 280, native 275, 5 FN 2 FP); fall back
     no_new_symbol,

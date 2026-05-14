@@ -1,0 +1,19 @@
+{
+  "name": "no-global-assign",
+  "category": "style",
+  "description": "Disallow assignments to native objects or read-only global variables",
+  "fixable": null,
+  "messages": {
+    "globalShouldNotBeModified": "Read-only global '{{name}}' should not be modified."
+  },
+  "handlers": [
+    {
+      "selector": "Program",
+      "kind": "for-each-readonly-global-write-ref",
+      "exceptionsOption": "exceptions",
+      "messageId": "globalShouldNotBeModified",
+      "hasNameData": true,
+      "body": []
+    }
+  ]
+}

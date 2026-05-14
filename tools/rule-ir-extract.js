@@ -304,8 +304,11 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractSingleNameGlobalRefHandler,
       extractNoNewFuncHandler,
       extractNewExpressionShadowHandler,
-      extractReadonlyGlobalAssignHandler, // sprint #1 — see TODO at fn def
+      extractReadonlyGlobalAssignHandler,
     ];
+    // Stash the create() body so recognizers that need to find sibling helpers
+    // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
+    h.__createBody = createBodyStmts;
     let handled = false;
     for (const rec of recognizers) {
       const specialized = rec(h, stmts, { ctxName, constants, helpers });
@@ -459,16 +462,17 @@ function extractGlobalRefHandler(rawHandler, stmts, { ctxName, constants, helper
   };
 }
 
-// Recognize no-global-assign's pattern (sprint #1, IN PROGRESS):
+// Recognize no-global-assign's pattern:
 //
 //   Program(node) {
 //     const globalScope = sourceCode.getScope(node);
 //     globalScope.variables.forEach(checkVariable);
 //   }
 //
-//   // Where checkVariable / checkReference are local function declarations:
+// Plus two co-located helpers (function declarations in create()'s body):
+//
 //   function checkVariable(variable) {
-//     if (variable.writeable === false && !exceptions.includes(variable.name)) {
+//     if (variable.writeable === false && !<EXCEPTIONS>.includes(variable.name)) {
 //       variable.references.forEach(checkReference);
 //     }
 //   }
@@ -476,54 +480,256 @@ function extractGlobalRefHandler(rawHandler, stmts, { ctxName, constants, helper
 //     const identifier = reference.identifier;
 //     if (reference.init === false && reference.isWrite() &&
 //         (index === 0 || references[index - 1].identifier !== identifier)) {
-//       context.report({ node: identifier, messageId: "...", data: { name: identifier.name } });
+//       context.report({ node: identifier, messageId: "<MSG>", data: { name: identifier.name } });
 //     }
 //   }
 //
-// IR shape (proposed — emitter not yet implemented):
-//   {
-//     selector: "Program",
-//     kind: "for-each-readonly-global-write-ref",
-//     exceptionsOption: "exceptions",            // option name; null if no option
-//     refIdentifierBinding: "__ref_identifier__",
-//     messageId: "globalShouldNotBeModified",
-//     dataInterpolation: { name: "identifier.name" },
-//   }
-//
-// Required infrastructure (NOT YET BUILT — this stub returns ok:false):
-//   1. Helper-function inliner that recognizes checkReference/checkVariable shapes
-//      → enhance `extractHandlers`'s helper extraction loop (currently only
-//        handles 4 helper shapes: NodeTypePredicate, ReportIfHelper,
-//        DirectReportHelper, BoolPredicateHelper). Need: ScopeIterHelper,
-//        RefIterHelper.
-//   2. New IR ops: variable.writeable, variable.name, variable.references,
-//      reference.init, reference.isWrite(), reference.identifier
-//   3. New codegen kind in rule-codegen.js that emits Zig:
-//        for (ctx.scopes().globalScope().symbols()) |sym_id| {
-//            if (!ctx.symbols().isReadOnly(sym_id)) continue;
-//            if (containsStr(exceptions, ctx.symbols().getName(sym_id))) continue;
-//            const refs = ctx.references().forSymbol(sym_id);
-//            for (refs, 0..) |ref, i| {
-//                if (ctx.references().getKind(ref) != .write) continue;
-//                if (ctx.references().isInit(ref)) continue;
-//                if (i > 0 and ctx.references().getNode(refs[i - 1]) ==
-//                    ctx.references().getNode(ref)) continue;
-//                ctx.reportData(ctx.references().getNode(ref), .global_should_not_be_modified,
-//                    .{ .name = ctx.tokenText(...) });
-//            }
-//        }
-//   4. Verify Zig runtime has: ctx.scopes().globalScope(), symbols.isReadOnly(),
-//      references.forSymbol(), references.isInit(), data interpolation in
-//      ctx.reportData(). Add stubs as needed.
-//
-// Estimated effort to land end-to-end: 1-2 weeks of focused work.
-function extractReadonlyGlobalAssignHandler(rawHandler, _stmts, _ctx) {
-  // Stub. Returns ok:false until the infrastructure above is built. The
-  // dispatch in extractHandlers tries this then falls through to the
-  // generic extractor (which fails with "call not on context" today —
-  // unchanged behavior).
+// We don't try to inline the helpers as IR expressions — instead we recognize
+// the entire structure as one shape and emit a specialized kind that the
+// codegen lowers to a Zig runOnSymbols walking the reference table.
+function extractReadonlyGlobalAssignHandler(rawHandler, stmts, { ctxName }) {
   if (rawHandler.selector !== "Program") return { ok: false };
-  return { ok: false, reason: "for-each-readonly-global-write-ref recognizer not yet implemented (sprint #1 in progress)" };
+  // Body shape: const globalScope = sourceCode.getScope(node); globalScope.variables.forEach(checkVariable);
+  if (stmts.length !== 2) return { ok: false };
+  const [scopeDecl, forEachStmt] = stmts;
+  if (scopeDecl.type !== "VariableDeclaration" || scopeDecl.declarations.length !== 1) return { ok: false };
+  const sDeclarator = scopeDecl.declarations[0];
+  if (sDeclarator.id?.type !== "Identifier") return { ok: false };
+  if (!isSourceCodeGetScopeCall(sDeclarator.init, ctxName, rawHandler.nodeParam)) return { ok: false };
+  const scopeBinding = sDeclarator.id.name;
+  if (forEachStmt.type !== "ExpressionStatement") return { ok: false };
+  const call = forEachStmt.expression;
+  if (call.type !== "CallExpression" || call.arguments.length !== 1) return { ok: false };
+  if (call.callee.type !== "MemberExpression" || call.callee.computed) return { ok: false };
+  if (call.callee.property?.type !== "Identifier" || call.callee.property.name !== "forEach") return { ok: false };
+  const variablesMember = call.callee.object;
+  if (variablesMember.type !== "MemberExpression" || variablesMember.computed) return { ok: false };
+  if (variablesMember.property?.type !== "Identifier" || variablesMember.property.name !== "variables") return { ok: false };
+  if (variablesMember.object?.type !== "Identifier" || variablesMember.object.name !== scopeBinding) return { ok: false };
+  if (call.arguments[0].type !== "Identifier") return { ok: false };
+  const checkVarName = call.arguments[0].name;
+  // The recognizer relies on the rule.create() body having local function
+  // declarations named checkVariable / checkReference with the canonical shape.
+  // Match by structural signature in the original create() body.
+  // We re-extract here from the create() body via stash placed by extractHandlers.
+  const stash = rawHandler.__createBody;
+  if (!stash) return { ok: false };
+  const checkVariable = stash.find(s => s.type === "FunctionDeclaration" && s.id?.name === checkVarName);
+  if (!checkVariable) return { ok: false };
+  const cvInfo = matchCheckVariableShape(checkVariable);
+  if (!cvInfo) return { ok: false };
+  const checkReference = stash.find(s => s.type === "FunctionDeclaration" && s.id?.name === cvInfo.refCalleeName);
+  if (!checkReference) return { ok: false };
+  const crInfo = matchCheckReferenceShape(checkReference, ctxName);
+  if (!crInfo) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      selector: "Program",
+      kind: "for-each-readonly-global-write-ref",
+      exceptionsOption: cvInfo.exceptionsOption, // option name; null if no exception filter
+      messageId: crInfo.messageId,
+      // Currently the only data interpolation supported is `name = identifier.name`;
+      // emitted as `.{ .name = <ident token text> }` in Zig.
+      hasNameData: crInfo.hasNameData,
+      body: [], // by construction — codegen for this kind is fully derived from above fields
+    },
+  };
+}
+
+// Match the body of `function checkVariable(variable) { ... }`.
+// Returns { refCalleeName, exceptionsOption } on success, null otherwise.
+function matchCheckVariableShape(fn) {
+  if (fn.params.length !== 1 || fn.params[0].type !== "Identifier") return null;
+  const varName = fn.params[0].name;
+  const body = fn.body?.body;
+  if (!body || body.length !== 1) return null;
+  const ifStmt = body[0];
+  if (ifStmt.type !== "IfStatement") return null;
+  // Test: variable.writeable === false  [&& !<exceptions>.includes(variable.name)]
+  const test = ifStmt.test;
+  let writeableSide, exceptionsSide;
+  if (test.type === "LogicalExpression" && test.operator === "&&") {
+    writeableSide = test.left;
+    exceptionsSide = test.right;
+  } else {
+    writeableSide = test;
+    exceptionsSide = null;
+  }
+  if (!matchWriteableEqFalse(writeableSide, varName)) return null;
+  let exceptionsOption = null;
+  if (exceptionsSide) {
+    const opt = matchExceptionsIncludesNot(exceptionsSide, varName);
+    if (!opt) return null;
+    exceptionsOption = opt;
+  }
+  // Then: variable.references.forEach(<callback>)
+  const thenBody = ifStmt.consequent?.type === "BlockStatement" ? ifStmt.consequent.body : null;
+  if (!thenBody || thenBody.length !== 1) return null;
+  const exprStmt = thenBody[0];
+  if (exprStmt.type !== "ExpressionStatement") return null;
+  const c = exprStmt.expression;
+  if (c.type !== "CallExpression" || c.arguments.length !== 1) return null;
+  if (c.callee.type !== "MemberExpression" || c.callee.computed) return null;
+  if (c.callee.property?.type !== "Identifier" || c.callee.property.name !== "forEach") return null;
+  const refsM = c.callee.object;
+  if (refsM.type !== "MemberExpression" || refsM.computed) return null;
+  if (refsM.property?.type !== "Identifier" || refsM.property.name !== "references") return null;
+  if (refsM.object?.type !== "Identifier" || refsM.object.name !== varName) return null;
+  if (c.arguments[0].type !== "Identifier") return null;
+  return { refCalleeName: c.arguments[0].name, exceptionsOption };
+}
+
+// `<varName>.writeable === false`  (operands either order)
+function matchWriteableEqFalse(node, varName) {
+  if (node.type !== "BinaryExpression") return false;
+  if (node.operator !== "===") return false;
+  const isWriteableMember = (n) =>
+    n.type === "MemberExpression" && !n.computed &&
+    n.object?.type === "Identifier" && n.object.name === varName &&
+    n.property?.type === "Identifier" && n.property.name === "writeable";
+  const isFalse = (n) => n.type === "Literal" && n.value === false;
+  return (isWriteableMember(node.left) && isFalse(node.right)) ||
+         (isWriteableMember(node.right) && isFalse(node.left));
+}
+
+// `!<exceptionsOption>.includes(<varName>.name)`  → returns option name string, or null.
+// The exceptionsOption is destructured from `context.options` somewhere in create();
+// the IR records the option key so codegen can fetch it from the rule_options at runtime.
+function matchExceptionsIncludesNot(node, varName) {
+  if (node.type !== "UnaryExpression" || node.operator !== "!") return null;
+  const call = node.argument;
+  if (call.type !== "CallExpression" || call.arguments.length !== 1) return null;
+  if (call.callee.type !== "MemberExpression" || call.callee.computed) return null;
+  if (call.callee.property?.type !== "Identifier" || call.callee.property.name !== "includes") return null;
+  if (call.callee.object?.type !== "Identifier") return null;
+  const exceptionsBinding = call.callee.object.name;
+  const arg = call.arguments[0];
+  if (arg.type !== "MemberExpression" || arg.computed) return null;
+  if (arg.object?.type !== "Identifier" || arg.object.name !== varName) return null;
+  if (arg.property?.type !== "Identifier" || arg.property.name !== "name") return null;
+  // The exceptionsBinding is the identifier introduced by the create() body's
+  // destructuring of context.options.  We carry the *binding name* — it
+  // doubles as the option key when codegen interprets the
+  // `for-each-readonly-global-write-ref` shape (no-global-assign canonically
+  // names this "exceptions").
+  return exceptionsBinding;
+}
+
+// Match the body of `function checkReference(reference, index, references) { ... }`.
+// Returns { messageId, hasNameData } on success, null otherwise.
+function matchCheckReferenceShape(fn, ctxName) {
+  if (fn.params.length !== 3) return null;
+  if (fn.params[0].type !== "Identifier" || fn.params[1].type !== "Identifier" || fn.params[2].type !== "Identifier") return null;
+  const refName = fn.params[0].name;
+  const idxName = fn.params[1].name;
+  const refsName = fn.params[2].name;
+  const body = fn.body?.body;
+  if (!body || body.length !== 2) return null;
+  // const identifier = reference.identifier;
+  const idDecl = body[0];
+  if (idDecl.type !== "VariableDeclaration" || idDecl.declarations.length !== 1) return null;
+  const idDeclarator = idDecl.declarations[0];
+  if (idDeclarator.id?.type !== "Identifier") return null;
+  const identifierBinding = idDeclarator.id.name;
+  const init = idDeclarator.init;
+  if (!init || init.type !== "MemberExpression" || init.computed) return null;
+  if (init.object?.type !== "Identifier" || init.object.name !== refName) return null;
+  if (init.property?.type !== "Identifier" || init.property.name !== "identifier") return null;
+  // if (reference.init === false && reference.isWrite() && (index === 0 || ...)) ctx.report(...)
+  const ifStmt = body[1];
+  if (ifStmt.type !== "IfStatement") return null;
+  if (!matchCheckReferenceTest(ifStmt.test, refName, idxName, refsName, identifierBinding)) return null;
+  const thenBody = ifStmt.consequent?.type === "BlockStatement" ? ifStmt.consequent.body : null;
+  if (!thenBody || thenBody.length !== 1) return null;
+  const reportStmt = thenBody[0];
+  if (reportStmt.type !== "ExpressionStatement") return null;
+  const reportCall = reportStmt.expression;
+  if (reportCall.type !== "CallExpression" || reportCall.arguments.length !== 1) return null;
+  if (reportCall.callee.type !== "MemberExpression" || reportCall.callee.computed) return null;
+  if (reportCall.callee.object?.type !== "Identifier" || reportCall.callee.object.name !== ctxName) return null;
+  if (reportCall.callee.property?.type !== "Identifier" || reportCall.callee.property.name !== "report") return null;
+  const arg = reportCall.arguments[0];
+  if (arg.type !== "ObjectExpression") return null;
+  // Need: node: identifier, messageId: "X", data: { name: identifier.name }
+  let messageId = null;
+  let hasNameData = false;
+  let nodeOk = false;
+  for (const prop of arg.properties) {
+    if (prop.type !== "Property" || prop.key?.type !== "Identifier") return null;
+    const k = prop.key.name;
+    if (k === "node") {
+      if (prop.value?.type !== "Identifier" || prop.value.name !== identifierBinding) return null;
+      nodeOk = true;
+    } else if (k === "messageId") {
+      if (prop.value?.type !== "Literal" || typeof prop.value.value !== "string") return null;
+      messageId = prop.value.value;
+    } else if (k === "data") {
+      if (prop.value?.type !== "ObjectExpression" || prop.value.properties.length !== 1) return null;
+      const p2 = prop.value.properties[0];
+      if (p2.type !== "Property" || p2.key?.type !== "Identifier" || p2.key.name !== "name") return null;
+      const v = p2.value;
+      if (v?.type !== "MemberExpression" || v.computed) return null;
+      if (v.object?.type !== "Identifier" || v.object.name !== identifierBinding) return null;
+      if (v.property?.type !== "Identifier" || v.property.name !== "name") return null;
+      hasNameData = true;
+    } else {
+      return null;
+    }
+  }
+  if (!nodeOk || !messageId) return null;
+  return { messageId, hasNameData };
+}
+
+// `reference.init === false && reference.isWrite() && (index === 0 || references[index - 1].identifier !== identifier)`
+function matchCheckReferenceTest(node, refName, idxName, refsName, idBinding) {
+  // Top-level conjunctions left-folded: ((init===false && isWrite()) && dedup)
+  // Walk down lhs conjuncts.
+  let conjuncts = [];
+  function flatten(n) {
+    if (n.type === "LogicalExpression" && n.operator === "&&") {
+      flatten(n.left);
+      flatten(n.right);
+    } else conjuncts.push(n);
+  }
+  flatten(node);
+  if (conjuncts.length !== 3) return false;
+  // 1: reference.init === false
+  const c1 = conjuncts[0];
+  if (c1.type !== "BinaryExpression" || c1.operator !== "===") return false;
+  const isInitMember = (n) => n.type === "MemberExpression" && !n.computed &&
+    n.object?.type === "Identifier" && n.object.name === refName &&
+    n.property?.type === "Identifier" && n.property.name === "init";
+  const isFalse = (n) => n.type === "Literal" && n.value === false;
+  if (!((isInitMember(c1.left) && isFalse(c1.right)) || (isInitMember(c1.right) && isFalse(c1.left)))) return false;
+  // 2: reference.isWrite()
+  const c2 = conjuncts[1];
+  if (c2.type !== "CallExpression" || c2.arguments.length !== 0) return false;
+  if (c2.callee.type !== "MemberExpression" || c2.callee.computed) return false;
+  if (c2.callee.object?.type !== "Identifier" || c2.callee.object.name !== refName) return false;
+  if (c2.callee.property?.type !== "Identifier" || c2.callee.property.name !== "isWrite") return false;
+  // 3: (index === 0 || references[index - 1].identifier !== identifier)
+  const c3 = conjuncts[2];
+  if (c3.type !== "LogicalExpression" || c3.operator !== "||") return false;
+  // index === 0
+  const lhs = c3.left;
+  if (lhs.type !== "BinaryExpression" || lhs.operator !== "===") return false;
+  const isIdx = (n) => n.type === "Identifier" && n.name === idxName;
+  const isZero = (n) => n.type === "Literal" && n.value === 0;
+  if (!((isIdx(lhs.left) && isZero(lhs.right)) || (isIdx(lhs.right) && isZero(lhs.left)))) return false;
+  // references[index - 1].identifier !== identifier
+  const rhs = c3.right;
+  if (rhs.type !== "BinaryExpression" || rhs.operator !== "!==") return false;
+  const isPrevIdent = (n) => n.type === "MemberExpression" && !n.computed &&
+    n.property?.type === "Identifier" && n.property.name === "identifier" &&
+    n.object?.type === "MemberExpression" && n.object.computed &&
+    n.object.object?.type === "Identifier" && n.object.object.name === refsName &&
+    n.object.property?.type === "BinaryExpression" && n.object.property.operator === "-" &&
+    n.object.property.left?.type === "Identifier" && n.object.property.left.name === idxName &&
+    n.object.property.right?.type === "Literal" && n.object.property.right.value === 1;
+  const isIdBinding = (n) => n.type === "Identifier" && n.name === idBinding;
+  if (!((isPrevIdent(rhs.left) && isIdBinding(rhs.right)) || (isPrevIdent(rhs.right) && isIdBinding(rhs.left)))) return false;
+  return true;
 }
 
 // Recognize the "scope-shadowing check on callee of NewExpression" pattern:

@@ -70,6 +70,39 @@ pub const LintDiagnostic = struct {
 pub const InlineGlobalEntry = struct {
     name: []const u8,
     is_off: bool,
+    /// True when the directive marks the global as writable (`:true`/`:writable`).
+    /// False for `:false`/`:readonly` and the unspecified default (ESLint defaults
+    /// to readonly).  Ignored when `is_off` is true.
+    is_writable: bool = false,
+};
+
+/// Built-in globals that ESLint treats as read-only by default — assigning to
+/// them is the canonical no-global-assign violation.  Mirrors the `builtin`
+/// set from the `globals` npm package + ECMAScript globals.
+pub const BUILTIN_READONLY_GLOBALS = [_][]const u8{
+    "undefined",     "NaN",            "Infinity",         "globalThis",
+    "eval",          "isFinite",       "isNaN",            "parseFloat",
+    "parseInt",      "decodeURI",      "decodeURIComponent",
+    "encodeURI",     "encodeURIComponent",
+    "Object",        "Function",       "Boolean",          "Symbol",
+    "Error",         "EvalError",      "RangeError",       "ReferenceError",
+    "SyntaxError",   "TypeError",      "URIError",         "AggregateError",
+    "Number",        "BigInt",         "Math",             "Date",
+    "String",        "RegExp",         "Array",            "Int8Array",
+    "Uint8Array",    "Uint8ClampedArray", "Int16Array",    "Uint16Array",
+    "Int32Array",    "Uint32Array",    "Float32Array",     "Float64Array",
+    "BigInt64Array", "BigUint64Array", "Map",              "Set",
+    "WeakMap",       "WeakSet",        "JSON",             "Promise",
+    "Reflect",       "Proxy",          "ArrayBuffer",      "SharedArrayBuffer",
+    "DataView",      "Atomics",        "FinalizationRegistry", "WeakRef",
+    "Intl",          "console",
+};
+
+/// CommonJS readonly globals — only treated as readonly when `sourceType: "commonjs"`.
+/// In plain script mode `require = 0` is just an implicit global write (handled by
+/// no-implicit-globals); only the commonjs env wires these as readonly variables.
+pub const COMMONJS_READONLY_GLOBALS = [_][]const u8{
+    "require", "module", "exports", "__dirname", "__filename", "global",
 };
 
 // ── Lint Context ───────────────────────────────────────────
@@ -438,6 +471,60 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// Returns true when `name` is treated as a read-only global at this site.
+    /// Sources, in priority order:
+    ///   1. `languageOptions.globals[name]` is `false` / `"readonly"` / `"readable"` → readonly
+    ///      (`true` / `"writable"` / `"writeable"` → writable)
+    ///   2. Inline `/*global name:false|readonly*/` → readonly; `:true|writable` → writable
+    ///   3. Built-in always-readonly globals (Object, Array, Math, …)
+    /// Used by no-global-assign to flag writes to read-only globals.
+    pub fn globalIsReadOnly(self: *const LintContext, name: []const u8) bool {
+        // 1. languageOptions.globals[name]
+        if (self.language_options) |lo| {
+            if (lo.* == .object) {
+                if (lo.object.get("globals")) |g| {
+                    if (g == .object) {
+                        if (g.object.get(name)) |v| {
+                            switch (v) {
+                                .string => |s| {
+                                    if (std.mem.eql(u8, s, "off")) return false;
+                                    if (std.mem.eql(u8, s, "writable") or
+                                        std.mem.eql(u8, s, "writeable") or
+                                        std.mem.eql(u8, s, "true")) return false;
+                                    return true; // "readonly", "readable", anything else
+                                },
+                                .bool => |b| return !b, // false → readonly, true → writable
+                                else => {},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 2. Inline directives.  Take the latest entry that matches.
+        var idx: usize = self.inline_globals.len;
+        while (idx > 0) {
+            idx -= 1;
+            const entry = self.inline_globals[idx];
+            if (!std.mem.eql(u8, entry.name, name)) continue;
+            if (entry.is_off) return false;
+            return !entry.is_writable;
+        }
+        // 3. Built-in always-readonly list.
+        for (BUILTIN_READONLY_GLOBALS) |g| {
+            if (std.mem.eql(u8, g, name)) return true;
+        }
+        // 4. CommonJS readonly globals — present when sourceType: "commonjs".
+        if (self.getLanguageOptionString("sourceType")) |st| {
+            if (std.mem.eql(u8, st, "commonjs")) {
+                for (COMMONJS_READONLY_GLOBALS) |g| {
+                    if (std.mem.eql(u8, g, name)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /// Returns true when `languageOptions.globals` is an explicit object (even if empty),
     /// meaning the caller has explicitly enumerated which globals are available.
     /// When false, globals are unspecified and default environment rules apply.
@@ -599,6 +686,10 @@ fn collectGlobalsEntries(
             while (s < body.len and body[s] != ',' and body[s] != ' ' and body[s] != '\t' and body[s] != '\n' and body[s] != '\r') s += 1;
             value = body[v_start..s];
         }
-        try list.append(allocator, .{ .name = name, .is_off = std.mem.eql(u8, value, "off") });
+        const off = std.mem.eql(u8, value, "off");
+        // ESLint inline-globals default (no value) is readonly.  `true`/`writable`
+        // → writable; everything else (including `false`/`readonly`/empty) → readonly.
+        const writable = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "writable");
+        try list.append(allocator, .{ .name = name, .is_off = off, .is_writable = writable });
     }
 }
