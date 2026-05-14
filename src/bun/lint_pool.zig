@@ -25,6 +25,7 @@ const js_buffer = ez.js_buffer;
 const parse_to_buffer = ez.parse_to_buffer;
 const Language = ez.token.Language;
 const layout = ez.layout;
+const linter_mod = ez.linter;
 
 // Embed the vendored Bun binary at compile time. The file lives at
 // vendor/bun/bun-aarch64-darwin (committed via .gitignore stub; populated
@@ -43,6 +44,31 @@ extern "c" fn getpid() i32;
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 const STDIN_FD: i32 = 0;
+
+/// ESLint v9 recommended rule set (mirrors src/bun/worker.js RULE_MODULES
+/// keys). Used as the native-rule filter at parse time so we only fire
+/// rules the user actually enabled. Single source of truth for both
+/// what JS workers run and what native dispatcher considers.
+const ESLINT_RECOMMENDED = [_][]const u8{
+    "constructor-super", "for-direction", "getter-return", "no-async-promise-executor",
+    "no-case-declarations", "no-class-assign", "no-compare-neg-zero", "no-cond-assign",
+    "no-const-assign", "no-constant-binary-expression", "no-constant-condition",
+    "no-control-regex", "no-debugger", "no-delete-var", "no-dupe-args",
+    "no-dupe-class-members", "no-dupe-else-if", "no-dupe-keys", "no-duplicate-case",
+    "no-empty", "no-empty-character-class", "no-empty-pattern", "no-empty-static-block",
+    "no-ex-assign", "no-extra-boolean-cast", "no-fallthrough", "no-func-assign",
+    "no-global-assign", "no-import-assign", "no-invalid-regexp", "no-irregular-whitespace",
+    "no-loss-of-precision", "no-misleading-character-class", "no-new-native-nonconstructor",
+    "no-nonoctal-decimal-escape", "no-obj-calls", "no-octal", "no-prototype-builtins",
+    "no-redeclare", "no-regex-spaces", "no-self-assign", "no-setter-return",
+    "no-shadow-restricted-names", "no-sparse-arrays", "no-this-before-super",
+    "no-unassigned-vars", "no-undef", "no-unexpected-multiline", "no-unreachable",
+    "no-unsafe-finally", "no-unsafe-negation", "no-unsafe-optional-chaining",
+    "no-unused-labels", "no-unused-private-class-members", "no-unused-vars",
+    "no-useless-assignment", "no-useless-backreference", "no-useless-catch",
+    "no-useless-escape", "no-with", "preserve-caught-error", "require-yield",
+    "use-isnan", "valid-typeof",
+};
 const STDOUT_FD: i32 = 1;
 
 // ── Monotonic time ────────────────────────────────────────────────────────
@@ -632,7 +658,7 @@ pub fn main(init: std.process.Init) !void {
     var sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer sem_arena.deinit();
     var native_diags: std.ArrayList(parse_to_buffer.NativeDiag) = .empty;
-    _ = try parse_to_buffer.parseToBuffer(ast_bytes.ptr, total_buf_len, source_start, source_len, .js, true, &sem_arena, &native_diags);
+    _ = try parse_to_buffer.parseToBuffer(ast_bytes.ptr, total_buf_len, source_start, source_len, .js, true, &sem_arena, &native_diags, &ESLINT_RECOMMENDED);
     const native_diag_count: u32 = @intCast(native_diags.items.len);
     std.debug.print("[main] parsed {s} ({d:.1}MB src) in {d:.1}ms — {d} native diags\n", .{
         src_path,
@@ -683,23 +709,14 @@ pub fn main(init: std.process.Init) !void {
             rules_storage = try alloc.alloc([]const u8, 1);
             rules_storage[0] = "no-useless-assignment";
         } else {
-            // Drop rules that already ran natively at parse time. MUST stay
-            // in sync with parse_to_buffer.NATIVE_PARSE_TIME_RULES — every
-            // entry there should be in this list and vice versa, otherwise
-            // we get either double-emit or missing diags.
-            const NATIVE_RULES_TO_SKIP = [_][]const u8{
-                "no-useless-assignment",
-                "no-debugger",
-                "no-with",
-                "no-octal",
-                "no-delete-var",
-                "no-compare-neg-zero",
-                "no-case-declarations",
-            };
+            // Drop every rule that has a native impl in our registry.
+            // parse_to_buffer dispatches all native rules with default
+            // severities — keeping them in the JS worker batch would
+            // double-emit. Single source of truth: linter.rule_names.
             var keep_count: usize = 0;
             for (rec) |s| {
                 var skip = false;
-                for (NATIVE_RULES_TO_SKIP) |n| {
+                for (linter_mod.rule_names) |n| {
                     if (std.mem.eql(u8, s, n)) { skip = true; break; }
                 }
                 if (!skip) keep_count += 1;
@@ -708,7 +725,7 @@ pub fn main(init: std.process.Init) !void {
             var ki: usize = 0;
             for (rec) |s| {
                 var skip = false;
-                for (NATIVE_RULES_TO_SKIP) |n| {
+                for (linter_mod.rule_names) |n| {
                     if (std.mem.eql(u8, s, n)) { skip = true; break; }
                 }
                 if (skip) continue;

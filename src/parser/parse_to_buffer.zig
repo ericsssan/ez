@@ -62,6 +62,11 @@ pub fn parseToBuffer(
     /// triples here (allocated in `sem_arena`'s allocator). Caller can
     /// exclude those rule names from the JS plugin set.
     out_native_diags: ?*std.ArrayList(NativeDiag),
+    /// Optional filter — only native rules whose name appears here will
+    /// fire. When null, every native rule with default_severity != .off
+    /// runs (fine for tests / "lint everything" mode, but emits
+    /// diagnostics for rules the user hasn't enabled).
+    native_rules_filter: ?[]const []const u8,
 ) !u32 {
     if (source_start + source_len > buf_len) return error.BufferTooSmall;
     if (source_start < js_buffer.HEADER_SIZE) return error.SourceStartTooLow;
@@ -117,28 +122,12 @@ pub fn parseToBuffer(
     if (out_native_diags) |diags_out| {
         sem.parent_indices = traversal.parents;
         const sem_alloc = sem_arena.allocator();
-        // Validated overlap with eslint:recommended where the native impl is
-        // confirmed to match the JS rule's diagnostics. Each one added here
-        // MUST also be dropped from the JS worker batch (see lint_pool.zig)
-        // to avoid double-emission. Grow this list one rule at a time as
-        // parity is verified against the differential test corpus.
-        // Rules that intersect with eslint:recommended AND have a native
-        // impl whose parity vs JS has been validated (differential test
-        // 100% on rule-specific corpus). Each rule here saves the JS
-        // worker from running it.
-        // NOTE: no-eq-null is NOT in this list — it's not part of
-        // eslint:recommended, and adding it caused the user to see
-        // ~1600 unwanted diagnostics on typescript.js.
-        const NATIVE_PARSE_TIME_RULES = [_][]const u8{
-            "no-useless-assignment",
-            "no-debugger",
-            "no-with",
-            "no-octal",
-            "no-delete-var",
-            "no-compare-neg-zero",
-            "no-case-declarations",
-        };
-        const diag_list = try linter_mod.lintRulesByName(sem_alloc, &tree, &sem, language, &NATIVE_PARSE_TIME_RULES);
+        // When a filter is provided, only those rules fire. When null, run
+        // every native rule with default_severity != .off (legacy / tests).
+        const diag_list = if (native_rules_filter) |filter|
+            try linter_mod.lintRulesByName(sem_alloc, &tree, &sem, language, filter)
+        else
+            try linter_mod.lint(sem_alloc, &tree, &sem, null, language);
         for (diag_list) |d| {
             const loc = Location.fromLineStarts(lex_result.line_starts, source, d.span.start);
             const rule_name = if (d.rule_index < linter_mod.rule_names.len)
