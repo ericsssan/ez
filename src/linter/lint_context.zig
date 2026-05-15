@@ -518,6 +518,13 @@ pub const LintContext = struct {
         return src[open_pos + 1 .. close_pos - 1];
     }
 
+    /// True for ASCII identifier characters (used in node-span boundary
+    /// scans to confirm word boundaries when matching keyword text).
+    fn isIdentChar(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
+            or (c >= '0' and c <= '9') or c == '_' or c == '$';
+    }
+
     /// Tags whose `data.rhs` is a NodeIndex pointing at the rightmost
     /// child — the one whose effective end determines the parent's span.
     /// Excludes tags where `rhs` is an extra-data index (call/new args,
@@ -553,7 +560,26 @@ pub const LintContext = struct {
         const i = index.toInt();
         const first_tok = if (i < self.node_min_toks.len) self.node_min_toks[i] else main_tok;
         const last_tok  = if (i < self.node_max_toks.len) self.node_max_toks[i] else main_tok;
-        const first_start = self.ast.tokenStart(first_tok);
+        var first_start = self.ast.tokenStart(first_tok);
+        // For TS declarations whose `declare` modifier isn't tracked as a
+        // child node's main_token, walk backward to include it.  Same for
+        // `export` modifiers prefixing a declaration when the declaration
+        // itself is the reported node (export wrappers normally subsume,
+        // but rules can target the inner decl directly).
+        const tag0 = self.nodeTag(index);
+        if (tag0 == .ts_module_decl or tag0 == .ts_namespace_decl
+            or tag0 == .ts_interface_decl or tag0 == .ts_enum_decl
+            or tag0 == .ts_type_alias_decl or tag0 == .ts_declare_function) {
+            const src0 = self.ast.source;
+            // Walk backward over whitespace.  If we land at the end of
+            // `declare`, back up to its start.
+            var bp: usize = first_start;
+            while (bp > 0 and (src0[bp - 1] == ' ' or src0[bp - 1] == '\t')) bp -= 1;
+            if (bp >= 7 and std.mem.eql(u8, src0[bp - 7 .. bp], "declare")) {
+                // Confirm word boundary on the left.
+                if (bp == 7 or !isIdentChar(src0[bp - 8])) first_start = @intCast(bp - 7);
+            }
+        }
         const last_start  = self.ast.tokenStart(last_tok);
         const last_len    = self.ast.tokens.items(.len)[last_tok];
         var end: u32 = last_start + last_len;
