@@ -322,6 +322,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractSingleNameGlobalRefHandler,
       extractNoNewFuncHandler,
       extractNewExpressionShadowHandler,
+      extractCallOrNewEarlyReturnGlobalHandler, // no-array-constructor
       extractReadonlyGlobalAssignHandler,
       extractDeclaredVariableModifyingRefHandler, // sprint #2
     ];
@@ -355,7 +356,19 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       : body;
     irHandlers.push({ selector: h.selector, body: finalBody });
   }
-  return { handlers: irHandlers, helpers, constants };
+  // Dedupe identical handlers — fires when a rule's create() returns the
+  // same fn for two selectors that both match a recognizer (e.g.
+  // `{ CallExpression: check, NewExpression: check }` where the recognizer
+  // lifts both to the same Program:exit unresolved-global-ref shape).
+  const seen = new Set();
+  const dedupedHandlers = [];
+  for (const h of irHandlers) {
+    const key = JSON.stringify(h);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    dedupedHandlers.push(h);
+  }
+  return { handlers: dedupedHandlers, helpers, constants };
 }
 
 // Recognize the "scope-lookup on global implicit names" handler pattern:
@@ -1121,6 +1134,212 @@ function extractNewExpressionShadowHandler(rawHandler, stmts, { constants }) {
       ],
     },
   };
+}
+
+// Recognize the "early-return guard + global-lookup + report" pattern used by
+// no-array-constructor:
+//
+//   function check(node) {
+//     if (
+//       node.callee.type !== "Identifier" ||
+//       node.callee.name !== "<NAME>" ||
+//       <extra-conds>
+//     ) return;
+//     const variable = getVariableByName(sourceCode.getScope(node), "<NAME>");
+//     if (variable && variable.identifiers.length === 0) {
+//       <body>
+//       context.report({ node, messageId: "<X>" [, fix, suggest] });
+//     }
+//   }
+//
+//   return { CallExpression: check, NewExpression: check };
+//
+// The dual dispatch lives in splitHandlers, so this recognizer fires per
+// selector — duplicates are folded by the post-loop dedupe in extractHandlers.
+//
+// Translation: a Program:exit for-each-unresolved-global-ref over the single
+// name "<NAME>", with a body that checks parent is call_expr/new_expr AND the
+// ref is the parent's callee, then optionally applies the inverted extra
+// conditions, then reports at the parent (if NewExpression) or the ref (if
+// CallExpression).  Fix and suggest are intentionally dropped — they require
+// IR ops beyond the current extractor's vocabulary; the diag still fires.
+function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { constants }) {
+  if (rawHandler.selector !== "CallExpression" && rawHandler.selector !== "NewExpression") return { ok: false };
+  if (stmts.length !== 3) return { ok: false };
+  const [earlyIf, varDecl, innerIf] = stmts;
+  const nodeParam = rawHandler.nodeParam;
+
+  // ── Statement 1: early-return guard.
+  if (earlyIf.type !== "IfStatement") return { ok: false };
+  if (!isPlainReturn(earlyIf.consequent)) return { ok: false };
+  if (earlyIf.alternate) return { ok: false };
+  // The guard is an OR-chain.  Look for `node.callee.type !== "Identifier"`
+  // and `node.callee.name !== "<NAME>"`; record any other clauses for
+  // inverting back into positive filter conditions.
+  const orParts = flattenLogical(earlyIf.test, "||");
+  let nameLiteral = null;
+  let sawCalleeTypeIdentifier = false;
+  const extraNegConds = []; // each entry is an AST node (the extra OR clause)
+  for (const part of orParts) {
+    if (isCalleeTypeNotIdentifier(part, nodeParam)) { sawCalleeTypeIdentifier = true; continue; }
+    const n = extractCalleeNameLiteral(part, nodeParam);
+    if (n != null) { nameLiteral = n; continue; }
+    extraNegConds.push(part);
+  }
+  if (!sawCalleeTypeIdentifier || nameLiteral == null) return { ok: false };
+
+  // ── Statement 2: const variable = scopeLookup(scope, "<NAME>")
+  if (varDecl.type !== "VariableDeclaration" || varDecl.declarations.length !== 1) return { ok: false };
+  const vDeclarator = varDecl.declarations[0];
+  if (vDeclarator.id?.type !== "Identifier") return { ok: false };
+  const lookupName = extractSingleNameScopeLookupLiteral(vDeclarator.init, /*scopeBinding*/ null);
+  if (lookupName !== nameLiteral) return { ok: false };
+  const variableBinding = vDeclarator.id.name;
+
+  // ── Statement 3: if (variable && variable.identifiers.length === 0) { ... report ... }
+  if (innerIf.type !== "IfStatement") return { ok: false };
+  if (!isVariableDeclaredCheckLoose(innerIf.test, variableBinding)) return { ok: false };
+  const innerBody = innerIf.consequent?.type === "BlockStatement" ? innerIf.consequent.body : null;
+  if (!innerBody) return { ok: false };
+  // Find the report call — anywhere in innerBody (other statements set up
+  // pre-fix locals we can't extract; we just want the report's messageId).
+  let messageId = null;
+  for (const s of innerBody) {
+    if (s.type !== "ExpressionStatement") continue;
+    const info = extractReportShape(s.expression, nodeParam);
+    if (info) { messageId = info.messageId; break; }
+  }
+  if (!messageId) return { ok: false };
+
+  // ── Hoist the single-name set into the rule's constants table.
+  let namesConstant = null;
+  for (const k of Object.keys(constants)) {
+    const v = constants[k];
+    if (v.kind === "string-set" && v.values.length === 1 && v.values[0] === nameLiteral) {
+      namesConstant = k;
+      break;
+    }
+  }
+  if (!namesConstant) {
+    namesConstant = `__${nameLiteral.replace(/[^A-Za-z0-9_]/g, "_")}_names__`;
+    constants[namesConstant] = { kind: "string-set", values: [nameLiteral] };
+  }
+
+  // ── Build the handler IR body.
+  const refExpr    = { op: "identifier", name: "__ref_identifier__" };
+  const parentExpr = { op: "parent-node-skip-grouping", node: refExpr };
+  const isNewExpr  = { op: "node-tag-equals", node: parentExpr, estreeType: "NewExpression" };
+  // CallExpression in SELECTOR_TO_TAG_MULTI already covers optional_call_expr.
+  const isCallExpr = { op: "node-tag-equals", node: parentExpr, estreeType: "CallExpression" };
+  const parentIsCallOrNew = { op: "binary", operator: "||", lhs: isNewExpr, rhs: isCallExpr };
+  const refIsCallee = { op: "nodes-equal",
+    a: { op: "node-callee", node: parentExpr },
+    b: refExpr };
+  const outerCond = { op: "binary", operator: "&&", lhs: parentIsCallOrNew, rhs: refIsCallee };
+
+  // Translate extra negative-OR conds into positive AND conds.  Skip clauses
+  // that touch AST properties the codegen can't lower (TS-only metadata like
+  // `node.typeArguments`, options like `node.optional`).  Skipping is safe:
+  // it widens the match and risks an extra FP, but doesn't risk an FN.
+  let extraPositive = null;
+  const extraScope = { ctxName: rawHandler.ctxName, nodeParamName: null,
+    locals: new Map([[nodeParam, { kind: "expr", expr: parentExpr }]]),
+    constants };
+  const SKIP_PROPS = new Set(["typeArguments", "typeParameters", "definite"]);
+  // Walk via eslint-visitor-keys so we only descend into real AST children —
+  // nodeView wrappers expose extra getters (parent, loc, etc.) and even
+  // sibling refs that an Object.keys-based walk would chase across the whole
+  // tree, producing spurious "found typeArguments" hits in unrelated clauses.
+  const touchesUnsupportedProp = (n) => {
+    const seen = new WeakSet();
+    const walk = (x) => {
+      if (!x || typeof x !== "object" || !x.type || seen.has(x)) return false;
+      seen.add(x);
+      if (x.type === "MemberExpression" && !x.computed
+          && x.property?.type === "Identifier" && SKIP_PROPS.has(x.property.name)) return true;
+      const keys = visitorKeys[x.type] || [];
+      for (const k of keys) {
+        const v = x[k];
+        if (Array.isArray(v)) { for (const e of v) if (walk(e)) return true; }
+        else if (v && typeof v === "object" && walk(v)) return true;
+      }
+      return false;
+    };
+    return walk(n);
+  };
+  for (const negPart of extraNegConds) {
+    if (touchesUnsupportedProp(negPart)) continue;
+    const r = extractExpr(negPart, extraScope);
+    if (!r.ok) continue;
+    const inverted = { op: "unary", operator: "!", operand: r.expr };
+    extraPositive = extraPositive ? { op: "binary", operator: "&&", lhs: extraPositive, rhs: inverted } : inverted;
+  }
+
+  // Report target: parent node when parent is NewExpression, else the ref.
+  // (ESLint reports the whole `new Array()` but only the `Array` identifier
+  // for plain `Array(...)` calls — historical compatibility.)
+  const reportThen = [
+    { op: "if",
+      cond: { op: "node-tag-equals", node: parentExpr, estreeType: "NewExpression" },
+      then: [{ op: "report", node: parentExpr, messageId }],
+      else: [{ op: "report", node: refExpr,    messageId }] },
+  ];
+  const guardedReport = extraPositive
+    ? [{ op: "if", cond: extraPositive, then: reportThen }]
+    : reportThen;
+
+  return {
+    ok: true,
+    handler: {
+      selector: "Program:exit",
+      kind: "for-each-unresolved-global-ref",
+      namesConstant,
+      refIdentifierBinding: "__ref_identifier__",
+      body: [{ op: "if", cond: outerCond, then: guardedReport }],
+    },
+  };
+}
+
+// Helpers for the early-return-guard recognizer.
+
+// ReturnStatement OR { return; }
+function isPlainReturn(stmt) {
+  if (stmt.type === "ReturnStatement" && !stmt.argument) return true;
+  if (stmt.type === "BlockStatement" && stmt.body.length === 1) return isPlainReturn(stmt.body[0]);
+  return false;
+}
+
+// `node.callee.type !== "Identifier"`
+function isCalleeTypeNotIdentifier(expr, nodeParam) {
+  if (expr.type !== "BinaryExpression" || expr.operator !== "!==") return false;
+  const m = expr.left;
+  if (m.type !== "MemberExpression" || m.computed) return false;
+  if (m.property?.type !== "Identifier" || m.property.name !== "type") return false;
+  const c = m.object;
+  if (c.type !== "MemberExpression" || c.computed) return false;
+  if (c.property?.type !== "Identifier" || c.property.name !== "callee") return false;
+  if (c.object?.type !== "Identifier" || c.object.name !== nodeParam) return false;
+  return expr.right.type === "Literal" && expr.right.value === "Identifier";
+}
+
+// `node.callee.name !== "<NAME>"`  →  returns the literal name, else null.
+function extractCalleeNameLiteral(expr, nodeParam) {
+  if (expr.type !== "BinaryExpression" || expr.operator !== "!==") return null;
+  const m = expr.left;
+  if (m.type !== "MemberExpression" || m.computed) return null;
+  if (m.property?.type !== "Identifier" || m.property.name !== "name") return null;
+  const c = m.object;
+  if (c.type !== "MemberExpression" || c.computed) return null;
+  if (c.property?.type !== "Identifier" || c.property.name !== "callee") return null;
+  if (c.object?.type !== "Identifier" || c.object.name !== nodeParam) return null;
+  if (expr.right.type !== "Literal" || typeof expr.right.value !== "string") return null;
+  return expr.right.value;
+}
+
+// Flatten `a || b || c` into [a, b, c]; same for `&&`.
+function flattenLogical(expr, op) {
+  if (expr.type !== "LogicalExpression" || expr.operator !== op) return [expr];
+  return [...flattenLogical(expr.left, op), ...flattenLogical(expr.right, op)];
 }
 
 // const { name } = node.callee  →  "name"
