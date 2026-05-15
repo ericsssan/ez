@@ -820,9 +820,10 @@ pub const LintContext = struct {
         }
         // ts_interface_decl / ts_enum_decl — body is a SubRange of members
         // tucked into extra-data; the `{` ... `}` brackets are not children.
-        // Brace-depth scan from the first `{` past existing end.
+        // Scan for `{` from main_token (existing end may sit deep inside
+        // the body), then depth-1 scan to the matching `}`.
         if (tag == .ts_interface_decl or tag == .ts_enum_decl) {
-            var p: usize = end;
+            var p: usize = self.ast.tokenStart(main_tok);
             while (p < src.len and src[p] != '{') p += 1;
             if (p < src.len) {
                 var depth: i32 = 1;
@@ -876,10 +877,12 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
-        // switch_stmt — closing `}` of switch body.  Same depth-from-open
-        // scan as block/object — find the `{` after the discriminant first.
+        // switch_stmt — closing `}` of switch body.  The `{` opens after
+        // the discriminant; scan for it from main_token (the `switch`
+        // keyword) since the existing `end` may already sit deep inside
+        // the switch body.  Then depth-1 scan from after `{` to its `}`.
         if (tag == .switch_stmt) {
-            var p: usize = end;
+            var p: usize = self.ast.tokenStart(main_tok);
             while (p < src.len and src[p] != '{') p += 1;
             if (p < src.len) {
                 var depth: i32 = 1;
