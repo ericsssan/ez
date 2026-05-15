@@ -2762,8 +2762,13 @@ function splitHandlers(createFn, ctxName) {
     }
     if (!isFunctionLike(handlerFn)) return; // skip non-function handlers silently
     const firstParam = handlerFn.params?.[0];
-    if (!firstParam || firstParam.type !== "Identifier") return; // skip event-style or destructured
-    handlers.push({ selector, handler: handlerFn, nodeParam: firstParam.name });
+    if (firstParam && firstParam.type !== "Identifier") return; // skip event-style or destructured
+    // 0-param handlers (e.g. `Program() { ... }` that uses sourceCode) get
+    // a synthetic node param name — body extraction will reject any actual
+    // reference to it, so this only matters for rules that don't use the
+    // param at all.
+    const nodeParam = firstParam ? firstParam.name : "__node__";
+    handlers.push({ selector, handler: handlerFn, nodeParam });
   };
 
   for (const p of returned.properties) {
@@ -2903,6 +2908,29 @@ function extractStatement(stmt, scope) {
   //   for (let i = 0; i < node.consequent.length; i++) { const x = node.consequent[i]; <body> }
   if (stmt.type === "ForStatement") {
     return extractForLoop(stmt, scope);
+  }
+  // for-of `for (const X of <iterExpr>) { <body> }` — equivalent to
+  // iterate-children when <iterExpr> is `<nodeExpr>.<childArrayProp>`
+  // (e.g. `node.cases`, `node.elements`).  Bindings declared via const
+  // get a per-iteration element binding the same way extractForLoop does.
+  if (stmt.type === "ForOfStatement") {
+    if (!stmt.left || stmt.left.type !== "VariableDeclaration") return { ok: false, reason: "for-of left must be VariableDeclaration" };
+    if (stmt.left.declarations.length !== 1) return { ok: false, reason: "for-of left must declare 1 binding" };
+    const id = stmt.left.declarations[0].id;
+    if (id.type !== "Identifier") return { ok: false, reason: "for-of left id must be Identifier" };
+    const elementBinding = id.name;
+    const sourceR = extractExpr(stmt.right, scope);
+    if (!sourceR.ok) return sourceR;
+    const innerScope = { ...scope, locals: new Map(scope.locals) };
+    innerScope.locals.set(elementBinding, { kind: "iter-element" });
+    const body = stmt.body.type === "BlockStatement" ? stmt.body.body : [stmt.body];
+    const innerBody = [];
+    for (const s of body) {
+      const r = extractStatement(s, innerScope);
+      if (!r.ok) return r;
+      innerBody.push(...r.stmts);
+    }
+    return { ok: true, stmts: [{ op: "iterate-children", source: sourceR.expr, elementBinding, body: innerBody }] };
   }
   // VariableDeclaration inside handler body — support these cases:
   //   const X = new Set([literals])   — hoist to rule-level constants, track binding
