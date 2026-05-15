@@ -63,14 +63,22 @@ const ESLINT_RECOMMENDED = [
 // ── CLI parse ───────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { files: [], recommended: false, quiet: false, timing: false, workers: null, fix: false, fixDryRun: false };
-  for (const a of argv) {
+  const args = { files: [], recommended: false, quiet: false, timing: false, workers: null, fix: false, fixDryRun: false, configPath: null, noConfigLookup: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
     if (a === "--recommended") args.recommended = true;
     else if (a === "--quiet" || a === "-q") args.quiet = true;
     else if (a === "--timing") args.timing = true;
     else if (a === "--fix") args.fix = true;
     else if (a === "--fix-dry-run") args.fixDryRun = true;
-    else if (a.startsWith("--workers=")) {
+    else if (a === "--no-config-lookup") args.noConfigLookup = true;
+    else if (a === "--config" || a === "-c") {
+      const v = argv[++i];
+      if (!v) { process.stderr.write(`ezlint: --config requires a path\n`); process.exit(2); }
+      args.configPath = v;
+    } else if (a.startsWith("--config=")) {
+      args.configPath = a.slice("--config=".length);
+    } else if (a.startsWith("--workers=")) {
       const n = parseInt(a.slice("--workers=".length), 10);
       if (!Number.isFinite(n) || n < 0) { process.stderr.write(`ezlint: invalid --workers value\n`); process.exit(2); }
       args.workers = n;
@@ -88,21 +96,82 @@ function parseArgs(argv) {
     process.stderr.write("ezlint: --fix and --fix-dry-run are mutually exclusive\n");
     process.exit(2);
   }
+  if (args.recommended && args.configPath) {
+    process.stderr.write("ezlint: --recommended and --config are mutually exclusive\n");
+    process.exit(2);
+  }
   return args;
 }
 
 function printHelp() {
   process.stdout.write(
     "usage: ezlint [flags] <file> [<file>...]\n\n" +
+    "config (one of these required):\n" +
+    "  --recommended         use bundled eslint:recommended preset (64 rules)\n" +
+    "  --config <path>, -c   load explicit eslint flat-config file\n" +
+    "  (auto-discover)       walk up from cwd looking for eslint.config.{js,mjs,cjs}\n" +
+    "  --no-config-lookup    don't auto-discover; combine with --recommended for defaults\n\n" +
     "flags:\n" +
-    "  --recommended    use eslint:recommended preset (64 rules)\n" +
-    "  --fix            apply autofix to fixable diagnostics; write changes to disk\n" +
-    "  --fix-dry-run    print what --fix would change without writing\n" +
-    "  --workers=N      worker count for multi-file (default min(files, hardware), 0 = inline single-thread)\n" +
-    "  --quiet, -q      suppress per-diagnostic output, print summary only\n" +
-    "  --timing         emit startup/lint ms breakdown on stderr\n" +
-    "  --help, -h       show this help\n",
+    "  --fix                 apply autofix to fixable diagnostics; write changes to disk\n" +
+    "  --fix-dry-run         print what --fix would change without writing\n" +
+    "  --workers=N           worker count for multi-file (default min(files, hardware), 0 = inline)\n" +
+    "  --quiet, -q           suppress per-diagnostic output, print summary only\n" +
+    "  --timing              emit startup/lint ms breakdown on stderr\n" +
+    "  --help, -h            show this help\n",
   );
+}
+
+// ── Flat-config discovery ───────────────────────────────────────
+//
+// Walk up from cwd looking for eslint.config.{js,mjs,cjs} (matching
+// ESLint's auto-discovery semantics).  Returns the absolute path to the
+// nearest config file, or null if none found.  Stops at the filesystem
+// root or when a directory containing a `package.json` is found and
+// still has no config (so we don't accidentally cross monorepo
+// boundaries upward — same heuristic as ESLint v9).
+function findFlatConfig(startDir) {
+  const path = require("node:path");
+  const { existsSync } = fs;
+  const NAMES = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs"];
+  let dir = path.resolve(startDir);
+  while (true) {
+    for (const n of NAMES) {
+      const p = path.join(dir, n);
+      if (existsSync(p)) return p;
+    }
+    // Stop at a package boundary OR filesystem root.
+    if (existsSync(path.join(dir, "package.json"))) return null;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+// Load a flat config file.  Both ESM (.js/.mjs) and CJS (.cjs) supported.
+// Returns the array-shaped config (or single-object wrapped in an array).
+async function loadConfigFile(absPath) {
+  if (absPath.endsWith(".cjs")) {
+    const mod = require(absPath);
+    return Array.isArray(mod) ? mod : [mod];
+  }
+  // .js / .mjs — use dynamic import so ESM exports work.
+  const mod = await import("file://" + absPath);
+  const def = mod.default || mod;
+  return Array.isArray(def) ? def : [def];
+}
+
+// Extract the merged `rules` object from a flat-config array.  Later
+// entries override earlier ones.  Plugins are not loaded at this stage;
+// rule names are kept verbatim and resolved against CORE_PLUGINS later.
+function extractRulesFromConfig(configArray) {
+  const merged = {};
+  for (const entry of configArray) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.rules && typeof entry.rules === "object") {
+      Object.assign(merged, entry.rules);
+    }
+  }
+  return merged;
 }
 
 // ── Diag formatter (compact text) ───────────────────────────────
@@ -362,11 +431,61 @@ class WorkerPool {
     process.exit(2);
   }
 
-  if (!args.recommended) {
-    process.stderr.write("ezlint: --recommended is currently required (config-file discovery TODO)\n");
-    process.exit(2);
+  // Resolve the rules set.  Precedence:
+  //   --recommended         → bundled 64-rule recommended preset
+  //   --config <path>       → load that flat-config file
+  //   auto-discover         → walk up from cwd for eslint.config.{js,mjs,cjs}
+  //                          (skipped when --no-config-lookup)
+  //   nothing               → error (must explicitly pick a config source)
+  let rules;
+  let configSource = null;
+  if (args.recommended) {
+    rules = Object.fromEntries(ESLINT_RECOMMENDED.map(r => [r, "error"]));
+    configSource = "--recommended";
+  } else {
+    let cfgPath = args.configPath ? require("node:path").resolve(args.configPath) : null;
+    if (!cfgPath && !args.noConfigLookup) cfgPath = findFlatConfig(process.cwd());
+    if (!cfgPath) {
+      process.stderr.write(
+        "ezlint: no config found.  Use --recommended for the bundled preset, " +
+        "or place an eslint.config.js in this directory (or an ancestor).\n"
+      );
+      process.exit(2);
+    }
+    let cfgArr;
+    try {
+      cfgArr = await loadConfigFile(cfgPath);
+    } catch (e) {
+      process.stderr.write(`ezlint: failed to load config ${cfgPath}: ${e.message}\n`);
+      process.exit(2);
+    }
+    const flatRules = extractRulesFromConfig(cfgArr);
+    if (Object.keys(flatRules).length === 0) {
+      process.stderr.write(`ezlint: ${cfgPath} has no \`rules\` field — nothing to lint\n`);
+      process.exit(2);
+    }
+    // Filter against bundled rules.  Unknown rule names get a one-line
+    // warning so the user knows they're inert (binary ships only the
+    // 64 recommended rules; non-recommended ones aren't statically
+    // imported and bun build --compile can't load them dynamically).
+    const known = new Set(CORE_PLUGINS.map(p => p.meta?.name).filter(Boolean));
+    rules = {};
+    const unknown = [];
+    for (const [name, severity] of Object.entries(flatRules)) {
+      if (!known.has(name)) { unknown.push(name); continue; }
+      rules[name] = severity;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(
+        `ezlint: ${unknown.length} rule(s) in config not bundled in this binary, ignored: ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? ", ..." : ""}\n`
+      );
+    }
+    if (Object.keys(rules).length === 0) {
+      process.stderr.write(`ezlint: ${cfgPath} enables no rules this binary supports\n`);
+      process.exit(2);
+    }
+    configSource = cfgPath;
   }
-  const rules = Object.fromEntries(ESLINT_RECOMMENDED.map(r => [r, "error"]));
 
   let totalDiags = 0;
   let totalErrors = 0;
