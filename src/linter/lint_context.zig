@@ -514,6 +514,36 @@ pub const LintContext = struct {
         return src[open_pos + 1 .. close_pos - 1];
     }
 
+    /// Tags whose `data.rhs` is a NodeIndex pointing at the rightmost
+    /// child — the one whose effective end determines the parent's span.
+    /// Excludes tags where `rhs` is an extra-data index (call/new args,
+    /// fn/class body, conditional alternate — those have dedicated
+    /// nodeSpan branches above).
+    fn rhsIsNodeChild(tag: Node.Tag) bool {
+        return switch (tag) {
+            // Arithmetic / comparison / logical
+            .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
+            .equal, .not_equal, .strict_equal, .strict_not_equal,
+            .less_than, .greater_than, .less_equal, .greater_equal,
+            .bitwise_and, .bitwise_or, .bitwise_xor,
+            .shift_left, .shift_right, .unsigned_shift_right,
+            .logical_and, .logical_or, .nullish_coalesce,
+            .in_expr, .instanceof_expr,
+            // Assignments
+            .assign, .add_assign, .sub_assign, .mul_assign,
+            .div_assign, .mod_assign, .exp_assign,
+            .and_assign, .or_assign, .xor_assign,
+            .shl_assign, .shr_assign, .ushr_assign,
+            .logical_and_assign, .logical_or_assign, .nullish_assign,
+            // Member access: rhs is the property/index expression
+            .computed_member_expr, .optional_computed_member_expr,
+            // Pattern with default: { x = expr }
+            .assignment_pattern,
+            => true,
+            else => false,
+        };
+    }
+
     pub fn nodeSpan(self: *const LintContext, index: NodeIndex) Span {
         const main_tok = self.ast.nodeMainToken(index);
         const i = index.toInt();
@@ -559,9 +589,13 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
-        // var/let/const — ESTree's VariableDeclaration includes the trailing
-        // `;` in its range.  If the next non-whitespace char is `;`, extend.
-        if (tag == .var_decl or tag == .let_decl or tag == .const_decl) {
+        // Statements that include their trailing `;` in ESTree's `range` —
+        // declarations, simple statements, and expression statements all
+        // count.  If the next non-whitespace char past the existing end is
+        // a `;`, extend through it.
+        if (tag == .var_decl or tag == .let_decl or tag == .const_decl
+            or tag == .expression_stmt or tag == .return_stmt or tag == .throw_stmt
+            or tag == .break_stmt or tag == .continue_stmt or tag == .debugger_stmt) {
             var p: usize = end;
             while (p < src.len and (src[p] == ' ' or src[p] == '\t')) p += 1;
             if (p < src.len and src[p] == ';') end = @intCast(p + 1);
@@ -596,6 +630,74 @@ pub const LintContext = struct {
                     const body_span = self.nodeSpan(class_data.body);
                     if (body_span.end > end) end = body_span.end;
                 }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // arrow_fn / async_arrow_fn — body lives in extra-data (ArrowData.body).
+        if (tag == .arrow_fn or tag == .async_arrow_fn) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const arrow_data = self.extraData(ast_mod.ArrowData, @intFromEnum(data.lhs));
+                if (arrow_data.body != .none) {
+                    const body_span = self.nodeSpan(arrow_data.body);
+                    if (body_span.end > end) end = body_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // if_else_stmt — rhs is an extra index to {consequent, alternate}.
+        // The alternate (else branch) is a statement; its block-closing `}`
+        // isn't in node_max_toks.  Recurse to pick it up.
+        if (tag == .if_else_stmt) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                const if_data = self.extraData(ast_mod.IfData, @intFromEnum(data.rhs));
+                if (if_data.alternate != .none) {
+                    const alt_span = self.nodeSpan(if_data.alternate);
+                    if (alt_span.end > end) end = alt_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // if_stmt / while_stmt — rhs is the body statement (NodeIndex).
+        if (tag == .if_stmt or tag == .while_stmt or tag == .do_while_stmt) {
+            const data = self.nodeData(index);
+            // For do-while, lhs is body; for if/while, rhs is body.
+            const body = if (tag == .do_while_stmt) data.lhs else data.rhs;
+            if (body != .none) {
+                const body_span = self.nodeSpan(body);
+                if (body_span.end > end) end = body_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // Conditional — rhs is an extra index to {consequent, alternate}.
+        // The alternate is the last child; recurse into its nodeSpan so
+        // wrapped alternates like `b ? b : (c => c)` end at the wrapper `)`.
+        if (tag == .conditional) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                const cond_data = self.extraData(ast_mod.Conditional, @intFromEnum(data.rhs));
+                if (cond_data.alternate != .none) {
+                    const alt_span = self.nodeSpan(cond_data.alternate);
+                    if (alt_span.end > end) end = alt_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // Binary/assign/computed-member — rhs IS a NodeIndex child (the
+        // "right" / "default" / "index" expression).  Recurse so a wrapped
+        // rhs like `a || (b => c)` includes the wrapper `)`.  For computed
+        // member the closing `]` itself isn't tracked; scan past it.
+        if (rhsIsNodeChild(tag)) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                const rhs_span = self.nodeSpan(data.rhs);
+                if (rhs_span.end > end) end = rhs_span.end;
+            }
+            if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+                var p: usize = end;
+                while (p < src.len and src[p] != ']') p += 1;
+                if (p < src.len) end = @intCast(p + 1);
             }
             return .{ .start = first_start, .end = end };
         }
