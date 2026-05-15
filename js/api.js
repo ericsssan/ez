@@ -468,6 +468,30 @@ async function createLinter(config = {}) {
 }
 
 /**
+ * Synchronous variant of createLinter for callers (like the CLI's --fix loop)
+ * that need to lint in-memory source text without paying the await tax.
+ * Caller is responsible for resolving config first via _resolveConfig — or
+ * use the simpler `createLinter` if a Promise return is acceptable.
+ *
+ * Returns lintText(source, filename) → diags[] (NOT a Promise).
+ *
+ * @param {object} resolved - Output of _resolveConfig (jsPlugins, nativeConfig, ruleConfig, ruleSeverities)
+ * @returns {function(source: string, filename: string): Array}
+ */
+function lintTextSync(resolved, source, filename) {
+  return _lintSourceOne(source, filename || "<input>", resolved);
+}
+
+/**
+ * Resolve config and return both the resolved object and the sync linter.
+ * Helper for callers that want both.
+ */
+async function createSyncLinter(config = {}) {
+  const resolved = await _resolveConfig(config);
+  return { resolved, lintText: (source, filename) => lintTextSync(resolved, source, filename) };
+}
+
+/**
  * Create a cached file linter for CI / batch runs.
  * Resolves config once; returns lintFile(path) → diags[] using the fused
  * parseAndLintNative NAPI path (one Zig trip = read + parse + native lint),
@@ -484,4 +508,4 @@ async function createFileLinter(config = {}) {
   };
 }
 
-module.exports = { lint, lintSource, fix, fixSource, applyFixes, createLinter, createFileLinter };
+module.exports = { lint, lintSource, fix, fixSource, applyFixes, createLinter, createSyncLinter, createFileLinter };

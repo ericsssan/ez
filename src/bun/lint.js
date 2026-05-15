@@ -24,8 +24,15 @@ const tStart = performance.now();
 // --compile` can follow the dependency graph and inline everything into the
 // standalone binary.  Dynamic requires would leave api.js + its transitive
 // closure (rules.bundle.js, eslint-visitor-keys, etc.) outside the bundle.
-const { createFileLinter, applyFixes } = require("../../js/api.js");
+const { createFileLinter, createSyncLinter, applyFixes } = require("../../js/api.js");
 const fs = require("node:fs");
+
+// ESLint applies up to 10 fix passes by default; we follow that convention.
+// Each pass re-lints the previous pass's output and applies any newly-
+// resolvable fixes (some rules' fixes expose new violations that another
+// rule can fix on the next pass; some single rules emit independent fixes
+// at conflicting ranges that resolve over multiple passes).
+const MAX_FIX_PASSES = 10;
 // Static, pre-required rule descriptors — replaces api.js's loadCoreRules
 // for the standalone binary so `bun build --compile` can follow the
 // dependency graph.  See src/bun/recommended-rules.js for the rationale.
@@ -108,30 +115,22 @@ function formatDiag(file, d) {
 
 // ── Autofix application ─────────────────────────────────────────
 //
-// Given a file's diagnostics, extract their `fix` payloads and apply them
-// to the source.  Returns { fixedSource, applied, skipped } where:
-//   * fixedSource — string with non-overlapping fixes applied (= source
-//     when no fixes), or null when nothing changed.
-//   * applied     — diagnostics whose fix was applied.
-//   * skipped     — diagnostics with a fix that overlapped an earlier one
-//     (applyFixes resolves overlaps by skipping; ESLint's iterative fix
-//     loop catches these on a subsequent pass — we currently do one pass).
-//
-// `--fix` writes fixedSource to disk; `--fix-dry-run` prints what would
-// change without writing.  Diagnostics whose fix was applied are omitted
-// from the output (matching ESLint's behaviour); the unfixable ones still
-// print so you see what's left.
-function applyFixesForFile(file, diags) {
+// Given a source string and its diagnostics, extract `fix` payloads and
+// apply them.  Returns { fixedSource, applied, skipped } where:
+//   * fixedSource — string with non-overlapping fixes applied, or null
+//     when nothing changed.
+//   * applied     — diagnostics whose fix was applied this pass.
+//   * skipped     — diagnostics with a fix that overlapped an earlier
+//     one (resolved on a later pass by applyFixIterative).
+function applyFixesToSource(source, diags) {
   const withFix = diags.filter(d => d.fix);
   if (withFix.length === 0) return { fixedSource: null, applied: [], skipped: [] };
-  const source = fs.readFileSync(file, "utf8");
   const fixes = withFix.flatMap(d => Array.isArray(d.fix) ? d.fix : [d.fix]);
   const fixed = applyFixes(source, fixes);
   if (fixed === source) return { fixedSource: null, applied: [], skipped: [] };
-  // Determine which diagnostics' fixes survived overlap resolution.  The
-  // applyFixes algorithm picks fixes by start position and skips any that
-  // overlap a previously-applied range.  Replay that pass here so we can
-  // tell the caller which diagnostics were resolved vs left alone.
+  // Replay the same start-sorted skip-on-overlap pass so we can attribute
+  // applied vs skipped per diagnostic.  Used for the dry-run summary and
+  // to detect convergence in the iterative fix loop.
   const sorted = withFix.slice().sort((a, b) => {
     const fa = Array.isArray(a.fix) ? a.fix[0] : a.fix;
     const fb = Array.isArray(b.fix) ? b.fix[0] : b.fix;
@@ -147,45 +146,80 @@ function applyFixesForFile(file, diags) {
   return { fixedSource: fixed, applied, skipped };
 }
 
+// Iterative fix loop — apply, re-lint, apply, re-lint, until no more
+// fixes apply OR MAX_FIX_PASSES is reached.  Mirrors ESLint's behaviour
+// (default 10 passes) so two adjacent overlapping fixes resolve, and so
+// rules whose fix exposes a new violation get a chance to fix that too.
+//
+// `lintText` is the synchronous in-memory lint function (from
+// createSyncLinter().lintText).  Returns { fixedSource, finalDiags,
+// totalApplied, passes }.  fixedSource is null when nothing changed.
+function applyFixIterative(initialSource, initialDiags, file, lintText) {
+  let source = initialSource;
+  let diags = initialDiags;
+  let totalApplied = 0;
+  let passes = 0;
+  let anyChange = false;
+
+  while (passes < MAX_FIX_PASSES) {
+    const { fixedSource, applied } = applyFixesToSource(source, diags);
+    if (fixedSource === null) break;
+    source = fixedSource;
+    totalApplied += applied.length;
+    passes++;
+    anyChange = true;
+    // Re-lint the new source.  Done in-process / single-thread — the loop
+    // is inherently serial (each pass depends on the previous) so worker
+    // parallelism doesn't help.
+    diags = lintText(source, file);
+  }
+  return {
+    fixedSource: anyChange ? source : null,
+    finalDiags: diags,
+    totalApplied,
+    passes,
+  };
+}
+
 // ── Per-file fix-or-print orchestrator ──────────────────────────
 //
-// Given one file's diagnostics, either apply fixes (and write/print) when
-// --fix or --fix-dry-run was set, OR just print diagnostics in the normal
-// path.  Returns { totalDiagsPrinted, errorsPrinted, fixedThisFile } so
-// the caller can keep its running tallies.
-function processFileResult(file, diags, args, sink) {
+// Given one file's initial diagnostics, either run the iterative fix
+// loop (apply → re-lint → apply, up to MAX_FIX_PASSES) when --fix /
+// --fix-dry-run is set, OR just print diagnostics in the normal path.
+// Returns { totalDiagsPrinted, errorsPrinted, fixedThisFile, fixPasses }.
+//
+// `lintText` (only used in fix mode) is a sync linter from
+// createSyncLinter; main passes it in once after pool init.
+function processFileResult(file, diags, args, sink, lintText) {
   let totalDiagsPrinted = 0;
   let errorsPrinted = 0;
   let fixedThisFile = false;
+  let fixPasses = 0;
 
   if (args.fix || args.fixDryRun) {
-    const { fixedSource, applied, skipped } = applyFixesForFile(file, diags);
+    const initialSource = fs.readFileSync(file, "utf8");
+    const { fixedSource, finalDiags, totalApplied, passes } =
+      applyFixIterative(initialSource, diags, file, lintText);
+    fixPasses = passes;
     if (fixedSource !== null) {
       if (args.fix) {
         fs.writeFileSync(file, fixedSource);
         fixedThisFile = true;
       } else {
-        // Dry-run summary: report number of fixes that would apply.  No
-        // diff output yet — keep this CLI lean; pipe to `diff` externally
-        // if needed.
-        process.stderr.write(`ezlint: ${file}: would fix ${applied.length} diag(s)`);
-        if (skipped.length > 0) process.stderr.write(`, ${skipped.length} would-be-fix conflicted (overlapping)`);
-        process.stderr.write("\n");
+        process.stderr.write(`ezlint: ${file}: would fix ${totalApplied} diag(s) over ${passes} pass(es)\n`);
       }
     }
-    // Still print diags that weren't fixed (their messageIds were not
-    // resolved by the autofix).  Caller may filter further with --quiet.
-    const appliedSet = new Set(applied);
-    const remaining = diags.filter(d => !appliedSet.has(d));
-    totalDiagsPrinted = remaining.length;
-    for (const d of remaining) if (d.severity === 2) errorsPrinted++;
-    if (!args.quiet) for (const d of remaining) sink(formatDiag(file, d));
+    // Print the diags that survive after fix convergence.  These are the
+    // "leftover" violations the user still needs to act on.
+    totalDiagsPrinted = finalDiags.length;
+    for (const d of finalDiags) if (d.severity === 2) errorsPrinted++;
+    if (!args.quiet) for (const d of finalDiags) sink(formatDiag(file, d));
   } else {
     totalDiagsPrinted = diags.length;
     for (const d of diags) if (d.severity === 2) errorsPrinted++;
     if (!args.quiet) for (const d of diags) sink(formatDiag(file, d));
   }
-  return { totalDiagsPrinted, errorsPrinted, fixedThisFile };
+  return { totalDiagsPrinted, errorsPrinted, fixedThisFile, fixPasses };
 }
 
 // ── Worker pool ─────────────────────────────────────────────────
@@ -337,6 +371,15 @@ class WorkerPool {
   let totalDiags = 0;
   let totalErrors = 0;
   let totalFixedFiles = 0;
+  let totalFixPasses = 0;
+  // The fix loop is inherently serial — each pass re-lints the prior
+  // pass's output.  Worker pool can't help; we use a single in-process
+  // synchronous linter only when --fix or --fix-dry-run is set.
+  let lintTextSync = null;
+  if (args.fix || args.fixDryRun) {
+    const { lintText } = await createSyncLinter({ rules, corePlugins: CORE_PLUGINS });
+    lintTextSync = lintText;
+  }
 
   // --workers=0 forces inline (no workers at all) — useful for profiling.
   const forceInline = args.workers === 0;
@@ -354,7 +397,7 @@ class WorkerPool {
         totalErrors++;
         continue;
       }
-      const r = processFileResult(file, diags, args, line => process.stdout.write(line + "\n"));
+      const r = processFileResult(file, diags, args, line => process.stdout.write(line + "\n"), lintTextSync);
       totalDiags += r.totalDiagsPrinted;
       totalErrors += r.errorsPrinted;
       if (r.fixedThisFile) totalFixedFiles++;
@@ -422,7 +465,7 @@ class WorkerPool {
       let diags;
       try { diags = lintFile(file); }
       catch (e) { process.stderr.write(`ezlint: ${file}: ${e.message}\n`); process.exit(1); }
-      const r = processFileResult(file, diags, args, line => process.stdout.write(line + "\n"));
+      const r = processFileResult(file, diags, args, line => process.stdout.write(line + "\n"), lintTextSync);
       totalDiags = r.totalDiagsPrinted;
       totalErrors = r.errorsPrinted;
       if (r.fixedThisFile) totalFixedFiles = 1;
@@ -460,7 +503,7 @@ class WorkerPool {
       process.exit(1);
     }
     allDiags.sort((a, b) => (a.line - b.line) || (a.column - b.column));
-    const ruleParallelResult = processFileResult(file, allDiags, args, line => process.stdout.write(line + "\n"));
+    const ruleParallelResult = processFileResult(file, allDiags, args, line => process.stdout.write(line + "\n"), lintTextSync);
     totalDiags = ruleParallelResult.totalDiagsPrinted;
     totalErrors = ruleParallelResult.errorsPrinted;
     if (ruleParallelResult.fixedThisFile) totalFixedFiles = 1;
@@ -497,7 +540,7 @@ class WorkerPool {
       totalErrors++;
       continue;
     }
-    const pr = processFileResult(r.file, r.diagnostics, args, line => process.stdout.write(line + "\n"));
+    const pr = processFileResult(r.file, r.diagnostics, args, line => process.stdout.write(line + "\n"), lintTextSync);
     totalDiags += pr.totalDiagsPrinted;
     totalErrors += pr.errorsPrinted;
     if (pr.fixedThisFile) totalFixedFiles++;
