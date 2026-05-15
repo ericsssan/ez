@@ -238,7 +238,12 @@ function _fromNativeDiag(d) {
     column: d.col ?? 0,
     endLine: undefined,
     endColumn: undefined,
-    fix: undefined,
+    // Native diag fix data is the same { range:[start,end], text } shape as
+    // JS rule fixes — pass it through so callers (api.fix() and the CLI's
+    // --fix path) can apply native rules' autofixes too.  The decoder in
+    // js/index.js _parseDiags already populates d.fix from the binary
+    // diag stream's flag-bit-2 / fix payload.
+    fix: d.fix,
   };
 }
 

@@ -24,7 +24,8 @@ const tStart = performance.now();
 // --compile` can follow the dependency graph and inline everything into the
 // standalone binary.  Dynamic requires would leave api.js + its transitive
 // closure (rules.bundle.js, eslint-visitor-keys, etc.) outside the bundle.
-const { createFileLinter } = require("../../js/api.js");
+const { createFileLinter, applyFixes } = require("../../js/api.js");
+const fs = require("node:fs");
 // Static, pre-required rule descriptors — replaces api.js's loadCoreRules
 // for the standalone binary so `bun build --compile` can follow the
 // dependency graph.  See src/bun/recommended-rules.js for the rationale.
@@ -55,11 +56,13 @@ const ESLINT_RECOMMENDED = [
 // ── CLI parse ───────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { files: [], recommended: false, quiet: false, timing: false, workers: null };
+  const args = { files: [], recommended: false, quiet: false, timing: false, workers: null, fix: false, fixDryRun: false };
   for (const a of argv) {
     if (a === "--recommended") args.recommended = true;
     else if (a === "--quiet" || a === "-q") args.quiet = true;
     else if (a === "--timing") args.timing = true;
+    else if (a === "--fix") args.fix = true;
+    else if (a === "--fix-dry-run") args.fixDryRun = true;
     else if (a.startsWith("--workers=")) {
       const n = parseInt(a.slice("--workers=".length), 10);
       if (!Number.isFinite(n) || n < 0) { process.stderr.write(`ezlint: invalid --workers value\n`); process.exit(2); }
@@ -74,6 +77,10 @@ function parseArgs(argv) {
       args.files.push(a);
     }
   }
+  if (args.fix && args.fixDryRun) {
+    process.stderr.write("ezlint: --fix and --fix-dry-run are mutually exclusive\n");
+    process.exit(2);
+  }
   return args;
 }
 
@@ -82,6 +89,8 @@ function printHelp() {
     "usage: ezlint [flags] <file> [<file>...]\n\n" +
     "flags:\n" +
     "  --recommended    use eslint:recommended preset (64 rules)\n" +
+    "  --fix            apply autofix to fixable diagnostics; write changes to disk\n" +
+    "  --fix-dry-run    print what --fix would change without writing\n" +
     "  --workers=N      worker count for multi-file (default min(files, hardware), 0 = inline single-thread)\n" +
     "  --quiet, -q      suppress per-diagnostic output, print summary only\n" +
     "  --timing         emit startup/lint ms breakdown on stderr\n" +
@@ -95,6 +104,88 @@ function formatDiag(file, d) {
   const sev = d.severity === 2 ? "error" : "warning";
   const rule = d.ruleId ? ` (${d.ruleId})` : "";
   return `${file}:${d.line}:${d.column}: ${sev}: ${d.message}${rule}`;
+}
+
+// ── Autofix application ─────────────────────────────────────────
+//
+// Given a file's diagnostics, extract their `fix` payloads and apply them
+// to the source.  Returns { fixedSource, applied, skipped } where:
+//   * fixedSource — string with non-overlapping fixes applied (= source
+//     when no fixes), or null when nothing changed.
+//   * applied     — diagnostics whose fix was applied.
+//   * skipped     — diagnostics with a fix that overlapped an earlier one
+//     (applyFixes resolves overlaps by skipping; ESLint's iterative fix
+//     loop catches these on a subsequent pass — we currently do one pass).
+//
+// `--fix` writes fixedSource to disk; `--fix-dry-run` prints what would
+// change without writing.  Diagnostics whose fix was applied are omitted
+// from the output (matching ESLint's behaviour); the unfixable ones still
+// print so you see what's left.
+function applyFixesForFile(file, diags) {
+  const withFix = diags.filter(d => d.fix);
+  if (withFix.length === 0) return { fixedSource: null, applied: [], skipped: [] };
+  const source = fs.readFileSync(file, "utf8");
+  const fixes = withFix.flatMap(d => Array.isArray(d.fix) ? d.fix : [d.fix]);
+  const fixed = applyFixes(source, fixes);
+  if (fixed === source) return { fixedSource: null, applied: [], skipped: [] };
+  // Determine which diagnostics' fixes survived overlap resolution.  The
+  // applyFixes algorithm picks fixes by start position and skips any that
+  // overlap a previously-applied range.  Replay that pass here so we can
+  // tell the caller which diagnostics were resolved vs left alone.
+  const sorted = withFix.slice().sort((a, b) => {
+    const fa = Array.isArray(a.fix) ? a.fix[0] : a.fix;
+    const fb = Array.isArray(b.fix) ? b.fix[0] : b.fix;
+    return fa.range[0] - fb.range[0];
+  });
+  const applied = [], skipped = [];
+  let cursor = 0;
+  for (const d of sorted) {
+    const f = Array.isArray(d.fix) ? d.fix[0] : d.fix;
+    if (f.range[0] < cursor) skipped.push(d);
+    else { applied.push(d); cursor = f.range[1]; }
+  }
+  return { fixedSource: fixed, applied, skipped };
+}
+
+// ── Per-file fix-or-print orchestrator ──────────────────────────
+//
+// Given one file's diagnostics, either apply fixes (and write/print) when
+// --fix or --fix-dry-run was set, OR just print diagnostics in the normal
+// path.  Returns { totalDiagsPrinted, errorsPrinted, fixedThisFile } so
+// the caller can keep its running tallies.
+function processFileResult(file, diags, args, sink) {
+  let totalDiagsPrinted = 0;
+  let errorsPrinted = 0;
+  let fixedThisFile = false;
+
+  if (args.fix || args.fixDryRun) {
+    const { fixedSource, applied, skipped } = applyFixesForFile(file, diags);
+    if (fixedSource !== null) {
+      if (args.fix) {
+        fs.writeFileSync(file, fixedSource);
+        fixedThisFile = true;
+      } else {
+        // Dry-run summary: report number of fixes that would apply.  No
+        // diff output yet — keep this CLI lean; pipe to `diff` externally
+        // if needed.
+        process.stderr.write(`ezlint: ${file}: would fix ${applied.length} diag(s)`);
+        if (skipped.length > 0) process.stderr.write(`, ${skipped.length} would-be-fix conflicted (overlapping)`);
+        process.stderr.write("\n");
+      }
+    }
+    // Still print diags that weren't fixed (their messageIds were not
+    // resolved by the autofix).  Caller may filter further with --quiet.
+    const appliedSet = new Set(applied);
+    const remaining = diags.filter(d => !appliedSet.has(d));
+    totalDiagsPrinted = remaining.length;
+    for (const d of remaining) if (d.severity === 2) errorsPrinted++;
+    if (!args.quiet) for (const d of remaining) sink(formatDiag(file, d));
+  } else {
+    totalDiagsPrinted = diags.length;
+    for (const d of diags) if (d.severity === 2) errorsPrinted++;
+    if (!args.quiet) for (const d of diags) sink(formatDiag(file, d));
+  }
+  return { totalDiagsPrinted, errorsPrinted, fixedThisFile };
 }
 
 // ── Worker pool ─────────────────────────────────────────────────
@@ -245,6 +336,7 @@ class WorkerPool {
 
   let totalDiags = 0;
   let totalErrors = 0;
+  let totalFixedFiles = 0;
 
   // --workers=0 forces inline (no workers at all) — useful for profiling.
   const forceInline = args.workers === 0;
@@ -262,21 +354,22 @@ class WorkerPool {
         totalErrors++;
         continue;
       }
-      totalDiags += diags.length;
-      for (const d of diags) if (d.severity === 2) totalErrors++;
-      if (!args.quiet) {
-        for (const d of diags) process.stdout.write(formatDiag(file, d) + "\n");
-      }
+      const r = processFileResult(file, diags, args, line => process.stdout.write(line + "\n"));
+      totalDiags += r.totalDiagsPrinted;
+      totalErrors += r.errorsPrinted;
+      if (r.fixedThisFile) totalFixedFiles++;
     }
     const tDone = performance.now();
     if (args.timing) {
       process.stderr.write(
         `\nezlint: ${args.files.length} file(s), ${totalDiags} diags ` +
         `[inline] (startup ${(tReady - tStart).toFixed(0)}ms, lint ${(tDone - tReady).toFixed(0)}ms, ` +
-        `total ${(tDone - tStart).toFixed(0)}ms)\n`,
+        `total ${(tDone - tStart).toFixed(0)}ms)${args.fix ? `, fixed ${totalFixedFiles} file(s)` : ""}\n`,
       );
     } else if (args.quiet) {
-      process.stderr.write(`ezlint: ${totalDiags} diagnostic(s) across ${args.files.length} file(s)\n`);
+      process.stderr.write(`ezlint: ${totalDiags} diagnostic(s) across ${args.files.length} file(s)${args.fix ? `, fixed ${totalFixedFiles} file(s)` : ""}\n`);
+    } else if (args.fix && totalFixedFiles > 0) {
+      process.stderr.write(`ezlint: fixed ${totalFixedFiles} file(s)\n`);
     }
     process.exit(totalErrors > 0 ? 1 : 0);
   }
@@ -329,15 +422,16 @@ class WorkerPool {
       let diags;
       try { diags = lintFile(file); }
       catch (e) { process.stderr.write(`ezlint: ${file}: ${e.message}\n`); process.exit(1); }
-      totalDiags = diags.length;
-      for (const d of diags) if (d.severity === 2) totalErrors++;
-      if (!args.quiet) for (const d of diags) process.stdout.write(formatDiag(file, d) + "\n");
+      const r = processFileResult(file, diags, args, line => process.stdout.write(line + "\n"));
+      totalDiags = r.totalDiagsPrinted;
+      totalErrors = r.errorsPrinted;
+      if (r.fixedThisFile) totalFixedFiles = 1;
       const tDone = performance.now();
       if (args.timing) {
         process.stderr.write(
           `\nezlint: 1 file(s), ${totalDiags} diags [inline] ` +
           `(startup ${(tReady - tStart).toFixed(0)}ms, lint ${(tDone - tReady).toFixed(0)}ms, ` +
-          `total ${(tDone - tStart).toFixed(0)}ms)\n`,
+          `total ${(tDone - tStart).toFixed(0)}ms)${args.fix && totalFixedFiles ? ", fixed" : ""}\n`,
         );
       }
       process.exit(totalErrors > 0 ? 1 : 0);
@@ -366,17 +460,18 @@ class WorkerPool {
       process.exit(1);
     }
     allDiags.sort((a, b) => (a.line - b.line) || (a.column - b.column));
-    totalDiags = allDiags.length;
-    for (const d of allDiags) if (d.severity === 2) totalErrors++;
-    if (!args.quiet) for (const d of allDiags) process.stdout.write(formatDiag(file, d) + "\n");
+    const ruleParallelResult = processFileResult(file, allDiags, args, line => process.stdout.write(line + "\n"));
+    totalDiags = ruleParallelResult.totalDiagsPrinted;
+    totalErrors = ruleParallelResult.errorsPrinted;
+    if (ruleParallelResult.fixedThisFile) totalFixedFiles = 1;
     if (args.timing) {
       process.stderr.write(
         `\nezlint: 1 file(s), ${totalDiags} diags ` +
         `[rule-parallel n=${nWorkers}] (dispatch ${(tDispatch - tStart).toFixed(0)}ms, ` +
-        `lint ${(tDone - tDispatch).toFixed(0)}ms, total ${(tDone - tStart).toFixed(0)}ms)\n`,
+        `lint ${(tDone - tDispatch).toFixed(0)}ms, total ${(tDone - tStart).toFixed(0)}ms)${args.fix && totalFixedFiles ? ", fixed" : ""}\n`,
       );
     } else if (args.quiet) {
-      process.stderr.write(`ezlint: ${totalDiags} diagnostic(s) across 1 file(s)\n`);
+      process.stderr.write(`ezlint: ${totalDiags} diagnostic(s) across 1 file(s)${args.fix && totalFixedFiles ? `, fixed ${totalFixedFiles}` : ""}\n`);
     }
     process.exit(totalErrors > 0 ? 1 : 0);
   }
@@ -402,21 +497,22 @@ class WorkerPool {
       totalErrors++;
       continue;
     }
-    totalDiags += r.diagnostics.length;
-    for (const d of r.diagnostics) if (d.severity === 2) totalErrors++;
-    if (!args.quiet) {
-      for (const d of r.diagnostics) process.stdout.write(formatDiag(r.file, d) + "\n");
-    }
+    const pr = processFileResult(r.file, r.diagnostics, args, line => process.stdout.write(line + "\n"));
+    totalDiags += pr.totalDiagsPrinted;
+    totalErrors += pr.errorsPrinted;
+    if (pr.fixedThisFile) totalFixedFiles++;
   }
 
   if (args.timing) {
     process.stderr.write(
       `\nezlint: ${args.files.length} file(s), ${totalDiags} diags ` +
       `[pool n=${nWorkers}] (dispatch ${(tDispatch - tStart).toFixed(0)}ms, lint ${(tDone - tDispatch).toFixed(0)}ms, ` +
-      `total ${(tDone - tStart).toFixed(0)}ms)\n`,
+      `total ${(tDone - tStart).toFixed(0)}ms)${args.fix ? `, fixed ${totalFixedFiles} file(s)` : ""}\n`,
     );
   } else if (args.quiet) {
-    process.stderr.write(`ezlint: ${totalDiags} diagnostic(s) across ${args.files.length} file(s)\n`);
+    process.stderr.write(`ezlint: ${totalDiags} diagnostic(s) across ${args.files.length} file(s)${args.fix ? `, fixed ${totalFixedFiles} file(s)` : ""}\n`);
+  } else if (args.fix && totalFixedFiles > 0) {
+    process.stderr.write(`ezlint: fixed ${totalFixedFiles} file(s)\n`);
   }
 
   process.exit(totalErrors > 0 ? 1 : 0);
