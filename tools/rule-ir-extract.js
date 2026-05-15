@@ -2772,6 +2772,7 @@ function extractReportCall(call, scope) {
   if (arg.type !== "ObjectExpression") return { ok: false, reason: "report arg must be object literal" };
   let nodeExpr = { op: "node-ref" };
   let messageId = null;
+  let fix = null;
   for (const p of arg.properties) {
     if (p.type !== "Property") return { ok: false, reason: "report arg has non-Property entry" };
     const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
@@ -2791,7 +2792,8 @@ function extractReportCall(call, scope) {
     } else if (k === "loc") {
       return { ok: false, reason: `report.loc not supported in v2` };
     } else if (k === "fix") {
-      // Ignore fix — we emit detection only; auto-fix is a Zig-side concern.
+      // Try to extract a fix; gracefully degrade (no fix in IR) on unsupported shapes.
+      fix = tryExtractFixFn(p.value, scope) ?? null;
     } else {
       return { ok: false, reason: `unknown report option: ${k}` };
     }
@@ -2801,7 +2803,61 @@ function extractReportCall(call, scope) {
   if (isTokenExpr(nodeExpr)) {
     return { ok: true, stmts: [{ op: "report-at-token", token: nodeExpr, messageId }] };
   }
-  return { ok: true, stmts: [{ op: "report", node: nodeExpr, messageId }] };
+  const reportStmt = { op: "report", node: nodeExpr, messageId };
+  if (fix) reportStmt.fix = fix;
+  return { ok: true, stmts: [reportStmt] };
+}
+
+// Extract a fix arrow/function with body `return fixer.replaceText(<node>, "literal")`
+// or the arrow expression form.  Returns a fix descriptor or null on any deviation.
+//
+// Supported shapes:
+//   fix: fixer => fixer.replaceText(<node>, "literal")
+//   fix(fixer) { return fixer.replaceText(<node>, "literal"); }
+//
+// More complex fixes (conditional, sourceCode lookups, range-based) are out
+// of scope — codegen needs runtime source slicing to build replacement text
+// from sub-spans, which the current Zig API doesn't yet expose.
+function tryExtractFixFn(fixVal, scope) {
+  if (!fixVal) return null;
+  let body, paramName;
+  if (fixVal.type === "ArrowFunctionExpression") {
+    if (fixVal.params.length !== 1 || fixVal.params[0].type !== "Identifier") return null;
+    paramName = fixVal.params[0].name;
+    body = fixVal.body;
+    if (body.type === "BlockStatement") {
+      if (body.body.length !== 1 || body.body[0].type !== "ReturnStatement") return null;
+      body = body.body[0].argument;
+    }
+  } else if (fixVal.type === "FunctionExpression") {
+    if (fixVal.params.length !== 1 || fixVal.params[0].type !== "Identifier") return null;
+    paramName = fixVal.params[0].name;
+    if (!fixVal.body || fixVal.body.body.length !== 1) return null;
+    if (fixVal.body.body[0].type !== "ReturnStatement") return null;
+    body = fixVal.body.body[0].argument;
+  } else {
+    return null;
+  }
+  if (!body || body.type !== "CallExpression") return null;
+  if (body.callee?.type !== "MemberExpression") return null;
+  if (body.callee.object?.type !== "Identifier" || body.callee.object.name !== paramName) return null;
+  const method = body.callee.property?.name;
+  if (method === "replaceText") {
+    if (body.arguments.length !== 2) return null;
+    const nodeArg = body.arguments[0];
+    const textArg = body.arguments[1];
+    if (textArg.type !== "Literal" || typeof textArg.value !== "string") return null;
+    const r = extractExpr(nodeArg, scope);
+    if (!r.ok) return null;
+    return { kind: "replace-text", node: r.expr, text: textArg.value };
+  }
+  if (method === "remove") {
+    if (body.arguments.length !== 1) return null;
+    const r = extractExpr(body.arguments[0], scope);
+    if (!r.ok) return null;
+    return { kind: "remove", node: r.expr };
+  }
+  return null;
 }
 
 // ── Regex → finite string set ──

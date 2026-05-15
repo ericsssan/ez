@@ -797,6 +797,17 @@ function emitStatement(stmt, indent, ctx) {
   const ind = "    ".repeat(indent);
   if (stmt.op === "report") {
     const node = emitExpr(stmt.node, ctx);
+    if (stmt.fix) {
+      // Fix span = the node's full span when no explicit range is given.
+      // For replace-text, fix.text is the string literal to substitute;
+      // for remove, fix.text = "".
+      const fixText = stmt.fix.kind === "remove" ? "" : stmt.fix.text;
+      const fixNode = emitExpr(stmt.fix.node, ctx);
+      const msgId = stmt.messageId ? `"${zigStr(stmt.messageId)}"` : `""`;
+      return [
+        `${ind}ctx.reportWithFixAndMessageId(${node}, ctx.nodeSpan(${fixNode}), "${zigStr(fixText)}", ${msgId});`,
+      ];
+    }
     if (stmt.messageId) {
       return [`${ind}ctx.reportWithMessageId(${node}, "${zigStr(stmt.messageId)}");`];
     }
