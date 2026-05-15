@@ -37,6 +37,11 @@ const MAX_FIX_PASSES = 10;
 // for the standalone binary so `bun build --compile` can follow the
 // dependency graph.  See src/bun/recommended-rules.js for the rationale.
 const { DESCRIPTORS: CORE_PLUGINS } = require("./recommended-rules.js");
+// Wire native-diag message templates from the static bundle so the binary
+// doesn't fall through to load-plugin's dynamic loadCoreRules path (which
+// reaches into js/.ez-dist/rules.bundle.js — not present in the compiled
+// binary's closure).
+require("../../js/load-plugin").setNativeMessageSource(CORE_PLUGINS);
 
 // ESLint v9 :recommended rule set — single source of truth on the JS side.
 const ESLINT_RECOMMENDED = [

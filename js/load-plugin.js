@@ -132,7 +132,15 @@ function loadPlugin(pkgName, opts = {}) {
 //
 // Native (Zig) diagnostics carry a `messageId` but not the human-readable
 // message text — JS-side hydrates the message from the rule module's
-// `meta.messages` map.  This is built lazily on first lookup and cached.
+// `meta.messages` map.  Two ways to populate the lookup:
+//
+//   * `setNativeMessageSource(descriptors)` — called by the CLI binary at
+//     startup with the static CORE_PLUGINS bundle.  Bypasses loadCoreRules,
+//     which goes through dynamic require paths that `bun build --compile`
+//     can't follow into the standalone binary.
+//
+//   * Fallback — when no source is set (library API path), lazily call
+//     loadCoreRules on first lookup.
 let _nativeMessageMap = null;
 function _ensureNativeMessageMap() {
   if (_nativeMessageMap) return _nativeMessageMap;
@@ -144,11 +152,14 @@ function _ensureNativeMessageMap() {
   return _nativeMessageMap;
 }
 
-/**
- * Look up the message template for a native diagnostic's (ruleName, messageId).
- * Returns null when the rule or messageId is unknown — caller should fall back
- * to a generic placeholder.
- */
+function setNativeMessageSource(descriptors) {
+  _nativeMessageMap = new Map();
+  for (const desc of descriptors) {
+    const msgs = desc.meta?.messages;
+    if (msgs && typeof msgs === "object") _nativeMessageMap.set(desc.meta.name, msgs);
+  }
+}
+
 function getNativeMessageTemplate(ruleName, messageId) {
   if (!ruleName || !messageId) return null;
   const map = _ensureNativeMessageMap();
@@ -156,4 +167,4 @@ function getNativeMessageTemplate(ruleName, messageId) {
   return msgs ? (msgs[messageId] ?? null) : null;
 }
 
-module.exports = { loadCoreRules, loadPlugin, getNativeMessageTemplate };
+module.exports = { loadCoreRules, loadPlugin, getNativeMessageTemplate, setNativeMessageSource };
