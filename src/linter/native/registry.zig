@@ -276,7 +276,8 @@ pub const all_rules = .{
     valid_typeof,
     // no_unused_vars, // runner >> native (runner 436, native 297, gap 139, 51 FP); fall back to JS runner
     // no_undef, // runner >> native (runner 101, native 76, 5 FN 22 FP); fall back
-    no_constant_condition,
+    // no_constant_condition, // hand-written, 91 FP vs ESLint; fall back to JS runner
+
     no_func_assign,
     // no_import_assign, // runner >> native (runner 110, native 85, 31 FN); fall back
     // no_self_assign, // native has 7 FP making hybrid worse (runner 85, native 74); fall back to JS runner
@@ -289,7 +290,7 @@ pub const all_rules = .{
     no_async_promise_executor,
     no_compare_neg_zero,
     // no_dupe_class_members, // native has FP making hybrid worse (runner 78, native 72); fall back to JS runner
-    no_dupe_else_if,
+    // no_dupe_else_if, // hand-written, 59 FP vs ESLint; fall back to JS runner
     no_duplicate_case,
     // no_empty_pattern, // runner >> native (runner 31, native 25, 6 FP!!); fall back
     no_ex_assign,
@@ -313,7 +314,7 @@ pub const all_rules = .{
     no_constructor_return,
     // no_await_in_loop, // runner >> native (runner 37, native 28, 9 FN); fall back
     // no_promise_executor_return, // runner >> native (runner 124/124, native 121/124, 3 more FN); fall back
-    no_unreachable_loop,
+    // no_unreachable_loop, // hand-written, 781 FP vs ESLint; fall back to JS runner
     no_empty_static_block,
     no_constructor_new,
     // accessor_pairs, // runner >> native (50%, 7 FP); fall back to JS runner
@@ -331,7 +332,7 @@ pub const all_rules = .{
     no_invalid_remove_event_listener,
     no_useless_assignment,
     // Suspicious (28)
-    eqeqeq,
+    // eqeqeq, // hand-written, 45 FP vs ESLint; fall back to JS runner
     // no_cond_assign, // runner >> native (runner 45, native 32, 13 FN); fall back
     // no_control_regex, // runner >> native (runner 36, native 23, gap 13, 1 FP); fall back to JS runner
     no_delete_var,
@@ -378,13 +379,13 @@ pub const all_rules = .{
     no_new_array,
     // require_unicode_regexp, // runner >> native (runner 79, native 48, gap 31, 2 FP); fall back to JS runner
     // Style (30)
-    no_var,
+    // no_var, // hand-written, 62 FP vs ESLint; fall back to JS runner
     prefer_const,
     no_array_constructor,
     // no_bitwise, // runner >> native (runner 26, native 16, gap 10, 4 FP); fall back to JS runner
     no_caller,
     no_continue,
-    no_else_return,
+    // no_else_return, // hand-written, 82 FP vs ESLint; fall back to JS runner
     no_eq_null,
     no_extend_native,
     no_extra_bind,
@@ -409,8 +410,8 @@ pub const all_rules = .{
     // no_return_assign, // runner >> native (runner 30, native 25, 5 FN); fall back
     no_script_url,
     no_unneeded_ternary,
-    no_useless_computed_key,
-    prefer_template,
+    // no_useless_computed_key, // hand-written, 65 FP vs ESLint; fall back to JS runner
+    // prefer_template, // hand-written, 83 FP vs ESLint; fall back to JS runner
     // Style v0.5 (4)
     // object_shorthand, // runner >> native (55%, 3 FP); fall back to JS runner
     // prefer_exponentiation_operator, // native 4 FN (2 more than runner: dynamic computed keys); fall back to runner
@@ -440,8 +441,8 @@ pub const all_rules = .{
     // prefer_destructuring, // runner >> native (runner 103, native 80, gap 23, 5 FP); fall back to JS runner
     // Style v0.7 (12)
     // camelcase, // runner >> native (runner 204, native 118, gap 86); fall back to JS runner
-    prefer_numeric_literals,
-    prefer_regex_literals,
+    // prefer_numeric_literals, // hand-written, 62 FP vs ESLint; fall back to JS runner
+    // prefer_regex_literals, // hand-written, 192 FP vs ESLint; fall back to JS runner
     // no_useless_return, // runner >> native (runner 46, native 33, gap 13); fall back to JS runner
     // func_style, // runner >> native (runner 120, native 73, gap 47); fall back to JS runner
     // id_length, // runner >> native (runner 181, native 96, gap 85, 1 FP); fall back to JS runner
@@ -463,7 +464,7 @@ pub const all_rules = .{
     // max_classes_per_file, // native has 5 FP making hybrid 9 vs runner 17; fall back to JS runner
     prefer_while,
     no_useless_switch_case,
-    class_methods_use_this,
+    // class_methods_use_this, // hand-written, 63 FP vs ESLint; fall back to JS runner
     avoid_new,
     consistent_date_clone,
     prefer_dom_node_append,
@@ -513,9 +514,9 @@ pub const all_rules = .{
     ts_no_unsafe_declaration_merging,
     ts_explicit_function_return_type,
     // ts_explicit_module_boundary_types, // runner >> native (runner 144, native 117, gap 27, 21 FP); fall back to JS runner
-    // Unicorn plugin (2)
-    unicorn_no_array_for_each,
-    unicorn_no_zero_fractions,
+    // Unicorn plugin (0 — both hand-written rules disabled)
+    // unicorn_no_array_for_each, // hand-written, 282 FP vs ESLint; fall back to JS runner
+    // unicorn_no_zero_fractions, // hand-written, 173 FP vs ESLint; fall back to JS runner
 };
 
 /// Total number of registered lint rules.
