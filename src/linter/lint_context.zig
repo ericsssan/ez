@@ -349,6 +349,35 @@ pub const LintContext = struct {
         return src[sp.start..sp.end];
     }
 
+    /// Source text between the call/new node's parentheses — equivalent to
+    /// ESLint's `getArgumentsText` helper from no-array-constructor and
+    /// related rules.  Preserves whitespace/comments inside the call so a
+    /// fix replacing `Array(  x , y  )` with `[<text>]` keeps the original
+    /// inner formatting.  Returns "" when the call has no parens (e.g.
+    /// `new Array` with no arg list).
+    pub fn argsTextBetweenParens(self: *const LintContext, call: NodeIndex) []const u8 {
+        if (call == .none) return "";
+        const data = self.nodeData(call);
+        const callee = data.lhs;
+        if (callee == .none) return "";
+        const callee_end = self.nodeSpan(callee).end;
+        const call_end = self.nodeSpan(call).end;
+        const src = self.ast.source;
+        if (callee_end >= src.len or call_end > src.len or call_end <= callee_end) return "";
+        // First `(` after the callee is the opening paren.  Bail if we walk
+        // past the call's end without finding one — caller (e.g. `new Array`
+        // with no parentheses) gets an empty string and should skip the fix.
+        var open_pos: usize = callee_end;
+        while (open_pos < call_end and src[open_pos] != '(') open_pos += 1;
+        if (open_pos >= call_end or src[open_pos] != '(') return "";
+        // Walk back from call_end to the matching `)`.  call_end points just
+        // past the `)`, so close_pos lands on the `)` itself.
+        var close_pos: usize = call_end;
+        while (close_pos > open_pos + 1 and src[close_pos - 1] != ')') close_pos -= 1;
+        if (close_pos <= open_pos + 1) return "";
+        return src[open_pos + 1 .. close_pos - 1];
+    }
+
     pub fn nodeSpan(self: *const LintContext, index: NodeIndex) Span {
         const main_tok = self.ast.nodeMainToken(index);
         const i = index.toInt();

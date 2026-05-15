@@ -324,10 +324,12 @@ function emit(rule) {
     out.push(``);
   }
 
-  // Emit each helper as a Zig fn returning bool.  report-if helpers are
-  // inlined at every call site by the extractor, so nothing to emit here.
+  // Emit each helper as a Zig fn returning bool.  report-if and direct-report
+  // helpers are inlined at every call site by the extractor; args-text-of
+  // is lowered inline to ctx.argsTextBetweenParens — no per-rule fn needed
+  // for any of these.
   for (const [name, h] of Object.entries(rule.helpers || {})) {
-    if (h.kind === "report-if" || h.kind === "direct-report") continue;
+    if (h.kind === "report-if" || h.kind === "direct-report" || h.kind === "args-text-of") continue;
     for (const line of emitHelper(name, h, ctx)) out.push(line);
     out.push(``);
   }
@@ -951,6 +953,8 @@ function emitExpr(e, ctx) {
     case "node-ref": return "node";
     case "source-text-of":
       return `ctx.sourceText(${emitExpr(e.node, ctx)})`;
+    case "args-text-of":
+      return `ctx.argsTextBetweenParens(${emitExpr(e.node, ctx)})`;
     case "literal":
       if (e.value === null) return "null";
       if (typeof e.value === "string") return `"${zigStr(e.value)}"`;

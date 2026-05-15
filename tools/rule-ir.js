@@ -113,12 +113,16 @@ const EXPR_OPS = new Set([
   "token-tag-equals",          // tok.tag == <TagName>
   "token-has-space-between",   // gap between two adjacent tokens > 0
   "tokens-same-line",          // two tokens on same line (no newline between)
+  // ── Source-text ops (string-valued; used in fix-text templates) ─────────
+  "source-text-of",            // sourceCode.getText(node) — slice of node's full span
+  "args-text-of",              // call's `(...)` body — getArgumentsText helper
+  "template-string",           // `lit${expr}lit` parts → runtime allocPrint
 ]);
 
 // Helper-function kinds.
 //   node-type-predicate — finite lookup table: NodeType string → bool or expr
 //   report-if          — user-local helper `function(node) { if (COND) context.report({node, messageId}); }` — inlined at each call site
-const HELPER_KINDS = new Set(["node-type-predicate", "report-if", "direct-report"]);
+const HELPER_KINDS = new Set(["node-type-predicate", "report-if", "direct-report", "args-text-of"]);
 
 // Top-level constant kinds (declared at top of rule.create body, used in handler bodies).
 //   string-set   — `const X = new Set([s1, s2, ...])` with string literals

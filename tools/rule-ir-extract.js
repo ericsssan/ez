@@ -238,8 +238,12 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
           const directReport = extractDirectReportHelper(stmt);
           if (directReport) helpers[stmt.id.name] = directReport;
           else {
-            const boolPred = extractBoolPredicateHelper(stmt, constants, boolPreds, optionLocals, moduleImports);
-            if (boolPred) boolPreds[stmt.id.name] = boolPred;
+            const argsText = extractArgsTextHelper(stmt);
+            if (argsText) helpers[stmt.id.name] = argsText;
+            else {
+              const boolPred = extractBoolPredicateHelper(stmt, constants, boolPreds, optionLocals, moduleImports);
+              if (boolPred) boolPreds[stmt.id.name] = boolPred;
+            }
           }
         }
       }
@@ -1495,6 +1499,61 @@ function extractDirectReportHelper(fn) {
   const info = extractReportShape(body[0].expression, paramName);
   if (!info) return null;
   return { kind: "direct-report", param: paramName, messageId: info.messageId };
+}
+
+// Recognize the "source slice between a call's parentheses" helper used by
+// no-array-constructor and similar rules:
+//
+//   function getArgumentsText(node) {
+//     const lastToken = sourceCode.getLastToken(node);
+//     if (!isClosingParenToken(lastToken)) return "";
+//     let firstToken = node.callee;
+//     do { firstToken = sourceCode.getTokenAfter(firstToken); ... }
+//     while (!isOpeningParenToken(firstToken));
+//     return sourceCode.text.slice(firstToken.range[1], lastToken.range[0]);
+//   }
+//
+// We don't structurally verify every line — fingerprint the body via three
+// telltale calls (`getLastToken`, `isClosingParenToken`, a `slice` returning
+// from the body).  Lifts to the IR op `args-text-of`, which codegen lowers
+// to ctx.argsTextBetweenParens(node) — a Zig helper that does the same
+// scan.  Misrecognition is rare in practice (the fingerprint is specific
+// enough) and the cost is just an incorrect fix string at worst, never a
+// missing/extra diagnostic.
+function extractArgsTextHelper(fn) {
+  if (!fn.params || fn.params.length !== 1) return null;
+  if (fn.params[0].type !== "Identifier") return null;
+  const body = fn.body?.body;
+  if (!body || body.length === 0) return null;
+  let sawGetLastToken = false;
+  let sawClosingParen = false;
+  let sawSliceReturn = false;
+  const seen = new WeakSet();
+  const walk = (x) => {
+    if (!x || typeof x !== "object" || !x.type || seen.has(x)) return;
+    seen.add(x);
+    if (x.type === "CallExpression") {
+      const callee = x.callee;
+      if (callee?.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier") {
+        const m = callee.property.name;
+        if (m === "getLastToken") sawGetLastToken = true;
+        if (m === "slice" && callee.object?.type === "MemberExpression"
+            && callee.object.property?.name === "text") sawSliceReturn = true;
+      } else if (callee?.type === "Identifier" && callee.name === "isClosingParenToken") {
+        sawClosingParen = true;
+      }
+    }
+    const keys = visitorKeys[x.type] || [];
+    for (const k of keys) {
+      const v = x[k];
+      if (Array.isArray(v)) for (const e of v) walk(e);
+      else if (v && typeof v === "object") walk(v);
+    }
+  };
+  for (const s of body) walk(s);
+  if (!(sawGetLastToken && sawClosingParen && sawSliceReturn)) return null;
+  return { kind: "args-text-of", param: fn.params[0].name };
 }
 
 // Recognize a single-expression boolean predicate helper:
@@ -4207,6 +4266,12 @@ function extractExpr(expr, scope) {
           const arg = extractExpr(expr.arguments[0], scope);
           if (!arg.ok) return arg;
           return { ok: true, expr: { op: "call-helper", name: callee.name, arg: arg.expr } };
+        }
+        if (h.kind === "args-text-of") {
+          if (expr.arguments.length !== 1) return { ok: false, reason: "args-text-of helper call must have 1 arg" };
+          const arg = extractExpr(expr.arguments[0], scope);
+          if (!arg.ok) return arg;
+          return { ok: true, expr: { op: "args-text-of", node: arg.expr } };
         }
         // report-if inline-as-expression isn't meaningful (it's a statement).
         // Fall through to the statement-level inliner via extractStatement.
