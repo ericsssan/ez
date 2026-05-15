@@ -660,6 +660,34 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
+        // TS-specific expressions whose right side determines the end:
+        //   `expr as Type`, `expr satisfies Type` (rhs = type)
+        //   `expr!` non-null (lhs = expr; main_token is `!`)
+        //   `<Type>expr` type assertion (rhs = expression)
+        if (tag == .ts_as_expr or tag == .ts_satisfies_expr) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                const r_span = self.nodeSpan(data.rhs);
+                if (r_span.end > end) end = r_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        if (tag == .ts_type_assertion) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                const r_span = self.nodeSpan(data.rhs);
+                if (r_span.end > end) end = r_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        if (tag == .ts_non_null_expr) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const l_span = self.nodeSpan(data.lhs);
+                if (l_span.end > end) end = l_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
         // Unary / update prefix — operand is data.lhs.  Recurse so a wrapped
         // operand like `void(0)` extends through the wrapper `)`.
         if (tag == .unary_plus or tag == .unary_minus or tag == .bitwise_not
