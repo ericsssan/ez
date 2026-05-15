@@ -233,6 +233,25 @@ const SPAN_NARROWERS = {
     if (!m) return null;
     return { start: span.start + m.index, end: span.start + m.index + m[0].length };
   },
+  // no-async-promise-executor reports the new expression; ESLint
+  // reports the `async` keyword of the promise executor function.
+  "no-async-promise-executor": (slice, span) => {
+    const s = _td.decode(slice);
+    const m = /\basync\b/.exec(s);
+    if (!m) return null;
+    return { start: span.start + m.index, end: span.start + m.index + 5 };
+  },
+  // valid-typeof reports the binary expression; ESLint reports the
+  // RHS string literal (the invalid typeof comparand).
+  "valid-typeof": (slice, span) => {
+    const s = _td.decode(slice);
+    // Match the rightmost single-or-double-quoted string after `typeof`.
+    let last = null;
+    const re = /(['"])([^'"\\]|\\.)*?\1/g;
+    for (let m; (m = re.exec(s)); ) last = m;
+    if (!last) return null;
+    return { start: span.start + last.index, end: span.start + last.index + last[0].length };
+  },
 };
 function _narrowSpanForRule(diag, srcBytes, lineStarts) {
   const fn = SPAN_NARROWERS[diag.ruleName];
