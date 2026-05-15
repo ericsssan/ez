@@ -161,10 +161,18 @@ function setNativeMessageSource(descriptors) {
 }
 
 function getNativeMessageTemplate(ruleName, messageId) {
-  if (!ruleName || !messageId) return null;
+  if (!ruleName) return null;
   const map = _ensureNativeMessageMap();
   const msgs = map.get(ruleName);
-  return msgs ? (msgs[messageId] ?? null) : null;
+  if (!msgs) return null;
+  if (messageId) return msgs[messageId] ?? null;
+  // Hand-written native rules don't yet emit a messageId; fall back to the
+  // single message template when there's exactly one (most ESLint rules
+  // have a single canonical message).  This avoids the `[rule-name]`
+  // placeholder showing up in CLI output for rules like no-self-compare.
+  const keys = Object.keys(msgs);
+  if (keys.length === 1) return msgs[keys[0]];
+  return null;
 }
 
 module.exports = { loadCoreRules, loadPlugin, getNativeMessageTemplate, setNativeMessageSource };
