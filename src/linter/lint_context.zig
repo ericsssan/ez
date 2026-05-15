@@ -688,6 +688,18 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
+        // export default <expr|fn|class> / export <decl> — lhs holds the
+        // wrapped declaration/expression; recurse so the parent export
+        // node ends past the wrapped construct's `}` / `;`.
+        if (tag == .export_default_expr or tag == .export_default_fn
+            or tag == .export_default_class or tag == .export_named) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const inner_span = self.nodeSpan(data.lhs);
+                if (inner_span.end > end) end = inner_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
         // Unary / update prefix — operand is data.lhs.  Recurse so a wrapped
         // operand like `void(0)` extends through the wrapper `)`.
         if (tag == .unary_plus or tag == .unary_minus or tag == .bitwise_not
@@ -778,6 +790,29 @@ pub const LintContext = struct {
                 if (try_data.finally_body != .none) {
                     const f_span = self.nodeSpan(try_data.finally_body);
                     if (f_span.end > end) end = f_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // ts_interface_decl / ts_enum_decl — body is a SubRange of members
+        // tucked into extra-data; the `{` ... `}` brackets are not children.
+        // Brace-depth scan from the first `{` past existing end.
+        if (tag == .ts_interface_decl or tag == .ts_enum_decl) {
+            var p: usize = end;
+            while (p < src.len and src[p] != '{') p += 1;
+            if (p < src.len) {
+                var depth: i32 = 1;
+                p += 1;
+                while (p < src.len) : (p += 1) {
+                    const c = src[p];
+                    if (c == '{') depth += 1
+                    else if (c == '}') {
+                        depth -= 1;
+                        if (depth == 0) {
+                            if (@as(u32, @intCast(p + 1)) > end) end = @intCast(p + 1);
+                            break;
+                        }
+                    }
                 }
             }
             return .{ .start = first_start, .end = end };
