@@ -1002,6 +1002,8 @@ function emitExpr(e, ctx) {
       return `ctx.needsPrecedingSemicolon(${emitExpr(e.node, ctx)})`;
     case "has-comments-before-args":
       return `ctx.hasCommentsBeforeArgs(${emitExpr(e.node, ctx)})`;
+    case "has-comments-inside-node":
+      return `ctx.hasCommentsInsideNode(${emitExpr(e.node, ctx)})`;
     case "node-is-optional":
       return `ctx.nodeIsOptional(${emitExpr(e.node, ctx)})`;
     case "node-has-type-arguments":

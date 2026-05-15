@@ -123,6 +123,7 @@ const EXPR_OPS = new Set([
   "is-start-of-expression-statement",
   "needs-preceding-semicolon",
   "has-comments-before-args",   // file-local hasCommentsInArrayConstructor-style helper
+  "has-comments-inside-node",   // sourceCode.getCommentsInside(node).length > 0
   "node-is-optional",           // node.optional → tag is one of optional_*
   "node-has-type-arguments",    // node.typeArguments → callee is ts_instantiation_expr
   "node-non-spread-args-count", // n.arguments.reduce(non-spread count) → u32
@@ -477,7 +478,7 @@ function validateExpr(e, path) {
   // Source-text and ternary ops (used in fix-text templates).
   if (e.op === "source-text-of" || e.op === "args-text-of"
       || e.op === "is-start-of-expression-statement" || e.op === "needs-preceding-semicolon"
-      || e.op === "has-comments-before-args"
+      || e.op === "has-comments-before-args" || e.op === "has-comments-inside-node"
       || e.op === "node-is-optional" || e.op === "node-has-type-arguments"
       || e.op === "node-non-spread-args-count") {
     return validateExpr(e.node, `${path}.node`);

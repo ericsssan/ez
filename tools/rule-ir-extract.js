@@ -4130,6 +4130,15 @@ function extractExpr(expr, scope) {
           if (op === "===" || op === "==") return { ok: true, expr: eq };
           return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
         }
+        // typeof <expr> === "undefined" — defensive check on AST property
+        // access that always evaluates to false in our parser (every
+        // documented field is populated).  Resolve at extraction time so
+        // the surrounding short-circuit folds away.
+        if (R.expr.value === "undefined") {
+          const folded = { op: "literal", value: false };
+          if (op === "===" || op === "==") return { ok: true, expr: folded };
+          return { ok: true, expr: { op: "literal", value: true } };
+        }
         return { ok: false, reason: `unsupported typeof check: ${JSON.stringify(R.expr.value)}` };
       }
       // node.value === NUMBER → node-literal-value-equals
@@ -4167,6 +4176,19 @@ function extractExpr(expr, scope) {
         || (e.op === "identifier" && e.name === "__ref_identifier__");
       if ((op === "===" || op === "==") && isNodeValued(L.expr) && isNodeValued(R.expr)) {
         return { ok: true, expr: { op: "nodes-equal", a: L.expr, b: R.expr } };
+      }
+      // sourceCode.getCommentsInside(<node>).length > 0  →  has-comments-inside-node(node)
+      // and the inverse `=== 0` form too.
+      const isCommentsInsideLen = (e) =>
+        e.op === "member" && e.property === "length"
+        && e.object?.op === "__comments_inside_marker__";
+      if ((op === ">" || op === ">=") && isCommentsInsideLen(L.expr)
+          && R.expr.op === "literal" && R.expr.value === (op === ">" ? 0 : 1)) {
+        return { ok: true, expr: { op: "has-comments-inside-node", node: L.expr.object.node } };
+      }
+      if ((op === "===" || op === "==") && isCommentsInsideLen(L.expr)
+          && R.expr.op === "literal" && R.expr.value === 0) {
+        return { ok: true, expr: { op: "unary", operator: "!", operand: { op: "has-comments-inside-node", node: L.expr.object.node } } };
       }
       // <X>.arguments.length === N → node-args-count-equals(X, N) or node-args-length-zero(X) for N=0
       const isArgsLenCompare = (litSide, memberSide) =>
@@ -4226,6 +4248,23 @@ function extractExpr(expr, scope) {
           && expr.arguments[1].type === "Literal" && expr.arguments[1].value === 0) {
         const r = extractExpr(callee.object.object, scope);
         if (r.ok) return { ok: true, expr: { op: "node-non-spread-args-count", node: r.expr } };
+      }
+      // typeof X === "undefined" / typeof X !== "undefined" — defensive
+      // guards on AST property access.  Our parser populates every
+      // documented field on every node tag, so the typeof always returns
+      // "object" or the field's value type — never "undefined".  Resolve
+      // to literal false (or true for !==) at extraction time.
+      // (The check has to be in the parent BinaryExpression handler — the
+      // raw `typeof X` expression can't resolve to a useful IR boolean
+      // without a comparison.  See the BinaryExpression case below.)
+      // sourceCode.getCommentsInside(<node>) — return a marker so the
+      // enclosing `.length > 0` / `.length === 0` BinaryExpression handler
+      // lifts the whole thing into has-comments-inside-node.
+      if (callee?.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "getCommentsInside"
+          && isSourceCodeReceiver(callee.object, scope) && expr.arguments.length === 1) {
+        const r = extractExpr(expr.arguments[0], scope);
+        if (r.ok) return { ok: true, expr: { op: "__comments_inside_marker__", node: r.expr } };
       }
       // sourceCode.getText(<node>) → source-text-of(node).  No-arg form
       // (whole source) is intentionally not supported — it would require

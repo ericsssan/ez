@@ -458,6 +458,25 @@ pub const LintContext = struct {
     /// Scanning source bytes is safe in this range: between a callee
     /// identifier and the opening paren there are no string/regex literals
     /// that could contain `/*` patterns spuriously.
+    /// True when the node's source span contains any `/*` or `//` comment
+    /// markers.  Mirrors ESLint's
+    ///     sourceCode.getCommentsInside(node).length > 0
+    /// Conservative source-byte scan that also walks into string/template/
+    /// regex bodies — those rarely contain `/*` or `//` substrings, and the
+    /// over-counting just keeps the rule from firing in marginal cases.
+    pub fn hasCommentsInsideNode(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        const span = self.nodeSpan(node);
+        const src = self.ast.source;
+        if (span.start >= src.len or span.end > src.len) return false;
+        var i: usize = span.start;
+        while (i + 1 < span.end) : (i += 1) {
+            if (src[i] == '/' and (src[i + 1] == '/' or src[i + 1] == '*'))
+                return true;
+        }
+        return false;
+    }
+
     pub fn hasCommentsBeforeArgs(self: *const LintContext, call: NodeIndex) bool {
         if (call == .none) return false;
         const span = self.nodeSpan(call);
