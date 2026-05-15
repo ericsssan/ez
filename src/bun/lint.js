@@ -110,16 +110,25 @@ function formatDiag(file, d) {
 // is paid once and amortised across the entire file set.
 
 class WorkerPool {
-  constructor(nWorkers, rulesConfig) {
+  // rulesConfigPerWorker — array of length nWorkers (one rules config per
+  // worker), or a single rules config which gets sent to every worker.
+  //
+  // Per-worker configs enable rule-parallelism (split the rule set across
+  // workers so each worker runs a subset on the same file).  Single config
+  // enables file-parallelism (every worker can lint any file with the
+  // full rule set).  Both modes are safe now that the NAPI binding's
+  // config cache is thread-local (src/cli/napi.zig:tl_config_cache_*).
+  constructor(nWorkers, rulesConfigPerWorker) {
     this.workers = [];
-    // Bun.Worker accepts a path or URL; the URL form survives bun build
-    // --compile bundling because the bundler statically resolves it.
     const workerUrl = new URL("./lint-worker.js", import.meta.url);
+    const perWorker = Array.isArray(rulesConfigPerWorker)
+      ? rulesConfigPerWorker
+      : new Array(nWorkers).fill(rulesConfigPerWorker);
     for (let i = 0; i < nWorkers; i++) {
       const w = new Worker(workerUrl);
-      const slot = { id: i, worker: w, ready: false, busy: false };
+      const slot = { id: i, worker: w, ready: false, busy: false, mode: "queue" };
       w.onmessage = (e) => this._onMessage(slot, e);
-      w.postMessage({ type: "init", rules: rulesConfig });
+      w.postMessage({ type: "init", rules: perWorker[i] });
       this.workers.push(slot);
     }
     this._queue = [];
@@ -127,6 +136,11 @@ class WorkerPool {
     this._next = 0;     // monotonic seq for stable ordering
     this._inflight = 0;
     this._resolve = null;
+    // Rule-parallel state — set by runRuleParallel.
+    this._rpFile = null;
+    this._rpResults = null;
+    this._rpResolve = null;
+    this._rpRemaining = 0;
   }
 
   _dispatch() {
@@ -141,18 +155,35 @@ class WorkerPool {
     }
   }
 
+  _kickRuleParallel(slot) {
+    if (slot.busy) return;
+    slot.busy = true;
+    slot.worker.postMessage({ type: "lint", file: this._rpFile, seq: slot.id });
+  }
+
   _onMessage(slot, event) {
     const msg = event.data;
     if (msg.type === "ready") {
       slot.ready = true;
-      this._dispatch();
+      if (slot.mode === "rule-parallel") this._kickRuleParallel(slot);
+      else this._dispatch();
     } else if (msg.type === "result") {
       slot.busy = false;
-      this._inflight--;
-      this._results.push(msg);
-      this._dispatch();
-      if (this._inflight === 0 && this._queue.length === 0 && this._resolve) {
-        this._resolve();
+      if (slot.mode === "rule-parallel") {
+        this._rpResults.push(msg);
+        this._rpRemaining--;
+        if (this._rpRemaining === 0 && this._rpResolve) {
+          const r = this._rpResolve;
+          this._rpResolve = null;
+          r(this._rpResults);
+        }
+      } else {
+        this._inflight--;
+        this._results.push(msg);
+        this._dispatch();
+        if (this._inflight === 0 && this._queue.length === 0 && this._resolve) {
+          this._resolve();
+        }
       }
     }
   }
@@ -160,13 +191,33 @@ class WorkerPool {
   async run(files) {
     this._queue = [...files];
     if (this._queue.length === 0) return [];
-    // Wait for at least one worker to be ready before returning the awaited
-    // promise — _dispatch is a no-op until then; this is harmless because
-    // the "ready" message handler retries dispatch.
     return new Promise((resolve) => {
       this._resolve = resolve;
       this._dispatch();
     }).then(() => this._results);
+  }
+
+  // Rule-parallel: send the same file to every worker; each worker's
+  // pre-configured rule subset (set in the constructor) determines what
+  // fires.  Returns the per-worker partial diagnostic arrays so the
+  // caller can merge them.  Each worker re-parses the file via NAPI
+  // (~200ms × N parallel = ~200ms wall) — overhead is far less than the
+  // JS-rules walk savings.
+  async runRuleParallel(file) {
+    this._rpFile = file;
+    this._rpResults = [];
+    this._rpRemaining = this.workers.length;
+    for (const slot of this.workers) slot.mode = "rule-parallel";
+    return new Promise((resolve) => {
+      this._rpResolve = resolve;
+      // Workers that already reported "ready" before this method was
+      // called (i.e. mode flip happened too late for the constructor's
+      // postMessage round-trip) are kicked here; still-warming workers
+      // are kicked from _onMessage on their "ready" event.
+      for (const slot of this.workers) {
+        if (slot.ready && !slot.busy) this._kickRuleParallel(slot);
+      }
+    });
   }
 
   shutdown() {
@@ -195,14 +246,11 @@ class WorkerPool {
   let totalDiags = 0;
   let totalErrors = 0;
 
-  // Single-file fast path: skip the worker pool entirely.  The pool's spawn
-  // + warm-up cost (~50ms × N + ~485ms first-init) exceeds the single-file
-  // lint time for everything except the largest files, and dodges the
-  // postMessage round-trip.
-  // --workers=0 forces inline regardless of file count (useful for profiling).
-  const wantInline = args.workers === 0 || args.files.length === 1;
+  // --workers=0 forces inline (no workers at all) — useful for profiling.
+  const forceInline = args.workers === 0;
+  const hwc = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
 
-  if (wantInline) {
+  if (forceInline) {
     const lintFile = await createFileLinter({ rules, corePlugins: CORE_PLUGINS });
     const tReady = performance.now();
     for (const file of args.files) {
@@ -233,9 +281,77 @@ class WorkerPool {
     process.exit(totalErrors > 0 ? 1 : 0);
   }
 
-  // Multi-file path.  Bun exposes navigator.hardwareConcurrency; clamp to
-  // the file count so we don't spawn workers that have nothing to do.
-  const hwc = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
+  // Single-file: rule-parallel.  Same file goes to every worker, each
+  // pre-configured with a disjoint rule subset.  Closes the ~30% gap vs
+  // the old Zig-host ezlint which split rules across 2 worker processes.
+  if (args.files.length === 1) {
+    // Default 4 workers for single-file: empirical sweet spot — n=2 saves
+    // ~17% wall, n=4 saves ~21%, n=8 saves ~31% but with diminishing returns
+    // (each worker still pays the full parse cost in parallel).  4 keeps the
+    // warm-up cost low and beats the old Zig host's wall on typescript.js.
+    const nWorkers = Math.max(1, args.workers ?? Math.min(4, hwc));
+    const file = args.files[0];
+    if (nWorkers === 1) {
+      // One worker has no parallelism — direct inline is faster (no spawn).
+      const lintFile = await createFileLinter({ rules, corePlugins: CORE_PLUGINS });
+      const tReady = performance.now();
+      let diags;
+      try { diags = lintFile(file); }
+      catch (e) { process.stderr.write(`ezlint: ${file}: ${e.message}\n`); process.exit(1); }
+      totalDiags = diags.length;
+      for (const d of diags) if (d.severity === 2) totalErrors++;
+      if (!args.quiet) for (const d of diags) process.stdout.write(formatDiag(file, d) + "\n");
+      const tDone = performance.now();
+      if (args.timing) {
+        process.stderr.write(
+          `\nezlint: 1 file(s), ${totalDiags} diags [inline] ` +
+          `(startup ${(tReady - tStart).toFixed(0)}ms, lint ${(tDone - tReady).toFixed(0)}ms, ` +
+          `total ${(tDone - tStart).toFixed(0)}ms)\n`,
+        );
+      }
+      process.exit(totalErrors > 0 ? 1 : 0);
+    }
+    // Round-robin partition keeps each chunk's mix of cheap+expensive and
+    // native+JS rules roughly balanced.  Names are disjoint across
+    // partitions so each rule fires in exactly one worker (no double-emit).
+    const partitions = Array.from({ length: nWorkers }, () => ({}));
+    const ruleNames = Object.keys(rules);
+    for (let i = 0; i < ruleNames.length; i++) {
+      partitions[i % nWorkers][ruleNames[i]] = rules[ruleNames[i]];
+    }
+    const pool = new WorkerPool(nWorkers, partitions);
+    const tDispatch = performance.now();
+    const partials = await pool.runRuleParallel(file);
+    const tDone = performance.now();
+    pool.shutdown();
+    const allDiags = [];
+    let workerErr = null;
+    for (const r of partials) {
+      if (r.error) { workerErr = r.error; continue; }
+      for (const d of r.diagnostics) allDiags.push(d);
+    }
+    if (workerErr) {
+      process.stderr.write(`ezlint: ${file}: ${workerErr}\n`);
+      process.exit(1);
+    }
+    allDiags.sort((a, b) => (a.line - b.line) || (a.column - b.column));
+    totalDiags = allDiags.length;
+    for (const d of allDiags) if (d.severity === 2) totalErrors++;
+    if (!args.quiet) for (const d of allDiags) process.stdout.write(formatDiag(file, d) + "\n");
+    if (args.timing) {
+      process.stderr.write(
+        `\nezlint: 1 file(s), ${totalDiags} diags ` +
+        `[rule-parallel n=${nWorkers}] (dispatch ${(tDispatch - tStart).toFixed(0)}ms, ` +
+        `lint ${(tDone - tDispatch).toFixed(0)}ms, total ${(tDone - tStart).toFixed(0)}ms)\n`,
+      );
+    } else if (args.quiet) {
+      process.stderr.write(`ezlint: ${totalDiags} diagnostic(s) across 1 file(s)\n`);
+    }
+    process.exit(totalErrors > 0 ? 1 : 0);
+  }
+
+  // Multi-file: file-parallel.  Each worker has the full rules config and
+  // pulls whole files from a queue.  Workers stay warm across files.
   const nWorkers = Math.max(1, Math.min(args.workers ?? hwc, args.files.length));
 
   const pool = new WorkerPool(nWorkers, rules);
