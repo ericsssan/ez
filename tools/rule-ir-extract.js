@@ -1290,7 +1290,9 @@ function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { ctxName, 
   const extraScope = { ctxName: rawHandler.ctxName, nodeParamName: null,
     locals: new Map([[nodeParam, { kind: "expr", expr: parentExpr }]]),
     constants };
-  const SKIP_PROPS = new Set(["typeArguments", "typeParameters", "definite"]);
+  // Only `definite` (TS-only "x!: T" declaration flag) is dropped silently
+  // now — typeArguments/typeParameters lift to node-has-type-arguments.
+  const SKIP_PROPS = new Set(["definite"]);
   // Walk via eslint-visitor-keys so we only descend into real AST children —
   // nodeView wrappers expose extra getters (parent, loc, etc.) and even
   // sibling refs that an Object.keys-based walk would chase across the whole
@@ -1320,20 +1322,15 @@ function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { ctxName, 
     extraPositive = extraPositive ? { op: "binary", operator: "&&", lhs: extraPositive, rhs: inverted } : inverted;
   }
 
-  // Report target: parent node when parent is NewExpression, else the ref.
-  // (ESLint reports the whole `new Array()` but only the `Array` identifier
-  // for plain `Array(...)` calls — historical compatibility.)
+  // ESLint's `context.report({ node, ... })` passes the call/new node
+  // itself, so the diagnostic span covers the whole expression — both for
+  // `new Array(...)` and `Array(...)`.  Report at parent for both.
   const mkReport = (node) => {
     const r = { op: "report", node, messageId };
     if (reportFix) r.fix = reportFix;
     return r;
   };
-  const reportThen = [
-    { op: "if",
-      cond: { op: "node-tag-equals", node: parentExpr, estreeType: "NewExpression" },
-      then: [mkReport(parentExpr)],
-      else: [mkReport(refExpr)] },
-  ];
+  const reportThen = [mkReport(parentExpr)];
   const guardedReport = extraPositive
     ? [{ op: "if", cond: extraPositive, then: reportThen }]
     : reportThen;
@@ -4020,6 +4017,13 @@ function extractExpr(expr, scope) {
         // tag (optional_call_expr / optional_member_expr / etc.).
         if (prop === "optional") {
           return { ok: true, expr: { op: "node-is-optional", node: obj.expr } };
+        }
+        // `.typeArguments` on Call/NewExpression — TypeScript generic args
+        // (`f<T>()`).  Truthy in JS terms when present; in our parser the
+        // callee is wrapped in a ts_instantiation_expr, which is what the
+        // ctx.nodeHasTypeArguments helper inspects.
+        if (prop === "typeArguments" || prop === "typeParameters") {
+          return { ok: true, expr: { op: "node-has-type-arguments", node: obj.expr } };
         }
       }
       return { ok: true, expr: { op: "member", object: obj.expr, property: expr.property.name, computed: false } };

@@ -1004,6 +1004,8 @@ function emitExpr(e, ctx) {
       return `ctx.hasCommentsBeforeArgs(${emitExpr(e.node, ctx)})`;
     case "node-is-optional":
       return `ctx.nodeIsOptional(${emitExpr(e.node, ctx)})`;
+    case "node-has-type-arguments":
+      return `ctx.nodeHasTypeArguments(${emitExpr(e.node, ctx)})`;
     case "node-non-spread-args-count":
       return `ctx.nonSpreadArgCount(${emitExpr(e.node, ctx)})`;
     case "literal":

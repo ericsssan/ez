@@ -178,11 +178,18 @@ pub const LintContext = struct {
         return self.ast.tokenStart(b) > self.tokenEnd(a);
     }
 
-    /// Parent of `n`, skipping intermediate grouping_expr wrappers.
+    /// Parent of `n`, skipping intermediate grouping_expr wrappers and TS
+    /// instantiation-expression wrappers (`f<T>(...)` parses as
+    /// new_expr → ts_instantiation_expr → callee).  Skipping the wrapper
+    /// matches ESTree's flatter shape where `node.callee` IS the original
+    /// identifier and the type args live as a sibling property.
     pub fn parentOfSkipGrouping(self: *const LintContext, n: NodeIndex) NodeIndex {
         var p = self.parentOf(n);
-        while (p != .none and self.ast.nodeTag(p) == .grouping_expr)
+        while (p != .none) {
+            const tag = self.ast.nodeTag(p);
+            if (tag != .grouping_expr and tag != .ts_instantiation_expr) break;
             p = self.parentOf(p);
+        }
         return p;
     }
 
@@ -264,13 +271,19 @@ pub const LintContext = struct {
         return false;
     }
 
-    /// Callee of a call/new expression, with grouping_expr layers stripped.
+    /// Callee of a call/new expression, with grouping_expr and TS
+    /// instantiation-expression wrappers stripped — matches ESTree's
+    /// `node.callee` shape where `f<T>(x)` exposes `f` directly as callee
+    /// and the type args live in a sibling `typeArguments` field.
     /// Returns .none when `n` is .none or lhs is .none.
     pub fn calleeOf(self: *const LintContext, n: NodeIndex) NodeIndex {
         if (n == .none) return .none;
         var callee = self.ast.nodeData(n).lhs;
-        while (callee != .none and self.ast.nodeTag(callee) == .grouping_expr)
+        while (callee != .none) {
+            const tag = self.ast.nodeTag(callee);
+            if (tag != .grouping_expr and tag != .ts_instantiation_expr) break;
             callee = self.ast.nodeData(callee).lhs;
+        }
         return callee;
     }
 
@@ -390,6 +403,18 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// True when a Call/NewExpression has TypeScript generic type arguments
+    /// (`f<T>()` / `new Foo<T>()`).  ESTree exposes this as a `typeArguments`
+    /// property on the call itself; in our parser the callee is wrapped in a
+    /// `ts_instantiation_expr` whose lhs is the original callee and whose
+    /// rhs holds the type-args SubRange.
+    pub fn nodeHasTypeArguments(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        const data = self.nodeData(node);
+        if (data.lhs == .none) return false;
+        return self.nodeTag(data.lhs) == .ts_instantiation_expr;
+    }
+
     /// True when the node is part of an optional chain (`?.()` / `?.[]` /
     /// `?.x`).  ESTree exposes this as a boolean `.optional` flag on
     /// CallExpression/MemberExpression; in our parser the optional variants
@@ -483,22 +508,43 @@ pub const LintContext = struct {
         var end: u32 = last_start + last_len;
         // The parens of call/new aren't tracked as separate AST children, so
         // node_max_toks stops at the last arg (or the callee when there are
-        // no args).  Extend through the matching closing `)` so the
-        // diagnostic span matches ESLint's `node.range`.  Paren-depth scan is
-        // bounded — we start after the last child (or callee) and stop at the
-        // first `)` whose depth returns to zero.  No-paren forms (`new Foo`)
-        // leave the span unchanged.
+        // no args).  Extend through the matching closing `)` so the span
+        // matches ESLint's `node.range`.
+        //
+        // Computing the close paren correctly with nested calls requires
+        // starting at depth=1 *at the outer `(`* — we can't just scan from
+        // the existing end with depth=0, since node_max_toks for an outer
+        // call already includes inner-call tokens (their main_token can be
+        // the inner `(`), so depth-0 scanning would close on an inner `)`.
+        //
+        // So: find the callee's end token explicitly via node_max_toks for
+        // the callee child, scan forward for the first `(` (skipping `?.`
+        // and whitespace), then track depth from there.  No-paren forms
+        // (`new Foo` with no arg list) leave the span unchanged.
         const tag = self.nodeTag(index);
         if (tag == .call_expr or tag == .new_expr or tag == .optional_call_expr) {
-            const src = self.ast.source;
-            var depth: i32 = 0;
-            var p: usize = end;
-            while (p < src.len) : (p += 1) {
-                const c = src[p];
-                if (c == '(') depth += 1
-                else if (c == ')') {
-                    depth -= 1;
-                    if (depth <= 0) { end = @intCast(p + 1); break; }
+            const data = self.nodeData(index);
+            const callee = data.lhs;
+            if (callee != .none) {
+                const ci = callee.toInt();
+                const callee_max_tok = if (ci < self.node_max_toks.len) self.node_max_toks[ci]
+                                       else self.ast.nodeMainToken(callee);
+                const callee_end = self.ast.tokenStart(callee_max_tok)
+                                 + self.ast.tokens.items(.len)[callee_max_tok];
+                const src = self.ast.source;
+                var p: usize = callee_end;
+                while (p < src.len and src[p] != '(') p += 1;
+                if (p < src.len) {
+                    var depth: i32 = 1;
+                    p += 1;
+                    while (p < src.len) : (p += 1) {
+                        const c = src[p];
+                        if (c == '(') depth += 1
+                        else if (c == ')') {
+                            depth -= 1;
+                            if (depth == 0) { end = @intCast(p + 1); break; }
+                        }
+                    }
                 }
             }
         }
