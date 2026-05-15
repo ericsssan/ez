@@ -349,6 +349,47 @@ pub const LintContext = struct {
         return src[sp.start..sp.end];
     }
 
+    /// True when `node` is the leftmost expression of an ExpressionStatement.
+    /// Mirrors ESLint's `astUtils.isStartOfExpressionStatement`: walks parents
+    /// while their span starts at the same byte as `node`, returning true
+    /// when an ExpressionStatement is encountered along the way.
+    pub fn isStartOfExpressionStatement(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        const start = self.nodeSpan(node).start;
+        var current = self.parentOf(node);
+        while (current != .none) {
+            if (self.nodeSpan(current).start != start) return false;
+            if (self.nodeTag(current) == .expression_stmt) return true;
+            current = self.parentOf(current);
+        }
+        return false;
+    }
+
+    /// True when emitting code in front of `node` would merge it with the
+    /// preceding statement under JavaScript ASI rules — i.e., the previous
+    /// non-whitespace character is neither `;` nor `}`.  Used by fix codegen
+    /// for rules that turn a callsite into an array literal (`Array(...)` →
+    /// `[...]`) and need to insert a leading `;` to avoid ambiguity.
+    ///
+    /// Conservative impl: skips ASCII whitespace only.  Inline comments
+    /// before a node are rare in the rules that use this helper, and a false
+    /// "needs semicolon" emits an extra `;` (still valid JS) rather than
+    /// breaking the program.
+    pub fn needsPrecedingSemicolon(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        const start = self.nodeSpan(node).start;
+        if (start == 0) return false;
+        const src = self.ast.source;
+        var i: usize = start;
+        while (i > 0) {
+            i -= 1;
+            const c = src[i];
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') continue;
+            return c != ';' and c != '}';
+        }
+        return false;
+    }
+
     /// Source text between the call/new node's parentheses — equivalent to
     /// ESLint's `getArgumentsText` helper from no-array-constructor and
     /// related rules.  Preserves whitespace/comments inside the call so a

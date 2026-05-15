@@ -4377,6 +4377,28 @@ function extractExpr(expr, scope) {
       // any MemberExpression whose object is the bare identifier "astUtils"
       // (or its imported alias), since rules consistently destructure the
       // module under that name.
+      // astUtils.isStartOfExpressionStatement(node) — runtime semantic helper.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier"
+          && callee.property.name === "isStartOfExpressionStatement"
+          && callee.object?.type === "Identifier" && callee.object.name === "astUtils"
+          && expr.arguments.length === 1) {
+        const arg = extractExpr(expr.arguments[0], scope);
+        if (!arg.ok) return arg;
+        return { ok: true, expr: { op: "is-start-of-expression-statement", node: arg.expr } };
+      }
+      // astUtils.needsPrecedingSemicolon(sourceCode, node) — drop the
+      // sourceCode arg, the Zig helper holds its own context reference.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier"
+          && callee.property.name === "needsPrecedingSemicolon"
+          && callee.object?.type === "Identifier" && callee.object.name === "astUtils"
+          && expr.arguments.length === 2
+          && isSourceCodeReceiver(expr.arguments[0], scope)) {
+        const arg = extractExpr(expr.arguments[1], scope);
+        if (!arg.ok) return arg;
+        return { ok: true, expr: { op: "needs-preceding-semicolon", node: arg.expr } };
+      }
       if (callee.type === "MemberExpression" && !callee.computed
           && callee.property?.type === "Identifier"
           && callee.object?.type === "Identifier"

@@ -119,6 +119,9 @@ const EXPR_OPS = new Set([
   "template-string",           // `lit${expr}lit` parts → runtime allocPrint
   // ── Conditional value (lifted from `let X; if(c){X=A}else{X=B}` patterns)
   "ternary",                   // { cond, then, else } — codegen branches per use site
+  // ── astUtils boolean helpers (lower to ctx.<helper>(node)).
+  "is-start-of-expression-statement",
+  "needs-preceding-semicolon",
 ]);
 
 // Helper-function kinds.
@@ -466,6 +469,33 @@ function validateExpr(e, path) {
     const a = validateExpr(e.a, `${path}.a`);
     if (!a.ok) return a;
     return validateExpr(e.b, `${path}.b`);
+  }
+  // Source-text and ternary ops (used in fix-text templates).
+  if (e.op === "source-text-of" || e.op === "args-text-of"
+      || e.op === "is-start-of-expression-statement" || e.op === "needs-preceding-semicolon") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "template-string") {
+    if (!Array.isArray(e.parts)) return fail("template-string.parts must be array", path);
+    for (let i = 0; i < e.parts.length; i++) {
+      const p = e.parts[i];
+      if (p.kind === "str") {
+        if (typeof p.value !== "string") return fail(`template-string.parts[${i}].value must be string`, path);
+      } else if (p.kind === "expr") {
+        const r = validateExpr(p.expr, `${path}.parts[${i}].expr`);
+        if (!r.ok) return r;
+      } else {
+        return fail(`template-string.parts[${i}].kind must be 'str'|'expr'`, path);
+      }
+    }
+    return { ok: true };
+  }
+  if (e.op === "ternary") {
+    const c = validateExpr(e.cond, `${path}.cond`);
+    if (!c.ok) return c;
+    const t = validateExpr(e.then, `${path}.then`);
+    if (!t.ok) return t;
+    return validateExpr(e.else, `${path}.else`);
   }
   return fail("unreachable", path);
 }

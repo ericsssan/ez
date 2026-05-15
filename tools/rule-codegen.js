@@ -995,6 +995,10 @@ function emitExpr(e, ctx) {
       return `ctx.sourceText(${emitExpr(e.node, ctx)})`;
     case "args-text-of":
       return `ctx.argsTextBetweenParens(${emitExpr(e.node, ctx)})`;
+    case "is-start-of-expression-statement":
+      return `ctx.isStartOfExpressionStatement(${emitExpr(e.node, ctx)})`;
+    case "needs-preceding-semicolon":
+      return `ctx.needsPrecedingSemicolon(${emitExpr(e.node, ctx)})`;
     case "literal":
       if (e.value === null) return "null";
       if (typeof e.value === "string") return `"${zigStr(e.value)}"`;
