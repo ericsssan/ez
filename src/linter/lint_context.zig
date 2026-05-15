@@ -390,6 +390,35 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// True when the node is part of an optional chain (`?.()` / `?.[]` /
+    /// `?.x`).  ESTree exposes this as a boolean `.optional` flag on
+    /// CallExpression/MemberExpression; in our parser the optional variants
+    /// are encoded as separate node tags.
+    pub fn nodeIsOptional(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        return switch (self.nodeTag(node)) {
+            .optional_call_expr, .optional_member_expr, .optional_computed_member_expr => true,
+            else => false,
+        };
+    }
+
+    /// Count arguments of a call/new node whose AST tag is not SpreadElement.
+    /// Mirrors the no-array-constructor reduce:
+    ///     node.arguments.reduce((c, a) => a.type !== "SpreadElement" ? c+1 : c, 0)
+    pub fn nonSpreadArgCount(self: *const LintContext, node: NodeIndex) u32 {
+        if (node == .none) return 0;
+        const data = self.nodeData(node);
+        if (data.rhs == .none) return 0;
+        const sr = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(sr);
+        var count: u32 = 0;
+        for (args) |a_int| {
+            const a: NodeIndex = @enumFromInt(a_int);
+            if (self.nodeTag(a) != .spread_element) count += 1;
+        }
+        return count;
+    }
+
     /// True when the source range from a call/new node's start to its
     /// opening `(` contains a `/*` or `//` comment marker.  Mirrors the
     /// no-array-constructor file-local helper `hasCommentsInArrayConstructor`,
@@ -451,7 +480,29 @@ pub const LintContext = struct {
         const first_start = self.ast.tokenStart(first_tok);
         const last_start  = self.ast.tokenStart(last_tok);
         const last_len    = self.ast.tokens.items(.len)[last_tok];
-        return .{ .start = first_start, .end = last_start + last_len };
+        var end: u32 = last_start + last_len;
+        // The parens of call/new aren't tracked as separate AST children, so
+        // node_max_toks stops at the last arg (or the callee when there are
+        // no args).  Extend through the matching closing `)` so the
+        // diagnostic span matches ESLint's `node.range`.  Paren-depth scan is
+        // bounded — we start after the last child (or callee) and stop at the
+        // first `)` whose depth returns to zero.  No-paren forms (`new Foo`)
+        // leave the span unchanged.
+        const tag = self.nodeTag(index);
+        if (tag == .call_expr or tag == .new_expr or tag == .optional_call_expr) {
+            const src = self.ast.source;
+            var depth: i32 = 0;
+            var p: usize = end;
+            while (p < src.len) : (p += 1) {
+                const c = src[p];
+                if (c == '(') depth += 1
+                else if (c == ')') {
+                    depth -= 1;
+                    if (depth <= 0) { end = @intCast(p + 1); break; }
+                }
+            }
+        }
+        return .{ .start = first_start, .end = end };
     }
 
     /// Parent node of `index`, or `.none` when semantic did not compute parents

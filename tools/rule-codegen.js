@@ -1002,6 +1002,10 @@ function emitExpr(e, ctx) {
       return `ctx.needsPrecedingSemicolon(${emitExpr(e.node, ctx)})`;
     case "has-comments-before-args":
       return `ctx.hasCommentsBeforeArgs(${emitExpr(e.node, ctx)})`;
+    case "node-is-optional":
+      return `ctx.nodeIsOptional(${emitExpr(e.node, ctx)})`;
+    case "node-non-spread-args-count":
+      return `ctx.nonSpreadArgCount(${emitExpr(e.node, ctx)})`;
     case "literal":
       if (e.value === null) return "null";
       if (typeof e.value === "string") return `"${zigStr(e.value)}"`;

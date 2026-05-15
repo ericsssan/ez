@@ -3801,6 +3801,41 @@ function tryExtractTokenNavCall(callExpr, scope) {
   return null;
 }
 
+// Match an arrow function shape:
+//   (count, arg) => arg.type !== "SpreadElement" ? count + 1 : count
+// Used by extractExpr to recognize the no-array-constructor non-spread
+// counter and lower the whole reduce() call into one IR op.
+function isCountNonSpreadArrow(fn) {
+  if (!fn) return false;
+  if (fn.type !== "ArrowFunctionExpression" && fn.type !== "FunctionExpression") return false;
+  if (fn.params.length !== 2) return false;
+  if (fn.params[0].type !== "Identifier" || fn.params[1].type !== "Identifier") return false;
+  const cName = fn.params[0].name;
+  const aName = fn.params[1].name;
+  let body = fn.body;
+  if (body.type === "BlockStatement") {
+    if (body.body.length !== 1 || body.body[0].type !== "ReturnStatement") return false;
+    body = body.body[0].argument;
+  }
+  if (!body || body.type !== "ConditionalExpression") return false;
+  // test: arg.type !== "SpreadElement"
+  const t = body.test;
+  if (t.type !== "BinaryExpression" || t.operator !== "!==") return false;
+  const m = t.left;
+  if (m.type !== "MemberExpression" || m.computed) return false;
+  if (m.object?.type !== "Identifier" || m.object.name !== aName) return false;
+  if (m.property?.type !== "Identifier" || m.property.name !== "type") return false;
+  if (t.right.type !== "Literal" || t.right.value !== "SpreadElement") return false;
+  // consequent: count + 1
+  const c = body.consequent;
+  if (c.type !== "BinaryExpression" || c.operator !== "+") return false;
+  if (c.left.type !== "Identifier" || c.left.name !== cName) return false;
+  if (c.right.type !== "Literal" || c.right.value !== 1) return false;
+  // alternate: count
+  if (body.alternate.type !== "Identifier" || body.alternate.name !== cName) return false;
+  return true;
+}
+
 // Check if an AST node is a sourceCode receiver (identifier "sourceCode" or context.sourceCode).
 function isSourceCodeReceiver(node, scope) {
   if (!node) return false;
@@ -3981,6 +4016,11 @@ function extractExpr(expr, scope) {
         if (prop === "property" || prop === "right") {
           return { ok: true, expr: { op: "node-secondary-child", node: obj.expr } };
         }
+        // `.optional` on Call/Member — encoded in our parser as a separate
+        // tag (optional_call_expr / optional_member_expr / etc.).
+        if (prop === "optional") {
+          return { ok: true, expr: { op: "node-is-optional", node: obj.expr } };
+        }
       }
       return { ok: true, expr: { op: "member", object: obj.expr, property: expr.property.name, computed: false } };
     }
@@ -4141,6 +4181,18 @@ function extractExpr(expr, scope) {
           ? { op: "node-args-length-zero", node: R.expr.object.object }
           : { op: "node-args-count-equals", node: R.expr.object.object, count: n } };
       }
+      // <X>.arguments.length > 0 (or >= 1) → !node-args-length-zero(X).
+      // The reverse (0 < X.arguments.length, 1 <= X.arguments.length) too.
+      if ((op === ">" || op === ">=") && isArgsLenCompare(R.expr, L.expr)
+          && ((op === ">" && R.expr.value === 0) || (op === ">=" && R.expr.value === 1))) {
+        return { ok: true, expr: { op: "unary", operator: "!",
+          operand: { op: "node-args-length-zero", node: L.expr.object.object } } };
+      }
+      if ((op === "<" || op === "<=") && isArgsLenCompare(L.expr, R.expr)
+          && ((op === "<" && L.expr.value === 0) || (op === "<=" && L.expr.value === 1))) {
+        return { ok: true, expr: { op: "unary", operator: "!",
+          operand: { op: "node-args-length-zero", node: R.expr.object.object } } };
+      }
       return { ok: true, expr: { op: "binary", operator: op, lhs: L.expr, rhs: R.expr } };
     }
     case "UnaryExpression": {
@@ -4156,6 +4208,21 @@ function extractExpr(expr, scope) {
     }
     case "CallExpression": {
       const callee = expr.callee;
+      // <X>.arguments.reduce((c, a) => a.type !== "SpreadElement" ? c+1 : c, 0)
+      //   → node-non-spread-args-count(<X>)
+      // Recognized at the rule's setup site (e.g. no-array-constructor's
+      // `nonSpreadCount`); we don't try to lower other reduce shapes — only
+      // this exact "count non-spread arguments" idiom.
+      if (callee?.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "reduce"
+          && callee.object?.type === "MemberExpression" && !callee.object.computed
+          && callee.object.property?.type === "Identifier" && callee.object.property.name === "arguments"
+          && expr.arguments.length === 2
+          && isCountNonSpreadArrow(expr.arguments[0])
+          && expr.arguments[1].type === "Literal" && expr.arguments[1].value === 0) {
+        const r = extractExpr(callee.object.object, scope);
+        if (r.ok) return { ok: true, expr: { op: "node-non-spread-args-count", node: r.expr } };
+      }
       // sourceCode.getText(<node>) → source-text-of(node).  No-arg form
       // (whole source) is intentionally not supported — it would require
       // emitting an unbounded fix span and isn't useful for our codegen.
@@ -4425,6 +4492,25 @@ function extractExpr(expr, scope) {
         const h = scope.boolPreds[callee.name];
         return { ok: true, expr: substituteNodeRef(h.cond, argR.expr) };
       }
+      // astUtils helpers — accept both `astUtils.X(...)` and bare `X(...)`
+      // (rules often destructure from ./utils/ast-utils).  Match BEFORE the
+      // generic "unknown call target" rejection so bare-form calls resolve.
+      const isAstUtilsCall = (name) =>
+        (callee.type === "Identifier" && callee.name === name)
+        || (callee.type === "MemberExpression" && !callee.computed
+            && callee.property?.type === "Identifier" && callee.property.name === name
+            && callee.object?.type === "Identifier" && callee.object.name === "astUtils");
+      if (isAstUtilsCall("isStartOfExpressionStatement") && expr.arguments.length === 1) {
+        const arg = extractExpr(expr.arguments[0], scope);
+        if (!arg.ok) return arg;
+        return { ok: true, expr: { op: "is-start-of-expression-statement", node: arg.expr } };
+      }
+      if (isAstUtilsCall("needsPrecedingSemicolon") && expr.arguments.length === 2
+          && isSourceCodeReceiver(expr.arguments[0], scope)) {
+        const arg = extractExpr(expr.arguments[1], scope);
+        if (!arg.ok) return arg;
+        return { ok: true, expr: { op: "needs-preceding-semicolon", node: arg.expr } };
+      }
       // Helper call: isLexicalDeclaration(statement) — bool helper.
       if (callee.type === "Identifier") {
         // Try to inline unicorn/known imported helpers (isMethodCall, isMemberExpression, etc.).
@@ -4472,28 +4558,8 @@ function extractExpr(expr, scope) {
       // any MemberExpression whose object is the bare identifier "astUtils"
       // (or its imported alias), since rules consistently destructure the
       // module under that name.
-      // astUtils.isStartOfExpressionStatement(node) — runtime semantic helper.
-      if (callee.type === "MemberExpression" && !callee.computed
-          && callee.property?.type === "Identifier"
-          && callee.property.name === "isStartOfExpressionStatement"
-          && callee.object?.type === "Identifier" && callee.object.name === "astUtils"
-          && expr.arguments.length === 1) {
-        const arg = extractExpr(expr.arguments[0], scope);
-        if (!arg.ok) return arg;
-        return { ok: true, expr: { op: "is-start-of-expression-statement", node: arg.expr } };
-      }
-      // astUtils.needsPrecedingSemicolon(sourceCode, node) — drop the
-      // sourceCode arg, the Zig helper holds its own context reference.
-      if (callee.type === "MemberExpression" && !callee.computed
-          && callee.property?.type === "Identifier"
-          && callee.property.name === "needsPrecedingSemicolon"
-          && callee.object?.type === "Identifier" && callee.object.name === "astUtils"
-          && expr.arguments.length === 2
-          && isSourceCodeReceiver(expr.arguments[0], scope)) {
-        const arg = extractExpr(expr.arguments[1], scope);
-        if (!arg.ok) return arg;
-        return { ok: true, expr: { op: "needs-preceding-semicolon", node: arg.expr } };
-      }
+      // (astUtils predicate matchers moved above the unknown-call-target
+      //  branch — see comment block earlier in this case.)
       if (callee.type === "MemberExpression" && !callee.computed
           && callee.property?.type === "Identifier"
           && callee.object?.type === "Identifier"

@@ -416,6 +416,7 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
           message,
           messageId,
           severity: d.severity ?? null,
+          fix: d.fix ?? null,
         };
       });
   } catch { return null; }

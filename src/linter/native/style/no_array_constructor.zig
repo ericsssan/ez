@@ -42,6 +42,14 @@ fn nodeArgsCount(c: *const LintContext, n: NodeIndex) usize {
     return c.extraSlice(sr).len;
 }
 
+fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
+    if (n == .none) return false;
+    const d = c.nodeData(n);
+    if (d.rhs == .none) return true;
+    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    return c.extraSlice(sr).len == 0;
+}
+
 fn nodeArgAt(c: *const LintContext, n: NodeIndex, idx: u32) NodeIndex {
     if (n == .none) return .none;
     const d = c.nodeData(n);
@@ -71,9 +79,33 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if ((((ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)) == .new_expr) or blk: { const __t = ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)); break :blk (__t == .call_expr or __t == .optional_call_expr); }) and (ctx.calleeOf(ctx.parentOfSkipGrouping(__ref_identifier__)) == __ref_identifier__))) {
             if (!(((nodeArgsCount(ctx, ctx.parentOfSkipGrouping(__ref_identifier__)) == 1) and !((ctx.nodeTag(nodeArgAt(ctx, ctx.parentOfSkipGrouping(__ref_identifier__), 0)) == .spread_element))))) {
                 if ((ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)) == .new_expr)) {
-                    ctx.reportWithMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), "preferLiteral");
+                    if (((ctx.nodeIsOptional(ctx.parentOfSkipGrouping(__ref_identifier__)) or (!(nodeArgsLenZero(ctx, ctx.parentOfSkipGrouping(__ref_identifier__))) and (ctx.nonSpreadArgCount(ctx.parentOfSkipGrouping(__ref_identifier__)) < 2))) or ctx.hasCommentsBeforeArgs(ctx.parentOfSkipGrouping(__ref_identifier__)))) {
+                        ctx.reportWithMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), "preferLiteral");
+                    } else {
+                        if ((ctx.isStartOfExpressionStatement(ctx.parentOfSkipGrouping(__ref_identifier__)) and ctx.needsPrecedingSemicolon(ctx.parentOfSkipGrouping(__ref_identifier__)))) {
+                            const __fix_text = std.fmt.allocPrint(ctx.allocator, ";[{s}]", .{ ctx.argsTextBetweenParens(ctx.parentOfSkipGrouping(__ref_identifier__)) }) catch return;
+                            defer ctx.allocator.free(__fix_text);
+                            ctx.reportWithFixAndMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)), __fix_text, "preferLiteral");
+                        } else {
+                            const __fix_text = std.fmt.allocPrint(ctx.allocator, "[{s}]", .{ ctx.argsTextBetweenParens(ctx.parentOfSkipGrouping(__ref_identifier__)) }) catch return;
+                            defer ctx.allocator.free(__fix_text);
+                            ctx.reportWithFixAndMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)), __fix_text, "preferLiteral");
+                        }
+                    }
                 } else {
-                    ctx.reportWithMessageId(__ref_identifier__, "preferLiteral");
+                    if (((ctx.nodeIsOptional(ctx.parentOfSkipGrouping(__ref_identifier__)) or (!(nodeArgsLenZero(ctx, ctx.parentOfSkipGrouping(__ref_identifier__))) and (ctx.nonSpreadArgCount(ctx.parentOfSkipGrouping(__ref_identifier__)) < 2))) or ctx.hasCommentsBeforeArgs(ctx.parentOfSkipGrouping(__ref_identifier__)))) {
+                        ctx.reportWithMessageId(__ref_identifier__, "preferLiteral");
+                    } else {
+                        if ((ctx.isStartOfExpressionStatement(ctx.parentOfSkipGrouping(__ref_identifier__)) and ctx.needsPrecedingSemicolon(ctx.parentOfSkipGrouping(__ref_identifier__)))) {
+                            const __fix_text = std.fmt.allocPrint(ctx.allocator, ";[{s}]", .{ ctx.argsTextBetweenParens(ctx.parentOfSkipGrouping(__ref_identifier__)) }) catch return;
+                            defer ctx.allocator.free(__fix_text);
+                            ctx.reportWithFixAndMessageId(__ref_identifier__, ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)), __fix_text, "preferLiteral");
+                        } else {
+                            const __fix_text = std.fmt.allocPrint(ctx.allocator, "[{s}]", .{ ctx.argsTextBetweenParens(ctx.parentOfSkipGrouping(__ref_identifier__)) }) catch return;
+                            defer ctx.allocator.free(__fix_text);
+                            ctx.reportWithFixAndMessageId(__ref_identifier__, ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)), __fix_text, "preferLiteral");
+                        }
+                    }
                 }
             }
         }
