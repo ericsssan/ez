@@ -75,6 +75,14 @@ napi:
 # for a CLI tool — the perf wins are 35-40% across both modes and beat
 # even `bun run` from source (~860ms single-file).
 EZ_BUN_TARGET ?= bun-darwin-arm64
+
+# Regenerate src/bun/recommended-rules.js from the ESLint core rules dir.
+# Run after an ESLint upgrade that adds/removes rules.  Output is a
+# committed file (machine-generated but in-tree so it builds without
+# extra steps); ezlint depends on it being current.
+ezlint-rules:
+	bun tools/gen-bundled-rules.js
+
 ezlint: napi
 	@mkdir -p dist
 	bun build --compile --bytecode --packages=bundle --target=$(EZ_BUN_TARGET) \
