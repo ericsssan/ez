@@ -613,6 +613,16 @@ pub const LintContext = struct {
             or tag == .break_stmt or tag == .break_label
             or tag == .continue_stmt or tag == .continue_label
             or tag == .debugger_stmt) {
+            // For statements with an expression body (lhs), recurse so the
+            // body's own paren/brace extension is reflected in the parent
+            // statement's end before we scan for the trailing `;`.
+            const data = self.nodeData(index);
+            if (data.lhs != .none and (tag == .expression_stmt
+                or tag == .return_stmt or tag == .throw_stmt
+                or tag == .break_label or tag == .continue_label)) {
+                const body_span = self.nodeSpan(data.lhs);
+                if (body_span.end > end) end = body_span.end;
+            }
             var p: usize = end;
             while (p < src.len and (src[p] == ' ' or src[p] == '\t')) p += 1;
             if (p < src.len and src[p] == ';') end = @intCast(p + 1);
