@@ -459,11 +459,28 @@ pub const LintContext = struct {
         const span = self.nodeSpan(call);
         const src = self.ast.source;
         if (span.start >= src.len or span.end > src.len) return false;
+        // Mirror ESLint's hasCommentsInArrayConstructor: scan from the node's
+        // start to either the args' opening `(` or the node's end (whichever
+        // comes first).  The args paren is the first `(` AFTER the callee's
+        // end — anything before that is part of the callee (e.g. `new
+        // (Array)` with parens around the callee).  Without this distinction
+        // we'd stop at the wrapper paren and miss `new (Array /* hint */)`-
+        // style comments.
+        const data = self.nodeData(call);
+        const callee = data.lhs;
+        const callee_end: usize = if (callee != .none) blk: {
+            const ci = callee.toInt();
+            const ct = if (ci < self.node_max_toks.len) self.node_max_toks[ci]
+                       else self.ast.nodeMainToken(callee);
+            break :blk self.ast.tokenStart(ct) + self.ast.tokens.items(.len)[ct];
+        } else span.start;
+        var args_open: usize = span.end;
+        var p: usize = callee_end;
+        while (p < span.end) : (p += 1) if (src[p] == '(') { args_open = p; break; };
         var i: usize = span.start;
-        while (i < span.end and src[i] != '(') {
-            if (i + 1 < span.end and src[i] == '/' and (src[i + 1] == '/' or src[i + 1] == '*'))
+        while (i < args_open) : (i += 1) {
+            if (i + 1 < args_open and src[i] == '/' and (src[i + 1] == '/' or src[i + 1] == '*'))
                 return true;
-            i += 1;
         }
         return false;
     }
@@ -506,43 +523,49 @@ pub const LintContext = struct {
         const last_start  = self.ast.tokenStart(last_tok);
         const last_len    = self.ast.tokens.items(.len)[last_tok];
         var end: u32 = last_start + last_len;
-        // The parens of call/new aren't tracked as separate AST children, so
-        // node_max_toks stops at the last arg (or the callee when there are
-        // no args).  Extend through the matching closing `)` so the span
-        // matches ESLint's `node.range`.
-        //
-        // Computing the close paren correctly with nested calls requires
-        // starting at depth=1 *at the outer `(`* — we can't just scan from
-        // the existing end with depth=0, since node_max_toks for an outer
-        // call already includes inner-call tokens (their main_token can be
-        // the inner `(`), so depth-0 scanning would close on an inner `)`.
-        //
-        // So: find the callee's end token explicitly via node_max_toks for
-        // the callee child, scan forward for the first `(` (skipping `?.`
-        // and whitespace), then track depth from there.  No-paren forms
-        // (`new Foo` with no arg list) leave the span unchanged.
         const tag = self.nodeTag(index);
+        const src = self.ast.source;
+        // grouping_expr's `)` isn't a child node's main_token so it doesn't
+        // propagate into node_max_toks.  Scan forward for the next `)` past
+        // the wrapped expression — there can't be anything but whitespace/
+        // comments between the inner expression's end and the close paren.
+        if (tag == .grouping_expr) {
+            var p: usize = end;
+            while (p < src.len and src[p] != ')') p += 1;
+            if (p < src.len) end = @intCast(p + 1);
+            return .{ .start = first_start, .end = end };
+        }
+        // Call/new parens also aren't tracked, plus the callee may itself be
+        // a parenthesized expression (`new (Array)()` or `new (Array)`).
+        // Two extensions needed:
+        //   * if there's an args list, walk to the matching close paren of
+        //     the args (depth-1 scan from the args' opening paren).
+        //   * if there's no args list AND the callee is wrapped, extend
+        //     through the wrapper's close paren (recurse into nodeSpan to
+        //     pick up grouping's own paren-extension).
         if (tag == .call_expr or tag == .new_expr or tag == .optional_call_expr) {
             const data = self.nodeData(index);
             const callee = data.lhs;
             if (callee != .none) {
-                const ci = callee.toInt();
-                const callee_max_tok = if (ci < self.node_max_toks.len) self.node_max_toks[ci]
-                                       else self.ast.nodeMainToken(callee);
-                const callee_end = self.ast.tokenStart(callee_max_tok)
-                                 + self.ast.tokens.items(.len)[callee_max_tok];
-                const src = self.ast.source;
-                var p: usize = callee_end;
-                while (p < src.len and src[p] != '(') p += 1;
-                if (p < src.len) {
-                    var depth: i32 = 1;
-                    p += 1;
-                    while (p < src.len) : (p += 1) {
-                        const c = src[p];
-                        if (c == '(') depth += 1
-                        else if (c == ')') {
-                            depth -= 1;
-                            if (depth == 0) { end = @intCast(p + 1); break; }
+                const callee_span = self.nodeSpan(callee);
+                if (callee_span.end > end) end = callee_span.end;
+                // Only scan for an args paren when the call actually has an
+                // arg list — `new Foo` and `new (Foo)` (rhs == .none) end at
+                // the callee's effective end, NOT at any subsequent `(` that
+                // belongs to a sibling expression (`new (Foo) && (bar)`).
+                if (data.rhs != .none) {
+                    var p: usize = callee_span.end;
+                    while (p < src.len and src[p] != '(') p += 1;
+                    if (p < src.len) {
+                        var depth: i32 = 1;
+                        p += 1;
+                        while (p < src.len) : (p += 1) {
+                            const c = src[p];
+                            if (c == '(') depth += 1
+                            else if (c == ')') {
+                                depth -= 1;
+                                if (depth == 0) { end = @intCast(p + 1); break; }
+                            }
                         }
                     }
                 }
