@@ -233,6 +233,85 @@ const SPAN_NARROWERS = {
     if (!m) return null;
     return { start: span.start + m.index, end: span.start + m.index + m[0].length };
   },
+  // no-useless-constructor reports the MethodDefinition; ESLint
+  // narrows to the `constructor` keyword (the token before the params
+  // paren).  Also covers the @typescript-eslint variant.
+  "no-useless-constructor": (slice, span) => {
+    const s = _td.decode(slice);
+    const m = /^\s*(?:public\s+|private\s+|protected\s+)?constructor\b/.exec(s);
+    if (!m) return null;
+    const word = m[0].lastIndexOf("constructor");
+    return { start: span.start + word, end: span.start + word + "constructor".length };
+  },
+  "@typescript-eslint/no-useless-constructor": (slice, span) => {
+    const s = _td.decode(slice);
+    const m = /^\s*(?:public\s+|private\s+|protected\s+)?constructor\b/.exec(s);
+    if (!m) return null;
+    const word = m[0].lastIndexOf("constructor");
+    return { start: span.start + word, end: span.start + word + "constructor".length };
+  },
+  // no-dupe-args reports the duplicate param identifier; ESLint reports
+  // the enclosing param list `(...)`.  Walk the source backward from
+  // the duplicate to find the opening `(`, then forward to the closing.
+  "no-dupe-args": (slice, span, src) => {
+    if (!src) return null;
+    let p = span.start;
+    let depth = 0;
+    while (p > 0) {
+      const c = src[p - 1];
+      if (c === 41) depth++; // )
+      else if (c === 40) {
+        if (depth === 0) break;
+        depth--;
+      }
+      p--;
+    }
+    if (p === 0 || src[p - 1] !== 40) return null;
+    const openPos = p - 1;
+    let q = openPos + 1;
+    depth = 1;
+    while (q < src.length) {
+      const c = src[q];
+      if (c === 40) depth++;
+      else if (c === 41) {
+        depth--;
+        if (depth === 0) { q++; break; }
+      }
+      q++;
+    }
+    return { start: openPos, end: q };
+  },
+  // require-await reports the entire function; ESLint uses
+  // astUtils.getFunctionHeadLoc which ends BEFORE the params `(`:
+  //   `async function name() {}` → `async function name`
+  //   `async function () {}`     → `async function`
+  //   `async () => {}`           → `async () =>` (arrow includes `=>`)
+  //   `async x => {}`            → `async x =>`
+  "require-await": (slice, span) => {
+    const s = _td.decode(slice);
+    const am = /\basync\b/.exec(s);
+    if (!am) return null;
+    // Arrow function: include up to `=>`.
+    const arrowIdx = s.indexOf("=>", am.index);
+    if (arrowIdx >= 0) {
+      // Make sure there's no `function` keyword between `async` and `=>`.
+      const between = s.slice(am.index, arrowIdx);
+      if (!/\bfunction\b/.test(between)) {
+        return { start: span.start + am.index, end: span.start + arrowIdx + 2 };
+      }
+    }
+    // function form: end before the params `(`.
+    const fnIdx = s.indexOf("function", am.index);
+    if (fnIdx >= 0) {
+      let p = fnIdx + "function".length;
+      // Skip `*` (generator) and whitespace, then optional name.
+      while (p < s.length && (s[p] === ' ' || s[p] === '\t' || s[p] === '*')) p++;
+      const nameMatch = /^[A-Za-z_$][A-Za-z0-9_$]*/.exec(s.slice(p));
+      if (nameMatch) p += nameMatch[0].length;
+      return { start: span.start + am.index, end: span.start + p };
+    }
+    return null;
+  },
   // no-async-promise-executor reports the new expression; ESLint
   // reports the `async` keyword of the promise executor function.
   "no-async-promise-executor": (slice, span) => {
@@ -258,7 +337,10 @@ function _narrowSpanForRule(diag, srcBytes, lineStarts) {
   if (!fn) return;
   const slice = new Uint8Array(srcBytes.buffer, srcBytes.byteOffset + diag.offset,
                                 Math.max(0, diag.endOffset - diag.offset));
-  const narrowed = fn(slice, { start: diag.offset, end: diag.endOffset });
+  // Pass the full source as a third arg so narrowers that need to walk
+  // outside the diag's span (e.g. no-dupe-args reporting the duplicate
+  // identifier but ESLint reporting the enclosing param list) can scan.
+  const narrowed = fn(slice, { start: diag.offset, end: diag.endOffset }, srcBytes);
   if (!narrowed) return;
   diag.offset = narrowed.start;
   diag.endOffset = narrowed.end;
