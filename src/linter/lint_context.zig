@@ -573,18 +573,33 @@ pub const LintContext = struct {
         //   * if there's no args list AND the callee is wrapped, extend
         //     through the wrapper's close paren (recurse into nodeSpan to
         //     pick up grouping's own paren-extension).
-        // block_stmt / class_body — main_token is `{`, close `}` isn't a
-        // child node's main_token.  Brace-depth scan from the existing end
-        // (which sits past the last child's tokens) handles nested blocks.
-        if (tag == .block_stmt or tag == .class_body) {
+        // Tags whose closing `]` / `}` aren't tracked as a child's
+        // main_token.  Start the depth scan from the OUTER opening bracket
+        // (main_token position) at depth=1 — scanning from the existing end
+        // at depth=0 would close on a NESTED bracket since node_max_toks
+        // propagates through inner subtrees.
+        const open_close: ?[2]u8 = switch (tag) {
+            .array_literal, .array_pattern => [2]u8{ '[', ']' },
+            .object_literal, .object_pattern, .block_stmt, .class_body => [2]u8{ '{', '}' },
+            else => null,
+        };
+        if (open_close) |oc| {
+            const open = oc[0];
+            const close = oc[1];
+            // main_token sits at the OUTER opening bracket — start the scan
+            // there with depth=1 already accounted for.
+            const open_pos = self.ast.tokenStart(main_tok);
             var depth: i32 = 1;
-            var p: usize = end;
+            var p: usize = open_pos + 1;
             while (p < src.len) : (p += 1) {
                 const c = src[p];
-                if (c == '{') depth += 1
-                else if (c == '}') {
+                if (c == open) depth += 1
+                else if (c == close) {
                     depth -= 1;
-                    if (depth == 0) { end = @intCast(p + 1); break; }
+                    if (depth == 0) {
+                        if (@as(u32, @intCast(p + 1)) > end) end = @intCast(p + 1);
+                        break;
+                    }
                 }
             }
             return .{ .start = first_start, .end = end };
@@ -739,16 +754,24 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
-        // switch_stmt — closing `}` of switch body.  Brace-depth scan.
+        // switch_stmt — closing `}` of switch body.  Same depth-from-open
+        // scan as block/object — find the `{` after the discriminant first.
         if (tag == .switch_stmt) {
-            var depth: i32 = 0;
             var p: usize = end;
-            while (p < src.len) : (p += 1) {
-                const c = src[p];
-                if (c == '{') depth += 1
-                else if (c == '}') {
-                    depth -= 1;
-                    if (depth <= 0) { end = @intCast(p + 1); break; }
+            while (p < src.len and src[p] != '{') p += 1;
+            if (p < src.len) {
+                var depth: i32 = 1;
+                p += 1;
+                while (p < src.len) : (p += 1) {
+                    const c = src[p];
+                    if (c == '{') depth += 1
+                    else if (c == '}') {
+                        depth -= 1;
+                        if (depth == 0) {
+                            if (@as(u32, @intCast(p + 1)) > end) end = @intCast(p + 1);
+                            break;
+                        }
+                    }
                 }
             }
             return .{ .start = first_start, .end = end };
