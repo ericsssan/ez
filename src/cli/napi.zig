@@ -1477,12 +1477,20 @@ fn getAnyBufferPtr(env: n.Env, val: n.Value, out_len: *usize) ?[*]u8 {
 // ── Config helpers ────────────────────────────────────────────────
 
 /// Single-slot cache for the most recently parsed config.  Callers of
-/// NAPI linting typically reuse the same config bytes across files, so
+/// NAPI linting typically reuses the same config bytes across files, so
 /// hashing the incoming bytes and reusing the previously parsed Config
-/// skips a ~10ms JSON parse per file.  NAPI is invoked from the JS main
-/// thread, so this single-threaded cache is safe in typical use.
-var g_config_cache_hash: u64 = 0;
-var g_config_cache: ?linter_root.config.Config = null;
+/// skips a ~10ms JSON parse per file.
+///
+/// `threadlocal` because Bun.Worker pools call into NAPI from multiple OS
+/// threads concurrently — the cache used to be plain globals (single-thread
+/// assumption), which raced: thread A would `cached.deinit()` (when its hash
+/// missed) and free the Config that thread B was still using via the
+/// returned `*const Config` pointer.  Symptom: ezlint multi-file runs gave
+/// non-deterministic diag counts (e.g. 4/5 runs at 1730, 1/5 at 822).
+/// Per-thread cache: ~10KB × N threads, same hit rate (each worker tends
+/// to lint many files with the same config).
+threadlocal var tl_config_cache_hash: u64 = 0;
+threadlocal var tl_config_cache: ?linter_root.config.Config = null;
 
 /// Build (or reuse) a Config from a JSON-encoded ESLint config object.
 /// Returns a pointer into the cache — callers must NOT call deinit on it.
@@ -1490,21 +1498,21 @@ var g_config_cache: ?linter_root.config.Config = null;
 /// Unrecognised rule names are ignored. Rules not in the JSON default to .off.
 fn configFromJson(bytes: []const u8) *const linter_root.config.Config {
     const hash = std.hash.Wyhash.hash(0, bytes);
-    if (g_config_cache) |*cached| {
-        if (g_config_cache_hash == hash) return cached;
+    if (tl_config_cache) |*cached| {
+        if (tl_config_cache_hash == hash) return cached;
         cached.deinit();
-        g_config_cache = null;
+        tl_config_cache = null;
     }
     var config = linter_root.config.parseConfigJson(std.heap.page_allocator, bytes) catch {
-        g_config_cache = linter_root.config.Config.initAllOff(std.heap.page_allocator);
-        g_config_cache_hash = hash;
-        return &g_config_cache.?;
+        tl_config_cache = linter_root.config.Config.initAllOff(std.heap.page_allocator);
+        tl_config_cache_hash = hash;
+        return &tl_config_cache.?;
     };
     // Override the table with .off as default: only explicitly configured rules run.
     config.buildSeverityTableWithDefault(.off);
-    g_config_cache = config;
-    g_config_cache_hash = hash;
-    return &g_config_cache.?;
+    tl_config_cache = config;
+    tl_config_cache_hash = hash;
+    return &tl_config_cache.?;
 }
 
 /// Try to read a Uint8Array (TypedArray) argument as a byte slice.
