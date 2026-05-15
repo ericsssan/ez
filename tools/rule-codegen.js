@@ -63,6 +63,7 @@ const SELECTOR_TO_TAG = {
   ObjectPattern: "object_pattern",
   ArrayPattern: "array_pattern",
   TSNonNullExpression: "ts_non_null_expr",
+  PropertyDefinition: "property_def",
   // Intentionally narrow — add entries deliberately as IR grows to use them.
 };
 

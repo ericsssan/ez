@@ -2771,14 +2771,46 @@ function splitHandlers(createFn, ctxName) {
     handlers.push({ selector, handler: handlerFn, nodeParam });
   };
 
+  // Walk the create-body declarations once to surface any string/string-array
+  // bindings — used for computed selector keys like `[selectors](node)`.
+  const stringArrayBindings = new Map();
+  const stringScalarBindings = new Map();
+  for (const stmt of body.body) {
+    if (stmt.type !== "VariableDeclaration") continue;
+    for (const d of stmt.declarations) {
+      if (d.id?.type !== "Identifier" || !d.init) continue;
+      if (d.init.type === "ArrayExpression"
+          && d.init.elements.every(e => e?.type === "Literal" && typeof e.value === "string")) {
+        stringArrayBindings.set(d.id.name, d.init.elements.map(e => e.value));
+      } else if (d.init.type === "Literal" && typeof d.init.value === "string") {
+        stringScalarBindings.set(d.id.name, d.init.value);
+      }
+    }
+  }
   for (const p of returned.properties) {
     if (p.type !== "Property") continue;
     const key = p.key;
-    let selector = null;
-    if (key.type === "Identifier") selector = key.name;
-    else if (key.type === "Literal") selector = String(key.value);
-    if (!selector) continue;
-    pushHandler(selector, p.value);
+    let selectors = null;
+    // Computed `[X]` key — resolve X if it's a known string or string-array
+    // binding.  Lets `const sels = [...]` + `[sels](node)` expand to
+    // one handler per selector string.
+    if (p.computed) {
+      if (key.type === "Identifier") {
+        if (stringArrayBindings.has(key.name)) selectors = stringArrayBindings.get(key.name);
+        else if (stringScalarBindings.has(key.name)) selectors = [stringScalarBindings.get(key.name)];
+        else selectors = [key.name]; // unresolved — preserve old behavior
+      } else if (key.type === "ArrayExpression"
+          && key.elements.every(e => e?.type === "Literal" && typeof e.value === "string")) {
+        selectors = key.elements.map(e => e.value);
+      } else if (key.type === "Literal" && typeof key.value === "string") {
+        selectors = [key.value];
+      }
+    } else {
+      if (key.type === "Identifier") selectors = [key.name];
+      else if (key.type === "Literal") selectors = [String(key.value)];
+    }
+    if (!selectors) continue;
+    for (const sel of selectors) pushHandler(sel, p.value);
   }
   for (const { selector, handlerFn } of assignedHandlers) {
     pushHandler(selector, handlerFn);

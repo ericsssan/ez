@@ -25,6 +25,7 @@ const no_const_assign = @import("correctness/no_const_assign.zig");
 const no_empty_pattern = @import("correctness/no_empty_pattern.zig");
 const no_eq_null = @import("style/no_eq_null.zig");
 const no_octal = @import("style/no_octal.zig");
+const no_multi_assign = @import("style/no_multi_assign.zig");
 // v0.4 correctness rules
 // const for_direction = @import("correctness/for_direction.zig");  // hand-written — disabled per IR-only constraint
 // const getter_return = @import("correctness/getter_return.zig");  // hand-written — disabled per IR-only constraint
@@ -291,6 +292,7 @@ pub const all_rules = .{
     no_empty_pattern,
     no_eq_null,
     no_octal,
+    no_multi_assign,
     // for_direction, // runner >> native (runner 72, native 47, gap 25, 6 FP); fall back to JS runner
     // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
     // no_async_promise_executor, // hand-written — disabled
