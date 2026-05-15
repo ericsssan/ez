@@ -46,6 +46,24 @@ function isFunctionLike(n) {
   return n && (n.type === "FunctionExpression" || n.type === "FunctionDeclaration" || n.type === "ArrowFunctionExpression");
 }
 
+// Sprint #3: well-known astUtils predicates we recognise as inline node-type
+// checks.  Each entry is an array of ESTree node-type strings — a call
+// `astUtils.<name>(node)` becomes equivalent to a switch over node.type
+// returning true for any matching type, false otherwise.
+//
+// Source for the type lists: tests/conformance/eslint/lib/rules/utils/ast-utils.js.
+// The original implementations test a regex (anyFunctionPattern, anyLoopPattern,
+// etc.); we materialise the regex as an explicit type list so the existing
+// node-type-predicate IR can carry it.
+//
+// Adding more entries unlocks any rule whose body calls these helpers with a
+// single AST-node argument (the common case).  Helpers that take tokens or
+// multiple arguments are NOT in this map.
+const ASTUTILS_NODE_TYPE_PREDICATES = {
+  isFunction: ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"],
+  isLoop: ["DoWhileStatement", "ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement"],
+};
+
 // Find the exported rule object literal.
 // Supports:
 //   CommonJS: module.exports = { create, meta }
@@ -3806,6 +3824,42 @@ function extractExpr(expr, scope) {
         // report-if inline-as-expression isn't meaningful (it's a statement).
         // Fall through to the statement-level inliner via extractStatement.
         return { ok: false, reason: `cannot use report-if helper '${callee.name}' in expression position` };
+      }
+      // Sprint #3: well-known astUtils predicates.  When a rule calls
+      // `astUtils.isFunction(arg)` (or any other entry in
+      // ASTUTILS_NODE_TYPE_PREDICATES), inject a virtual node-type-predicate
+      // helper into the rule's helpers map and emit a call-helper IR op
+      // pointing at it.  Codegen treats these identically to locally-defined
+      // predicates — generates a Zig `fn isFunction(tag: Node.Tag) bool`.
+      //
+      // The "astUtils" receiver matching is intentionally loose: we accept
+      // any MemberExpression whose object is the bare identifier "astUtils"
+      // (or its imported alias), since rules consistently destructure the
+      // module under that name.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier"
+          && callee.object?.type === "Identifier"
+          && callee.object.name === "astUtils"
+          && expr.arguments.length === 1
+          && Object.prototype.hasOwnProperty.call(ASTUTILS_NODE_TYPE_PREDICATES, callee.property.name)) {
+        const predName = callee.property.name;
+        const types = ASTUTILS_NODE_TYPE_PREDICATES[predName];
+        // Inject the predicate into helpers (idempotent — only writes if
+        // missing).  Uses a stable per-rule name so multiple call sites in
+        // the same rule share one emitted Zig helper.
+        const helperName = `__astutils_${predName}`;
+        if (!scope.helpers) scope.helpers = {};
+        if (!scope.helpers[helperName]) {
+          scope.helpers[helperName] = {
+            kind: "node-type-predicate",
+            param: "node",
+            cases: [{ types, returns: true }],
+            default: false,
+          };
+        }
+        const arg = extractExpr(expr.arguments[0], scope);
+        if (!arg.ok) return arg;
+        return { ok: true, expr: { op: "call-helper", name: helperName, arg: arg.expr } };
       }
       return { ok: false, reason: "unsupported CallExpression shape" };
     }
