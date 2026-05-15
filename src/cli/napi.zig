@@ -1104,7 +1104,8 @@ fn parseAndLintImpl(
     const sem_ptr: *const semantic_mod.SemanticResult =
         if (sem_result_opt != null) &sem_result_opt.? else &empty_sem;
 
-    const diagnostics = linter_mod.lint(lint_arena, &tree, sem_ptr, config, language) catch &.{};
+    const raw_diagnostics = linter_mod.lint(lint_arena, &tree, sem_ptr, config, language) catch &.{};
+    const diagnostics = filterDiagsByDisables(lint_arena, raw_diagnostics, source) catch raw_diagnostics;
 
     // Serialize diagnostics into out_ptr (same format as ez_lint).
     if (out_len >= 4) {
@@ -1378,7 +1379,8 @@ fn lintImpl(
         try semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{ .build_parents = true })
     else
         semantic_mod.SemanticResult.initEmpty(arena);
-    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config, language);
+    const raw_diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config, language);
+    const diagnostics = filterDiagsByDisables(arena, raw_diagnostics, source) catch raw_diagnostics;
 
     // Serialize diagnostics into the caller's output buffer.
     if (out_len < 4) return 0;
@@ -1391,6 +1393,30 @@ fn lintImpl(
         pos = w;
     }
     return pos;
+}
+
+/// Apply inline `/* eslint-disable ... */` directives to native diagnostics
+/// — was previously a host-side concern, but the differential pipeline runs
+/// native straight to the napi entry without the host's filter pass, so
+/// disable directives in test fixtures (e.g. eslint-disable-next-line)
+/// silently leaked through as native FPs.
+fn filterDiagsByDisables(
+    alloc: std.mem.Allocator,
+    raw: []const linter_root.LintDiagnostic,
+    source: []const u8,
+) ![]const linter_root.LintDiagnostic {
+    if (raw.len == 0) return raw;
+    var disables = linter_root.inline_disable.InlineDisables.parse(alloc, source) catch return raw;
+    defer disables.deinit();
+    if (disables.directives.len == 0) return raw;
+    // Build a small line_starts table on the fly — the host's table isn't
+    // available here, but it's O(N) once per source and the differential
+    // dwarfs the cost vs the lint pass.
+    var ls: std.ArrayList(u32) = .empty;
+    defer ls.deinit(alloc);
+    try ls.append(alloc, 0);
+    for (source, 0..) |c, i| if (c == '\n') try ls.append(alloc, @intCast(i + 1));
+    return linter_mod.filterByInlineDisables(alloc, raw, &disables, ls.items, source);
 }
 
 // Wire format per diagnostic (little-endian):
