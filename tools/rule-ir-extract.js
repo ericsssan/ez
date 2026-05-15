@@ -227,7 +227,13 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
   // Maps local variable name → { op: "get-option-bool"|"get-option-string", name, default }
   const optionLocals = new Map();
 
-  for (const stmt of createBodyStmts) {
+  // ── Pass 1: register specialized helper recognizers ─────────────
+  // (Generic inline helpers are deferred to pass 2 so they can call
+  // each other and any specialized helper registered here.)
+  const pendingInlineFns = []; // [{ name, fn }]
+  // Also include MODULE-level FunctionDeclarations as candidate helpers —
+  // many rules define `function isFoo(node) { ... }` at module scope.
+  for (const stmt of (ast?.body || [])) {
     if (stmt.type === "FunctionDeclaration" && stmt.id?.type === "Identifier") {
       const pred = extractNodeTypePredicate(stmt);
       if (pred) helpers[stmt.id.name] = pred;
@@ -237,20 +243,26 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
         else {
           const directReport = extractDirectReportHelper(stmt);
           if (directReport) helpers[stmt.id.name] = directReport;
-          else {
-            const argsText = extractArgsTextHelper(stmt);
-            if (argsText) helpers[stmt.id.name] = argsText;
-            else {
-              const hasComments = extractHasCommentsHelper(stmt);
-              if (hasComments) helpers[stmt.id.name] = hasComments;
-              else {
-                const boolPred = extractBoolPredicateHelper(stmt, constants, boolPreds, optionLocals, moduleImports);
-                if (boolPred) boolPreds[stmt.id.name] = boolPred;
-              }
-            }
-          }
         }
       }
+    }
+  }
+  for (const stmt of createBodyStmts) {
+    if (stmt.type === "FunctionDeclaration" && stmt.id?.type === "Identifier") {
+      const pred = extractNodeTypePredicate(stmt);
+      if (pred) { helpers[stmt.id.name] = pred; continue; }
+      const reportIf = extractReportIfHelper(stmt);
+      if (reportIf) { helpers[stmt.id.name] = reportIf; continue; }
+      const directReport = extractDirectReportHelper(stmt);
+      if (directReport) { helpers[stmt.id.name] = directReport; continue; }
+      const argsText = extractArgsTextHelper(stmt);
+      if (argsText) { helpers[stmt.id.name] = argsText; continue; }
+      const hasComments = extractHasCommentsHelper(stmt);
+      if (hasComments) { helpers[stmt.id.name] = hasComments; continue; }
+      const boolPred = extractBoolPredicateHelper(stmt, constants, boolPreds, optionLocals, moduleImports);
+      if (boolPred) { boolPreds[stmt.id.name] = boolPred; continue; }
+      // Defer for generic-inline pass.
+      pendingInlineFns.push({ name: stmt.id.name, fn: stmt });
     }
     if (stmt.type === "VariableDeclaration") {
       for (const decl of stmt.declarations) {
@@ -295,6 +307,47 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
           if (c.kind === "regex") regexConsts[decl.id.name] = c;
           else constants[decl.id.name] = c;
         }
+      }
+    }
+  }
+
+  // ── Pass 2: generic inline-statement helpers ────────────────────
+  // Each pending FunctionDeclaration's body is extracted via
+  // extractStatement using a synthetic scope where the param is bound
+  // to a marker identifier.  At call sites the marker is substituted
+  // with the actual argument's IR.  We iterate to fixpoint so a helper
+  // calling another helper that's later in source order resolves once
+  // the second is known.
+  let progress = true;
+  while (progress && pendingInlineFns.length > 0) {
+    progress = false;
+    for (let i = pendingInlineFns.length - 1; i >= 0; i--) {
+      const { name, fn } = pendingInlineFns[i];
+      if (!fn.params || fn.params.length !== 1) { pendingInlineFns.splice(i, 1); continue; }
+      if (fn.params[0].type !== "Identifier") { pendingInlineFns.splice(i, 1); continue; }
+      const param = fn.params[0].name;
+      const stmts = fn.body?.body;
+      if (!stmts) { pendingInlineFns.splice(i, 1); continue; }
+      // Synthetic scope: param treated as the synthesized marker so any
+      // identifier reference in the body extracts as `{op:"identifier",
+      // name: "__inline_arg__"}` — codegen substitutes later.
+      const markerName = "__inline_arg__";
+      const scope = {
+        ctxName, nodeParamName: null,
+        locals: new Map([[param, { kind: "expr", expr: { op: "identifier", name: markerName } }]]),
+        helpers, constants, boolPreds, regexConsts, moduleImports: moduleImports || {},
+      };
+      const irStmts = [];
+      let okAll = true;
+      for (const s of stmts) {
+        const r = extractStatement(s, scope);
+        if (!r.ok) { okAll = false; break; }
+        irStmts.push(...r.stmts);
+      }
+      if (okAll) {
+        helpers[name] = { kind: "inline-statements", param: markerName, stmts: irStmts };
+        pendingInlineFns.splice(i, 1);
+        progress = true;
       }
     }
   }
@@ -1711,6 +1764,21 @@ function extractBoolPredicateHelper(fn, extraConstants, extraBoolPreds, outerLoc
 }
 
 // Replace `{ op: "node-ref" }` occurrences inside `expr` with `replacement`.
+// Walk `expr` and replace every `{op:"identifier", name: name}` node with
+// `replacement`.  Used by the generic helper inliner to thread the call's
+// argument through the helper's pre-extracted IR.
+function substituteIdentRef(expr, name, replacement) {
+  if (!expr || typeof expr !== "object") return expr;
+  if (expr.op === "identifier" && expr.name === name) return replacement;
+  const out = { ...expr };
+  for (const k of Object.keys(out)) {
+    const v = out[k];
+    if (Array.isArray(v)) out[k] = v.map(x => substituteIdentRef(x, name, replacement));
+    else if (v && typeof v === "object" && "op" in v) out[k] = substituteIdentRef(v, name, replacement);
+  }
+  return out;
+}
+
 function substituteNodeRef(expr, replacement) {
   if (!expr || typeof expr !== "object") return expr;
   if (expr.op === "node-ref") return replacement;
@@ -2873,6 +2941,16 @@ function extractStatement(stmt, scope) {
         cond,
         then: [{ op: "report", node: argR.expr, messageId: h.messageId }],
       }] };
+    }
+    // Inline a generic helper: substitute the helper's param marker with
+    // the call's argument throughout the helper's pre-extracted IR stmts.
+    if (callee.type === "Identifier" && scope.helpers?.[callee.name]?.kind === "inline-statements") {
+      if (e.arguments.length !== 1) return { ok: false, reason: "inline helper call must have 1 arg" };
+      const argR = extractExpr(e.arguments[0], scope);
+      if (!argR.ok) return argR;
+      const h = scope.helpers[callee.name];
+      const subbed = h.stmts.map(s => substituteIdentRef(s, h.param, argR.expr));
+      return { ok: true, stmts: subbed };
     }
     if (callee.type !== "MemberExpression" || callee.computed) return { ok: false, reason: "unsupported call callee" };
     if (callee.object.type !== "Identifier" || callee.object.name !== scope.ctxName) {
