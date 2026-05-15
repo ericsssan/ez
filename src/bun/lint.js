@@ -285,11 +285,42 @@ class WorkerPool {
   // pre-configured with a disjoint rule subset.  Closes the ~30% gap vs
   // the old Zig-host ezlint which split rules across 2 worker processes.
   if (args.files.length === 1) {
-    // Default 4 workers for single-file: empirical sweet spot — n=2 saves
-    // ~17% wall, n=4 saves ~21%, n=8 saves ~31% but with diminishing returns
-    // (each worker still pays the full parse cost in parallel).  4 keeps the
-    // warm-up cost low and beats the old Zig host's wall on typescript.js.
-    const nWorkers = Math.max(1, args.workers ?? Math.min(4, hwc));
+    // Adaptive worker count for single-file rule-parallel mode.
+    //
+    // Per-worker cost has two components: a fixed warm-up (~485ms init +
+    // ~50ms parse + ~10ms postMessage) and a variable JS-rule walk that
+    // scales with file size and rule subset.  For tiny files the fixed
+    // cost dominates and inline beats any pool; for big files the JS walk
+    // dominates and parallelism wins linearly until each worker's per-call
+    // parse cost catches up.
+    //
+    // Empirically on bench/fixtures/typescript.js (8.7MB):
+    //                          bun run    dist/ezlint (compiled)
+    //   inline:                1675ms     1675ms
+    //   rule-parallel n=2:     1395ms     1613ms
+    //   rule-parallel n=4:     1323ms     1597ms
+    //   rule-parallel n=6:     ~1200ms    1398ms  ← sweet spot for compiled
+    //   rule-parallel n=8:     1161ms     1642ms  (compiled regresses here)
+    //
+    // Compiled binary peaks at n=6 — past that, worker spawn overhead and
+    // bytecode-JIT contention overwhelm the parallelism gain.  bun run
+    // peaks at n=8 (faster spawn).  We cap at 6 to optimize for the
+    // production target (compiled binary).
+    //
+    // Thresholds keep the worst case (small files paying spawn cost they
+    // don't recoup) bounded.  Override with --workers=N or --workers=0 (inline).
+    let nWorkers;
+    if (args.workers != null) {
+      nWorkers = Math.max(1, args.workers);
+    } else {
+      let bytes;
+      try { bytes = require("node:fs").statSync(args.files[0]).size; }
+      catch (_) { bytes = 1 << 20; } // assume 1MB if stat fails
+      if (bytes < 50 * 1024) nWorkers = 1;          // <50KB: inline
+      else if (bytes < 256 * 1024) nWorkers = 2;     // <256KB: 2 workers
+      else if (bytes < 1024 * 1024) nWorkers = Math.min(4, hwc); // <1MB: 4
+      else nWorkers = Math.min(6, hwc);              // bigger: up to 6
+    }
     const file = args.files[0];
     if (nWorkers === 1) {
       // One worker has no parallelism — direct inline is faster (no spawn).

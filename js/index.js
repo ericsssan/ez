@@ -256,12 +256,24 @@ function parse(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
 
+  // Same upfront-stat heuristic as parseAndLintNative — AST is ~30× source
+  // and the buf-too-small needed-hint protocol only covers source overrun,
+  // not AST overrun, so the grow-and-retry path can't recover from a too-
+  // tight initial allocation on big files.
+  let stat;
+  try { stat = fs.statSync(filePath); } catch (_) { stat = null; }
+  if (stat && stat.size > 0) {
+    const wanted = Math.max(DEFAULT_BUFFER_SIZE, stat.size * 32 + HEADER_SIZE);
+    if (!sharedBuffer || sharedBuffer.byteLength < wanted) {
+      sharedBuffer = ensureBufferBytes(wanted);
+    }
+  }
   let buf = sharedBuffer || ensureBufferBytes(DEFAULT_BUFFER_SIZE);
   let bytesUsed = b.parseFile(buf, filePath, lang);
   if (bytesUsed === 0) {
     const needed = new DataView(buf).getUint32(0, true);
     if (needed > 0 && needed + HEADER_SIZE > buf.byteLength) {
-      buf = ensureBufferBytes(needed + HEADER_SIZE);
+      buf = ensureBufferBytes(needed * 32 + HEADER_SIZE);
       sharedBuffer = buf;
       bytesUsed = b.parseFile(buf, filePath, lang);
     }
