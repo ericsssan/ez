@@ -117,6 +117,8 @@ const EXPR_OPS = new Set([
   "source-text-of",            // sourceCode.getText(node) — slice of node's full span
   "args-text-of",              // call's `(...)` body — getArgumentsText helper
   "template-string",           // `lit${expr}lit` parts → runtime allocPrint
+  // ── Conditional value (lifted from `let X; if(c){X=A}else{X=B}` patterns)
+  "ternary",                   // { cond, then, else } — codegen branches per use site
 ]);
 
 // Helper-function kinds.

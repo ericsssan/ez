@@ -2709,6 +2709,25 @@ function getFunctionBodyStatements(fn) {
 function extractStatement(stmt, scope) {
   if (stmt.type === "ExpressionStatement") {
     const e = stmt.expression;
+    // Assignment to a previously-declared `let X;` — bind X in scope.locals.
+    // Plain `X = <expr>;` only (no compound ops); fixes the "uninit-local
+    // followed by single assignment" pattern that's common in setup code
+    // before context.report().  If extraction fails, fall through to the
+    // unknownLocals path so identifier references error out predictably.
+    if (e.type === "AssignmentExpression" && e.operator === "="
+        && e.left?.type === "Identifier" && scope.uninitLocals?.has(e.left.name)) {
+      const name = e.left.name;
+      const r = extractExpr(e.right, scope);
+      if (r.ok) {
+        scope.locals.set(name, { kind: "expr", expr: r.expr });
+        scope.uninitLocals.delete(name);
+        return { ok: true, stmts: [] };
+      }
+      scope.unknownLocals = scope.unknownLocals || new Set();
+      scope.unknownLocals.add(name);
+      scope.uninitLocals.delete(name);
+      return { ok: true, stmts: [] };
+    }
     if (e.type !== "CallExpression") return { ok: false, reason: `unsupported ExpressionStatement: ${e.type}` };
     const callee = e.callee;
     // Inline a user-local direct-report helper: `<NAME>(ARG)` → report(ARG, msg)
@@ -2742,6 +2761,14 @@ function extractStatement(stmt, scope) {
     return extractReportCall(e, scope);
   }
   if (stmt.type === "IfStatement") {
+    // Special case: if both branches are pure assignments to uninit-locals,
+    // register conditional bindings (`let X; if (cond) { X = A } else { X = B }`
+    // → bind X to a ternary IR expr).  Subsequent expression references to X
+    // resolve to the ternary, which codegen lowers per use site (e.g. into a
+    // branched fix when X appears in a fix-text template).
+    const condBind = tryExtractConditionalBindings(stmt, scope);
+    if (condBind) return { ok: true, stmts: [] };
+
     const cond = extractExpr(stmt.test, scope);
     if (!cond.ok) return cond;
     const thenStmts = [];
@@ -2864,8 +2891,11 @@ function extractStatement(stmt, scope) {
       }
       const name = decl.id.name;
       if (!decl.init) {
-        scope.unknownLocals = scope.unknownLocals || new Set();
-        scope.unknownLocals.add(name);
+        // `let X;` — track as uninit-local so a subsequent `X = expr;` (or
+        // an if/else that assigns X in both branches) can bind it.  Until
+        // bound, references will fail through to unknownLocals semantics.
+        scope.uninitLocals = scope.uninitLocals || new Set();
+        scope.uninitLocals.add(name);
         continue;
       }
       // `const sourceCode = context.sourceCode` — track as a sourceCode alias.
@@ -2900,6 +2930,65 @@ function extractStatement(stmt, scope) {
     return { ok: true, stmts: [] };
   }
   return { ok: false, reason: `unsupported statement: ${stmt.type}` };
+}
+
+// Detect `if (cond) { X1 = A1; X2 = A2; ... } else { X1 = B1; X2 = B2; ... }`
+// where every Xi is a previously-declared uninit local (`let Xi;`).  When
+// matched, register each Xi in scope.locals as a conditional binding —
+// `{ kind: "expr", expr: { op: "ternary", cond, then: Ai, else: Bi } }`.
+// Returns true on a successful match (so the caller suppresses the
+// IfStatement's normal IR emission); false otherwise.
+function tryExtractConditionalBindings(ifStmt, scope) {
+  if (!ifStmt.alternate) return false;
+  if (!scope.uninitLocals || scope.uninitLocals.size === 0) return false;
+  const thenBody = ifStmt.consequent.type === "BlockStatement" ? ifStmt.consequent.body : [ifStmt.consequent];
+  const elseBody = ifStmt.alternate.type === "BlockStatement" ? ifStmt.alternate.body : [ifStmt.alternate];
+  // Both branches must consist entirely of `X = expr;` where X is uninit.
+  const thenAssigns = collectAssignsToUninit(thenBody, scope);
+  if (!thenAssigns) return false;
+  const elseAssigns = collectAssignsToUninit(elseBody, scope);
+  if (!elseAssigns) return false;
+  // Every name assigned in `then` must also be assigned in `else` (and vice
+  // versa) so the binding is well-defined on both paths.  Names assigned in
+  // only one branch are left uninit and will surface as unknown-locals.
+  const names = new Set([...thenAssigns.keys(), ...elseAssigns.keys()]);
+  for (const n of names) if (!thenAssigns.has(n) || !elseAssigns.has(n)) return false;
+  // Extract the controlling condition once.
+  const condR = extractExpr(ifStmt.test, scope);
+  if (!condR.ok) return false;
+  // Extract each branch's RHS — bail if any side fails (we don't want to
+  // partially commit and leave Xi half-bound).
+  const bindings = new Map();
+  for (const n of names) {
+    const a = extractExpr(thenAssigns.get(n), scope);
+    if (!a.ok) return false;
+    const b = extractExpr(elseAssigns.get(n), scope);
+    if (!b.ok) return false;
+    bindings.set(n, { thenExpr: a.expr, elseExpr: b.expr });
+  }
+  // Commit.
+  for (const [n, { thenExpr, elseExpr }] of bindings) {
+    scope.locals.set(n, { kind: "expr", expr: { op: "ternary", cond: condR.expr, then: thenExpr, else: elseExpr } });
+    scope.uninitLocals.delete(n);
+  }
+  return true;
+}
+
+// Collect `X = expr` assignments where X is in scope.uninitLocals, returning
+// a Map<name, exprAst>.  Returns null on any other statement (so the caller
+// rejects the branch).
+function collectAssignsToUninit(stmts, scope) {
+  const out = new Map();
+  for (const s of stmts) {
+    if (s.type !== "ExpressionStatement") return null;
+    const e = s.expression;
+    if (e?.type !== "AssignmentExpression" || e.operator !== "=") return null;
+    if (e.left?.type !== "Identifier") return null;
+    if (!scope.uninitLocals.has(e.left.name)) return null;
+    if (out.has(e.left.name)) return null; // duplicate assign — give up
+    out.set(e.left.name, e.right);
+  }
+  return out.size === 0 ? null : out;
 }
 
 function deepEqual(a, b) {

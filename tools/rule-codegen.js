@@ -827,7 +827,37 @@ function emitFixOrPlainReport(fix, node, msgId, indent, ctx) {
   }
   // Runtime-built text: lower template-string into std.fmt.allocPrint;
   // any other string-typed expression goes through a single {s} slot.
+  // If the textExpr (or any of its template parts) is a ternary, distribute
+  // it: emit a Zig if/else where each branch calls allocPrint with one side
+  // of the ternary substituted.  This handles the common case where a
+  // `let X; if(c){X=A}else{X=B}` binding flows into a fix-text template.
   const tx = fix.textExpr;
+  if (tx.op === "ternary") {
+    return emitTernaryFixText(tx, node, msgId, fixSpan, indent, ctx);
+  }
+  if (tx.op === "template-string") {
+    const ternaryIdx = tx.parts.findIndex(p => p.kind === "expr" && p.expr.op === "ternary");
+    if (ternaryIdx !== -1) {
+      const tern = tx.parts[ternaryIdx].expr;
+      // Build the then- and else-substituted templates.
+      const subst = (v) => ({ op: "template-string",
+        parts: tx.parts.map((p, i) => i === ternaryIdx ? { kind: "expr", expr: v } : p) });
+      const lifted = { op: "ternary", cond: tern.cond, then: subst(tern.then), else: subst(tern.else) };
+      return emitTernaryFixText(lifted, node, msgId, fixSpan, indent, ctx);
+    }
+  }
+  return [
+    `${ind}{`,
+    `${ind}    const __fix_text = ${emitAllocPrint(tx, ctx)};`,
+    `${ind}    defer ctx.allocator.free(__fix_text);`,
+    `${ind}    ctx.reportWithFixAndMessageId(${node}, ${fixSpan}, __fix_text, ${msgId});`,
+    `${ind}}`,
+  ];
+}
+
+// Render a template-string (or any string-typed expr) as a `std.fmt.allocPrint`
+// call returning `[]u8`.  Caller is responsible for `defer ctx.allocator.free`.
+function emitAllocPrint(tx, ctx) {
   let fmt, args;
   if (tx.op === "template-string") {
     fmt = "";
@@ -841,11 +871,21 @@ function emitFixOrPlainReport(fix, node, msgId, indent, ctx) {
     args = [emitExpr(tx, ctx)];
   }
   const argsList = args.length === 0 ? ".{}" : `.{ ${args.join(", ")} }`;
+  return `std.fmt.allocPrint(ctx.allocator, "${zigStr(fmt)}", ${argsList}) catch return`;
+}
+
+function emitTernaryFixText(tern, node, msgId, fixSpan, indent, ctx) {
+  const ind = "    ".repeat(indent);
+  const innerInd = "    ".repeat(indent + 1);
   return [
-    `${ind}{`,
-    `${ind}    const __fix_text = std.fmt.allocPrint(ctx.allocator, "${zigStr(fmt)}", ${argsList}) catch return;`,
-    `${ind}    defer ctx.allocator.free(__fix_text);`,
-    `${ind}    ctx.reportWithFixAndMessageId(${node}, ${fixSpan}, __fix_text, ${msgId});`,
+    `${ind}if (${emitExpr(tern.cond, ctx)}) {`,
+    `${innerInd}const __fix_text = ${emitAllocPrint(tern.then, ctx)};`,
+    `${innerInd}defer ctx.allocator.free(__fix_text);`,
+    `${innerInd}ctx.reportWithFixAndMessageId(${node}, ${fixSpan}, __fix_text, ${msgId});`,
+    `${ind}} else {`,
+    `${innerInd}const __fix_text = ${emitAllocPrint(tern.else, ctx)};`,
+    `${innerInd}defer ctx.allocator.free(__fix_text);`,
+    `${innerInd}ctx.reportWithFixAndMessageId(${node}, ${fixSpan}, __fix_text, ${msgId});`,
     `${ind}}`,
   ];
 }
