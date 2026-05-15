@@ -688,6 +688,26 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
+        // member_expr / optional_member_expr — main_token is the property
+        // name token, but for private fields the parser uses the `#` token
+        // (1 char) and skips the identifier suffix.  Walk forward from end
+        // through `#`-prefixed identifier chars so `this.#field` extends to
+        // the end of `field`.  Also handles the regular case as a no-op
+        // since main_token is already the identifier (no `#`).
+        if (tag == .member_expr or tag == .optional_member_expr) {
+            // If the existing end points at a `#`, walk past identifier chars.
+            var p: usize = end;
+            if (p > 0 and src[p - 1] == '#') {
+                while (p < src.len) : (p += 1) {
+                    const c = src[p];
+                    const is_id = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
+                        or (c >= '0' and c <= '9') or c == '_' or c == '$';
+                    if (!is_id) break;
+                }
+                end = @intCast(p);
+            }
+            return .{ .start = first_start, .end = end };
+        }
         // export default <expr|fn|class> / export <decl> — lhs holds the
         // wrapped declaration/expression; recurse so the parent export
         // node ends past the wrapped construct's `}` / `;`.
