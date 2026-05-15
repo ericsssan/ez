@@ -1167,7 +1167,7 @@ function extractNewExpressionShadowHandler(rawHandler, stmts, { constants }) {
 // conditions, then reports at the parent (if NewExpression) or the ref (if
 // CallExpression).  Fix and suggest are intentionally dropped — they require
 // IR ops beyond the current extractor's vocabulary; the diag still fires.
-function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { constants }) {
+function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { ctxName, constants, helpers }) {
   if (rawHandler.selector !== "CallExpression" && rawHandler.selector !== "NewExpression") return { ok: false };
   if (stmts.length !== 3) return { ok: false };
   const [earlyIf, varDecl, innerIf] = stmts;
@@ -1205,13 +1205,50 @@ function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { constants
   if (!isVariableDeclaredCheckLoose(innerIf.test, variableBinding)) return { ok: false };
   const innerBody = innerIf.consequent?.type === "BlockStatement" ? innerIf.consequent.body : null;
   if (!innerBody) return { ok: false };
-  // Find the report call — anywhere in innerBody (other statements set up
-  // pre-fix locals we can't extract; we just want the report's messageId).
+
+  // Build a body scope that maps the rule's `node` parameter to parentExpr
+  // (the call/new node in our IR), then extract each pre-report statement.
+  // VariableDeclarations populate scope.locals (or unknownLocals on
+  // unsupported init); the conditional-binding lift fires automatically when
+  // an if/else assigns previously-uninit lets in both branches.  When we
+  // reach the report, extractReportCall pulls in fix info too — gracefully
+  // dropping the fix when its body references unsupported locals.
+  const parentExprForBody = { op: "parent-node-skip-grouping", node: { op: "identifier", name: "__ref_identifier__" } };
+  const bodyScope = {
+    ctxName,
+    nodeParamName: null,
+    locals: new Map([[nodeParam, { kind: "expr", expr: parentExprForBody }]]),
+    helpers: helpers || {},
+    constants,
+    unknownLocals: new Set([variableBinding]),
+  };
+
   let messageId = null;
+  let reportFix = null;
   for (const s of innerBody) {
-    if (s.type !== "ExpressionStatement") continue;
-    const info = extractReportShape(s.expression, nodeParam);
-    if (info) { messageId = info.messageId; break; }
+    // Report call — extract via the full report extractor so fix is captured.
+    if (s.type === "ExpressionStatement" && s.expression?.type === "CallExpression") {
+      const c = s.expression.callee;
+      if (c?.type === "MemberExpression" && !c.computed
+          && c.property?.type === "Identifier" && c.property.name === "report"
+          && c.object?.type === "Identifier" && c.object.name === ctxName) {
+        const r = extractReportCall(s.expression, bodyScope);
+        if (r.ok && r.stmts.length === 1 && r.stmts[0].op === "report") {
+          messageId = r.stmts[0].messageId;
+          reportFix = r.stmts[0].fix ?? null;
+          continue;
+        }
+        // Fall back to messageId-only extraction so the rule still fires.
+        const info = extractReportShape(s.expression, nodeParam);
+        if (info) { messageId = info.messageId; continue; }
+      }
+    }
+    // Setup statement — let extractStatement update scope; ignore IR output
+    // (these are bindings/comments, not lint-emitting work).  Failures are
+    // tolerated: an unsupported setup stmt just leaves later identifiers
+    // marked unknown, which surfaces as a degraded fix (no autofix) rather
+    // than a recognizer rejection.
+    extractStatement(s, bodyScope);
   }
   if (!messageId) return { ok: false };
 
@@ -1282,11 +1319,16 @@ function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { constants
   // Report target: parent node when parent is NewExpression, else the ref.
   // (ESLint reports the whole `new Array()` but only the `Array` identifier
   // for plain `Array(...)` calls — historical compatibility.)
+  const mkReport = (node) => {
+    const r = { op: "report", node, messageId };
+    if (reportFix) r.fix = reportFix;
+    return r;
+  };
   const reportThen = [
     { op: "if",
       cond: { op: "node-tag-equals", node: parentExpr, estreeType: "NewExpression" },
-      then: [{ op: "report", node: parentExpr, messageId }],
-      else: [{ op: "report", node: refExpr,    messageId }] },
+      then: [mkReport(parentExpr)],
+      else: [mkReport(refExpr)] },
   ];
   const guardedReport = extraPositive
     ? [{ op: "if", cond: extraPositive, then: reportThen }]
