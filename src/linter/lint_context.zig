@@ -766,17 +766,26 @@ pub const LintContext = struct {
         }
         // switch_case / switch_default — rhs is a SubRange of statements.
         // ESTree includes the trailing `;` of the last consequent in the
-        // case's range, so recurse into the last statement.
+        // case's range; an empty consequent (just `case 1:` followed by
+        // another case) ends at the `:` itself.
         if (tag == .switch_case or tag == .switch_default) {
             const data = self.nodeData(index);
+            var has_stmts = false;
             if (data.rhs != .none) {
                 const sr = self.extraData(SubRange, @intFromEnum(data.rhs));
                 const stmts = self.extraSlice(sr);
                 if (stmts.len > 0) {
+                    has_stmts = true;
                     const last: NodeIndex = @enumFromInt(stmts[stmts.len - 1]);
                     const last_span = self.nodeSpan(last);
                     if (last_span.end > end) end = last_span.end;
                 }
+            }
+            if (!has_stmts) {
+                // No consequent — find the `:` after the test/default keyword.
+                var p: usize = end;
+                while (p < src.len and src[p] != ':' and src[p] != '\n') p += 1;
+                if (p < src.len and src[p] == ':') end = @intCast(p + 1);
             }
             return .{ .start = first_start, .end = end };
         }
