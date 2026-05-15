@@ -241,8 +241,12 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
             const argsText = extractArgsTextHelper(stmt);
             if (argsText) helpers[stmt.id.name] = argsText;
             else {
-              const boolPred = extractBoolPredicateHelper(stmt, constants, boolPreds, optionLocals, moduleImports);
-              if (boolPred) boolPreds[stmt.id.name] = boolPred;
+              const hasComments = extractHasCommentsHelper(stmt);
+              if (hasComments) helpers[stmt.id.name] = hasComments;
+              else {
+                const boolPred = extractBoolPredicateHelper(stmt, constants, boolPreds, optionLocals, moduleImports);
+                if (boolPred) boolPreds[stmt.id.name] = boolPred;
+              }
             }
           }
         }
@@ -1562,6 +1566,49 @@ function extractDirectReportHelper(fn) {
 // scan.  Misrecognition is rare in practice (the fingerprint is specific
 // enough) and the cost is just an incorrect fix string at worst, never a
 // missing/extra diagnostic.
+// Recognize a "comments inside this call's parens?" helper:
+//
+//   function hasCommentsInArrayConstructor(node) {
+//     const firstToken = sourceCode.getFirstToken(node);
+//     const lastToken  = sourceCode.getLastToken(node);
+//     let lastRelevantToken = sourceCode.getLastToken(node.callee);
+//     while (lastRelevantToken !== lastToken && !isOpeningParenToken(lastRelevantToken))
+//       lastRelevantToken = sourceCode.getTokenAfter(lastRelevantToken);
+//     return sourceCode.commentsExistBetween(firstToken, lastRelevantToken);
+//   }
+//
+// Body fingerprint: a single-param function whose body invokes
+// `commentsExistBetween` somewhere.  Lifts to the IR op
+// `has-comments-before-args`, which codegen lowers to
+// `ctx.hasCommentsBeforeArgs(node)`.
+function extractHasCommentsHelper(fn) {
+  if (!fn.params || fn.params.length !== 1) return null;
+  if (fn.params[0].type !== "Identifier") return null;
+  const body = fn.body?.body;
+  if (!body || body.length === 0) return null;
+  let sawCommentsExistBetween = false;
+  const seen = new WeakSet();
+  const walk = (x) => {
+    if (!x || typeof x !== "object" || !x.type || seen.has(x)) return;
+    seen.add(x);
+    if (x.type === "CallExpression"
+        && x.callee?.type === "MemberExpression" && !x.callee.computed
+        && x.callee.property?.type === "Identifier"
+        && x.callee.property.name === "commentsExistBetween") {
+      sawCommentsExistBetween = true;
+    }
+    const keys = visitorKeys[x.type] || [];
+    for (const k of keys) {
+      const v = x[k];
+      if (Array.isArray(v)) for (const e of v) walk(e);
+      else if (v && typeof v === "object") walk(v);
+    }
+  };
+  for (const s of body) walk(s);
+  if (!sawCommentsExistBetween) return null;
+  return { kind: "has-comments-before-args", param: fn.params[0].name };
+}
+
 function extractArgsTextHelper(fn) {
   if (!fn.params || fn.params.length !== 1) return null;
   if (fn.params[0].type !== "Identifier") return null;
@@ -4403,6 +4450,12 @@ function extractExpr(expr, scope) {
           const arg = extractExpr(expr.arguments[0], scope);
           if (!arg.ok) return arg;
           return { ok: true, expr: { op: "args-text-of", node: arg.expr } };
+        }
+        if (h.kind === "has-comments-before-args") {
+          if (expr.arguments.length !== 1) return { ok: false, reason: "has-comments helper call must have 1 arg" };
+          const arg = extractExpr(expr.arguments[0], scope);
+          if (!arg.ok) return arg;
+          return { ok: true, expr: { op: "has-comments-before-args", node: arg.expr } };
         }
         // report-if inline-as-expression isn't meaningful (it's a statement).
         // Fall through to the statement-level inliner via extractStatement.

@@ -390,6 +390,30 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// True when the source range from a call/new node's start to its
+    /// opening `(` contains a `/*` or `//` comment marker.  Mirrors the
+    /// no-array-constructor file-local helper `hasCommentsInArrayConstructor`,
+    /// which uses sourceCode.commentsExistBetween(firstToken, lastRelevantToken)
+    /// to gate fixes — applying an `Array /* hint */()` → `[]` rewrite would
+    /// strip the comment, so the rule abstains.
+    ///
+    /// Scanning source bytes is safe in this range: between a callee
+    /// identifier and the opening paren there are no string/regex literals
+    /// that could contain `/*` patterns spuriously.
+    pub fn hasCommentsBeforeArgs(self: *const LintContext, call: NodeIndex) bool {
+        if (call == .none) return false;
+        const span = self.nodeSpan(call);
+        const src = self.ast.source;
+        if (span.start >= src.len or span.end > src.len) return false;
+        var i: usize = span.start;
+        while (i < span.end and src[i] != '(') {
+            if (i + 1 < span.end and src[i] == '/' and (src[i + 1] == '/' or src[i + 1] == '*'))
+                return true;
+            i += 1;
+        }
+        return false;
+    }
+
     /// Source text between the call/new node's parentheses — equivalent to
     /// ESLint's `getArgumentsText` helper from no-array-constructor and
     /// related rules.  Preserves whitespace/comments inside the call so a

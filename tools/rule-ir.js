@@ -122,12 +122,13 @@ const EXPR_OPS = new Set([
   // ── astUtils boolean helpers (lower to ctx.<helper>(node)).
   "is-start-of-expression-statement",
   "needs-preceding-semicolon",
+  "has-comments-before-args",   // file-local hasCommentsInArrayConstructor-style helper
 ]);
 
 // Helper-function kinds.
 //   node-type-predicate — finite lookup table: NodeType string → bool or expr
 //   report-if          — user-local helper `function(node) { if (COND) context.report({node, messageId}); }` — inlined at each call site
-const HELPER_KINDS = new Set(["node-type-predicate", "report-if", "direct-report", "args-text-of"]);
+const HELPER_KINDS = new Set(["node-type-predicate", "report-if", "direct-report", "args-text-of", "has-comments-before-args"]);
 
 // Top-level constant kinds (declared at top of rule.create body, used in handler bodies).
 //   string-set   — `const X = new Set([s1, s2, ...])` with string literals
@@ -472,7 +473,8 @@ function validateExpr(e, path) {
   }
   // Source-text and ternary ops (used in fix-text templates).
   if (e.op === "source-text-of" || e.op === "args-text-of"
-      || e.op === "is-start-of-expression-statement" || e.op === "needs-preceding-semicolon") {
+      || e.op === "is-start-of-expression-statement" || e.op === "needs-preceding-semicolon"
+      || e.op === "has-comments-before-args") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "template-string") {

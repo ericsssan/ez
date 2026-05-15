@@ -329,7 +329,8 @@ function emit(rule) {
   // is lowered inline to ctx.argsTextBetweenParens — no per-rule fn needed
   // for any of these.
   for (const [name, h] of Object.entries(rule.helpers || {})) {
-    if (h.kind === "report-if" || h.kind === "direct-report" || h.kind === "args-text-of") continue;
+    if (h.kind === "report-if" || h.kind === "direct-report"
+        || h.kind === "args-text-of" || h.kind === "has-comments-before-args") continue;
     for (const line of emitHelper(name, h, ctx)) out.push(line);
     out.push(``);
   }
@@ -999,6 +1000,8 @@ function emitExpr(e, ctx) {
       return `ctx.isStartOfExpressionStatement(${emitExpr(e.node, ctx)})`;
     case "needs-preceding-semicolon":
       return `ctx.needsPrecedingSemicolon(${emitExpr(e.node, ctx)})`;
+    case "has-comments-before-args":
+      return `ctx.hasCommentsBeforeArgs(${emitExpr(e.node, ctx)})`;
     case "literal":
       if (e.value === null) return "null";
       if (typeof e.value === "string") return `"${zigStr(e.value)}"`;
