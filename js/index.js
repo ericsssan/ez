@@ -133,6 +133,14 @@ function _parseDiags(bytesWritten, srcBytes) {
   const count = dv.getUint32(0, true);
   const ruleNames = _getNativeRuleNames();
   const diags = [];
+  // Precompute line-starts ONCE per file so per-diag line/col is a binary
+  // search (O(log L)) instead of a per-diag full scan (O(offset)).  The old
+  // path was the dominant cost on big files: each call to _bufOffsetToLine
+  // scanned from byte 0 to the diag's offset, so 317 diags on the 8.7MB
+  // typescript.js fixture meant ~1.4 billion byte compares — measured at
+  // ~600ms wall, which surfaced as the "no-case-declarations 712ms ghost"
+  // (the rule's own run() was 0.29ms; the cost was here in JS).
+  const lineStarts = srcBytes ? _buildLineStarts(srcBytes) : null;
   let pos = 4;
   for (let i = 0; i < count; i++) {
     if (pos + 7 > bytesWritten) break;
@@ -143,9 +151,10 @@ function _parseDiags(bytesWritten, srcBytes) {
     const hasFix    = (flags & 0x04) !== 0;
     const ruleName  = ruleNames[ruleIndex] || `native-rule-${ruleIndex}`;
     const diag = { offset, severity, ruleName };
-    if (srcBytes) {
-      diag.line = _bufOffsetToLine(srcBytes, offset);
-      diag.col = _bufOffsetToCol(srcBytes, offset);
+    if (lineStarts) {
+      const lc = _offsetToLineCol(lineStarts, offset);
+      diag.line = lc.line;
+      diag.col = lc.col;
     }
     if (hasFix) {
       if (pos + 10 > bytesWritten) break;
@@ -161,23 +170,31 @@ function _parseDiags(bytesWritten, srcBytes) {
   return diags;
 }
 
-/** Count 1-based line number for a UTF-8 byte offset. */
-function _bufOffsetToLine(bytes, offset) {
-  let line = 1;
-  const end = Math.min(offset, bytes.length);
-  for (let i = 0; i < end; i++) {
-    if (bytes[i] === 10) line++;
+/** Build a sorted Uint32Array of byte offsets where each line starts. */
+function _buildLineStarts(bytes) {
+  // First pass: count newlines so we can sized-allocate the typed array.
+  // A single linear scan over the source — O(N) once vs O(N) per diag.
+  let count = 1; // line 1 starts at offset 0
+  const len = bytes.length;
+  for (let i = 0; i < len; i++) if (bytes[i] === 10) count++;
+  const starts = new Uint32Array(count);
+  let idx = 1;
+  starts[0] = 0;
+  for (let i = 0; i < len; i++) {
+    if (bytes[i] === 10) starts[idx++] = i + 1;
   }
-  return line;
+  return starts;
 }
 
-/** Count 0-based column for a UTF-8 byte offset. */
-function _bufOffsetToCol(bytes, offset) {
-  const end = Math.min(offset, bytes.length);
-  for (let i = end; i > 0; i--) {
-    if (bytes[i - 1] === 10) return end - i;
+/** Binary-search the line-start at or before `offset`; return 1-based line + 0-based col. */
+function _offsetToLineCol(lineStarts, offset) {
+  let lo = 0, hi = lineStarts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (lineStarts[mid] <= offset) lo = mid;
+    else hi = mid - 1;
   }
-  return end;
+  return { line: lo + 1, col: offset - lineStarts[lo] };
 }
 
 function _ensureLintOutBuf(sourceLen) {
