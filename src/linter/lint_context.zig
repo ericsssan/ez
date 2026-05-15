@@ -543,6 +543,62 @@ pub const LintContext = struct {
         //   * if there's no args list AND the callee is wrapped, extend
         //     through the wrapper's close paren (recurse into nodeSpan to
         //     pick up grouping's own paren-extension).
+        // block_stmt / class_body — main_token is `{`, close `}` isn't a
+        // child node's main_token.  Brace-depth scan from the existing end
+        // (which sits past the last child's tokens) handles nested blocks.
+        if (tag == .block_stmt or tag == .class_body) {
+            var depth: i32 = 1;
+            var p: usize = end;
+            while (p < src.len) : (p += 1) {
+                const c = src[p];
+                if (c == '{') depth += 1
+                else if (c == '}') {
+                    depth -= 1;
+                    if (depth == 0) { end = @intCast(p + 1); break; }
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // var/let/const — ESTree's VariableDeclaration includes the trailing
+        // `;` in its range.  If the next non-whitespace char is `;`, extend.
+        if (tag == .var_decl or tag == .let_decl or tag == .const_decl) {
+            var p: usize = end;
+            while (p < src.len and (src[p] == ' ' or src[p] == '\t')) p += 1;
+            if (p < src.len and src[p] == ';') end = @intCast(p + 1);
+            return .{ .start = first_start, .end = end };
+        }
+        // fn_decl / fn_expr / etc. — body lives in extra-data (FnData.body),
+        // not data.rhs.  Pull the body NodeIndex from there and recurse so
+        // the function span reaches the closing `}` (block_stmt extends
+        // through `}` itself via the case above).
+        if (tag == .fn_decl or tag == .async_fn_decl or tag == .generator_fn_decl
+            or tag == .async_generator_fn_decl
+            or tag == .fn_expr or tag == .async_fn_expr
+            or tag == .generator_fn_expr or tag == .async_generator_fn_expr) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const fn_data = self.extraData(ast_mod.FnData, @intFromEnum(data.lhs));
+                if (fn_data.body != .none) {
+                    const body_span = self.nodeSpan(fn_data.body);
+                    if (body_span.end > end) end = body_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // class_decl / class_expr — body lives in extra-data (ClassData.body),
+        // not data.rhs.  Pull it from there and recurse so the class span
+        // reaches the closing `}`.
+        if (tag == .class_decl or tag == .class_expr) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const class_data = self.extraData(ast_mod.ClassData, @intFromEnum(data.lhs));
+                if (class_data.body != .none) {
+                    const body_span = self.nodeSpan(class_data.body);
+                    if (body_span.end > end) end = body_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
         if (tag == .call_expr or tag == .new_expr or tag == .optional_call_expr) {
             const data = self.nodeData(index);
             const callee = data.lhs;
