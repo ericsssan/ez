@@ -610,7 +610,9 @@ pub const LintContext = struct {
         // a `;`, extend through it.
         if (tag == .var_decl or tag == .let_decl or tag == .const_decl
             or tag == .expression_stmt or tag == .return_stmt or tag == .throw_stmt
-            or tag == .break_stmt or tag == .continue_stmt or tag == .debugger_stmt) {
+            or tag == .break_stmt or tag == .break_label
+            or tag == .continue_stmt or tag == .continue_label
+            or tag == .debugger_stmt) {
             var p: usize = end;
             while (p < src.len and (src[p] == ' ' or src[p] == '\t')) p += 1;
             if (p < src.len and src[p] == ';') end = @intCast(p + 1);
