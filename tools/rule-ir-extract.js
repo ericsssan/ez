@@ -2846,16 +2846,37 @@ function tryExtractFixFn(fixVal, scope) {
     if (body.arguments.length !== 2) return null;
     const nodeArg = body.arguments[0];
     const textArg = body.arguments[1];
-    if (textArg.type !== "Literal" || typeof textArg.value !== "string") return null;
     const r = extractExpr(nodeArg, scope);
     if (!r.ok) return null;
-    return { kind: "replace-text", node: r.expr, text: textArg.value };
+    // Accept a string literal OR an arbitrary string-typed IR expression
+    // (typically a template-string built from source-text-of slices).  The
+    // codegen lowers literal-only fix.text to a static string and template/
+    // expression-typed fix.text to a runtime allocPrint.
+    if (textArg.type === "Literal" && typeof textArg.value === "string") {
+      return { kind: "replace-text", node: r.expr, text: textArg.value };
+    }
+    const tx = extractExpr(textArg, scope);
+    if (!tx.ok) return null;
+    return { kind: "replace-text", node: r.expr, textExpr: tx.expr };
   }
   if (method === "remove") {
     if (body.arguments.length !== 1) return null;
     const r = extractExpr(body.arguments[0], scope);
     if (!r.ok) return null;
     return { kind: "remove", node: r.expr };
+  }
+  if (method === "insertTextBefore" || method === "insertTextAfter") {
+    if (body.arguments.length !== 2) return null;
+    const r = extractExpr(body.arguments[0], scope);
+    if (!r.ok) return null;
+    const textArg = body.arguments[1];
+    const kind = method === "insertTextBefore" ? "insert-before" : "insert-after";
+    if (textArg.type === "Literal" && typeof textArg.value === "string") {
+      return { kind, node: r.expr, text: textArg.value };
+    }
+    const tx = extractExpr(textArg, scope);
+    if (!tx.ok) return null;
+    return { kind, node: r.expr, textExpr: tx.expr };
   }
   return null;
 }
@@ -3286,6 +3307,24 @@ function extractExpr(expr, scope) {
         return { ok: true, expr: { op: "literal", value: v } };
       return { ok: false, reason: `unsupported literal type ${typeof v}` };
     }
+    case "TemplateLiteral": {
+      // `lit${expr1}lit${expr2}lit` → a template-string IR with N+1 quasi parts
+      // and N expression parts, in source order.  Used in fix bodies where the
+      // replacement text is built by concatenating literal fragments and
+      // runtime-evaluated expressions (typically source-text-of(<node>) for
+      // sub-spans of the original source).
+      const parts = [];
+      for (let i = 0; i < expr.quasis.length; i++) {
+        const q = expr.quasis[i];
+        if (q.value.cooked !== "") parts.push({ kind: "str", value: q.value.cooked });
+        if (i < expr.expressions.length) {
+          const r = extractExpr(expr.expressions[i], scope);
+          if (!r.ok) return { ok: false, reason: `template-literal expr: ${r.reason}` };
+          parts.push({ kind: "expr", expr: r.expr });
+        }
+      }
+      return { ok: true, expr: { op: "template-string", parts } };
+    }
     case "Identifier": {
       if (expr.name === scope.nodeParamName) return { ok: true, expr: { op: "node-ref" } };
       const local = scope.locals?.get(expr.name);
@@ -3597,6 +3636,15 @@ function extractExpr(expr, scope) {
     }
     case "CallExpression": {
       const callee = expr.callee;
+      // sourceCode.getText(<node>) → source-text-of(node).  No-arg form
+      // (whole source) is intentionally not supported — it would require
+      // emitting an unbounded fix span and isn't useful for our codegen.
+      if (callee?.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "getText"
+          && isSourceCodeReceiver(callee.object, scope) && expr.arguments.length === 1) {
+        const r = extractExpr(expr.arguments[0], scope);
+        if (r.ok) return { ok: true, expr: { op: "source-text-of", node: r.expr } };
+      }
       // Token navigation: sourceCode.getTokenBefore/After/getFirstToken/getLastToken
       {
         const tokNav = tryExtractTokenNavCall(expr, scope);

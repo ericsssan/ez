@@ -37,7 +37,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             ctx.reportWithMessageId(node, "leading");
         }
         if (std.mem.endsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), ".")) {
-            ctx.reportWithMessageId(node, "trailing");
+            ctx.reportWithFixAndMessageId(node, (.{ .start = ctx.nodeSpan(node).end,   .end = ctx.nodeSpan(node).end }), "0", "trailing");
         }
     }
 }

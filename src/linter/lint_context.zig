@@ -339,6 +339,16 @@ pub const LintContext = struct {
         return self.ast.extraSlice(range);
     }
 
+    /// Source text covering the node's full subtree span — equivalent to
+    /// ESLint's `sourceCode.getText(node)`.  Returns a slice into the AST's
+    /// borrowed source buffer; valid for the lifetime of the lint pass.
+    pub fn sourceText(self: *const LintContext, index: NodeIndex) []const u8 {
+        const sp = self.nodeSpan(index);
+        const src = self.ast.source;
+        if (sp.start > sp.end or sp.end > src.len) return "";
+        return src[sp.start..sp.end];
+    }
+
     pub fn nodeSpan(self: *const LintContext, index: NodeIndex) Span {
         const main_tok = self.ast.nodeMainToken(index);
         const i = index.toInt();

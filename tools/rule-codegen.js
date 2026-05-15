@@ -798,14 +798,52 @@ function emitStatement(stmt, indent, ctx) {
   if (stmt.op === "report") {
     const node = emitExpr(stmt.node, ctx);
     if (stmt.fix) {
-      // Fix span = the node's full span when no explicit range is given.
-      // For replace-text, fix.text is the string literal to substitute;
-      // for remove, fix.text = "".
-      const fixText = stmt.fix.kind === "remove" ? "" : stmt.fix.text;
       const fixNode = emitExpr(stmt.fix.node, ctx);
       const msgId = stmt.messageId ? `"${zigStr(stmt.messageId)}"` : `""`;
+      // Fix span depends on the fixer method:
+      //   replace-text / remove → ctx.nodeSpan(fixNode)
+      //   insert-before         → zero-length span at nodeSpan.start
+      //   insert-after          → zero-length span at nodeSpan.end
+      let fixSpan;
+      switch (stmt.fix.kind) {
+        case "insert-before":
+          fixSpan = `(.{ .start = ctx.nodeSpan(${fixNode}).start, .end = ctx.nodeSpan(${fixNode}).start })`;
+          break;
+        case "insert-after":
+          fixSpan = `(.{ .start = ctx.nodeSpan(${fixNode}).end,   .end = ctx.nodeSpan(${fixNode}).end })`;
+          break;
+        default:
+          fixSpan = `ctx.nodeSpan(${fixNode})`;
+      }
+      // Static-text path: literal string OR fixer.remove (text = "").
+      if (stmt.fix.textExpr === undefined) {
+        const fixText = stmt.fix.kind === "remove" ? "" : stmt.fix.text;
+        return [
+          `${ind}ctx.reportWithFixAndMessageId(${node}, ${fixSpan}, "${zigStr(fixText)}", ${msgId});`,
+        ];
+      }
+      // Runtime-built text: lower a template-string into std.fmt.allocPrint;
+      // any other string-typed expression goes through a single {s} slot.
+      const tx = stmt.fix.textExpr;
+      let fmt, args;
+      if (tx.op === "template-string") {
+        fmt = "";
+        args = [];
+        for (const part of tx.parts) {
+          if (part.kind === "str") fmt += part.value.replace(/\{/g, "{{").replace(/\}/g, "}}");
+          else { fmt += "{s}"; args.push(emitExpr(part.expr, ctx)); }
+        }
+      } else {
+        fmt = "{s}";
+        args = [emitExpr(tx, ctx)];
+      }
+      const argsList = args.length === 0 ? ".{}" : `.{ ${args.join(", ")} }`;
       return [
-        `${ind}ctx.reportWithFixAndMessageId(${node}, ctx.nodeSpan(${fixNode}), "${zigStr(fixText)}", ${msgId});`,
+        `${ind}{`,
+        `${ind}    const __fix_text = std.fmt.allocPrint(ctx.allocator, "${zigStr(fmt)}", ${argsList}) catch return;`,
+        `${ind}    defer ctx.allocator.free(__fix_text);`,
+        `${ind}    ctx.reportWithFixAndMessageId(${node}, ctx.nodeSpan(${fixNode}), __fix_text, ${msgId});`,
+        `${ind}}`,
       ];
     }
     if (stmt.messageId) {
@@ -888,6 +926,8 @@ function emitAsBool(e, ctx) {
 function emitExpr(e, ctx) {
   switch (e.op) {
     case "node-ref": return "node";
+    case "source-text-of":
+      return `ctx.sourceText(${emitExpr(e.node, ctx)})`;
     case "literal":
       if (e.value === null) return "null";
       if (typeof e.value === "string") return `"${zigStr(e.value)}"`;
