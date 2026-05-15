@@ -22,6 +22,9 @@ const no_func_assign = @import("correctness/no_func_assign.zig");
 // const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");  // hand-written — disabled per IR-only constraint
 // const no_loss_of_precision = @import("correctness/no_loss_of_precision.zig");  // hand-written — disabled per IR-only constraint
 const no_const_assign = @import("correctness/no_const_assign.zig");
+const no_empty_pattern = @import("correctness/no_empty_pattern.zig");
+const no_eq_null = @import("style/no_eq_null.zig");
+const no_octal = @import("style/no_octal.zig");
 // v0.4 correctness rules
 // const for_direction = @import("correctness/for_direction.zig");  // hand-written — disabled per IR-only constraint
 // const getter_return = @import("correctness/getter_return.zig");  // hand-written — disabled per IR-only constraint
@@ -285,6 +288,9 @@ pub const all_rules = .{
     // no_unsafe_optional_chaining, // runner >> native (runner 187, native 155, gap 32); fall back to JS runner
     // no_loss_of_precision, // runner >> native (runner 125, native 114, 6 FN 5 FP); fall back
     no_const_assign,
+    no_empty_pattern,
+    no_eq_null,
+    no_octal,
     // for_direction, // runner >> native (runner 72, native 47, gap 25, 6 FP); fall back to JS runner
     // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
     // no_async_promise_executor, // hand-written — disabled
