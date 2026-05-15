@@ -405,14 +405,18 @@ pub const LintContext = struct {
 
     /// True when a Call/NewExpression has TypeScript generic type arguments
     /// (`f<T>()` / `new Foo<T>()`).  ESTree exposes this as a `typeArguments`
-    /// property on the call itself; in our parser the callee is wrapped in a
-    /// `ts_instantiation_expr` whose lhs is the original callee and whose
-    /// rhs holds the type-args SubRange.
+    /// property on the call itself; our parser may wrap the callee in a
+    /// `ts_instantiation_expr` (when the parser saw `<T>` in the unary
+    /// position) OR may attach the wrapper at the outer expression level
+    /// (e.g. `new Array<Foo>(1, 2, 3)` parses as `new Array` plus a sibling
+    /// instantiation).  Check both directions.
     pub fn nodeHasTypeArguments(self: *const LintContext, node: NodeIndex) bool {
         if (node == .none) return false;
         const data = self.nodeData(node);
-        if (data.lhs == .none) return false;
-        return self.nodeTag(data.lhs) == .ts_instantiation_expr;
+        if (data.lhs != .none and self.nodeTag(data.lhs) == .ts_instantiation_expr) return true;
+        const parent = self.parentOf(node);
+        if (parent != .none and self.nodeTag(parent) == .ts_instantiation_expr) return true;
+        return false;
     }
 
     /// True when the node is part of an optional chain (`?.()` / `?.[]` /
