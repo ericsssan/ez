@@ -659,14 +659,97 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
-        // if_stmt / while_stmt — rhs is the body statement (NodeIndex).
-        if (tag == .if_stmt or tag == .while_stmt or tag == .do_while_stmt) {
+        // if_stmt / while_stmt / do_while_stmt / with_stmt — rhs is body
+        // (or lhs for do-while).  for_stmt also fits — its body is data.rhs.
+        if (tag == .if_stmt or tag == .while_stmt or tag == .do_while_stmt
+            or tag == .with_stmt or tag == .for_stmt) {
             const data = self.nodeData(index);
-            // For do-while, lhs is body; for if/while, rhs is body.
             const body = if (tag == .do_while_stmt) data.lhs else data.rhs;
             if (body != .none) {
                 const body_span = self.nodeSpan(body);
                 if (body_span.end > end) end = body_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // labeled_stmt — lhs is the labeled body.
+        if (tag == .labeled_stmt) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const body_span = self.nodeSpan(data.lhs);
+                if (body_span.end > end) end = body_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // for-in / for-of / for-await-of — body lives in ForInOfData.body.
+        if (tag == .for_in_stmt or tag == .for_of_stmt or tag == .for_await_of_stmt) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const fio = self.extraData(ast_mod.ForInOfData, @intFromEnum(data.lhs));
+                if (fio.body != .none) {
+                    const body_span = self.nodeSpan(fio.body);
+                    if (body_span.end > end) end = body_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // try_stmt — lhs is the try block; recurse into the catch and the
+        // finally body too since they extend the overall try statement.
+        if (tag == .try_stmt) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const block_span = self.nodeSpan(data.lhs);
+                if (block_span.end > end) end = block_span.end;
+            }
+            if (data.rhs != .none) {
+                const try_data = self.extraData(ast_mod.TryData, @intFromEnum(data.rhs));
+                if (try_data.catch_node != .none) {
+                    const c_span = self.nodeSpan(try_data.catch_node);
+                    if (c_span.end > end) end = c_span.end;
+                }
+                if (try_data.finally_body != .none) {
+                    const f_span = self.nodeSpan(try_data.finally_body);
+                    if (f_span.end > end) end = f_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // catch_clause / ts_namespace_decl / ts_module_decl — rhs is the
+        // body block; recurse to extend through `}`.
+        if (tag == .catch_clause or tag == .ts_namespace_decl or tag == .ts_module_decl) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                const body_span = self.nodeSpan(data.rhs);
+                if (body_span.end > end) end = body_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // switch_case / switch_default — rhs is a SubRange of statements.
+        // ESTree includes the trailing `;` of the last consequent in the
+        // case's range, so recurse into the last statement.
+        if (tag == .switch_case or tag == .switch_default) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                const sr = self.extraData(SubRange, @intFromEnum(data.rhs));
+                const stmts = self.extraSlice(sr);
+                if (stmts.len > 0) {
+                    const last: NodeIndex = @enumFromInt(stmts[stmts.len - 1]);
+                    const last_span = self.nodeSpan(last);
+                    if (last_span.end > end) end = last_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // switch_stmt — closing `}` of switch body.  Brace-depth scan.
+        if (tag == .switch_stmt) {
+            var depth: i32 = 0;
+            var p: usize = end;
+            while (p < src.len) : (p += 1) {
+                const c = src[p];
+                if (c == '{') depth += 1
+                else if (c == '}') {
+                    depth -= 1;
+                    if (depth <= 0) { end = @intCast(p + 1); break; }
+                }
             }
             return .{ .start = first_start, .end = end };
         }
