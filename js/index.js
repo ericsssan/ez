@@ -441,8 +441,7 @@ function parseAndLintNative(filePath, options = {}) {
   if (_lintOutBuf.byteLength < 64 * 1024) _lintOutBuf = new ArrayBuffer(128 * 1024);
 
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-  // The AST is roughly 30× the source size for our buffer layout (matches the
-  // heuristic in src/bun/lint_pool.zig: `source_len * 30` for the bump budget).
+  // The AST is roughly 30× the source size for our buffer layout.
   // Stat upfront so the first NAPI call has enough headroom to avoid the
   // grow-and-retry round trip on big files.  AST overrun isn't reported in
   // the buf[0] needed-hint protocol — only source-too-small is — so the

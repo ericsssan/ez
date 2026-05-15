@@ -284,6 +284,12 @@ async function main() {
     // Their resolution stays at runtime via the host's normal module
     // resolution. Bundling them isn't useful (they're large, often
     // platform-specific, and our transforms don't touch them).
+    //
+    // Note: this bundle serves the LIBRARY API path (api.js → loadCoreRules
+    // when no corePlugins supplied).  The standalone `ezlint` binary built
+    // by `bun build --compile` bypasses the bundle entirely via
+    // src/bun/recommended-rules.js, so the externals list here doesn't
+    // affect binary self-containment.
     external: [
       "eslint",
       "typescript",
