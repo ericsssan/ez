@@ -3,208 +3,208 @@ const validateRule = rule.validateRule;
 
 // ── Correctness rules (58) ────────────────────────────────────
 const no_debugger = @import("correctness/no_debugger.zig");
-const no_empty = @import("correctness/no_empty.zig");
-const no_extra_semi = @import("correctness/no_extra_semi.zig");
-const no_dupe_keys = @import("correctness/no_dupe_keys.zig");
-const no_dupe_args = @import("correctness/no_dupe_args.zig");
-const no_sparse_arrays = @import("correctness/no_sparse_arrays.zig");
-const no_unreachable = @import("correctness/no_unreachable.zig");
-const no_unsafe_negation = @import("correctness/no_unsafe_negation.zig");
-const use_isnan = @import("correctness/use_isnan.zig");
-const valid_typeof = @import("correctness/valid_typeof.zig");
-const no_unused_vars = @import("correctness/no_unused_vars.zig");
-const no_undef = @import("correctness/no_undef.zig");
-const no_constant_condition = @import("correctness/no_constant_condition.zig");
+// const no_empty = @import("correctness/no_empty.zig");  // hand-written — disabled per IR-only constraint
+// const no_extra_semi = @import("correctness/no_extra_semi.zig");  // hand-written — disabled per IR-only constraint
+// const no_dupe_keys = @import("correctness/no_dupe_keys.zig");  // hand-written — disabled per IR-only constraint
+// const no_dupe_args = @import("correctness/no_dupe_args.zig");  // hand-written — disabled per IR-only constraint
+// const no_sparse_arrays = @import("correctness/no_sparse_arrays.zig");  // hand-written — disabled per IR-only constraint
+// const no_unreachable = @import("correctness/no_unreachable.zig");  // hand-written — disabled per IR-only constraint
+// const no_unsafe_negation = @import("correctness/no_unsafe_negation.zig");  // hand-written — disabled per IR-only constraint
+// const use_isnan = @import("correctness/use_isnan.zig");  // hand-written — disabled per IR-only constraint
+// const valid_typeof = @import("correctness/valid_typeof.zig");  // hand-written — disabled per IR-only constraint
+// const no_unused_vars = @import("correctness/no_unused_vars.zig");  // hand-written — disabled per IR-only constraint
+// const no_undef = @import("correctness/no_undef.zig");  // hand-written — disabled per IR-only constraint
+// const no_constant_condition = @import("correctness/no_constant_condition.zig");  // hand-written — disabled per IR-only constraint
 const no_func_assign = @import("correctness/no_func_assign.zig");
-const no_import_assign = @import("correctness/no_import_assign.zig");
-const no_self_assign = @import("correctness/no_self_assign.zig");
-const no_self_compare = @import("correctness/no_self_compare.zig");
-const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");
-const no_loss_of_precision = @import("correctness/no_loss_of_precision.zig");
+// const no_import_assign = @import("correctness/no_import_assign.zig");  // hand-written — disabled per IR-only constraint
+// const no_self_assign = @import("correctness/no_self_assign.zig");  // hand-written — disabled per IR-only constraint
+// const no_self_compare = @import("correctness/no_self_compare.zig");  // hand-written — disabled per IR-only constraint
+// const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");  // hand-written — disabled per IR-only constraint
+// const no_loss_of_precision = @import("correctness/no_loss_of_precision.zig");  // hand-written — disabled per IR-only constraint
 const no_const_assign = @import("correctness/no_const_assign.zig");
 // v0.4 correctness rules
-const for_direction = @import("correctness/for_direction.zig");
-const getter_return = @import("correctness/getter_return.zig");
-const no_async_promise_executor = @import("correctness/no_async_promise_executor.zig");
+// const for_direction = @import("correctness/for_direction.zig");  // hand-written — disabled per IR-only constraint
+// const getter_return = @import("correctness/getter_return.zig");  // hand-written — disabled per IR-only constraint
+// const no_async_promise_executor = @import("correctness/no_async_promise_executor.zig");  // hand-written — disabled per IR-only constraint
 const no_compare_neg_zero = @import("correctness/no_compare_neg_zero.zig");
-const no_dupe_class_members = @import("correctness/no_dupe_class_members.zig");
-const no_dupe_else_if = @import("correctness/no_dupe_else_if.zig");
-const no_duplicate_case = @import("correctness/no_duplicate_case.zig");
-const no_empty_pattern = @import("correctness/no_empty_pattern.zig");
+// const no_dupe_class_members = @import("correctness/no_dupe_class_members.zig");  // hand-written — disabled per IR-only constraint
+// const no_dupe_else_if = @import("correctness/no_dupe_else_if.zig");  // hand-written — disabled per IR-only constraint
+// const no_duplicate_case = @import("correctness/no_duplicate_case.zig");  // hand-written — disabled per IR-only constraint
+// const no_empty_pattern = @import("correctness/no_empty_pattern.zig");  // hand-written — disabled per IR-only constraint
 const no_ex_assign = @import("correctness/no_ex_assign.zig");
-const no_fallthrough = @import("correctness/no_fallthrough.zig");
+// const no_fallthrough = @import("correctness/no_fallthrough.zig");  // hand-written — disabled per IR-only constraint
 const no_global_assign = @import("style/no_global_assign.zig");
-const no_inner_declarations = @import("correctness/no_inner_declarations.zig");
-const no_irregular_whitespace = @import("correctness/no_irregular_whitespace.zig");
+// const no_inner_declarations = @import("correctness/no_inner_declarations.zig");  // hand-written — disabled per IR-only constraint
+// const no_irregular_whitespace = @import("correctness/no_irregular_whitespace.zig");  // hand-written — disabled per IR-only constraint
 const no_new_symbol = @import("correctness/no_new_symbol.zig");
 const no_obj_calls = @import("correctness/no_obj_calls.zig");
-const no_prototype_builtins = @import("correctness/no_prototype_builtins.zig");
-const no_setter_return = @import("correctness/no_setter_return.zig");
+// const no_prototype_builtins = @import("correctness/no_prototype_builtins.zig");  // hand-written — disabled per IR-only constraint
+// const no_setter_return = @import("correctness/no_setter_return.zig");  // hand-written — disabled per IR-only constraint
 const no_template_curly_in_string = @import("correctness/no_template_curly_in_string.zig");
-const no_this_before_super = @import("correctness/no_this_before_super.zig");
-const no_useless_catch = @import("correctness/no_useless_catch.zig");
+// const no_this_before_super = @import("correctness/no_this_before_super.zig");  // hand-written — disabled per IR-only constraint
+// const no_useless_catch = @import("correctness/no_useless_catch.zig");  // hand-written — disabled per IR-only constraint
 // v0.5 correctness rules
 const no_class_assign = @import("correctness/no_class_assign.zig");
-const no_unused_expressions = @import("correctness/no_unused_expressions.zig");
-const no_useless_constructor = @import("correctness/no_useless_constructor.zig");
+// const no_unused_expressions = @import("correctness/no_unused_expressions.zig");  // hand-written — disabled per IR-only constraint
+// const no_useless_constructor = @import("correctness/no_useless_constructor.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 correctness rules
-const require_await = @import("correctness/require_await.zig");
-const no_constructor_return = @import("correctness/no_constructor_return.zig");
-const no_await_in_loop = @import("correctness/no_await_in_loop.zig");
-const no_promise_executor_return = @import("correctness/no_promise_executor_return.zig");
-const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");
-const no_empty_static_block = @import("correctness/no_empty_static_block.zig");
-const no_constructor_new = @import("correctness/no_constructor_new.zig");
-const accessor_pairs = @import("correctness/no_setter_without_getter.zig");
+// const require_await = @import("correctness/require_await.zig");  // hand-written — disabled per IR-only constraint
+// const no_constructor_return = @import("correctness/no_constructor_return.zig");  // hand-written — disabled per IR-only constraint
+// const no_await_in_loop = @import("correctness/no_await_in_loop.zig");  // hand-written — disabled per IR-only constraint
+// const no_promise_executor_return = @import("correctness/no_promise_executor_return.zig");  // hand-written — disabled per IR-only constraint
+// const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");  // hand-written — disabled per IR-only constraint
+// const no_empty_static_block = @import("correctness/no_empty_static_block.zig");  // hand-written — disabled per IR-only constraint
+// const no_constructor_new = @import("correctness/no_constructor_new.zig");  // hand-written — disabled per IR-only constraint
+// const accessor_pairs = @import("correctness/no_setter_without_getter.zig");  // hand-written — disabled per IR-only constraint
 // v0.7 correctness rules
-const no_constant_binary_expression = @import("correctness/no_constant_binary_expression.zig");
-const no_div_regex = @import("correctness/no_div_regex.zig");
-const array_callback_return = @import("correctness/array_callback_return.zig");
-const no_useless_backreference = @import("correctness/no_useless_backreference.zig");
+// const no_constant_binary_expression = @import("correctness/no_constant_binary_expression.zig");  // hand-written — disabled per IR-only constraint
+// const no_div_regex = @import("correctness/no_div_regex.zig");  // hand-written — disabled per IR-only constraint
+// const array_callback_return = @import("correctness/array_callback_return.zig");  // hand-written — disabled per IR-only constraint
+// const no_useless_backreference = @import("correctness/no_useless_backreference.zig");  // hand-written — disabled per IR-only constraint
 const no_new_native_nonconstructor = @import("correctness/no_new_native_nonconstructor.zig");
 const no_buffer_constructor = @import("correctness/no_buffer_constructor.zig");
-const guard_for_in = @import("correctness/guard_for_in.zig");
+// const guard_for_in = @import("correctness/guard_for_in.zig");  // hand-written — disabled per IR-only constraint
 const no_negated_in_lhs = @import("correctness/no_negated_in_lhs.zig");
 const no_new_statics = @import("correctness/no_new_statics.zig");
 const no_invalid_remove_event_listener = @import("correctness/no_invalid_remove_event_listener.zig");
-const no_useless_assignment = @import("correctness/no_useless_assignment.zig");
+// const no_useless_assignment = @import("correctness/no_useless_assignment.zig");  // hand-written — disabled per IR-only constraint
 
 // ── Suspicious rules (43) ─────────────────────────────────────
 // (count unchanged)
-const eqeqeq = @import("suspicious/eqeqeq.zig");
-const no_cond_assign = @import("suspicious/no_cond_assign.zig");
-const no_control_regex = @import("suspicious/no_control_regex.zig");
+// const eqeqeq = @import("suspicious/eqeqeq.zig");  // hand-written — disabled per IR-only constraint
+// const no_cond_assign = @import("suspicious/no_cond_assign.zig");  // hand-written — disabled per IR-only constraint
+// const no_control_regex = @import("suspicious/no_control_regex.zig");  // hand-written — disabled per IR-only constraint
 const no_delete_var = @import("suspicious/no_delete_var.zig");
-const no_empty_character_class = @import("suspicious/no_empty_character_class.zig");
-const no_eval = @import("suspicious/no_eval.zig");
+// const no_empty_character_class = @import("suspicious/no_empty_character_class.zig");  // hand-written — disabled per IR-only constraint
+// const no_eval = @import("suspicious/no_eval.zig");  // hand-written — disabled per IR-only constraint
 const no_implied_eval = @import("suspicious/no_implied_eval.zig");
-const no_label_var = @import("suspicious/no_label_var.zig");
-const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");
-const no_misleading_character_class = @import("suspicious/no_misleading_character_class.zig");
-const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");
-const no_multi_str = @import("suspicious/no_multi_str.zig");
+// const no_label_var = @import("suspicious/no_label_var.zig");  // hand-written — disabled per IR-only constraint
+// const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // hand-written — disabled per IR-only constraint
+// const no_misleading_character_class = @import("suspicious/no_misleading_character_class.zig");  // hand-written — disabled per IR-only constraint
+// const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");  // hand-written — disabled per IR-only constraint
+// const no_multi_str = @import("suspicious/no_multi_str.zig");  // hand-written — disabled per IR-only constraint
 const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
-const no_nonoctal_decimal_escape = @import("suspicious/no_nonoctal_decimal_escape.zig");
-const no_octal = @import("suspicious/no_octal.zig");
-const no_redeclare = @import("suspicious/no_redeclare.zig");
-const no_regex_spaces = @import("suspicious/no_regex_spaces.zig");
-const no_restricted_globals = @import("suspicious/no_restricted_globals.zig");
-const no_shadow_restricted_names = @import("suspicious/no_shadow_restricted_names.zig");
-const no_unsafe_finally = @import("suspicious/no_unsafe_finally.zig");
-const no_unused_labels = @import("suspicious/no_unused_labels.zig");
-const no_useless_escape = @import("suspicious/no_useless_escape.zig");
+// const no_nonoctal_decimal_escape = @import("suspicious/no_nonoctal_decimal_escape.zig");  // hand-written — disabled per IR-only constraint
+// const no_octal = @import("suspicious/no_octal.zig");  // hand-written — disabled per IR-only constraint
+// const no_redeclare = @import("suspicious/no_redeclare.zig");  // hand-written — disabled per IR-only constraint
+// const no_regex_spaces = @import("suspicious/no_regex_spaces.zig");  // hand-written — disabled per IR-only constraint
+// const no_restricted_globals = @import("suspicious/no_restricted_globals.zig");  // hand-written — disabled per IR-only constraint
+// const no_shadow_restricted_names = @import("suspicious/no_shadow_restricted_names.zig");  // hand-written — disabled per IR-only constraint
+// const no_unsafe_finally = @import("suspicious/no_unsafe_finally.zig");  // hand-written — disabled per IR-only constraint
+// const no_unused_labels = @import("suspicious/no_unused_labels.zig");  // hand-written — disabled per IR-only constraint
+// const no_useless_escape = @import("suspicious/no_useless_escape.zig");  // hand-written — disabled per IR-only constraint
 const no_void = @import("suspicious/no_void.zig");
 const no_with = @import("suspicious/no_with.zig");
-const require_yield = @import("suspicious/require_yield.zig");
+// const require_yield = @import("suspicious/require_yield.zig");  // hand-written — disabled per IR-only constraint
 const no_case_declarations = @import("suspicious/no_case_declarations.zig");
-const no_sequences = @import("suspicious/no_sequences.zig");
-const no_throw_literal = @import("suspicious/no_throw_literal.zig");
+// const no_sequences = @import("suspicious/no_sequences.zig");  // hand-written — disabled per IR-only constraint
+// const no_throw_literal = @import("suspicious/no_throw_literal.zig");  // hand-written — disabled per IR-only constraint
 // v0.5 suspicious rules
-const no_console = @import("suspicious/no_console.zig");
-const no_alert = @import("suspicious/no_alert.zig");
-const no_duplicate_imports = @import("suspicious/no_duplicate_imports.zig");
-const default_case = @import("suspicious/default_case.zig");
-const radix = @import("suspicious/radix.zig");
-const no_shadow = @import("suspicious/no_shadow.zig");
+// const no_console = @import("suspicious/no_console.zig");  // hand-written — disabled per IR-only constraint
+// const no_alert = @import("suspicious/no_alert.zig");  // hand-written — disabled per IR-only constraint
+// const no_duplicate_imports = @import("suspicious/no_duplicate_imports.zig");  // hand-written — disabled per IR-only constraint
+// const default_case = @import("suspicious/default_case.zig");  // hand-written — disabled per IR-only constraint
+// const radix = @import("suspicious/radix.zig");  // hand-written — disabled per IR-only constraint
+// const no_shadow = @import("suspicious/no_shadow.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 suspicious rules
-const no_loop_func = @import("suspicious/no_loop_func.zig");
-const no_implicit_globals = @import("suspicious/no_implicit_globals.zig");
-const no_process_exit = @import("suspicious/no_process_exit.zig");
-const consistent_return = @import("suspicious/consistent_return.zig");
-const no_object_constructor = @import("suspicious/no_object_constructor.zig");
-const prefer_promise_reject_errors = @import("suspicious/no_async_with_error.zig");
+// const no_loop_func = @import("suspicious/no_loop_func.zig");  // hand-written — disabled per IR-only constraint
+// const no_implicit_globals = @import("suspicious/no_implicit_globals.zig");  // hand-written — disabled per IR-only constraint
+// const no_process_exit = @import("suspicious/no_process_exit.zig");  // hand-written — disabled per IR-only constraint
+// const consistent_return = @import("suspicious/consistent_return.zig");  // hand-written — disabled per IR-only constraint
+// const no_object_constructor = @import("suspicious/no_object_constructor.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_promise_reject_errors = @import("suspicious/no_async_with_error.zig");  // hand-written — disabled per IR-only constraint
 // v0.7 suspicious rules
-const no_return_await = @import("suspicious/no_return_await.zig");
-const no_new_array = @import("suspicious/no_array_constructor_with_holes.zig");
-const require_unicode_regexp = @import("suspicious/require_await_top_level.zig");
+// const no_return_await = @import("suspicious/no_return_await.zig");  // hand-written — disabled per IR-only constraint
+// const no_new_array = @import("suspicious/no_array_constructor_with_holes.zig");  // hand-written — disabled per IR-only constraint
+// const require_unicode_regexp = @import("suspicious/require_await_top_level.zig");  // hand-written — disabled per IR-only constraint
 
 // ── Style rules (79) ──────────────────────────────────────────
-const no_var = @import("style/no_var.zig");
-const prefer_const = @import("style/prefer_const.zig");
+// const no_var = @import("style/no_var.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_const = @import("style/prefer_const.zig");  // hand-written — disabled per IR-only constraint
 const no_array_constructor = @import("style/no_array_constructor.zig");
-const no_bitwise = @import("style/no_bitwise.zig");
+// const no_bitwise = @import("style/no_bitwise.zig");  // hand-written — disabled per IR-only constraint
 const no_caller = @import("style/no_caller.zig");
 const no_continue = @import("style/no_continue.zig");
-const no_else_return = @import("style/no_else_return.zig");
-const no_eq_null = @import("style/no_eq_null.zig");
-const no_extend_native = @import("style/no_extend_native.zig");
-const no_extra_bind = @import("style/no_extra_bind.zig");
+// const no_else_return = @import("style/no_else_return.zig");  // hand-written — disabled per IR-only constraint
+// const no_eq_null = @import("style/no_eq_null.zig");  // hand-written — disabled per IR-only constraint
+// const no_extend_native = @import("style/no_extend_native.zig");  // hand-written — disabled per IR-only constraint
+// const no_extra_bind = @import("style/no_extra_bind.zig");  // hand-written — disabled per IR-only constraint
 const no_extra_boolean_cast = @import("style/no_extra_boolean_cast.zig");
 const no_floating_decimal = @import("style/no_floating_decimal.zig");
 const no_iterator = @import("style/no_iterator.zig");
-const no_labels = @import("style/no_labels.zig");
-const no_lonely_if = @import("style/no_lonely_if.zig");
-const no_multi_assign = @import("style/no_multi_assign.zig");
+// const no_labels = @import("style/no_labels.zig");  // hand-written — disabled per IR-only constraint
+// const no_lonely_if = @import("style/no_lonely_if.zig");  // hand-written — disabled per IR-only constraint
+// const no_multi_assign = @import("style/no_multi_assign.zig");  // hand-written — disabled per IR-only constraint
 const no_negated_condition = @import("style/no_negated_condition.zig");
 const no_nested_ternary = @import("style/no_nested_ternary.zig");
 const no_new = @import("style/no_new.zig");
 const no_new_func = @import("style/no_new_func.zig");
-const no_new_object = @import("style/no_new_object.zig");
+// const no_new_object = @import("style/no_new_object.zig");  // hand-written — disabled per IR-only constraint
 const no_new_require = @import("style/no_new_require.zig");
 const no_process_env = @import("style/no_process_env.zig");
-const no_octal_escape = @import("style/no_octal_escape.zig");
-const no_param_reassign = @import("style/no_param_reassign.zig");
-const no_plusplus = @import("style/no_plusplus.zig");
+// const no_octal_escape = @import("style/no_octal_escape.zig");  // hand-written — disabled per IR-only constraint
+// const no_param_reassign = @import("style/no_param_reassign.zig");  // hand-written — disabled per IR-only constraint
+// const no_plusplus = @import("style/no_plusplus.zig");  // hand-written — disabled per IR-only constraint
 const no_proto = @import("style/no_proto.zig");
 const no_path_concat = @import("style/no_path_concat.zig");
-const no_return_assign = @import("style/no_return_assign.zig");
-const no_script_url = @import("style/no_script_url.zig");
+// const no_return_assign = @import("style/no_return_assign.zig");  // hand-written — disabled per IR-only constraint
+// const no_script_url = @import("style/no_script_url.zig");  // hand-written — disabled per IR-only constraint
 const no_unneeded_ternary = @import("style/no_unneeded_ternary.zig");
-const no_useless_computed_key = @import("style/no_useless_computed_key.zig");
-const prefer_template = @import("style/prefer_template.zig");
+// const no_useless_computed_key = @import("style/no_useless_computed_key.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_template = @import("style/prefer_template.zig");  // hand-written — disabled per IR-only constraint
 // v0.5 style rules
-const object_shorthand = @import("style/object_shorthand.zig");
-const prefer_exponentiation_operator = @import("style/prefer_exponentiation_operator.zig");
+// const object_shorthand = @import("style/object_shorthand.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_exponentiation_operator = @import("style/prefer_exponentiation_operator.zig");  // hand-written — disabled per IR-only constraint
 const symbol_description = @import("style/symbol_description.zig");
-const no_useless_rename = @import("style/no_useless_rename.zig");
+// const no_useless_rename = @import("style/no_useless_rename.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 style rules
-const prefer_rest_params = @import("style/prefer_rest_params.zig");
-const prefer_spread = @import("style/prefer_spread.zig");
-const no_useless_call = @import("style/no_useless_call.zig");
-const max_params = @import("style/max_params.zig");
-const prefer_arrow_callback = @import("style/prefer_arrow_callback.zig");
-const no_implicit_coercion = @import("style/no_implicit_coercion.zig");
-const no_useless_concat = @import("style/no_useless_concat.zig");
-const arrow_body_style = @import("style/arrow_body_style.zig");
-const default_param_last = @import("style/default_param_last.zig");
-const logical_assignment_operators = @import("style/logical_assignment_operators.zig");
-const prefer_object_spread = @import("style/prefer_object_spread.zig");
-const no_warning_comments = @import("style/no_warning_comments.zig");
+// const prefer_rest_params = @import("style/prefer_rest_params.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_spread = @import("style/prefer_spread.zig");  // hand-written — disabled per IR-only constraint
+// const no_useless_call = @import("style/no_useless_call.zig");  // hand-written — disabled per IR-only constraint
+// const max_params = @import("style/max_params.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_arrow_callback = @import("style/prefer_arrow_callback.zig");  // hand-written — disabled per IR-only constraint
+// const no_implicit_coercion = @import("style/no_implicit_coercion.zig");  // hand-written — disabled per IR-only constraint
+// const no_useless_concat = @import("style/no_useless_concat.zig");  // hand-written — disabled per IR-only constraint
+// const arrow_body_style = @import("style/arrow_body_style.zig");  // hand-written — disabled per IR-only constraint
+// const default_param_last = @import("style/default_param_last.zig");  // hand-written — disabled per IR-only constraint
+// const logical_assignment_operators = @import("style/logical_assignment_operators.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_object_spread = @import("style/prefer_object_spread.zig");  // hand-written — disabled per IR-only constraint
+// const no_warning_comments = @import("style/no_warning_comments.zig");  // hand-written — disabled per IR-only constraint
 // v0.7 style rules (continued)
-const sort_keys = @import("style/sort_imports.zig");
-const complexity = @import("style/complexity.zig");
-const max_statements = @import("style/max_statements.zig");
-const dot_notation = @import("style/dot_notation.zig");
-const no_confusing_arrow = @import("style/no_confusing_arrow.zig");
-const no_extra_label = @import("style/no_extra_label.zig");
-const vars_on_top = @import("style/no_implicit_globals_style.zig");
-const prefer_destructuring = @import("style/prefer_destructuring.zig");
+// const sort_keys = @import("style/sort_imports.zig");  // hand-written — disabled per IR-only constraint
+// const complexity = @import("style/complexity.zig");  // hand-written — disabled per IR-only constraint
+// const max_statements = @import("style/max_statements.zig");  // hand-written — disabled per IR-only constraint
+// const dot_notation = @import("style/dot_notation.zig");  // hand-written — disabled per IR-only constraint
+// const no_confusing_arrow = @import("style/no_confusing_arrow.zig");  // hand-written — disabled per IR-only constraint
+// const no_extra_label = @import("style/no_extra_label.zig");  // hand-written — disabled per IR-only constraint
+// const vars_on_top = @import("style/no_implicit_globals_style.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_destructuring = @import("style/prefer_destructuring.zig");  // hand-written — disabled per IR-only constraint
 // v0.7 style rules
-const camelcase = @import("style/camelcase.zig");
-const prefer_numeric_literals = @import("style/prefer_numeric_literals.zig");
-const prefer_regex_literals = @import("style/prefer_regex_literals.zig");
-const no_useless_return = @import("style/no_useless_return.zig");
-const func_style = @import("style/func_style.zig");
-const id_length = @import("style/id_length.zig");
-const operator_assignment = @import("style/operator_assignment.zig");
-const prefer_object_has_own = @import("style/prefer_object_has_own.zig");
-const no_underscore_dangle = @import("style/no_underscore_dangle.zig");
-const yoda = @import("style/yoda.zig");
+// const camelcase = @import("style/camelcase.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_numeric_literals = @import("style/prefer_numeric_literals.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_regex_literals = @import("style/prefer_regex_literals.zig");  // hand-written — disabled per IR-only constraint
+// const no_useless_return = @import("style/no_useless_return.zig");  // hand-written — disabled per IR-only constraint
+// const func_style = @import("style/func_style.zig");  // hand-written — disabled per IR-only constraint
+// const id_length = @import("style/id_length.zig");  // hand-written — disabled per IR-only constraint
+// const operator_assignment = @import("style/operator_assignment.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_object_has_own = @import("style/prefer_object_has_own.zig");  // hand-written — disabled per IR-only constraint
+// const no_underscore_dangle = @import("style/no_underscore_dangle.zig");  // hand-written — disabled per IR-only constraint
+// const yoda = @import("style/yoda.zig");  // hand-written — disabled per IR-only constraint
 const no_ternary = @import("style/no_ternary.zig");
-const prefer_named_capture_group = @import("style/prefer_named_capture_group.zig");
-const max_depth = @import("style/max_depth.zig");
-const default_case_last = @import("style/default_case_last.zig");
-const max_lines = @import("style/max_lines.zig");
-const no_mixed_operators = @import("style/no_mixed_operators.zig");
-const consistent_this = @import("style/consistent_this.zig");
+// const prefer_named_capture_group = @import("style/prefer_named_capture_group.zig");  // hand-written — disabled per IR-only constraint
+// const max_depth = @import("style/max_depth.zig");  // hand-written — disabled per IR-only constraint
+// const default_case_last = @import("style/default_case_last.zig");  // hand-written — disabled per IR-only constraint
+// const max_lines = @import("style/max_lines.zig");  // hand-written — disabled per IR-only constraint
+// const no_mixed_operators = @import("style/no_mixed_operators.zig");  // hand-written — disabled per IR-only constraint
+// const consistent_this = @import("style/consistent_this.zig");  // hand-written — disabled per IR-only constraint
 // v0.8 style rules
-const no_empty_function = @import("style/no_empty_function.zig");
-const no_undef_init = @import("style/no_undef_init.zig");
-const new_cap = @import("style/new_cap.zig");
-const max_classes_per_file = @import("style/max_classes_per_file.zig");
-const prefer_while = @import("style/prefer_while.zig");
-const no_useless_switch_case = @import("style/no_useless_switch_case.zig");
-const class_methods_use_this = @import("style/class_methods_use_this.zig");
+// const no_empty_function = @import("style/no_empty_function.zig");  // hand-written — disabled per IR-only constraint
+// const no_undef_init = @import("style/no_undef_init.zig");  // hand-written — disabled per IR-only constraint
+// const new_cap = @import("style/new_cap.zig");  // hand-written — disabled per IR-only constraint
+// const max_classes_per_file = @import("style/max_classes_per_file.zig");  // hand-written — disabled per IR-only constraint
+// const prefer_while = @import("style/prefer_while.zig");  // hand-written — disabled per IR-only constraint
+// const no_useless_switch_case = @import("style/no_useless_switch_case.zig");  // hand-written — disabled per IR-only constraint
+// const class_methods_use_this = @import("style/class_methods_use_this.zig");  // hand-written — disabled per IR-only constraint
 const avoid_new = @import("style/avoid_new.zig");
 // unicorn style rules
 const consistent_date_clone = @import("style/consistent_date_clone.zig");
@@ -217,63 +217,63 @@ const prefer_string_trim_start_end = @import("style/prefer_string_trim_start_end
 const require_number_to_fixed_digits_argument = @import("style/require_number_to_fixed_digits_argument.zig");
 
 // ── TypeScript rules (32) ─────────────────────────────────────
-const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
-const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");
-const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
-const ts_no_empty_interface = @import("typescript/no_empty_interface.zig");
-const ts_no_namespace = @import("typescript/no_namespace.zig");
-const ts_no_unnecessary_type_assertion = @import("typescript/no_unnecessary_type_assertion.zig");
-const ts_prefer_interface = @import("typescript/prefer_interface.zig");
-const ts_no_require_imports = @import("typescript/no_require_imports.zig");
+// const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");  // hand-written — disabled per IR-only constraint
+// const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_empty_interface = @import("typescript/no_empty_interface.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_namespace = @import("typescript/no_namespace.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_unnecessary_type_assertion = @import("typescript/no_unnecessary_type_assertion.zig");  // hand-written — disabled per IR-only constraint
+// const ts_prefer_interface = @import("typescript/prefer_interface.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_require_imports = @import("typescript/no_require_imports.zig");  // hand-written — disabled per IR-only constraint
 // v0.5 TypeScript rules
-const ts_ban_ts_comment = @import("typescript/ban_ts_comment.zig");
-const ts_no_this_alias = @import("typescript/no_this_alias.zig");
-const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values.zig");
-const ts_no_array_delete = @import("typescript/no_array_delete.zig");
+// const ts_ban_ts_comment = @import("typescript/ban_ts_comment.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_this_alias = @import("typescript/no_this_alias.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_array_delete = @import("typescript/no_array_delete.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 TypeScript rules
-const ts_no_useless_empty_export = @import("typescript/no_useless_empty_export.zig");
-const ts_prefer_optional_chain = @import("typescript/prefer_optional_chain.zig");
+// const ts_no_useless_empty_export = @import("typescript/no_useless_empty_export.zig");  // hand-written — disabled per IR-only constraint
+// const ts_prefer_optional_chain = @import("typescript/prefer_optional_chain.zig");  // hand-written — disabled per IR-only constraint
 const ts_no_non_null_asserted_optional_chain = @import("typescript/no_non_null_asserted_optional_chain.zig");
-const ts_no_confusing_non_null_assertion = @import("typescript/no_confusing_non_null_assertion.zig");
-const ts_no_non_null_asserted_nullish_coalescing = @import("typescript/no_unnecessary_type_constraint.zig");
+// const ts_no_confusing_non_null_assertion = @import("typescript/no_confusing_non_null_assertion.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_non_null_asserted_nullish_coalescing = @import("typescript/no_unnecessary_type_constraint.zig");  // hand-written — disabled per IR-only constraint
 // v0.7 TypeScript rules
-const ts_prefer_enum_initializers = @import("typescript/prefer_enum_initializers.zig");
-const ts_ban_types = @import("typescript/ban_types.zig");
-const ts_prefer_literal_enum_member = @import("typescript/prefer_literal_enum_member.zig");
-const ts_no_duplicate_type_constituents = @import("typescript/no_duplicate_type_constituents.zig");
-const ts_no_mixed_enums = @import("typescript/no_mixed_enums.zig");
+// const ts_prefer_enum_initializers = @import("typescript/prefer_enum_initializers.zig");  // hand-written — disabled per IR-only constraint
+// const ts_ban_types = @import("typescript/ban_types.zig");  // hand-written — disabled per IR-only constraint
+// const ts_prefer_literal_enum_member = @import("typescript/prefer_literal_enum_member.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_duplicate_type_constituents = @import("typescript/no_duplicate_type_constituents.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_mixed_enums = @import("typescript/no_mixed_enums.zig");  // hand-written — disabled per IR-only constraint
 const ts_no_extra_non_null_assertion = @import("typescript/no_extra_non_null_assertion.zig");
 // v0.8 TypeScript rules
-const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");
-const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");
-const ts_array_type = @import("typescript/array_type.zig");
-const ts_prefer_namespace_keyword = @import("typescript/prefer_namespace_keyword.zig");
-const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig");
-const ts_no_unnecessary_boolean_literal_compare = @import("typescript/no_unnecessary_boolean_literal_compare.zig");
-const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");
-const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");
-const ts_no_inferrable_types = @import("typescript/no_inferrable_types.zig");
-const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declaration_merging.zig");
-const ts_explicit_function_return_type = @import("typescript/explicit_function_return_type.zig");
-const ts_explicit_module_boundary_types = @import("typescript/explicit_module_boundary_types.zig");
+// const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");  // hand-written — disabled per IR-only constraint
+// const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
+// const ts_array_type = @import("typescript/array_type.zig");  // hand-written — disabled per IR-only constraint
+// const ts_prefer_namespace_keyword = @import("typescript/prefer_namespace_keyword.zig");  // hand-written — disabled per IR-only constraint
+// const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_unnecessary_boolean_literal_compare = @import("typescript/no_unnecessary_boolean_literal_compare.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");  // hand-written — disabled per IR-only constraint
+// const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_inferrable_types = @import("typescript/no_inferrable_types.zig");  // hand-written — disabled per IR-only constraint
+// const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declaration_merging.zig");  // hand-written — disabled per IR-only constraint
+// const ts_explicit_function_return_type = @import("typescript/explicit_function_return_type.zig");  // hand-written — disabled per IR-only constraint
+// const ts_explicit_module_boundary_types = @import("typescript/explicit_module_boundary_types.zig");  // hand-written — disabled per IR-only constraint
 
 // ── Unicorn plugin rules ──────────────────────────────────────
-const unicorn_no_array_for_each = @import("unicorn/no_array_for_each.zig");
-const unicorn_no_zero_fractions = @import("unicorn/no_zero_fractions.zig");
+// const unicorn_no_array_for_each = @import("unicorn/no_array_for_each.zig");  // hand-written — disabled per IR-only constraint
+// const unicorn_no_zero_fractions = @import("unicorn/no_zero_fractions.zig");  // hand-written — disabled per IR-only constraint
 
 /// Tuple of all lint rule module types registered in the linter.
 pub const all_rules = .{
     // Correctness (40)
     no_debugger,
-    no_empty,
-    no_extra_semi,
+    // no_empty, // hand-written — disabled
+    // no_extra_semi, // hand-written — disabled
     // no_dupe_keys, // runner >> native (runner 50, native 43, 7 FN); fall back
-    no_dupe_args,
-    no_sparse_arrays,
+    // no_dupe_args, // hand-written — disabled
+    // no_sparse_arrays, // hand-written — disabled
     // no_unreachable, // runner >> native (runner 57/67, native 42/67, 19 more FN); fall back to runner
     // no_unsafe_negation, // runner >> native (runner 29, native 24, 5 FN); fall back
     // use_isnan, // runner >> native (runner 214, native 176, gap 38); fall back to JS runner
-    valid_typeof,
+    // valid_typeof, // hand-written — disabled
     // no_unused_vars, // runner >> native (runner 436, native 297, gap 139, 51 FP); fall back to JS runner
     // no_undef, // runner >> native (runner 101, native 76, 5 FN 22 FP); fall back
     // no_constant_condition, // hand-written, 91 FP vs ESLint; fall back to JS runner
@@ -281,46 +281,46 @@ pub const all_rules = .{
     no_func_assign,
     // no_import_assign, // runner >> native (runner 110, native 85, 31 FN); fall back
     // no_self_assign, // native has 7 FP making hybrid worse (runner 85, native 74); fall back to JS runner
-    no_self_compare,
+    // no_self_compare, // hand-written — disabled
     // no_unsafe_optional_chaining, // runner >> native (runner 187, native 155, gap 32); fall back to JS runner
     // no_loss_of_precision, // runner >> native (runner 125, native 114, 6 FN 5 FP); fall back
     no_const_assign,
     // for_direction, // runner >> native (runner 72, native 47, gap 25, 6 FP); fall back to JS runner
     // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
-    no_async_promise_executor,
+    // no_async_promise_executor, // hand-written — disabled
     no_compare_neg_zero,
     // no_dupe_class_members, // native has FP making hybrid worse (runner 78, native 72); fall back to JS runner
     // no_dupe_else_if, // hand-written, 59 FP vs ESLint; fall back to JS runner
-    no_duplicate_case,
+    // no_duplicate_case, // hand-written — disabled
     // no_empty_pattern, // runner >> native (runner 31, native 25, 6 FP!!); fall back
     no_ex_assign,
-    no_fallthrough,
+    // no_fallthrough, // hand-written — disabled
     no_global_assign,
     // no_inner_declarations, // native has 6 FP making hybrid 61 vs runner 67; fall back to JS runner
     // no_irregular_whitespace, // runner >> native (runner 280, native 275, 5 FN 2 FP); fall back
     no_new_symbol,
     // no_obj_calls, // runner >> native (runner 107, native 84, 23 FN); fall back
-    no_prototype_builtins,
+    // no_prototype_builtins, // hand-written — disabled
     // no_setter_return, // runner >> native (runner 164, native 135, gap 29); fall back to JS runner
     no_template_curly_in_string,
     // no_this_before_super, // runner >> native (runner 58, native 44, 19 FN); fall back
-    no_useless_catch,
+    // no_useless_catch, // hand-written — disabled
     // Correctness v0.5 (3)
     no_class_assign,
     // no_unused_expressions, // runner >> native (runner 124, native 107, 15 FN 3 FP); fall back
-    no_useless_constructor,
+    // no_useless_constructor, // hand-written — disabled
     // Correctness v0.6 (8)
-    require_await,
-    no_constructor_return,
+    // require_await, // hand-written — disabled
+    // no_constructor_return, // hand-written — disabled
     // no_await_in_loop, // runner >> native (runner 37, native 28, 9 FN); fall back
     // no_promise_executor_return, // runner >> native (runner 124/124, native 121/124, 3 more FN); fall back
     // no_unreachable_loop, // hand-written, 781 FP vs ESLint; fall back to JS runner
-    no_empty_static_block,
-    no_constructor_new,
+    // no_empty_static_block, // hand-written — disabled
+    // no_constructor_new, // hand-written — disabled
     // accessor_pairs, // runner >> native (50%, 7 FP); fall back to JS runner
     // Correctness v0.7 (5)
     // no_constant_binary_expression, // runner >> native (21% correct); fall back to JS runner
-    no_div_regex,
+    // no_div_regex, // hand-written — disabled
     // array_callback_return, // runner >> native (39% correct); fall back to JS runner
     // no_useless_backreference, // runner >> native (49%, has FP); fall back to JS runner
     no_new_native_nonconstructor,
@@ -330,85 +330,85 @@ pub const all_rules = .{
     no_negated_in_lhs,
     no_new_statics,
     no_invalid_remove_event_listener,
-    no_useless_assignment,
+    // no_useless_assignment, // hand-written — disabled
     // Suspicious (28)
     // eqeqeq, // hand-written, 45 FP vs ESLint; fall back to JS runner
     // no_cond_assign, // runner >> native (runner 45, native 32, 13 FN); fall back
     // no_control_regex, // runner >> native (runner 36, native 23, gap 13, 1 FP); fall back to JS runner
     no_delete_var,
-    no_empty_character_class,
+    // no_empty_character_class, // hand-written — disabled
     // no_eval, // runner >> native (runner 102, native 64, gap 38); fall back to JS runner
     // no_implied_eval, // runner >> native (runner 173, native 103, gap 70); fall back to JS runner
-    no_label_var,
-    no_lone_blocks,
+    // no_label_var, // hand-written — disabled
+    // no_lone_blocks, // hand-written — disabled
     // no_misleading_character_class, // runner >> native (49%, 18 FP); fall back to JS runner
-    no_mixed_spaces_and_tabs,
-    no_multi_str,
+    // no_mixed_spaces_and_tabs, // hand-written — disabled
+    // no_multi_str, // hand-written — disabled
     no_new_wrappers,
     // no_nonoctal_decimal_escape, // native has 4 FP making hybrid worse (runner 83, native 79); fall back to JS runner
-    no_octal,
+    // no_octal, // hand-written — disabled
     // no_redeclare, // runner >> native (runner 67, native 28, gap 39); fall back to JS runner
-    no_regex_spaces,
+    // no_regex_spaces, // hand-written — disabled
     // no_restricted_globals, // runner >> native (46%); fall back to JS runner
-    no_shadow_restricted_names,
-    no_unsafe_finally,
-    no_unused_labels,
+    // no_shadow_restricted_names, // hand-written — disabled
+    // no_unsafe_finally, // hand-written — disabled
+    // no_unused_labels, // hand-written — disabled
     // no_useless_escape, // runner >> native (runner 288, native 215, gap 73, 5 FP); fall back to JS runner
     no_void,
     no_with,
-    require_yield,
+    // require_yield, // hand-written — disabled
     no_case_declarations,
     // no_sequences, // runner >> native (runner 42, native 32, gap 10); fall back to JS runner
-    no_throw_literal,
+    // no_throw_literal, // hand-written — disabled
     // Suspicious v0.5 (6)
-    no_console,
+    // no_console, // hand-written — disabled
     // no_alert, // runner >> native (runner 41, native 34, 8 FN); fall back
     // no_duplicate_imports, // runner >> native (runner 85, native 59, gap 26, 1 FP); fall back to JS runner
-    default_case,
+    // default_case, // hand-written — disabled
     // radix, // runner >> native (runner 54, native 31, 21 FN 2 FP); fall back
     // no_shadow, // runner >> native (runner 314/368, native 305/368, 9 more FN); fall back to runner
     // Suspicious v0.6 (6)
     // no_loop_func, // runner >> native (runner 96, native 41, gap 55, 54 FP!); fall back to JS runner
     // no_implicit_globals, // runner >> native (runner 224, native 199, gap 25); fall back to JS runner
-    no_process_exit,
+    // no_process_exit, // hand-written — disabled
     // consistent_return, // runner >> native (runner 43, native 23, gap 20); fall back to JS runner
     // no_object_constructor, // runner >> native (runner 56, native 6, gap 50, 3 FP); fall back to JS runner
     // prefer_promise_reject_errors, // runner >> native (runner 64, native 31, gap 33); fall back to JS runner
     // Suspicious v0.7 (3)
     // no_return_await, // runner >> native (runner 71, native 47, gap 24); fall back to JS runner
-    no_new_array,
+    // no_new_array, // hand-written — disabled
     // require_unicode_regexp, // runner >> native (runner 79, native 48, gap 31, 2 FP); fall back to JS runner
     // Style (30)
     // no_var, // hand-written, 62 FP vs ESLint; fall back to JS runner
-    prefer_const,
+    // prefer_const, // hand-written — disabled
     no_array_constructor,
     // no_bitwise, // runner >> native (runner 26, native 16, gap 10, 4 FP); fall back to JS runner
     no_caller,
     no_continue,
     // no_else_return, // hand-written, 82 FP vs ESLint; fall back to JS runner
-    no_eq_null,
-    no_extend_native,
-    no_extra_bind,
+    // no_eq_null, // hand-written — disabled
+    // no_extend_native, // hand-written — disabled
+    // no_extra_bind, // hand-written — disabled
     // no_extra_boolean_cast, // runner >> native (67%, missing enforceForLogicalOperands option); fall back
     no_floating_decimal,
     no_iterator,
-    no_labels,
-    no_lonely_if,
+    // no_labels, // hand-written — disabled
+    // no_lonely_if, // hand-written — disabled
     // no_multi_assign, // native has 2 FP making hybrid 20 vs runner 31; fall back to JS runner
     no_negated_condition,
     no_nested_ternary,
     no_new,
     no_new_func,
-    no_new_object,
+    // no_new_object, // hand-written — disabled
     no_new_require,
     no_process_env,
-    no_octal_escape,
+    // no_octal_escape, // hand-written — disabled
     // no_param_reassign, // runner >> native (runner 76, native 57, gap 21); fall back to JS runner
-    no_plusplus,
+    // no_plusplus, // hand-written — disabled
     no_proto,
     no_path_concat,
     // no_return_assign, // runner >> native (runner 30, native 25, 5 FN); fall back
-    no_script_url,
+    // no_script_url, // hand-written — disabled
     no_unneeded_ternary,
     // no_useless_computed_key, // hand-written, 65 FP vs ESLint; fall back to JS runner
     // prefer_template, // hand-written, 83 FP vs ESLint; fall back to JS runner
@@ -419,11 +419,11 @@ pub const all_rules = .{
     // no_useless_rename, // runner >> native (runner 163, native 78, gap 85, 13 FP); fall back to JS runner
     // Style v0.6 (13)
     // prefer_rest_params, // native has 6 FP making hybrid 5 vs runner 11; fall back to JS runner
-    prefer_spread,
+    // prefer_spread, // hand-written — disabled
     // no_useless_call, // runner >> native (runner 44, native 21, gap 23, 2 FP); fall back to JS runner
     // max_params, // runner >> native (runner 52, native 25, gap 28); fall back to JS runner
     // prefer_arrow_callback, // runner >> native (runner 105, native 63, gap 42, 14 FP); fall back to JS runner
-    no_implicit_coercion,
+    // no_implicit_coercion, // hand-written — disabled
     // no_useless_concat, // runner >> native (runner 20, native 14, gap 6, 2 FP); fall back to JS runner
     // arrow_body_style, // runner >> native (runner 87, native 63, gap 24, 3 FP); fall back to JS runner
     // default_param_last, // runner >> native (runner 96, native 81, gap 15, 3 FP); fall back to JS runner
@@ -436,8 +436,8 @@ pub const all_rules = .{
     // max_statements, // runner >> native (runner 42, native 20, gap 22); fall back to JS runner
     // dot_notation, // runner >> native (runner 69, native 50, gap 19, 5 FP); fall back to JS runner
     // no_confusing_arrow, // native has 6 FP making hybrid 24 vs runner 30; fall back to JS runner
-    no_extra_label,
-    vars_on_top,
+    // no_extra_label, // hand-written — disabled
+    // vars_on_top, // hand-written — disabled
     // prefer_destructuring, // runner >> native (runner 103, native 80, gap 23, 5 FP); fall back to JS runner
     // Style v0.7 (12)
     // camelcase, // runner >> native (runner 204, native 118, gap 86); fall back to JS runner
@@ -447,7 +447,7 @@ pub const all_rules = .{
     // func_style, // runner >> native (runner 120, native 73, gap 47); fall back to JS runner
     // id_length, // runner >> native (runner 181, native 96, gap 85, 1 FP); fall back to JS runner
     // operator_assignment, // runner >> native (runner 119, native 66, gap 53, 2 FP); fall back to JS runner
-    prefer_object_has_own,
+    // prefer_object_has_own, // hand-written — disabled
     // no_underscore_dangle, // runner >> native (runner 116, native 74, gap 42, 3 FP); fall back to JS runner
     // yoda, // runner >> native (runner 156, native 132, gap 24, 3 FP); fall back to JS runner
     no_ternary,
@@ -455,15 +455,15 @@ pub const all_rules = .{
     // max_depth, // runner >> native (runner 25, native 13, gap 12); fall back to JS runner
     // Style v0.8 (10)
     // no_empty_function, // native has 2 FP on @typescript-eslint/no-empty-function making hybrid 14 vs runner 16; fall back to JS runner
-    default_case_last,
+    // default_case_last, // hand-written — disabled
     // max_lines, // runner >> native (runner 46, native 16, gap 30, 1 FP); fall back to JS runner
     // no_mixed_operators, // runner >> native (runner 40, native 33, 7 FN); fall back
     // consistent_this, // runner >> native (runner 23, native 14, 10 FN 2 FP); fall back
     // no_undef_init, // native has 4 FP making hybrid 24 vs runner 28; fall back to JS runner
     // new_cap, // runner >> native (runner 80, native 55, gap 25, 3 FP); fall back to JS runner
     // max_classes_per_file, // native has 5 FP making hybrid 9 vs runner 17; fall back to JS runner
-    prefer_while,
-    no_useless_switch_case,
+    // prefer_while, // hand-written — disabled
+    // no_useless_switch_case, // hand-written — disabled
     // class_methods_use_this, // hand-written, 63 FP vs ESLint; fall back to JS runner
     avoid_new,
     consistent_date_clone,
@@ -475,29 +475,29 @@ pub const all_rules = .{
     prefer_string_trim_start_end,
     require_number_to_fixed_digits_argument,
     // TypeScript (8)
-    ts_no_explicit_any,
-    ts_no_non_null_assertion,
+    // ts_no_explicit_any, // hand-written — disabled
+    // ts_no_non_null_assertion, // hand-written — disabled
     // ts_prefer_as_const, // runner >> native (runner 46, native 38, gap 8); fall back to JS runner
     // ts_no_empty_interface, // runner >> native (runner 15, native 5, gap 10); fall back to JS runner
-    ts_no_namespace,
-    ts_no_unnecessary_type_assertion,
-    ts_prefer_interface,
-    ts_no_require_imports,
+    // ts_no_namespace, // hand-written — disabled
+    // ts_no_unnecessary_type_assertion, // hand-written — disabled
+    // ts_prefer_interface, // hand-written — disabled
+    // ts_no_require_imports, // hand-written — disabled
     // TypeScript v0.5 (4)
     // ts_ban_ts_comment, // runner >> native (runner 108, native 66, gap 42, 15 FP); fall back to JS runner
     // ts_no_this_alias, // native has FP making hybrid worse (runner 10, native 6, 1 FP); fall back to JS runner
     // ts_no_duplicate_enum_values, // runner >> native (runner 40, native 28, 12 FN); fall back
-    ts_no_array_delete,
+    // ts_no_array_delete, // hand-written — disabled
     // TypeScript v0.6 (5)
     // ts_no_useless_empty_export, // native 5 FP (.d.ts not detectable natively); fall back
-    ts_prefer_optional_chain,
+    // ts_prefer_optional_chain, // hand-written — disabled
     // ts_no_non_null_asserted_optional_chain, // native has 3 FP making hybrid 13 vs runner 13 (worse quality); fall back to JS runner
     // ts_no_confusing_non_null_assertion, // runner >> native (runner 18, native 8, gap 10); fall back to JS runner
-    ts_no_non_null_asserted_nullish_coalescing,
+    // ts_no_non_null_asserted_nullish_coalescing, // hand-written — disabled
     // TypeScript v0.7 (5)
-    ts_prefer_enum_initializers,
-    ts_ban_types,
-    ts_prefer_literal_enum_member,
+    // ts_prefer_enum_initializers, // hand-written — disabled
+    // ts_ban_types, // hand-written — disabled
+    // ts_prefer_literal_enum_member, // hand-written — disabled
     // ts_no_duplicate_type_constituents, // native has 16 FP making hybrid 48 vs runner 34 (worse); fall back to JS runner
     // ts_no_mixed_enums, // native has 4 FP making hybrid worse than runner; fall back to JS runner
     // TypeScript v0.8 (9)
@@ -505,14 +505,14 @@ pub const all_rules = .{
     // ts_no_empty_object_type, // runner >> native (runner 35, native 19, gap 16, 4 FP); fall back to JS runner
     // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
     // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner
-    ts_prefer_namespace_keyword,
+    // ts_prefer_namespace_keyword, // hand-written — disabled
     // ts_triple_slash_reference, // native has 8 FP making hybrid 13 vs runner 21; fall back to JS runner
     // ts_no_unnecessary_boolean_literal_compare, // native has 21 FP making hybrid 22 vs runner 21 (FP worse); fall back to JS runner
-    ts_no_dynamic_delete,
-    ts_prefer_ts_expect_error,
+    // ts_no_dynamic_delete, // hand-written — disabled
+    // ts_prefer_ts_expect_error, // hand-written — disabled
     // ts_no_inferrable_types, // runner >> native (runner 100, native 55, 47 FN); fall back
-    ts_no_unsafe_declaration_merging,
-    ts_explicit_function_return_type,
+    // ts_no_unsafe_declaration_merging, // hand-written — disabled
+    // ts_explicit_function_return_type, // hand-written — disabled
     // ts_explicit_module_boundary_types, // runner >> native (runner 144, native 117, gap 27, 21 FP); fall back to JS runner
     // Unicorn plugin (0 — both hand-written rules disabled)
     // unicorn_no_array_for_each, // hand-written, 282 FP vs ESLint; fall back to JS runner
