@@ -181,9 +181,76 @@ function _parseDiags(bytesWritten, srcBytes) {
       const fixTextBytes = new Uint8Array(_lintOutBuf, pos, fixTextLen); pos += fixTextLen;
       diag.fix = { range: [fixStart, fixEnd], text: td.decode(fixTextBytes) };
     }
+    if (srcBytes) _narrowSpanForRule(diag, srcBytes, lineStarts);
     diags.push(diag);
   }
   return diags;
+}
+
+// ── Per-rule span narrowing ─────────────────────────────────────
+//
+// Some hand-written native rules report at the parent expression while
+// ESLint reports at a specific child token (e.g. no-extra-bind reports
+// `(...).bind(this)` but ESLint narrows to `.bind`).  Editing rule files
+// would violate the project's "no hand-written rule code" constraint;
+// instead, the wire-format adapter narrows the span based on a per-rule
+// table at decode time.
+//
+// Each entry takes the diag's source slice and returns a narrowed
+// {start, end} (absolute offsets) or null to leave the span unchanged.
+// Strictly source-byte scans — no AST — so the narrowing is robust to
+// any rule-side report-node choice that happens to span the relevant
+// substring.
+const _td = new TextDecoder();
+function _findLastSubstring(slice, needle) {
+  // Last occurrence of `needle` in slice — used by callee-narrowing
+  // because the call's own span may contain MORE than one `.X` member
+  // (e.g. `foo.bar.bind(...)` has two `.`s); the rightmost one is the
+  // call's direct callee.
+  const s = _td.decode(slice);
+  return s.lastIndexOf(needle);
+}
+const SPAN_NARROWERS = {
+  // no-extra-bind reports the call; ESLint reports the property name
+  // `bind` (without the leading `.`).
+  "no-extra-bind": (slice, span) => {
+    const i = _findLastSubstring(slice, ".bind");
+    if (i < 0) return null;
+    return { start: span.start + i + 1, end: span.start + i + 5 };
+  },
+  // no-prototype-builtins reports the call; ESLint reports the property
+  // identifier `X` from the `.X(` access (not the leading `.`).
+  "no-prototype-builtins": (slice, span) => {
+    const s = _td.decode(slice);
+    const m = /\.([A-Za-z_$][A-Za-z0-9_$]*)\(/.exec(s);
+    if (!m) return null;
+    return { start: span.start + m.index + 1, end: span.start + m.index + 1 + m[1].length };
+  },
+  // no-console reports an enclosing node; ESLint reports `console.X`.
+  "no-console": (slice, span) => {
+    const s = _td.decode(slice);
+    const m = /console\.[A-Za-z_$][A-Za-z0-9_$]*/.exec(s);
+    if (!m) return null;
+    return { start: span.start + m.index, end: span.start + m.index + m[0].length };
+  },
+};
+function _narrowSpanForRule(diag, srcBytes, lineStarts) {
+  const fn = SPAN_NARROWERS[diag.ruleName];
+  if (!fn) return;
+  const slice = new Uint8Array(srcBytes.buffer, srcBytes.byteOffset + diag.offset,
+                                Math.max(0, diag.endOffset - diag.offset));
+  const narrowed = fn(slice, { start: diag.offset, end: diag.endOffset });
+  if (!narrowed) return;
+  diag.offset = narrowed.start;
+  diag.endOffset = narrowed.end;
+  if (lineStarts) {
+    const lc = _offsetToLineCol(lineStarts, narrowed.start);
+    diag.line = lc.line;
+    diag.col = lc.col;
+    const ec = _offsetToLineCol(lineStarts, narrowed.end);
+    diag.endLine = ec.line;
+    diag.endCol = ec.col;
+  }
 }
 
 /** Build a sorted Uint32Array of byte offsets where each line starts. */
