@@ -128,4 +128,32 @@ function loadPlugin(pkgName, opts = {}) {
   return rules;
 }
 
-module.exports = { loadCoreRules, loadPlugin };
+// ── Native rule message lookup ───────────────────────────────
+//
+// Native (Zig) diagnostics carry a `messageId` but not the human-readable
+// message text — JS-side hydrates the message from the rule module's
+// `meta.messages` map.  This is built lazily on first lookup and cached.
+let _nativeMessageMap = null;
+function _ensureNativeMessageMap() {
+  if (_nativeMessageMap) return _nativeMessageMap;
+  _nativeMessageMap = new Map();
+  for (const desc of loadCoreRules({ includeDeprecated: true })) {
+    const msgs = desc.meta?.messages;
+    if (msgs && typeof msgs === "object") _nativeMessageMap.set(desc.meta.name, msgs);
+  }
+  return _nativeMessageMap;
+}
+
+/**
+ * Look up the message template for a native diagnostic's (ruleName, messageId).
+ * Returns null when the rule or messageId is unknown — caller should fall back
+ * to a generic placeholder.
+ */
+function getNativeMessageTemplate(ruleName, messageId) {
+  if (!ruleName || !messageId) return null;
+  const map = _ensureNativeMessageMap();
+  const msgs = map.get(ruleName);
+  return msgs ? (msgs[messageId] ?? null) : null;
+}
+
+module.exports = { loadCoreRules, loadPlugin, getNativeMessageTemplate };

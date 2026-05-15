@@ -47,7 +47,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // Destructuring with defaults can yield two write references that share
         // their identifier node ({Foo = 0} pattern).  Suppress the duplicate.
         if (id_node == prev_reported_node) continue;
-        ctx.report(id_node);
+        ctx.reportWithMessageId(id_node, "globalShouldNotBeModified");
         prev_reported_node = id_node;
     }
 }

@@ -19,6 +19,8 @@ pub const meta = RuleMeta{
 
 pub const relevant_tags = [_]Node.Tag{};
 
+pub const needs_semantic = true;
+
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
     noNewNonconstructor,
@@ -48,7 +50,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // Respect ESLint globals:"off" (config + inline /* global X:off */)
         if (ctx.globalIsOff(__name__)) continue;
         if (((ctx.nodeTag(ctx.parentOf(__ref_identifier__)) == .new_expr) and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
-            ctx.report(__ref_identifier__);
+            ctx.reportWithMessageId(__ref_identifier__, "noNewNonconstructor");
         }
     }
 }

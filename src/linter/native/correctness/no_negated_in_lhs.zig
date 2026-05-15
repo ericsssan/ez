@@ -23,6 +23,6 @@ const Messages = enum {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if ((((ctx.nodeTag(node) == .in_expr) and blk: { const __t = ctx.nodeTag(ctx.nodeData(node).lhs); break :blk (__t == .delete_expr or __t == .void_expr or __t == .typeof_expr or __t == .unary_plus or __t == .unary_minus or __t == .bitwise_not or __t == .logical_not); }) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .logical_not))) {
-        ctx.report(node);
+        ctx.reportWithMessageId(node, "negatedLHS");
     }
 }

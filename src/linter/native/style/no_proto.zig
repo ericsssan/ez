@@ -23,6 +23,6 @@ const Messages = enum {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodePropNameEquals(node, "__proto__")) {
-        ctx.report(node);
+        ctx.reportWithMessageId(node, "unexpectedProto");
     }
 }

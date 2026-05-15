@@ -24,6 +24,6 @@ const Messages = enum {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (((ctx.nodeTag(ctx.nodeData(node).lhs) == .identifier) and (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).lhs)), "require")))) {
-        ctx.report(node);
+        ctx.reportWithMessageId(node, "noNewRequire");
     }
 }

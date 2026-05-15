@@ -45,7 +45,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const statement: NodeIndex = @enumFromInt(__raw);
             const statement_tag = ctx.nodeTag(statement);
             if (isLexicalDeclaration(statement_tag)) {
-                ctx.report(statement);
+                ctx.reportWithMessageId(statement, "unexpected");
             }
         }
     }

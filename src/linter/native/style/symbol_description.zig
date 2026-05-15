@@ -26,14 +26,14 @@ const Messages = enum {
     expected,
 };
 
+const astUtils = [_][]const u8{ "COMMENTS_IGNORE_PATTERN", "LINEBREAKS", "LINEBREAK_MATCHER", "SHEBANG_MATCHER", "STATEMENT_LIST_PARENTS", "ECMASCRIPT_GLOBALS", "isTokenOnSameLine", "isNullOrUndefined", "isCallee", "isES5Constructor", "getUpperFunction", "isFunction", "isLoop", "isInLoop", "isArrayFromMethod", "isArrayFromAsyncMethod", "isParenthesised", "createGlobalLinebreakMatcher", "equalTokens", "isArrowToken", "isClosingBraceToken", "isClosingBracketToken", "isClosingParenToken", "isColonToken", "isCommaToken", "isCommentToken", "isDotToken", "isQuestionDotToken", "isKeywordToken", "isNotClosingBraceToken", "isNotClosingBracketToken", "isNotClosingParenToken", "isNotColonToken", "isNotCommaToken", "isNotDotToken", "isNotQuestionDotToken", "isNotOpeningBraceToken", "isNotOpeningBracketToken", "isNotOpeningParenToken", "isNotSemicolonToken", "isOpeningBraceToken", "isOpeningBracketToken", "isOpeningParenToken", "isSemicolonToken", "isEqToken", "isStringLiteral", "isBreakableStatement", "getModifyingReferences", "isSurroundedBy", "isDirectiveComment", "getTrailingStatement", "getVariableByName", "isDefaultThisBinding", "getPrecedence", "isEmptyBlock", "isEmptyFunction", "getDirectivePrologue", "isDecimalInteger", "isDecimalIntegerNumericToken", "getFunctionNameWithKind", "getFunctionHeadLoc", "getNextLocation", "getParenthesisedText", "couldBeError", "isNumericLiteral", "canTokensBeAdjacent", "getNameLocationInGlobalDirectiveComment", "hasOctalOrNonOctalDecimalEscapeSequence", "isStaticTemplateLiteral", "areBracesNecessary", "isReferenceToGlobalVariable", "isLogicalExpression", "isCoalesceExpression", "isMixedLogicalAndCoalesceExpressions", "isNullLiteral", "getStaticStringValue", "getStaticPropertyName", "skipChainExpression", "isSpecificId", "isSpecificMemberAccess", "equalLiteralValue", "isSameReference", "isLogicalAssignmentOperator", "getSwitchCaseColonToken", "getModuleExportName", "isConstant", "isTopLevelExpressionStatement", "isDirective", "isStartOfExpressionStatement", "needsPrecedingSemicolon", "isImportAttributeKey", "getOpeningParenOfParams" };
+
 const __Symbol_names__ = [_][]const u8{ "Symbol" };
 
 fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
     for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
     return false;
 }
-
-pub fn run(_: NodeIndex, _: *const LintContext) void {}
 
 fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
     if (n == .none) return false;
@@ -42,6 +42,8 @@ fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
     const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
     return c.extraSlice(sr).len == 0;
 }
+
+pub fn run(_: NodeIndex, _: *const LintContext) void {}
 
 pub fn runOnSymbols(ctx: *const LintContext) void {
     const refs = ctx.references();
@@ -59,7 +61,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (ctx.globalIsOff(__name__)) continue;
         if ((blk: { const __t = ctx.nodeTag(ctx.parentOf(__ref_identifier__)); break :blk (__t == .call_expr or __t == .optional_call_expr); } and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
             if (nodeArgsLenZero(ctx, ctx.parentOf(__ref_identifier__))) {
-                ctx.report(ctx.parentOf(__ref_identifier__));
+                ctx.reportWithMessageId(ctx.parentOf(__ref_identifier__), "expected");
             }
         }
     }

@@ -15,7 +15,7 @@ pub const meta = RuleMeta{
     .description = "Disallow use of the `Buffer()` constructor",
 };
 
-pub const relevant_tags = [_]Node.Tag{.call_expr, .new_expr};
+pub const relevant_tags = [_]Node.Tag{.call_expr, .optional_call_expr, .new_expr};
 
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
@@ -24,14 +24,14 @@ const Messages = enum {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     switch (ctx.nodeTag(node)) {
-        .call_expr => {
+        .call_expr, .optional_call_expr => {
             if ((std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).lhs)), "Buffer"))) {
-                ctx.report(node);
+                ctx.reportWithMessageId(node, "deprecated");
             }
         },
         .new_expr => {
             if ((std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).lhs)), "Buffer"))) {
-                ctx.report(node);
+                ctx.reportWithMessageId(node, "deprecated");
             }
         },
         else => {},

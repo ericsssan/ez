@@ -31,6 +31,6 @@ fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (((((std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).lhs)), "arguments")) and !((ctx.nodeTag(node) == .computed_member_expr or ctx.nodeTag(node) == .optional_computed_member_expr))) and (ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).rhs)).len > 0)) and containsStr(__rx_0__[0..], ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).rhs))))) {
-        ctx.report(node);
+        ctx.reportWithMessageId(node, "unexpected");
     }
 }

@@ -22,5 +22,5 @@ const Messages = enum {
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    ctx.report(node);
+    ctx.reportWithMessageId(node, "noTernaryOperator");
 }

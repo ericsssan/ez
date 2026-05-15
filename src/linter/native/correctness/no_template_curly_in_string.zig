@@ -24,6 +24,6 @@ const Messages = enum {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (((ctx.nodeTag(node) == .string_literal) and ((std.mem.indexOf(u8, ctx.tokenText(ctx.nodeMainToken(node)), "${") != null) and (std.mem.indexOf(u8, ctx.tokenText(ctx.nodeMainToken(node)), "}") != null)))) {
-        ctx.report(node);
+        ctx.reportWithMessageId(node, "unexpectedTemplateExpression");
     }
 }

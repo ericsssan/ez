@@ -23,6 +23,6 @@ const Messages = enum {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (((ctx.nodeTag(node) == .delete_expr) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .identifier))) {
-        ctx.report(node);
+        ctx.reportWithMessageId(node, "unexpected");
     }
 }

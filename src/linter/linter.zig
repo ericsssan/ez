@@ -230,24 +230,45 @@ pub fn lint(
     const inline_globals = try @import("lint_context.zig").scanInlineGlobals(allocator, tree.source);
     defer allocator.free(inline_globals);
 
-    // Compute per-node max-token table for proper nodeSpan().end.
-    // Forward pass over parent_indices (children have smaller indices than parents,
-    // so each node's subtree-max is finalized before propagating to its parent).
-    const node_max_toks: []u32 = blk: {
-        const n = tree.nodes.len;
-        const mt = try allocator.alloc(u32, n);
-        @memcpy(mt, tree.nodes.items(.main_token));
-        const parents = semantic.parent_indices;
+    // Compute per-node min/max-token tables so nodeSpan() can return the full
+    // subtree extent rather than just the main_token's position.  ESLint's
+    // diagnostic span is `node.range = [first-child-token, last-child-token]`;
+    // for BinaryExpression/MemberExpression/CallExpression the main_token is
+    // the operator/dot/callee — start-from-main_token would point to the
+    // wrong column and surface as a differential mismatch on every diag.
+    //
+    // Forward pass over parent_indices (children have smaller indices than
+    // parents, so each subtree-min/max is finalized before propagating up).
+    const n = tree.nodes.len;
+    const node_min_toks: []u32 = try allocator.alloc(u32, n);
+    defer allocator.free(node_min_toks);
+    @memcpy(node_min_toks, tree.nodes.items(.main_token));
+    const node_max_toks: []u32 = try allocator.alloc(u32, n);
+    defer allocator.free(node_max_toks);
+    @memcpy(node_max_toks, tree.nodes.items(.main_token));
+    {
+        // Prefer semantic.parent_indices when available; otherwise build a
+        // throwaway parents array so node-walk-only rules (which don't trigger
+        // needsSemantic) still get correct nodeSpan starts.
+        const NONE = std.math.maxInt(u32);
+        var owned_parents: ?[]u32 = null;
+        defer if (owned_parents) |p| allocator.free(p);
+        const parents: []const u32 = if (semantic.parent_indices.len == n)
+            semantic.parent_indices
+        else blk: {
+            const p = try @import("../parser/parent_builder.zig").buildParentsOnly(tree, allocator);
+            owned_parents = p;
+            break :blk p;
+        };
         if (parents.len == n) {
-            const NONE = std.math.maxInt(u32);
             for (1..n) |i| {
                 const p = parents[i];
-                if (p != NONE and mt[i] > mt[p]) mt[p] = mt[i];
+                if (p == NONE) continue;
+                if (node_max_toks[i] > node_max_toks[p]) node_max_toks[p] = node_max_toks[i];
+                if (node_min_toks[i] < node_min_toks[p]) node_min_toks[p] = node_min_toks[i];
             }
         }
-        break :blk mt;
-    };
-    defer allocator.free(node_max_toks);
+    }
 
     var ctx = LintContext{
         .ast = tree,
@@ -259,6 +280,7 @@ pub fn lint(
         .language_options = if (config) |cfg| cfg.language_options else null,
         .inline_globals = inline_globals,
         .node_max_toks = node_max_toks,
+        .node_min_toks = node_min_toks,
     };
 
     // ── Phase 1: AST node walk (CSR dispatch) ─────────────────
@@ -390,23 +412,39 @@ pub fn lintRulesByName(
     const inline_globals = try @import("lint_context.zig").scanInlineGlobals(allocator, tree.source);
     defer allocator.free(inline_globals);
 
-    // Same node_max_toks pass as `lint()`. Required for any node-walk rule
-    // that reads ctx.nodeSpan().end.
-    const node_max_toks: []u32 = blk: {
-        const n = tree.nodes.len;
-        const mt = try allocator.alloc(u32, n);
-        @memcpy(mt, tree.nodes.items(.main_token));
-        const parents = semantic.parent_indices;
+    // Same node_min/max-toks pass as `lint()`. Required for any node-walk
+    // rule that reads ctx.nodeSpan() — start/end come from the subtree-min
+    // and subtree-max of main tokens, respectively.
+    const n = tree.nodes.len;
+    const node_min_toks: []u32 = try allocator.alloc(u32, n);
+    defer allocator.free(node_min_toks);
+    @memcpy(node_min_toks, tree.nodes.items(.main_token));
+    const node_max_toks: []u32 = try allocator.alloc(u32, n);
+    defer allocator.free(node_max_toks);
+    @memcpy(node_max_toks, tree.nodes.items(.main_token));
+    {
+        // Prefer semantic.parent_indices when available; otherwise build a
+        // throwaway parents array so node-walk-only rules (which don't trigger
+        // needsSemantic) still get correct nodeSpan starts.
+        const NONE = std.math.maxInt(u32);
+        var owned_parents: ?[]u32 = null;
+        defer if (owned_parents) |p| allocator.free(p);
+        const parents: []const u32 = if (semantic.parent_indices.len == n)
+            semantic.parent_indices
+        else blk: {
+            const p = try @import("../parser/parent_builder.zig").buildParentsOnly(tree, allocator);
+            owned_parents = p;
+            break :blk p;
+        };
         if (parents.len == n) {
-            const NONE = std.math.maxInt(u32);
             for (1..n) |i| {
                 const p = parents[i];
-                if (p != NONE and mt[i] > mt[p]) mt[p] = mt[i];
+                if (p == NONE) continue;
+                if (node_max_toks[i] > node_max_toks[p]) node_max_toks[p] = node_max_toks[i];
+                if (node_min_toks[i] < node_min_toks[p]) node_min_toks[p] = node_min_toks[i];
             }
         }
-        break :blk mt;
-    };
-    defer allocator.free(node_max_toks);
+    }
 
     var ctx = LintContext{
         .ast = tree,
@@ -418,6 +456,7 @@ pub fn lintRulesByName(
         .language_options = null,
         .inline_globals = inline_globals,
         .node_max_toks = node_max_toks,
+        .node_min_toks = node_min_toks,
     };
 
     // Phase 1: node walk via CSR dispatch.

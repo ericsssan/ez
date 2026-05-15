@@ -1112,20 +1112,8 @@ fn parseAndLintImpl(
         std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
         var pos: u32 = 4;
         for (diagnostics) |diag| {
-            if (pos + 7 > out_len) break;
-            std.mem.writeInt(u16, out[pos..][0..2], diag.rule_index, .little); pos += 2;
-            std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
-            const sev_val: u8 = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 };
-            const has_fix: u8 = if (diag.fix != null) 0x04 else 0;
-            out[pos] = sev_val | has_fix; pos += 1;
-            if (diag.fix) |fix| {
-                if (pos + 10 + fix.text.len > out_len) break;
-                std.mem.writeInt(u32, out[pos..][0..4], fix.span.start, .little); pos += 4;
-                std.mem.writeInt(u32, out[pos..][0..4], fix.span.end, .little); pos += 4;
-                const tlen: u16 = @intCast(@min(fix.text.len, 0xFFFF));
-                std.mem.writeInt(u16, out[pos..][0..2], tlen, .little); pos += 2;
-                @memcpy(out[pos..][0..tlen], fix.text[0..tlen]); pos += tlen;
-            }
+            const w = serializeDiag(out, pos, diag) orelse break;
+            pos = w;
         }
     }
 
@@ -1396,29 +1384,48 @@ fn lintImpl(
     if (out_len < 4) return 0;
     const out = out_ptr[0..out_len];
 
-    // Compact format: count(u32) + per-diag: rule_index(u16) + offset(u32) + flags(u8) = 7 bytes base.
-    // flags: bits 0-1 = severity (1=warn, 2=error), bit 2 = has_fix.
-    // If has_fix: fix_start(u32) + fix_end(u32) + fix_text_len(u16) + fix_text(n) appended.
     std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
     var pos: u32 = 4;
-
     for (diagnostics) |diag| {
-        if (pos + 7 > out_len) break;
-        std.mem.writeInt(u16, out[pos..][0..2], diag.rule_index, .little); pos += 2;
-        std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
-        const sev_val: u8 = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 };
-        const has_fix: u8 = if (diag.fix != null) 0x04 else 0;
-        out[pos] = sev_val | has_fix; pos += 1;
-        if (diag.fix) |fix| {
-            if (pos + 10 + fix.text.len > out_len) break;
-            std.mem.writeInt(u32, out[pos..][0..4], fix.span.start, .little); pos += 4;
-            std.mem.writeInt(u32, out[pos..][0..4], fix.span.end, .little); pos += 4;
-            const tlen: u16 = @intCast(@min(fix.text.len, 0xFFFF));
-            std.mem.writeInt(u16, out[pos..][0..2], tlen, .little); pos += 2;
-            @memcpy(out[pos..][0..tlen], fix.text[0..tlen]); pos += tlen;
-        }
+        const w = serializeDiag(out, pos, diag) orelse break;
+        pos = w;
     }
+    return pos;
+}
 
+// Wire format per diagnostic (little-endian):
+//   u16 rule_index
+//   u32 span.start
+//   u32 span.end
+//   u8  flags           bits 0-1 = severity (1=warn, 2=error)
+//                       bit 2    = has_fix
+//                       bit 3    = has_message_id
+//   if has_message_id: u8 msg_id_len + bytes
+//   if has_fix:        u32 fix.start + u32 fix.end + u16 text_len + text bytes
+fn serializeDiag(out: []u8, pos_in: u32, diag: linter_root.LintDiagnostic) ?u32 {
+    var pos = pos_in;
+    if (pos + 11 > out.len) return null;
+    std.mem.writeInt(u16, out[pos..][0..2], diag.rule_index, .little); pos += 2;
+    std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
+    std.mem.writeInt(u32, out[pos..][0..4], diag.span.end,   .little); pos += 4;
+    const sev_val: u8 = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 };
+    const has_fix:    u8 = if (diag.fix != null) 0x04 else 0;
+    const has_msg_id: u8 = if (diag.message_id != null) 0x08 else 0;
+    out[pos] = sev_val | has_fix | has_msg_id; pos += 1;
+    if (diag.message_id) |mid| {
+        const mlen: u8 = @intCast(@min(mid.len, 0xFF));
+        if (pos + 1 + mlen > out.len) return null;
+        out[pos] = mlen; pos += 1;
+        @memcpy(out[pos..][0..mlen], mid[0..mlen]); pos += mlen;
+    }
+    if (diag.fix) |fix| {
+        const tlen: u16 = @intCast(@min(fix.text.len, 0xFFFF));
+        if (pos + 10 + tlen > out.len) return null;
+        std.mem.writeInt(u32, out[pos..][0..4], fix.span.start, .little); pos += 4;
+        std.mem.writeInt(u32, out[pos..][0..4], fix.span.end,   .little); pos += 4;
+        std.mem.writeInt(u16, out[pos..][0..2], tlen,           .little); pos += 2;
+        @memcpy(out[pos..][0..tlen], fix.text[0..tlen]); pos += tlen;
+    }
     return pos;
 }
 

@@ -39,6 +39,10 @@ pub const LintDiagnostic = struct {
     severity: Severity,
     /// Optional autofix — null when the rule has no fix for this diagnostic.
     fix: ?Fix = null,
+    /// Optional ESLint-compatible messageId (e.g. "preferLiteral", "comparingToSelf").
+    /// JS-side looks up the message template from the rule's meta.messages map.
+    /// String must outlive the diagnostic — codegen passes string literals.
+    message_id: ?[]const u8 = null,
 
     /// Format as "file:line:col: severity(rule-name)"
     pub fn format(
@@ -130,10 +134,15 @@ pub const LintContext = struct {
     /// Inline `/* global <name>[:off|readonly|...] */` directives parsed from source.
     /// Populated once by the linter before rules run; empty when no directives exist.
     inline_globals: []const InlineGlobalEntry = &.{},
-    /// Per-node maximum main_token index over the node's full subtree.
-    /// node_max_toks[i] = highest main_token index among node i and all its descendants.
-    /// Populated by the linter (O(n) pass using parent_indices); empty when unavailable.
+    /// Per-node minimum/maximum main_token index over the node's full subtree.
+    /// Used by `nodeSpan` so a node's diagnostic span covers from the first
+    /// child token (`node_min_toks[i]`) to the last child token+len
+    /// (`node_max_toks[i]`).  Without `node_min_toks` a BinaryExpression
+    /// would report at its operator (main_token) instead of its lhs start.
+    /// Populated by the linter (O(n) pass using parent_indices); empty when
+    /// unavailable, in which case nodeSpan falls back to main_token.
     node_max_toks: []const u32 = &.{},
+    node_min_toks: []const u32 = &.{},
 
     // ── AST accessors ─────────────────────────────────────
 
@@ -332,12 +341,13 @@ pub const LintContext = struct {
 
     pub fn nodeSpan(self: *const LintContext, index: NodeIndex) Span {
         const main_tok = self.ast.nodeMainToken(index);
-        const start = self.ast.tokenStart(main_tok);
         const i = index.toInt();
-        const last_tok = if (i < self.node_max_toks.len) self.node_max_toks[i] else main_tok;
-        const last_start = self.ast.tokenStart(last_tok);
-        const last_len = self.ast.tokens.items(.len)[last_tok];
-        return .{ .start = start, .end = last_start + last_len };
+        const first_tok = if (i < self.node_min_toks.len) self.node_min_toks[i] else main_tok;
+        const last_tok  = if (i < self.node_max_toks.len) self.node_max_toks[i] else main_tok;
+        const first_start = self.ast.tokenStart(first_tok);
+        const last_start  = self.ast.tokenStart(last_tok);
+        const last_len    = self.ast.tokens.items(.len)[last_tok];
+        return .{ .start = first_start, .end = last_start + last_len };
     }
 
     /// Parent node of `index`, or `.none` when semantic did not compute parents
@@ -590,11 +600,39 @@ pub const LintContext = struct {
         }) catch {};
     }
 
+    /// Report a diagnostic at a node, tagged with an ESLint messageId.
+    /// `message_id` must be a static string (typically a string literal from codegen).
+    pub fn reportWithMessageId(
+        self: *const LintContext,
+        node_idx: NodeIndex,
+        message_id: []const u8,
+    ) void {
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = self.nodeSpan(node_idx),
+            .severity = self.severity_override orelse .warning,
+            .message_id = message_id,
+        }) catch {};
+    }
+
     pub fn reportSpan(self: *const LintContext, span: Span) void {
         self.diagnostics.append(self.allocator, .{
             .rule_index = self.current_rule_index,
             .span = span,
             .severity = self.severity_override orelse .warning,
+        }) catch {};
+    }
+
+    pub fn reportSpanWithMessageId(
+        self: *const LintContext,
+        span: Span,
+        message_id: []const u8,
+    ) void {
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = span,
+            .severity = self.severity_override orelse .warning,
+            .message_id = message_id,
         }) catch {};
     }
 
@@ -625,6 +663,27 @@ pub const LintContext = struct {
             .span = diag_span,
             .severity = self.severity_override orelse .warning,
             .fix = .{ .span = fix_span, .text = text_copy },
+        }) catch {};
+    }
+
+    /// Report at a node with a fix and ESLint messageId.
+    pub fn reportWithFixAndMessageId(
+        self: *const LintContext,
+        node_idx: NodeIndex,
+        fix_span: Span,
+        fix_text: []const u8,
+        message_id: []const u8,
+    ) void {
+        const text_copy = self.allocator.dupe(u8, fix_text) catch {
+            self.reportWithMessageId(node_idx, message_id);
+            return;
+        };
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = self.nodeSpan(node_idx),
+            .severity = self.severity_override orelse .warning,
+            .fix = .{ .span = fix_span, .text = text_copy },
+            .message_id = message_id,
         }) catch {};
     }
 };

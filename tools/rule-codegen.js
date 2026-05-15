@@ -438,15 +438,10 @@ function emit(rule) {
 function emitUnresolvedGlobalRefHandler(handler, ctx) {
   const lines = [];
   const namesConst = zigIdent(handler.namesConstant);
-  // Helper: call/new argument count is 0 when rhs is .none or the SubRange is empty.
-  lines.push(`fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {`);
-  lines.push(`    if (n == .none) return false;`);
-  lines.push(`    const d = c.nodeData(n);`);
-  lines.push(`    if (d.rhs == .none) return true;`);
-  lines.push(`    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));`);
-  lines.push(`    return c.extraSlice(sr).len == 0;`);
-  lines.push(`}`);
-  lines.push(``);
+  // `nodeArgsLenZero` is now emitted once at the top of the file by the
+  // `irUsesOp("node-args-length-zero")` pre-pass — duplicating it here
+  // produces a "duplicate struct member" error when the rule uses both
+  // the unresolved-global path AND a top-level node-args-length-zero check.
   if (handler.methodChainCheck) {
     // Detect `<idNode>.<method>(...)` with method in a configured set; return
     // the outer CallExpression NodeIndex (or .none).  Handles optional member
@@ -572,11 +567,14 @@ function emitReadonlyGlobalWriteRefHandler(handler, _ctx) {
   lines.push(`        // Destructuring with defaults can yield two write references that share`);
   lines.push(`        // their identifier node ({Foo = 0} pattern).  Suppress the duplicate.`);
   lines.push(`        if (id_node == prev_reported_node) continue;`);
-  // Note: ezlint diagnostics carry rule_index + span + severity but not
-  // messageId + data — message text is reconstructed at output time from
-  // the rule's meta.messages.  The `name` interpolation is already implicit
-  // in the reported identifier's source text.
-  lines.push(`        ctx.report(id_node);`);
+  // Diagnostic carries a messageId (when the IR captured one) so the JS side
+  // can hydrate the human-readable message from the rule's meta.messages.
+  // The `name` interpolation is implicit in the reported identifier's source.
+  if (handler.messageId) {
+    lines.push(`        ctx.reportWithMessageId(id_node, "${zigStr(handler.messageId)}");`);
+  } else {
+    lines.push(`        ctx.report(id_node);`);
+  }
   lines.push(`        prev_reported_node = id_node;`);
   lines.push(`    }`);
   lines.push(`}`);
@@ -629,7 +627,11 @@ function emitWriteRefOfBindingHandler(handler, _ctx) {
   lines.push(`        // Destructuring with defaults can yield two write references that share`);
   lines.push(`        // their identifier node ({Foo = 0} pattern); suppress the duplicate.`);
   lines.push(`        if (id_node == prev_reported_node) continue;`);
-  lines.push(`        ctx.report(id_node);`);
+  if (handler.messageId) {
+    lines.push(`        ctx.reportWithMessageId(id_node, "${zigStr(handler.messageId)}");`);
+  } else {
+    lines.push(`        ctx.report(id_node);`);
+  }
   lines.push(`        prev_reported_node = id_node;`);
   lines.push(`    }`);
   lines.push(`}`);
@@ -794,7 +796,11 @@ function emitHandlerBody(body, indent, ctx) {
 function emitStatement(stmt, indent, ctx) {
   const ind = "    ".repeat(indent);
   if (stmt.op === "report") {
-    return [`${ind}ctx.report(${emitExpr(stmt.node, ctx)});`];
+    const node = emitExpr(stmt.node, ctx);
+    if (stmt.messageId) {
+      return [`${ind}ctx.reportWithMessageId(${node}, "${zigStr(stmt.messageId)}");`];
+    }
+    return [`${ind}ctx.report(${node});`];
   }
   if (stmt.op === "if") {
     const out = [`${ind}if (${emitExpr(stmt.cond, ctx)}) {`];
@@ -808,6 +814,11 @@ function emitStatement(stmt, indent, ctx) {
   }
   if (stmt.op === "report-at-token") {
     const tok = emitExpr(stmt.token, ctx);
+    if (stmt.messageId) {
+      return [
+        `${ind}ctx.reportSpanWithMessageId(.{ .start = ctx.ast.tokenStart(${tok}), .end = ctx.tokenEnd(${tok}) }, "${zigStr(stmt.messageId)}");`,
+      ];
+    }
     return [
       `${ind}ctx.reportSpan(.{ .start = ctx.ast.tokenStart(${tok}), .end = ctx.tokenEnd(${tok}) });`,
     ];

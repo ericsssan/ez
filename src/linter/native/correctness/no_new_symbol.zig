@@ -19,6 +19,8 @@ pub const meta = RuleMeta{
 
 pub const relevant_tags = [_]Node.Tag{};
 
+pub const needs_semantic = true;
+
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
     noNewSymbol,
@@ -32,14 +34,6 @@ fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
 }
 
 pub fn run(_: NodeIndex, _: *const LintContext) void {}
-
-fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
-    if (n == .none) return false;
-    const d = c.nodeData(n);
-    if (d.rhs == .none) return true;
-    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
-    return c.extraSlice(sr).len == 0;
-}
 
 pub fn runOnSymbols(ctx: *const LintContext) void {
     const refs = ctx.references();
@@ -56,7 +50,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // Respect ESLint globals:"off" (config + inline /* global X:off */)
         if (ctx.globalIsOff(__name__)) continue;
         if (((ctx.nodeTag(ctx.parentOf(__ref_identifier__)) == .new_expr) and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
-            ctx.report(__ref_identifier__);
+            ctx.reportWithMessageId(__ref_identifier__, "noNewSymbol");
         }
     }
 }

@@ -122,10 +122,18 @@ function _getNativeRuleNames() {
 }
 
 /**
- * Parse compact binary diagnostics.
- * Format: count(u32) + per-diag: rule_index(u16) + offset(u32) + flags(u8) = 7 bytes base.
- * flags bits 0-1 = severity (1=warn, 2=error), bit 2 = has_fix.
- * If has_fix: fix_start(u32) + fix_end(u32) + fix_text_len(u16) + fix_text(n) follows.
+ * Parse compact binary diagnostics.  Wire format per diag (LE):
+ *   u16 rule_index, u32 span_start, u32 span_end, u8 flags  [11 bytes base]
+ *     flags bits 0-1 = severity (1=warn, 2=error)
+ *     flag  bit  2   = has_fix
+ *     flag  bit  3   = has_message_id
+ *   if has_message_id: u8 msg_id_len + bytes
+ *   if has_fix:        u32 fix_start + u32 fix_end + u16 text_len + text bytes
+ *
+ * span_end is needed so we can compute endLine/endColumn — without it the
+ * differential vs ESLint reports every diag as a field mismatch.  message_id
+ * lets the JS side hydrate `messageId` and look up the human-readable
+ * `message` template from rule.meta.messages.
  */
 function _parseDiags(bytesWritten, srcBytes) {
   if (bytesWritten < 4) return [];
@@ -134,27 +142,35 @@ function _parseDiags(bytesWritten, srcBytes) {
   const ruleNames = _getNativeRuleNames();
   const diags = [];
   // Precompute line-starts ONCE per file so per-diag line/col is a binary
-  // search (O(log L)) instead of a per-diag full scan (O(offset)).  The old
-  // path was the dominant cost on big files: each call to _bufOffsetToLine
-  // scanned from byte 0 to the diag's offset, so 317 diags on the 8.7MB
-  // typescript.js fixture meant ~1.4 billion byte compares — measured at
-  // ~600ms wall, which surfaced as the "no-case-declarations 712ms ghost"
-  // (the rule's own run() was 0.29ms; the cost was here in JS).
+  // search (O(log L)) instead of a per-diag full scan (O(offset)).
   const lineStarts = srcBytes ? _buildLineStarts(srcBytes) : null;
+  const td = new TextDecoder();
   let pos = 4;
   for (let i = 0; i < count; i++) {
-    if (pos + 7 > bytesWritten) break;
+    if (pos + 11 > bytesWritten) break;
     const ruleIndex = dv.getUint16(pos, true);    pos += 2;
     const offset    = dv.getUint32(pos, true);    pos += 4;
+    const endOffset = dv.getUint32(pos, true);    pos += 4;
     const flags     = dv.getUint8(pos);           pos += 1;
     const severity  = flags & 0x03;
     const hasFix    = (flags & 0x04) !== 0;
+    const hasMsgId  = (flags & 0x08) !== 0;
     const ruleName  = ruleNames[ruleIndex] || `native-rule-${ruleIndex}`;
-    const diag = { offset, severity, ruleName };
+    const diag = { offset, endOffset, severity, ruleName };
     if (lineStarts) {
       const lc = _offsetToLineCol(lineStarts, offset);
       diag.line = lc.line;
       diag.col = lc.col;
+      const ec = _offsetToLineCol(lineStarts, endOffset);
+      diag.endLine = ec.line;
+      diag.endCol = ec.col;
+    }
+    if (hasMsgId) {
+      if (pos + 1 > bytesWritten) break;
+      const mlen = dv.getUint8(pos); pos += 1;
+      if (pos + mlen > bytesWritten) break;
+      const mBytes = new Uint8Array(_lintOutBuf, pos, mlen); pos += mlen;
+      diag.messageId = td.decode(mBytes);
     }
     if (hasFix) {
       if (pos + 10 > bytesWritten) break;
@@ -163,7 +179,7 @@ function _parseDiags(bytesWritten, srcBytes) {
       const fixTextLen = dv.getUint16(pos, true);     pos += 2;
       if (pos + fixTextLen > bytesWritten) break;
       const fixTextBytes = new Uint8Array(_lintOutBuf, pos, fixTextLen); pos += fixTextLen;
-      diag.fix = { range: [fixStart, fixEnd], text: new TextDecoder().decode(fixTextBytes) };
+      diag.fix = { range: [fixStart, fixEnd], text: td.decode(fixTextBytes) };
     }
     diags.push(diag);
   }

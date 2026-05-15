@@ -28,6 +28,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (((ctx.getOptionBool("allowAsStatement", false) and (ctx.parentOf(node) != .none)) and (ctx.nodeTag(ctx.parentOf(node)) == .expression_stmt))) {
             return;
         }
-        ctx.report(node);
+        ctx.reportWithMessageId(node, "noVoid");
     }
 }

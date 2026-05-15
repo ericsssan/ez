@@ -26,6 +26,8 @@ const Messages = enum {
     noFunctionConstructor,
 };
 
+const astUtils = [_][]const u8{ "COMMENTS_IGNORE_PATTERN", "LINEBREAKS", "LINEBREAK_MATCHER", "SHEBANG_MATCHER", "STATEMENT_LIST_PARENTS", "ECMASCRIPT_GLOBALS", "isTokenOnSameLine", "isNullOrUndefined", "isCallee", "isES5Constructor", "getUpperFunction", "isFunction", "isLoop", "isInLoop", "isArrayFromMethod", "isArrayFromAsyncMethod", "isParenthesised", "createGlobalLinebreakMatcher", "equalTokens", "isArrowToken", "isClosingBraceToken", "isClosingBracketToken", "isClosingParenToken", "isColonToken", "isCommaToken", "isCommentToken", "isDotToken", "isQuestionDotToken", "isKeywordToken", "isNotClosingBraceToken", "isNotClosingBracketToken", "isNotClosingParenToken", "isNotColonToken", "isNotCommaToken", "isNotDotToken", "isNotQuestionDotToken", "isNotOpeningBraceToken", "isNotOpeningBracketToken", "isNotOpeningParenToken", "isNotSemicolonToken", "isOpeningBraceToken", "isOpeningBracketToken", "isOpeningParenToken", "isSemicolonToken", "isEqToken", "isStringLiteral", "isBreakableStatement", "getModifyingReferences", "isSurroundedBy", "isDirectiveComment", "getTrailingStatement", "getVariableByName", "isDefaultThisBinding", "getPrecedence", "isEmptyBlock", "isEmptyFunction", "getDirectivePrologue", "isDecimalInteger", "isDecimalIntegerNumericToken", "getFunctionNameWithKind", "getFunctionHeadLoc", "getNextLocation", "getParenthesisedText", "couldBeError", "isNumericLiteral", "canTokensBeAdjacent", "getNameLocationInGlobalDirectiveComment", "hasOctalOrNonOctalDecimalEscapeSequence", "isStaticTemplateLiteral", "areBracesNecessary", "isReferenceToGlobalVariable", "isLogicalExpression", "isCoalesceExpression", "isMixedLogicalAndCoalesceExpressions", "isNullLiteral", "getStaticStringValue", "getStaticPropertyName", "skipChainExpression", "isSpecificId", "isSpecificMemberAccess", "equalLiteralValue", "isSameReference", "isLogicalAssignmentOperator", "getSwitchCaseColonToken", "getModuleExportName", "isConstant", "isTopLevelExpressionStatement", "isDirective", "isStartOfExpressionStatement", "needsPrecedingSemicolon", "isImportAttributeKey", "getOpeningParenOfParams" };
+
 const callMethods = [_][]const u8{ "apply", "bind", "call" };
 
 const __Function_names__ = [_][]const u8{ "Function" };
@@ -36,14 +38,6 @@ fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
 }
 
 pub fn run(_: NodeIndex, _: *const LintContext) void {}
-
-fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
-    if (n == .none) return false;
-    const d = c.nodeData(n);
-    if (d.rhs == .none) return true;
-    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
-    return c.extraSlice(sr).len == 0;
-}
 
 fn methodChainCall(c: *const LintContext, id_node: NodeIndex, methods: []const []const u8) NodeIndex {
     const parent = c.parentOf(id_node);
@@ -106,7 +100,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // Respect ESLint globals:"off" (config + inline /* global X:off */)
         if (ctx.globalIsOff(__name__)) continue;
         if ((((ctx.nodeTag(ctx.parentOf(__ref_identifier__)) == .new_expr) or blk: { const __t = ctx.nodeTag(ctx.parentOf(__ref_identifier__)); break :blk (__t == .call_expr or __t == .optional_call_expr); }) and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
-            ctx.report(ctx.parentOf(__ref_identifier__));
+            ctx.reportWithMessageId(ctx.parentOf(__ref_identifier__), "noFunctionConstructor");
         }
         // Method-chain invocation check: <idNode>.<method>(...) — report outer call.
         const __mc_call = methodChainCall(ctx, __ref_identifier__, callMethods[0..]);

@@ -18,7 +18,7 @@ const {
   getTagNames, getNativeRules, buildNativeConfig, detectLang, LANG,
 } = require("./index");
 const { runPlugins, applyDisableDirectives } = require("./eslint-runner");
-const { loadCoreRules, loadPlugin } = require("./load-plugin");
+const { loadCoreRules, loadPlugin, getNativeMessageTemplate } = require("./load-plugin");
 
 // Type-aware services init is deferred — eslint-runner calls ts-services
 // lazily on the first file that needs parserServices.  Keeps JS-only
@@ -230,19 +230,22 @@ function _fromRunnerReport(r) {
 }
 
 function _fromNativeDiag(d) {
+  // Wire format carries (offset, endOffset, ruleName, [messageId], [fix]).
+  // Hydrate ESLint-shape fields on the JS side: message text from
+  // rule.meta.messages, line/col from precomputed line-starts in _parseDiags.
+  const template = getNativeMessageTemplate(d.ruleName, d.messageId);
+  // ESLint columns are 1-based; native diags carry 0-based byte columns.
+  const col    = d.col != null ? d.col + 1 : 0;
+  const endCol = d.endCol != null ? d.endCol + 1 : undefined;
   return {
     ruleId: d.ruleName,
-    message: `[${d.ruleName}]`, // message comes from bundled rule meta.messages on JS side
+    message: template ?? (d.messageId ? `[${d.ruleName}/${d.messageId}]` : `[${d.ruleName}]`),
+    messageId: d.messageId ?? undefined,
     severity: d.severity || 2,
     line: d.line ?? 0,
-    column: d.col ?? 0,
-    endLine: undefined,
-    endColumn: undefined,
-    // Native diag fix data is the same { range:[start,end], text } shape as
-    // JS rule fixes — pass it through so callers (api.fix() and the CLI's
-    // --fix path) can apply native rules' autofixes too.  The decoder in
-    // js/index.js _parseDiags already populates d.fix from the binary
-    // diag stream's flag-bit-2 / fix payload.
+    column: col,
+    endLine: d.endLine ?? undefined,
+    endColumn: endCol,
     fix: d.fix,
   };
 }

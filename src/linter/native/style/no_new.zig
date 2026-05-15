@@ -25,6 +25,6 @@ const Messages = enum {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if ((ctx.nodeTag(ctx.parentOf(node)) == .expression_stmt)) {
-        ctx.report(ctx.parentOf(node));
+        ctx.reportWithMessageId(ctx.parentOf(node), "noNewStatement");
     }
 }

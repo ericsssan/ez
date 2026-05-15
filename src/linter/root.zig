@@ -1,6 +1,7 @@
 //! Linter module public API — re-exports all linter types.
 
 pub const lint_context = @import("lint_context.zig");
+pub const LintDiagnostic = lint_context.LintDiagnostic;
 pub const linter = @import("linter.zig");
 pub const rules = @import("native/registry.zig");
 

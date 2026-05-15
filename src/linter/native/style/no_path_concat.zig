@@ -31,6 +31,6 @@ fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (((ctx.nodeTag(node) == .add) and (((ctx.nodeTag(ctx.nodeData(node).lhs) == .identifier) and containsStr(MATCHER__set__[0..], ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).lhs)))) or ((ctx.nodeTag(ctx.nodeData(node).rhs) == .identifier) and containsStr(MATCHER__set__[0..], ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).rhs))))))) {
-        ctx.report(node);
+        ctx.reportWithMessageId(node, "usePathFunctions");
     }
 }

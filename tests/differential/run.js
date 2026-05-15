@@ -379,49 +379,42 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
     // would have suppressed.
     const _hasUseANative = /\/\*\s*eslint\s+test\/use-a\b/.test(code);
     const _hasUnknownRefNative = /\/\*\s*eslint\s+test\/unknown-ref\b/.test(code);
+    // Wire format now carries (endOffset, messageId) per diag; _parseDiags
+    // hydrates d.endLine/d.endCol/d.messageId.  Use them directly instead of
+    // the old "walk-forward-from-identifier" heuristic — the rule's own span
+    // is authoritative and matches ESLint's report node convention.
     return diags
       .filter(d => d.ruleName === _nativeName)
       .filter(d => {
-        // unknown-ref synthesises a read ref for every declared var, so
-        // every var becomes "has_any_read" → no diags would survive.
         if (_hasUnknownRefNative) return false;
         if (!_hasUseANative) return true;
-        let end = d.offset;
-        while (end < code.length) {
-          const cc = code.charCodeAt(end);
-          const isIdent = (cc >= 0x41 && cc <= 0x5a) || (cc >= 0x61 && cc <= 0x7a) ||
-            (cc >= 0x30 && cc <= 0x39) || cc === 0x5f || cc === 0x24 || cc >= 0x80;
-          if (!isIdent) break;
-          end++;
+        let end = d.endOffset != null ? d.endOffset : d.offset;
+        if (end === d.offset) {
+          while (end < code.length) {
+            const cc = code.charCodeAt(end);
+            const isIdent = (cc >= 0x41 && cc <= 0x5a) || (cc >= 0x61 && cc <= 0x7a) ||
+              (cc >= 0x30 && cc <= 0x39) || cc === 0x5f || cc === 0x24 || cc >= 0x80;
+            if (!isIdent) break;
+            end++;
+          }
         }
         return code.slice(d.offset, end) !== "a";
       })
       .map(d => {
-        let lineStart = 0;
-        for (let i = d.offset - 1; i >= 0; i--) {
-          if (code.charCodeAt(i) === 10) { lineStart = i + 1; break; }
-        }
-        const column = d.offset - lineStart + 1;
-        const line = offsetToLine(code, d.offset);
-        // Walk forward to find identifier end. Identifiers continue as
-        // long as the byte is alphanumeric, `_`, `$`, or non-ASCII.
-        let end = d.offset;
-        while (end < code.length) {
-          const cc = code.charCodeAt(end);
-          const isIdent = (cc >= 0x41 && cc <= 0x5a) || (cc >= 0x61 && cc <= 0x7a) ||
-            (cc >= 0x30 && cc <= 0x39) || cc === 0x5f || cc === 0x24 || cc >= 0x80;
-          if (!isIdent) break;
-          end++;
-        }
-        const endColumn = column + (end - d.offset);
+        const line   = d.line    ?? offsetToLine(code, d.offset);
+        const column = (d.col ?? 0) + 1;
+        const endLine   = d.endLine ?? line;
+        const endColumn = (d.endCol ?? d.col ?? 0) + 1;
+        const messageId = d.messageId ?? meta.messageId ?? null;
+        const message   = meta.message ?? null;
         return {
           rule: _nativeName,
           line,
           column,
-          endLine: line,
+          endLine,
           endColumn,
-          message: meta.message ?? null,
-          messageId: meta.messageId ?? null,
+          message,
+          messageId,
           severity: d.severity ?? null,
         };
       });
