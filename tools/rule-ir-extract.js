@@ -2820,38 +2820,102 @@ function extractReportCall(call, scope) {
 // from sub-spans, which the current Zig API doesn't yet expose.
 function tryExtractFixFn(fixVal, scope) {
   if (!fixVal) return null;
-  let body, paramName;
+  let paramName;
+  let bodyStmts;       // array of statements when body is a BlockStatement
+  let bodyExpr;        // single expression when body is an arrow's expression form
   if (fixVal.type === "ArrowFunctionExpression") {
     if (fixVal.params.length !== 1 || fixVal.params[0].type !== "Identifier") return null;
     paramName = fixVal.params[0].name;
-    body = fixVal.body;
-    if (body.type === "BlockStatement") {
-      if (body.body.length !== 1 || body.body[0].type !== "ReturnStatement") return null;
-      body = body.body[0].argument;
-    }
+    if (fixVal.body.type === "BlockStatement") bodyStmts = fixVal.body.body;
+    else bodyExpr = fixVal.body;
   } else if (fixVal.type === "FunctionExpression") {
     if (fixVal.params.length !== 1 || fixVal.params[0].type !== "Identifier") return null;
     paramName = fixVal.params[0].name;
-    if (!fixVal.body || fixVal.body.body.length !== 1) return null;
-    if (fixVal.body.body[0].type !== "ReturnStatement") return null;
-    body = fixVal.body.body[0].argument;
+    if (!fixVal.body) return null;
+    bodyStmts = fixVal.body.body;
   } else {
     return null;
   }
-  if (!body || body.type !== "CallExpression") return null;
-  if (body.callee?.type !== "MemberExpression") return null;
-  if (body.callee.object?.type !== "Identifier" || body.callee.object.name !== paramName) return null;
-  const method = body.callee.property?.name;
+
+  // Single-expression arrow body — unconditional fix.
+  if (bodyExpr) {
+    const f = extractFixerCall(bodyExpr, paramName, scope);
+    return f; // may be null on unsupported call shape
+  }
+
+  // BlockStatement: must be a sequence of `if (cond) return <fixerCall|null>;`
+  // followed by a final `return <fixerCall|null>;`.  Anything else (variable
+  // declarations, side-effect expressions, etc.) fails extraction entirely
+  // — codegen then drops the fix and the diag still fires.
+  const branches = [];
+  for (let i = 0; i < bodyStmts.length; i++) {
+    const s = bodyStmts[i];
+    const isLast = i === bodyStmts.length - 1;
+    if (s.type === "IfStatement") {
+      // `if (cond) <consequent>` where consequent ends in a return.  An else
+      // branch isn't supported here because the linear "guard then fallback"
+      // pattern is what nearly every ESLint fix uses; nested if/else can be
+      // expressed as additional guards.
+      if (s.alternate) return null;
+      const cond = extractExpr(s.test, scope);
+      if (!cond.ok) return null;
+      const ret = extractReturnedFixCall(s.consequent, paramName, scope);
+      if (ret === undefined) return null;
+      branches.push({ cond: cond.expr, fix: ret });
+    } else if (s.type === "ReturnStatement" && isLast) {
+      const fix = extractReturnedFixCallFromArg(s.argument, paramName, scope);
+      if (fix === undefined) return null;
+      branches.push({ fix }); // no cond → fallback branch
+    } else {
+      return null; // unsupported statement
+    }
+  }
+  if (branches.length === 0) return null;
+  // Single unconditional branch → flatten back to the simple shape so the
+  // codegen's unconditional path emits a single ctx.reportWithFix… line.
+  if (branches.length === 1 && !branches[0].cond) {
+    return branches[0].fix; // may be null (no-fix) — caller treats as no fix
+  }
+  return { kind: "branched", branches };
+}
+
+// Returns the fix descriptor for `return <fixerCall|null>;` inside an if's
+// consequent (which may be a BlockStatement wrapping a single ReturnStatement
+// or a bare ReturnStatement).  `undefined` ↔ unsupported shape; explicit
+// `null` ↔ `return null;` (no fix on this branch).
+function extractReturnedFixCall(stmt, paramName, scope) {
+  let ret;
+  if (stmt.type === "ReturnStatement") ret = stmt;
+  else if (stmt.type === "BlockStatement" && stmt.body.length === 1 && stmt.body[0].type === "ReturnStatement") {
+    ret = stmt.body[0];
+  } else {
+    return undefined;
+  }
+  return extractReturnedFixCallFromArg(ret.argument, paramName, scope);
+}
+
+function extractReturnedFixCallFromArg(arg, paramName, scope) {
+  if (!arg) return undefined;
+  if (arg.type === "Literal" && arg.value === null) return null; // explicit no-fix
+  if (arg.type === "Identifier" && arg.name === "undefined") return null;
+  if (arg.type !== "CallExpression") return undefined;
+  const f = extractFixerCall(arg, paramName, scope);
+  return f === null ? undefined : f;
+}
+
+// Extract a single `fixer.<method>(...)` call into a fix descriptor.  Returns
+// null on an unsupported method/argument shape so the caller can drop the
+// fix without failing the whole extract.
+function extractFixerCall(call, paramName, scope) {
+  if (!call || call.type !== "CallExpression") return null;
+  if (call.callee?.type !== "MemberExpression") return null;
+  if (call.callee.object?.type !== "Identifier" || call.callee.object.name !== paramName) return null;
+  const method = call.callee.property?.name;
   if (method === "replaceText") {
-    if (body.arguments.length !== 2) return null;
-    const nodeArg = body.arguments[0];
-    const textArg = body.arguments[1];
-    const r = extractExpr(nodeArg, scope);
+    if (call.arguments.length !== 2) return null;
+    const r = extractExpr(call.arguments[0], scope);
     if (!r.ok) return null;
-    // Accept a string literal OR an arbitrary string-typed IR expression
-    // (typically a template-string built from source-text-of slices).  The
-    // codegen lowers literal-only fix.text to a static string and template/
-    // expression-typed fix.text to a runtime allocPrint.
+    const textArg = call.arguments[1];
     if (textArg.type === "Literal" && typeof textArg.value === "string") {
       return { kind: "replace-text", node: r.expr, text: textArg.value };
     }
@@ -2860,16 +2924,16 @@ function tryExtractFixFn(fixVal, scope) {
     return { kind: "replace-text", node: r.expr, textExpr: tx.expr };
   }
   if (method === "remove") {
-    if (body.arguments.length !== 1) return null;
-    const r = extractExpr(body.arguments[0], scope);
+    if (call.arguments.length !== 1) return null;
+    const r = extractExpr(call.arguments[0], scope);
     if (!r.ok) return null;
     return { kind: "remove", node: r.expr };
   }
   if (method === "insertTextBefore" || method === "insertTextAfter") {
-    if (body.arguments.length !== 2) return null;
-    const r = extractExpr(body.arguments[0], scope);
+    if (call.arguments.length !== 2) return null;
+    const r = extractExpr(call.arguments[0], scope);
     if (!r.ok) return null;
-    const textArg = body.arguments[1];
+    const textArg = call.arguments[1];
     const kind = method === "insertTextBefore" ? "insert-before" : "insert-after";
     if (textArg.type === "Literal" && typeof textArg.value === "string") {
       return { kind, node: r.expr, text: textArg.value };

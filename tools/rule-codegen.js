@@ -793,63 +793,86 @@ function emitHandlerBody(body, indent, ctx) {
   return out;
 }
 
+// Emit lines for a single fix branch or plain (no-fix) report.
+// `fix` may be null/undefined → emit ctx.reportWithMessageId only.
+// Returns the emitted lines, indented to `indent`.
+function emitFixOrPlainReport(fix, node, msgId, indent, ctx) {
+  const ind = "    ".repeat(indent);
+  if (!fix) {
+    if (msgId === `""`) return [`${ind}ctx.report(${node});`];
+    return [`${ind}ctx.reportWithMessageId(${node}, ${msgId});`];
+  }
+  const fixNode = emitExpr(fix.node, ctx);
+  // Fix span: replace-text/remove → full node span; insert-before → zero-length
+  // at start; insert-after → zero-length at end.
+  let fixSpan;
+  switch (fix.kind) {
+    case "insert-before":
+      fixSpan = `(.{ .start = ctx.nodeSpan(${fixNode}).start, .end = ctx.nodeSpan(${fixNode}).start })`;
+      break;
+    case "insert-after":
+      fixSpan = `(.{ .start = ctx.nodeSpan(${fixNode}).end,   .end = ctx.nodeSpan(${fixNode}).end })`;
+      break;
+    default:
+      fixSpan = `ctx.nodeSpan(${fixNode})`;
+  }
+  // Static text path: literal string OR fixer.remove (text = "").
+  if (fix.textExpr === undefined) {
+    const fixText = fix.kind === "remove" ? "" : fix.text;
+    return [
+      `${ind}ctx.reportWithFixAndMessageId(${node}, ${fixSpan}, "${zigStr(fixText)}", ${msgId});`,
+    ];
+  }
+  // Runtime-built text: lower template-string into std.fmt.allocPrint;
+  // any other string-typed expression goes through a single {s} slot.
+  const tx = fix.textExpr;
+  let fmt, args;
+  if (tx.op === "template-string") {
+    fmt = "";
+    args = [];
+    for (const part of tx.parts) {
+      if (part.kind === "str") fmt += part.value.replace(/\{/g, "{{").replace(/\}/g, "}}");
+      else { fmt += "{s}"; args.push(emitExpr(part.expr, ctx)); }
+    }
+  } else {
+    fmt = "{s}";
+    args = [emitExpr(tx, ctx)];
+  }
+  const argsList = args.length === 0 ? ".{}" : `.{ ${args.join(", ")} }`;
+  return [
+    `${ind}{`,
+    `${ind}    const __fix_text = std.fmt.allocPrint(ctx.allocator, "${zigStr(fmt)}", ${argsList}) catch return;`,
+    `${ind}    defer ctx.allocator.free(__fix_text);`,
+    `${ind}    ctx.reportWithFixAndMessageId(${node}, ${fixSpan}, __fix_text, ${msgId});`,
+    `${ind}}`,
+  ];
+}
+
 function emitStatement(stmt, indent, ctx) {
   const ind = "    ".repeat(indent);
   if (stmt.op === "report") {
     const node = emitExpr(stmt.node, ctx);
-    if (stmt.fix) {
-      const fixNode = emitExpr(stmt.fix.node, ctx);
-      const msgId = stmt.messageId ? `"${zigStr(stmt.messageId)}"` : `""`;
-      // Fix span depends on the fixer method:
-      //   replace-text / remove → ctx.nodeSpan(fixNode)
-      //   insert-before         → zero-length span at nodeSpan.start
-      //   insert-after          → zero-length span at nodeSpan.end
-      let fixSpan;
-      switch (stmt.fix.kind) {
-        case "insert-before":
-          fixSpan = `(.{ .start = ctx.nodeSpan(${fixNode}).start, .end = ctx.nodeSpan(${fixNode}).start })`;
-          break;
-        case "insert-after":
-          fixSpan = `(.{ .start = ctx.nodeSpan(${fixNode}).end,   .end = ctx.nodeSpan(${fixNode}).end })`;
-          break;
-        default:
-          fixSpan = `ctx.nodeSpan(${fixNode})`;
-      }
-      // Static-text path: literal string OR fixer.remove (text = "").
-      if (stmt.fix.textExpr === undefined) {
-        const fixText = stmt.fix.kind === "remove" ? "" : stmt.fix.text;
-        return [
-          `${ind}ctx.reportWithFixAndMessageId(${node}, ${fixSpan}, "${zigStr(fixText)}", ${msgId});`,
-        ];
-      }
-      // Runtime-built text: lower a template-string into std.fmt.allocPrint;
-      // any other string-typed expression goes through a single {s} slot.
-      const tx = stmt.fix.textExpr;
-      let fmt, args;
-      if (tx.op === "template-string") {
-        fmt = "";
-        args = [];
-        for (const part of tx.parts) {
-          if (part.kind === "str") fmt += part.value.replace(/\{/g, "{{").replace(/\}/g, "}}");
-          else { fmt += "{s}"; args.push(emitExpr(part.expr, ctx)); }
+    const msgId = stmt.messageId ? `"${zigStr(stmt.messageId)}"` : `""`;
+    if (stmt.fix && stmt.fix.kind === "branched") {
+      // Each branch is `{ cond?, fix? }`; lower into an if/else chain where
+      // every branch independently emits its own report (with-fix or without).
+      // The fallback branch (no cond) emits the trailing `else { ... }`.
+      const out = [];
+      let first = true;
+      for (const br of stmt.fix.branches) {
+        const head = br.cond
+          ? `${first ? "if" : "} else if"} (${emitExpr(br.cond, ctx)}) {`
+          : `} else {`;
+        out.push(`${ind}${first ? "" : ""}${head}`);
+        for (const line of emitFixOrPlainReport(br.fix, node, msgId, indent + 1, ctx)) {
+          out.push(line);
         }
-      } else {
-        fmt = "{s}";
-        args = [emitExpr(tx, ctx)];
+        first = false;
       }
-      const argsList = args.length === 0 ? ".{}" : `.{ ${args.join(", ")} }`;
-      return [
-        `${ind}{`,
-        `${ind}    const __fix_text = std.fmt.allocPrint(ctx.allocator, "${zigStr(fmt)}", ${argsList}) catch return;`,
-        `${ind}    defer ctx.allocator.free(__fix_text);`,
-        `${ind}    ctx.reportWithFixAndMessageId(${node}, ctx.nodeSpan(${fixNode}), __fix_text, ${msgId});`,
-        `${ind}}`,
-      ];
+      out.push(`${ind}}`);
+      return out;
     }
-    if (stmt.messageId) {
-      return [`${ind}ctx.reportWithMessageId(${node}, "${zigStr(stmt.messageId)}");`];
-    }
-    return [`${ind}ctx.report(${node});`];
+    return emitFixOrPlainReport(stmt.fix, node, msgId, indent, ctx);
   }
   if (stmt.op === "if") {
     const out = [`${ind}if (${emitExpr(stmt.cond, ctx)}) {`];
