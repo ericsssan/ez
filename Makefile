@@ -66,10 +66,18 @@ napi:
 # though `new URL("./lint-worker.js", import.meta.url)` is the runtime spawn).
 # `--packages=bundle` inlines node_modules deps; src/bun/recommended-rules.js
 # uses static requires so the rule modules + transitive deps come along.
+#
+# `--bytecode` enables JSC's bytecode cache for the bundled scripts.  A/B
+# tested on bench/fixtures/typescript.js (8.7MB):
+#   without --bytecode:  1365ms wall (single file), 1652ms (4 files)
+#   with --bytecode:      788ms wall (single file), 1207ms (4 files)
+# Trade: binary grows from 79MB → 167MB (+88MB for the cache).  Worth it
+# for a CLI tool — the perf wins are 35-40% across both modes and beat
+# even `bun run` from source (~860ms single-file).
 EZ_BUN_TARGET ?= bun-darwin-arm64
 ezlint: napi
 	@mkdir -p dist
-	bun build --compile --packages=bundle --target=$(EZ_BUN_TARGET) \
+	bun build --compile --bytecode --packages=bundle --target=$(EZ_BUN_TARGET) \
 	  ./src/bun/lint.js ./src/bun/lint-worker.js \
 	  --outfile=dist/ezlint
 	@ls -lh dist/ezlint
