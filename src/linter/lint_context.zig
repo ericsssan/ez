@@ -660,6 +660,20 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
+        // Unary / update prefix — operand is data.lhs.  Recurse so a wrapped
+        // operand like `void(0)` extends through the wrapper `)`.
+        if (tag == .unary_plus or tag == .unary_minus or tag == .bitwise_not
+            or tag == .logical_not or tag == .typeof_expr or tag == .void_expr
+            or tag == .delete_expr or tag == .yield_expr or tag == .yield_delegate
+            or tag == .spread_element or tag == .prefix_inc or tag == .prefix_dec
+            or tag == .await_expr) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const op_span = self.nodeSpan(data.lhs);
+                if (op_span.end > end) end = op_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
         // arrow_fn / async_arrow_fn — body lives in extra-data (ArrowData.body).
         if (tag == .arrow_fn or tag == .async_arrow_fn) {
             const data = self.nodeData(index);
