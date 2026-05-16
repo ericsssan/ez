@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-unnecessary-array-flat-depth
+// Source rule: tests/conformance/eslint-plugin-unicorn/rules/no-unnecessary-array-flat-depth.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -17,6 +18,11 @@ pub const meta = RuleMeta{
 };
 
 pub const relevant_tags = [_]Node.Tag{.call_expr, .optional_call_expr};
+
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    no_unnecessary_array_flat_depth,
+};
 
 fn nodeArgsCount(c: *const LintContext, n: NodeIndex) usize {
     if (n == .none) return 0;
@@ -45,5 +51,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!((((ctx.nodeTag(node) == .call_expr) and (nodeArgsCount(ctx, node) == 1) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr or ctx.nodeTag(ctx.nodeData(node).lhs) == .optional_member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "flat")) and ctx.nodeNumericValueEquals(nodeArgAt(ctx, node, 0), 1)))) {
         return;
     }
-    ctx.report(nodeArgAt(ctx, node, 0));
+    ctx.reportWithFixAndMessageId(nodeArgAt(ctx, node, 0), ctx.nodeSpan(nodeArgAt(ctx, node, 0)), "", "no-unnecessary-array-flat-depth");
+    return;
 }

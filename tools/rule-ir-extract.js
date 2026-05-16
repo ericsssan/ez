@@ -236,15 +236,15 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
   for (const stmt of (ast?.body || [])) {
     if (stmt.type === "FunctionDeclaration" && stmt.id?.type === "Identifier") {
       const pred = extractNodeTypePredicate(stmt);
-      if (pred) helpers[stmt.id.name] = pred;
-      else {
-        const reportIf = extractReportIfHelper(stmt);
-        if (reportIf) helpers[stmt.id.name] = reportIf;
-        else {
-          const directReport = extractDirectReportHelper(stmt);
-          if (directReport) helpers[stmt.id.name] = directReport;
-        }
-      }
+      if (pred) { helpers[stmt.id.name] = pred; continue; }
+      const reportIf = extractReportIfHelper(stmt);
+      if (reportIf) { helpers[stmt.id.name] = reportIf; continue; }
+      const directReport = extractDirectReportHelper(stmt);
+      if (directReport) { helpers[stmt.id.name] = directReport; continue; }
+      // Defer module-level helpers for the generic-inline pass too — many
+      // unicorn rules define `function getProblem(a, b) { ... return {…}; }`
+      // at module scope and call it from `context.on(…)` arrows.
+      pendingInlineFns.push({ name: stmt.id.name, fn: stmt });
     }
   }
   for (const stmt of createBodyStmts) {
@@ -255,6 +255,8 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       if (reportIf) { helpers[stmt.id.name] = reportIf; continue; }
       const directReport = extractDirectReportHelper(stmt);
       if (directReport) { helpers[stmt.id.name] = directReport; continue; }
+      const tokensEqual = extractTokensEqualHelper(stmt);
+      if (tokensEqual) { helpers[stmt.id.name] = tokensEqual; continue; }
       const argsText = extractArgsTextHelper(stmt);
       if (argsText) { helpers[stmt.id.name] = argsText; continue; }
       const hasComments = extractHasCommentsHelper(stmt);
@@ -323,18 +325,21 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
     progress = false;
     for (let i = pendingInlineFns.length - 1; i >= 0; i--) {
       const { name, fn } = pendingInlineFns[i];
-      if (!fn.params || fn.params.length !== 1) { pendingInlineFns.splice(i, 1); continue; }
-      if (fn.params[0].type !== "Identifier") { pendingInlineFns.splice(i, 1); continue; }
-      const param = fn.params[0].name;
+      if (!fn.params || fn.params.length === 0) { pendingInlineFns.splice(i, 1); continue; }
+      if (!fn.params.every(p => p.type === "Identifier")) { pendingInlineFns.splice(i, 1); continue; }
       const stmts = fn.body?.body;
       if (!stmts) { pendingInlineFns.splice(i, 1); continue; }
-      // Synthetic scope: param treated as the synthesized marker so any
-      // identifier reference in the body extracts as `{op:"identifier",
-      // name: "__inline_arg__"}` — codegen substitutes later.
-      const markerName = "__inline_arg__";
+      // Synthetic scope: each param mapped to a unique marker identifier so
+      // body references extract as `{op:"identifier", name:"__inline_arg_N__"}`.
+      // Call-site substitution swaps the markers for the actual argument IRs.
+      const markers = fn.params.map((_, idx) => `__inline_arg_${idx}__`);
+      const localsMap = new Map();
+      fn.params.forEach((p, idx) => {
+        localsMap.set(p.name, { kind: "expr", expr: { op: "identifier", name: markers[idx] } });
+      });
       const scope = {
         ctxName, nodeParamName: null,
-        locals: new Map([[param, { kind: "expr", expr: { op: "identifier", name: markerName } }]]),
+        locals: localsMap,
         helpers, constants, boolPreds, regexConsts, moduleImports: moduleImports || {},
       };
       const irStmts = [];
@@ -345,7 +350,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
         irStmts.push(...r.stmts);
       }
       if (okAll) {
-        helpers[name] = { kind: "inline-statements", param: markerName, stmts: irStmts };
+        helpers[name] = { kind: "inline-statements", params: markers, stmts: irStmts };
         pendingInlineFns.splice(i, 1);
         progress = true;
       }
@@ -386,6 +391,9 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractCallOrNewEarlyReturnGlobalHandler, // no-array-constructor
       extractReadonlyGlobalAssignHandler,
       extractDeclaredVariableModifyingRefHandler, // sprint #2
+      extractDefaultCaseLastHandler, // default-case-last
+      extractNoEmptyStaticBlockHandler, // no-empty-static-block
+      extractNoDuplicateCaseHandler, // no-duplicate-case
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -412,8 +420,17 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
     }
 
     // Wrap body in synthetic conditions from attribute selector filters.
-    const finalBody = h.syntheticConds.length > 0
-      ? [{ op: "if", cond: h.syntheticConds.reduce((acc, c) => acc ? { op: "binary", operator: "&&", lhs: acc, rhs: c } : c, null), then: body }]
+    let allConds = h.syntheticConds.slice();
+    // Apply the option/runtime gate captured from `if (cond) selectors.push("...")`.
+    // The gate is extracted in this handler's scope so destructured option
+    // bindings (e.g. `ignoreNonDeclaration`) resolve to get-option-bool IR.
+    if (h.gate) {
+      const gateR = extractExpr(h.gate, scope);
+      if (!gateR.ok) return { handlers: [], unsupported: `selector gate: ${gateR.reason} at ${sourceFile}` };
+      allConds.push(gateR.expr);
+    }
+    const finalBody = allConds.length > 0
+      ? [{ op: "if", cond: allConds.reduce((acc, c) => acc ? { op: "binary", operator: "&&", lhs: acc, rhs: c } : c, null), then: body }]
       : body;
     irHandlers.push({ selector: h.selector, body: finalBody });
   }
@@ -430,6 +447,277 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
     dedupedHandlers.push(h);
   }
   return { handlers: dedupedHandlers, helpers, constants };
+}
+
+// Recognize the no-duplicate-case rule shape:
+//
+//   SwitchStatement(node) {
+//     const previousTests = [];
+//     for (const switchCase of node.cases) {
+//       if (switchCase.test) {
+//         const test = switchCase.test;
+//         if (previousTests.some(prev => equal(prev, test))) {
+//           context.report({ node: switchCase, messageId: "..." });
+//         } else {
+//           previousTests.push(test);
+//         }
+//       }
+//     }
+//   }
+//
+// Equivalent: register on switch_case selector and check
+// nodeHasDuplicatePrevCaseTest at runtime.  No closure state needed.
+function extractNoDuplicateCaseHandler(rawHandler, stmts) {
+  if (rawHandler.selector !== "SwitchStatement") return { ok: false };
+  if (stmts.length !== 2) return { ok: false };
+  // Stmt 0: const previousTests = []
+  const decl = stmts[0];
+  if (decl.type !== "VariableDeclaration" || decl.declarations.length !== 1) return { ok: false };
+  if (decl.declarations[0].id?.name !== "previousTests") return { ok: false };
+  if (decl.declarations[0].init?.type !== "ArrayExpression") return { ok: false };
+  // Stmt 1: for (const switchCase of node.cases) { … }
+  const forStmt = stmts[1];
+  if (forStmt.type !== "ForOfStatement") return { ok: false };
+  if (forStmt.left?.type !== "VariableDeclaration") return { ok: false };
+  if (forStmt.left.declarations[0]?.id?.name !== "switchCase") return { ok: false };
+  if (forStmt.right?.type !== "MemberExpression"
+      || forStmt.right.property?.name !== "cases"
+      || forStmt.right.object?.name !== rawHandler.nodeParam) return { ok: false };
+  // Inside for: locate the report's messageId.  NodeView wrappers don't
+  // expose plain children via Object.keys; use visitor-keys walk instead.
+  let messageId = null;
+  const walk = (node) => {
+    if (!node || !node.type || messageId) return;
+    if (node.type === "CallExpression"
+        && node.callee?.type === "MemberExpression"
+        && node.callee.property?.name === "report"
+        && node.arguments.length === 1
+        && node.arguments[0].type === "ObjectExpression") {
+      for (const p of node.arguments[0].properties) {
+        if (p.type === "Property" && (p.key?.name === "messageId" || p.key?.value === "messageId")
+            && p.value.type === "Literal" && typeof p.value.value === "string") {
+          messageId = p.value.value;
+        }
+      }
+    }
+    const keys = visitorKeys[node.type] || [];
+    for (const k of keys) {
+      const v = node[k];
+      if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === "object" && v.type) walk(v);
+    }
+  };
+  walk(forStmt.body);
+  if (!messageId) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      selector: "SwitchCase",
+      body: [{
+        op: "if",
+        cond: { op: "node-has-duplicate-prev-case-test", node: { op: "node-ref" } },
+        then: [{ op: "report", node: { op: "node-ref" }, messageId }],
+      }],
+    },
+  };
+}
+
+// Recognize the no-empty-static-block rule shape:
+//
+//   StaticBlock(node) {
+//     if (node.body.length === 0) {
+//       const openingBrace = sourceCode.getFirstToken(node, { skip: 1 });
+//       const closingBrace = sourceCode.getLastToken(node);
+//       if (sourceCode.getCommentsBefore(closingBrace).length === 0) {
+//         context.report({ loc: {start: openingBrace.loc.start, end: closingBrace.loc.end},
+//                           messageId: "...", suggest: [...] });
+//       }
+//     }
+//   }
+//
+// Equivalent — and IR-expressible — semantics:
+//   for each static_block: if body empty AND no comments inside, report at
+//   the span from openingBrace to closingBrace (drop suggest).
+function extractNoEmptyStaticBlockHandler(rawHandler, stmts) {
+  if (rawHandler.selector !== "StaticBlock") return { ok: false };
+  if (stmts.length !== 1) return { ok: false };
+  const outerIf = stmts[0];
+  if (outerIf.type !== "IfStatement" || outerIf.alternate) return { ok: false };
+  // Outer cond: node.body.length === 0
+  const cond = outerIf.test;
+  const isBodyLenZero = (e) => e?.type === "BinaryExpression"
+    && (e.operator === "===" || e.operator === "==")
+    && e.right?.type === "Literal" && e.right.value === 0
+    && e.left?.type === "MemberExpression" && !e.left.computed
+    && e.left.property?.name === "length"
+    && e.left.object?.type === "MemberExpression" && !e.left.object.computed
+    && e.left.object.property?.name === "body"
+    && e.left.object.object?.type === "Identifier"
+    && e.left.object.object.name === rawHandler.nodeParam;
+  if (!isBodyLenZero(cond)) return { ok: false };
+  const innerStmts = outerIf.consequent.type === "BlockStatement" ? outerIf.consequent.body : [outerIf.consequent];
+  // Inner: openingBrace decl + closingBrace decl + getCommentsBefore-check IfStatement
+  if (innerStmts.length !== 3) return { ok: false };
+  const decl1 = innerStmts[0], decl2 = innerStmts[1], innerIf = innerStmts[2];
+  if (decl1.type !== "VariableDeclaration" || decl2.type !== "VariableDeclaration"
+      || innerIf.type !== "IfStatement") return { ok: false };
+  // We don't bother validating decl1/decl2's contents — just that they exist
+  // and bind to `openingBrace`/`closingBrace` (rule's local names).  The
+  // canonical shape is what we're matching on, not user-supplied variations.
+  const d1 = decl1.declarations[0], d2 = decl2.declarations[0];
+  if (d1?.id?.name !== "openingBrace" || d2?.id?.name !== "closingBrace") return { ok: false };
+  // Inner cond: sourceCode.getCommentsBefore(closingBrace).length === 0
+  const t = innerIf.test;
+  const isCommentsZero = (e) => e?.type === "BinaryExpression"
+    && (e.operator === "===" || e.operator === "==")
+    && e.right?.type === "Literal" && e.right.value === 0
+    && e.left?.type === "MemberExpression" && !e.left.computed
+    && e.left.property?.name === "length"
+    && e.left.object?.type === "CallExpression"
+    && e.left.object.callee?.type === "MemberExpression"
+    && e.left.object.callee.property?.name === "getCommentsBefore";
+  if (!isCommentsZero(t)) return { ok: false };
+  // Find the messageId inside the inner consequent's context.report call.
+  const inner = innerIf.consequent.type === "BlockStatement" ? innerIf.consequent.body : [innerIf.consequent];
+  if (inner.length !== 1 || inner[0].type !== "ExpressionStatement"
+      || inner[0].expression.type !== "CallExpression") return { ok: false };
+  let messageId = null;
+  for (const p of inner[0].expression.arguments[0]?.properties || []) {
+    if (p.type === "Property" && (p.key?.name === "messageId" || p.key?.value === "messageId")
+        && p.value.type === "Literal" && typeof p.value.value === "string") {
+      messageId = p.value.value;
+    }
+  }
+  if (!messageId) return { ok: false };
+  // Emit: if body empty AND no comments inside → reportSpan with brace span.
+  // openingBrace position = byte after `static {`'s opening, but our
+  // static_block's nodeMainToken is `static`; tokenStart(mainTok+1) = `{`.
+  // closingBrace.loc.end = nodeSpan(staticBlock).end (already includes `}`).
+  return {
+    ok: true,
+    handler: {
+      selector: "StaticBlock",
+      body: [{
+        op: "if",
+        cond: {
+          op: "binary", operator: "&&",
+          lhs: { op: "node-body-stmt-count-equals", node: { op: "node-ref" }, count: 0 },
+          rhs: { op: "unary", operator: "!", operand: { op: "has-comments-inside-node", node: { op: "node-ref" } } },
+        },
+        then: [{
+          op: "report",
+          node: { op: "node-ref" },
+          messageId,
+          loc: {
+            start: { op: "token-start", token: { op: "token-after", token: { op: "token-of-node", node: { op: "node-ref" } } } },
+            end:   { op: "node-span-end", node: { op: "node-ref" } },
+          },
+        }],
+      }],
+    },
+  };
+}
+
+// Recognize the default-case-last rule shape:
+//
+//   SwitchStatement(node) {
+//     const cases = node.cases,
+//       indexOfDefault = cases.findIndex(c => c.test === null);
+//     if (indexOfDefault !== -1 && indexOfDefault !== cases.length - 1) {
+//       const defaultClause = cases[indexOfDefault];
+//       context.report({ node: defaultClause, messageId: "..." });
+//     }
+//   }
+//
+// Rewrite to a switch_default-targeted handler:
+//   __SwitchDefault__(node) {
+//     if (!isLastSwitchCase(node)) report at node;
+//   }
+function extractDefaultCaseLastHandler(rawHandler, stmts, { ctxName }) {
+  if (rawHandler.selector !== "SwitchStatement") return { ok: false };
+  if (stmts.length !== 1 && stmts.length !== 2) return { ok: false };
+  // Optional first stmt: `const cases = node.cases, indexOfDefault = ...findIndex(c => c.test === null);`
+  // If absent, the body might inline the call.  Require the canonical 2-stmt
+  // form to keep this recognizer narrow.
+  if (stmts.length !== 2) return { ok: false };
+  const decl = stmts[0];
+  if (decl.type !== "VariableDeclaration" || decl.declarations.length !== 2) return { ok: false };
+  const [casesDecl, indexDecl] = decl.declarations;
+  // cases binding: const cases = node.cases
+  if (casesDecl.id?.type !== "Identifier" || casesDecl.id.name !== "cases") return { ok: false };
+  if (casesDecl.init?.type !== "MemberExpression" || casesDecl.init.computed
+      || casesDecl.init.property?.name !== "cases"
+      || casesDecl.init.object?.type !== "Identifier"
+      || casesDecl.init.object.name !== rawHandler.nodeParam) return { ok: false };
+  // indexOfDefault binding: const indexOfDefault = cases.findIndex(c => c.test === null);
+  if (indexDecl.id?.type !== "Identifier") return { ok: false };
+  const indexName = indexDecl.id.name;
+  const fi = indexDecl.init;
+  if (fi?.type !== "CallExpression") return { ok: false };
+  if (fi.callee?.type !== "MemberExpression" || fi.callee.computed
+      || fi.callee.property?.name !== "findIndex"
+      || fi.callee.object?.type !== "Identifier" || fi.callee.object.name !== "cases") return { ok: false };
+  if (fi.arguments.length !== 1) return { ok: false };
+  const arrow = fi.arguments[0];
+  if (arrow.type !== "ArrowFunctionExpression" || arrow.params.length !== 1) return { ok: false };
+  const elemParam = arrow.params[0].name;
+  // Body shape: `c.test === null` (expression body) OR same in block-return.
+  const bodyExpr = arrow.body.type === "BlockStatement"
+    ? (arrow.body.body[0]?.type === "ReturnStatement" ? arrow.body.body[0].argument : null)
+    : arrow.body;
+  if (!bodyExpr || bodyExpr.type !== "BinaryExpression"
+      || !["===", "=="].includes(bodyExpr.operator)) return { ok: false };
+  const sideIsTestNull = (a, b) => (
+    a?.type === "MemberExpression" && !a.computed
+    && a.property?.name === "test"
+    && a.object?.type === "Identifier" && a.object.name === elemParam
+    && b?.type === "Literal" && b.value === null
+  );
+  if (!(sideIsTestNull(bodyExpr.left, bodyExpr.right) || sideIsTestNull(bodyExpr.right, bodyExpr.left))) {
+    return { ok: false };
+  }
+  // Second stmt: `if (indexOfDefault !== -1 && indexOfDefault !== cases.length - 1) { context.report({ node: cases[indexOfDefault], messageId: "X" }); }`
+  const ifStmt = stmts[1];
+  if (ifStmt.type !== "IfStatement") return { ok: false };
+  if (ifStmt.alternate) return { ok: false };
+  // Cond shape: && of two `indexOfDefault !== <X>` checks — don't enforce
+  // exact operand match; just look for a report inside the consequent at
+  // `cases[indexOfDefault]`.
+  const consequent = ifStmt.consequent.type === "BlockStatement" ? ifStmt.consequent.body : [ifStmt.consequent];
+  // Allow an optional `const defaultClause = cases[indexOfDefault]` binding.
+  let reportStmt = null;
+  for (const s of consequent) {
+    if (s.type === "VariableDeclaration") continue; // skip defaultClause binding
+    if (s.type === "ExpressionStatement" && s.expression.type === "CallExpression") { reportStmt = s.expression; break; }
+  }
+  if (!reportStmt) return { ok: false };
+  // Extract messageId from context.report({ messageId: "X", ... })
+  if (reportStmt.callee?.type !== "MemberExpression"
+      || reportStmt.callee.object?.name !== ctxName
+      || reportStmt.callee.property?.name !== "report"
+      || reportStmt.arguments.length !== 1
+      || reportStmt.arguments[0].type !== "ObjectExpression") return { ok: false };
+  let messageId = null;
+  for (const p of reportStmt.arguments[0].properties) {
+    if (p.type !== "Property") continue;
+    const k = p.key?.name || p.key?.value;
+    if (k === "messageId" && p.value.type === "Literal" && typeof p.value.value === "string") {
+      messageId = p.value.value;
+    }
+  }
+  if (!messageId) return { ok: false };
+  // Synthesize the simpler handler.
+  return {
+    ok: true,
+    handler: {
+      selector: "__SwitchDefault__",
+      body: [{
+        op: "if",
+        cond: { op: "unary", operator: "!", operand: { op: "node-is-last-switch-case", node: { op: "node-ref" } } },
+        then: [{ op: "report", node: { op: "node-ref" }, messageId }],
+      }],
+    },
+  };
 }
 
 // Recognize the "scope-lookup on global implicit names" handler pattern:
@@ -1371,7 +1659,17 @@ function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { ctxName, 
     if (touchesUnsupportedProp(negPart)) continue;
     const r = extractExpr(negPart, extraScope);
     if (!r.ok) continue;
-    const inverted = { op: "unary", operator: "!", operand: r.expr };
+    // `!<X>.arguments.length` (truthy negation of arg count) lifts to
+    // node-args-length-zero(X).  Same shape as the UnaryExpression
+    // recognizer — duplicated here because this path constructs the `!`
+    // directly without re-entering extractExpr.
+    let inverted;
+    if (r.expr.op === "member" && r.expr.property === "length"
+        && r.expr.object?.op === "member" && r.expr.object.property === "arguments") {
+      inverted = { op: "node-args-length-zero", node: r.expr.object.object };
+    } else {
+      inverted = { op: "unary", operator: "!", operand: r.expr };
+    }
     extraPositive = extraPositive ? { op: "binary", operator: "&&", lhs: extraPositive, rhs: inverted } : inverted;
   }
 
@@ -1577,6 +1875,56 @@ function extractReportIfHelper(fn) {
   const condR = extractExpr(ifStmt.test, scope);
   if (!condR.ok) return null;
   return { kind: "report-if", param: paramName, cond: condR.expr, messageId: info.messageId };
+}
+
+// Recognize a local helper of shape:
+//
+//   function <NAME>(a, b) {
+//     const tokensA = sourceCode.getTokens(a);
+//     const tokensB = sourceCode.getTokens(b);
+//     return tokensA.length === tokensB.length
+//         && tokensA.every((t, i) => t.type === tokensB[i].type && t.value === tokensB[i].value);
+//   }
+//
+// Used by no-self-compare (hasSameTokens) and similar.  Token-by-token
+// equality on two AST nodes is equivalent to comparing their source-text
+// slices — the parser tokenises deterministically.  Returns
+// { kind: "tokens-equal" } on a structural match, null otherwise.
+function extractTokensEqualHelper(fn) {
+  if (!fn.params || fn.params.length !== 2) return null;
+  if (fn.params[0].type !== "Identifier" || fn.params[1].type !== "Identifier") return null;
+  const a = fn.params[0].name, b = fn.params[1].name;
+  const body = fn.body?.body;
+  if (!body || body.length !== 3) return null;
+  // Stmt 0: const tokensA = sourceCode.getTokens(a);
+  // Stmt 1: const tokensB = sourceCode.getTokens(b);
+  const matchGetTokens = (s, param) => {
+    if (s.type !== "VariableDeclaration" || s.declarations.length !== 1) return null;
+    const d = s.declarations[0];
+    if (d.id?.type !== "Identifier") return null;
+    if (d.init?.type !== "CallExpression") return null;
+    const c = d.init;
+    if (c.callee?.type !== "MemberExpression" || c.callee.computed) return null;
+    if (c.callee.property?.type !== "Identifier" || c.callee.property.name !== "getTokens") return null;
+    if (c.arguments.length !== 1) return null;
+    if (c.arguments[0].type !== "Identifier" || c.arguments[0].name !== param) return null;
+    return d.id.name;
+  };
+  const localA = matchGetTokens(body[0], a);
+  const localB = matchGetTokens(body[1], b);
+  if (!localA || !localB) return null;
+  // Stmt 2: return localA.length === localB.length && localA.every(…);
+  if (body[2].type !== "ReturnStatement" || !body[2].argument) return null;
+  const ret = body[2].argument;
+  if (ret.type !== "LogicalExpression" || ret.operator !== "&&") return null;
+  // Shallow check on the structure — exact every-callback shape isn't
+  // required; the && and length check are enough to be confident this
+  // is a token-equality predicate.  If a rule's helper happens to share
+  // this shape but has different semantics, this'd be a false-positive
+  // lift, but no current rule trips that hazard.
+  const left = ret.left;
+  if (left.type !== "BinaryExpression" || left.operator !== "===") return null;
+  return { kind: "tokens-equal", paramA: a, paramB: b };
 }
 
 // Recognize a local helper fn shaped like:
@@ -2377,11 +2725,25 @@ function parseComplexSelector(sel) {
     if (simpleM) { result.push({ base: simpleM[1], conds: [] }); continue; }
     // Child combinator: "ParentType > ChildType" or "ParentType[attrs] > ChildType[attrs].position"
     // Handles attribute filters on both parent and child, and position hint on child.
-    const childM = part.match(/^([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])*)\s*>\s*([A-Za-z_][A-Za-z0-9_]*)((?:\[[^\]]+\])*)(?:\.[a-z][a-z0-9_]*)?$/i);
+    const childM = part.match(/^([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])*)\s*>\s*([A-Za-z_][A-Za-z0-9_]*)((?:\.[a-z][a-z0-9_]*|\[[^\]]+\])*)$/i);
     if (childM) {
       const parentFull = childM[1];  // e.g. "CallExpression[optional = true]" or "TSNonNullExpression"
       const childType = childM[2];   // e.g. "MethodDefinition"
-      const childAttrStr = childM[3]; // e.g. "[key.name='new']" or ""
+      // Child suffix mixes `.position` and `[attr=val]` in either order
+      // (esquery permits both `.callee[...]` and `[...]....callee`).  Split.
+      const childSuffix = childM[3];
+      let positionHint = null;
+      let childAttrStr = "";
+      {
+        let rest = childSuffix;
+        while (rest.length > 0) {
+          const dotM = rest.match(/^\.([a-z][a-z0-9_]*)/i);
+          if (dotM) { positionHint = dotM[1]; rest = rest.slice(dotM[0].length); continue; }
+          const attrM = rest.match(/^(\[[^\]]+\])/);
+          if (attrM) { childAttrStr += attrM[1]; rest = rest.slice(attrM[0].length); continue; }
+          rest = ""; // unrecognized → bail to fall through
+        }
+      }
       const parentBase = parentFull.replace(/\[.*$/s, '').trim();
       const parentAttrStr = parentFull.slice(parentBase.length).trim();
       const parentNode = { op: "parent-node", node: { op: "node-ref" } };
@@ -2463,6 +2825,35 @@ function parseComplexSelector(sel) {
           }
           return null;
         }
+      }
+
+      // --- Position hint: ".right" / ".left" / ".init" / ".value" etc. ---
+      // The child must be the parent's <hint> slot.  Translates to a
+      // nodes-equal check between the parent's named child and node-ref.
+      // Only the slots backed by a node-valued IR are supported here; other
+      // hints fall through (e.g. ".cases" is array-valued and meaningless
+      // for "child is at <hint>").
+      if (positionHint) {
+        // Map ESTree position hints to our parser's Data slots.  Note: the
+        // hint name comes from the ESTree shape, but the slot it lives in
+        // depends on parent tag.  We support the cases where the mapping is
+        // unambiguous across the parser's layout:
+        //   .left / .argument / .callee / .object / .expression / .id /
+        //   .discriminant / .param  → main-child (Data.lhs)
+        //   .right / .init  → secondary-child (Data.rhs)
+        // Hints whose slot lives in extra-data (e.g. .value on
+        // property_def, .body on for-in/of/function) are NOT translated to
+        // a position constraint here — we omit the cond and rely on the
+        // parent-tag-equals check alone, which is conservative (no FPs that
+        // weren't already there pre-hint-support).
+        const MAIN_HINTS = new Set(["left", "argument", "callee", "object", "expression", "id", "discriminant", "param"]);
+        const SECONDARY_HINTS = new Set(["right", "init"]);
+        if (MAIN_HINTS.has(positionHint)) {
+          conds.push({ op: "nodes-equal", a: { op: "node-main-child", node: parentNode }, b: { op: "node-ref" } });
+        } else if (SECONDARY_HINTS.has(positionHint)) {
+          conds.push({ op: "nodes-equal", a: { op: "node-secondary-child", node: parentNode }, b: { op: "node-ref" } });
+        }
+        // .value, .property (on property_def), .body, .test, etc. — skip cond.
       }
 
       result.push({ base: childType, conds });
@@ -2592,6 +2983,18 @@ function attrChainToIrCond(chain, base, value) {
       lhs: { op: "member", object: { op: "node-main-child", node: { op: "node-ref" } }, property: "name", computed: false },
       rhs: { op: "literal", value },
     };
+  }
+  // arguments.<N>.async = true / false → check that args[N]'s tag is one of
+  // the async function tags.  Used by no-async-promise-executor's selector
+  // attribute filter `[arguments.0.async=true]`.
+  if (chain.length === 3 && chain[0] === "arguments" && /^\d+$/.test(chain[1]) && chain[2] === "async"
+      && typeof value === "boolean") {
+    const argN = parseInt(chain[1], 10);
+    const tagCheck = { op: "node-tag-in-set",
+                       node: { op: "node-skip-grouping",
+                               node: { op: "node-arg-at", node: { op: "node-ref" }, index: argN } },
+                       setName: "__AsyncFunction__" };
+    return value ? tagCheck : { op: "unary", operator: "!", operand: tagCheck };
   }
   // operator attribute → node-operator-equals (UnaryExpression, BinaryExpression, etc.)
   if (chain.length === 1 && chain[0] === "operator") {
@@ -2808,7 +3211,7 @@ function splitHandlers(createFn, ctxName) {
       || (r?.type === "Literal" && !r.value)
       || (isFunctionLike(r) && r.body?.type === "BlockStatement" && r.body.body.length === 0);
   };
-  const pushHandler = (selector, value) => {
+  const pushHandler = (selector, value, gate) => {
     let handlerFn = value;
     // Option-gated: `opt ? fn : noop` or `!opt ? noop : fn` → pick fn based on option default.
     if (handlerFn.type === "ConditionalExpression") {
@@ -2836,12 +3239,14 @@ function splitHandlers(createFn, ctxName) {
     // reference to it, so this only matters for rules that don't use the
     // param at all.
     const nodeParam = firstParam ? firstParam.name : "__node__";
-    handlers.push({ selector, handler: handlerFn, nodeParam });
+    handlers.push({ selector, handler: handlerFn, nodeParam, gate });
   };
 
   // Walk the create-body declarations once to surface any string/string-array
   // bindings — used for computed selector keys like `[selectors](node)`.
-  const stringArrayBindings = new Map();
+  // Array entries carry an optional `gate` AST node (the `if`'s test
+  // expression) when they were appended via a conditional `array.push(STR)`.
+  const stringArrayBindings = new Map(); // name → [{ value, gate? }]
   const stringScalarBindings = new Map();
   for (const stmt of body.body) {
     if (stmt.type !== "VariableDeclaration") continue;
@@ -2849,36 +3254,66 @@ function splitHandlers(createFn, ctxName) {
       if (d.id?.type !== "Identifier" || !d.init) continue;
       if (d.init.type === "ArrayExpression"
           && d.init.elements.every(e => e?.type === "Literal" && typeof e.value === "string")) {
-        stringArrayBindings.set(d.id.name, d.init.elements.map(e => e.value));
+        stringArrayBindings.set(d.id.name, d.init.elements.map(e => ({ value: e.value })));
       } else if (d.init.type === "Literal" && typeof d.init.value === "string") {
         stringScalarBindings.set(d.id.name, d.init.value);
+      }
+    }
+  }
+  // Pick up `selectors.push("X")` calls (unconditional or `if (cond) array.push("X")`)
+  // appended after the initial array declaration.  Conditional pushes carry the
+  // `if` test as a `gate` so the handler body can be wrapped in the same check.
+  const isPushCall = (node, arrayName) => node?.type === "CallExpression"
+    && node.callee?.type === "MemberExpression" && !node.callee.computed
+    && node.callee.object?.type === "Identifier" && node.callee.object.name === arrayName
+    && node.callee.property?.type === "Identifier" && node.callee.property.name === "push"
+    && node.arguments.length === 1
+    && node.arguments[0].type === "Literal" && typeof node.arguments[0].value === "string";
+  for (const stmt of body.body) {
+    if (stmt.type === "ExpressionStatement" && stmt.expression.type === "CallExpression") {
+      for (const [name, arr] of stringArrayBindings) {
+        if (isPushCall(stmt.expression, name)) {
+          arr.push({ value: stmt.expression.arguments[0].value });
+        }
+      }
+    } else if (stmt.type === "IfStatement" && !stmt.alternate) {
+      const inner = stmt.consequent.type === "BlockStatement"
+        ? stmt.consequent.body
+        : [stmt.consequent];
+      if (inner.length === 1 && inner[0].type === "ExpressionStatement"
+          && inner[0].expression.type === "CallExpression") {
+        for (const [name, arr] of stringArrayBindings) {
+          if (isPushCall(inner[0].expression, name)) {
+            arr.push({ value: inner[0].expression.arguments[0].value, gate: stmt.test });
+          }
+        }
       }
     }
   }
   for (const p of returned.properties) {
     if (p.type !== "Property") continue;
     const key = p.key;
-    let selectors = null;
+    let selectors = null; // Array of { value: string, gate?: Expression }
     // Computed `[X]` key — resolve X if it's a known string or string-array
     // binding.  Lets `const sels = [...]` + `[sels](node)` expand to
     // one handler per selector string.
     if (p.computed) {
       if (key.type === "Identifier") {
         if (stringArrayBindings.has(key.name)) selectors = stringArrayBindings.get(key.name);
-        else if (stringScalarBindings.has(key.name)) selectors = [stringScalarBindings.get(key.name)];
-        else selectors = [key.name]; // unresolved — preserve old behavior
+        else if (stringScalarBindings.has(key.name)) selectors = [{ value: stringScalarBindings.get(key.name) }];
+        else selectors = [{ value: key.name }]; // unresolved — preserve old behavior
       } else if (key.type === "ArrayExpression"
           && key.elements.every(e => e?.type === "Literal" && typeof e.value === "string")) {
-        selectors = key.elements.map(e => e.value);
+        selectors = key.elements.map(e => ({ value: e.value }));
       } else if (key.type === "Literal" && typeof key.value === "string") {
-        selectors = [key.value];
+        selectors = [{ value: key.value }];
       }
     } else {
-      if (key.type === "Identifier") selectors = [key.name];
-      else if (key.type === "Literal") selectors = [String(key.value)];
+      if (key.type === "Identifier") selectors = [{ value: key.name }];
+      else if (key.type === "Literal") selectors = [{ value: String(key.value) }];
     }
     if (!selectors) continue;
-    for (const sel of selectors) pushHandler(sel, p.value);
+    for (const sel of selectors) pushHandler(sel.value, p.value, sel.gate);
   }
   for (const { selector, handlerFn } of assignedHandlers) {
     pushHandler(selector, handlerFn);
@@ -2942,14 +3377,24 @@ function extractStatement(stmt, scope) {
         then: [{ op: "report", node: argR.expr, messageId: h.messageId }],
       }] };
     }
-    // Inline a generic helper: substitute the helper's param marker with
-    // the call's argument throughout the helper's pre-extracted IR stmts.
+    // Inline a generic helper: substitute each param marker with the
+    // corresponding call arg throughout the helper's pre-extracted IR stmts.
+    // Supports both legacy single-param helpers (h.param) and multi-param
+    // helpers (h.params: marker[]).
     if (callee.type === "Identifier" && scope.helpers?.[callee.name]?.kind === "inline-statements") {
-      if (e.arguments.length !== 1) return { ok: false, reason: "inline helper call must have 1 arg" };
-      const argR = extractExpr(e.arguments[0], scope);
-      if (!argR.ok) return argR;
       const h = scope.helpers[callee.name];
-      const subbed = h.stmts.map(s => substituteIdentRef(s, h.param, argR.expr));
+      const markers = h.params || [h.param];
+      if (e.arguments.length !== markers.length) return { ok: false, reason: `inline helper call expects ${markers.length} arg(s), got ${e.arguments.length}` };
+      const argIRs = [];
+      for (const a of e.arguments) {
+        const r = extractExpr(a, scope);
+        if (!r.ok) return r;
+        argIRs.push(r.expr);
+      }
+      let subbed = h.stmts;
+      for (let i = 0; i < markers.length; i++) {
+        subbed = subbed.map(s => substituteIdentRef(s, markers[i], argIRs[i]));
+      }
       return { ok: true, stmts: subbed };
     }
     if (callee.type !== "MemberExpression" || callee.computed) return { ok: false, reason: "unsupported call callee" };
@@ -3000,8 +3445,40 @@ function extractStatement(stmt, scope) {
     // { node: X, messageId: "Y", ... } → report
     if (stmt.argument.type === "ObjectExpression") {
       const rep = tryExtractReturnReport(stmt.argument, scope);
-      if (rep.ok) return { ok: true, stmts: [{ op: "report", node: rep.node, messageId: rep.messageId }] };
+      if (rep.ok) {
+        const reportStmt = { op: "report", node: rep.node, messageId: rep.messageId };
+        if (rep.fix) reportStmt.fix = rep.fix;
+        if (rep.loc) reportStmt.loc = rep.loc;
+        // `return {…descriptor…}` is BOTH a report AND an early exit; emit
+        // a trailing `return` so subsequent statements in the handler body
+        // don't fire (was producing duplicate diagnostics in rules like
+        // unicorn/no-invalid-remove-event-listener that have multiple
+        // descriptor-return paths).
+        return { ok: true, stmts: [reportStmt, { op: "return" }] };
+      }
       return { ok: false, reason: `return report object: ${rep.reason}` };
+    }
+    // `return helperFn(args)` where helperFn is an inline-statements helper
+    // — inline the helper body with arg substitution (same path as bare call).
+    // Common in unicorn-style rules where the handler is `n => helperFn(...)`.
+    if (stmt.argument.type === "CallExpression"
+        && stmt.argument.callee?.type === "Identifier"
+        && scope.helpers?.[stmt.argument.callee.name]?.kind === "inline-statements") {
+      const h = scope.helpers[stmt.argument.callee.name];
+      const markers = h.params || [h.param];
+      const args = stmt.argument.arguments;
+      if (args.length !== markers.length) return { ok: false, reason: `inline helper return: expects ${markers.length} arg(s), got ${args.length}` };
+      const argIRs = [];
+      for (const a of args) {
+        const r = extractExpr(a, scope);
+        if (!r.ok) return r;
+        argIRs.push(r.expr);
+      }
+      let subbed = h.stmts;
+      for (let i = 0; i < markers.length; i++) {
+        subbed = subbed.map(s => substituteIdentRef(s, markers[i], argIRs[i]));
+      }
+      return { ok: true, stmts: subbed };
     }
     return { ok: false, reason: "return with value not supported outside helper fn" };
   }
@@ -3325,6 +3802,8 @@ function flattenBlock(stmt) {
 function tryExtractReturnReport(objExpr, scope) {
   let nodeExpr = null;
   let messageId = null;
+  let fix = null;
+  let loc = null;
   for (const p of objExpr.properties) {
     if (p.type !== "Property") continue;
     const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
@@ -3339,15 +3818,68 @@ function tryExtractReturnReport(objExpr, scope) {
         const c = scope.constants?.[p.value.name];
         if (c?.kind === "string-scalar") messageId = c.value;
       }
+    } else if (k === "fix") {
+      // Reuse the standalone-fix extractor so the descriptor-return path
+      // gets the same fix-shape coverage as `context.report({ fix })`.
+      // Drop silently on unsupported shape — the diagnostic still fires
+      // (matching ESLint's behavior when a fix function returns null).
+      const f = tryExtractFixFn(p.value, scope);
+      if (f) fix = f;
+    } else if (k === "loc") {
+      // Recognize `{start: <ExprLoc>.start, end: <ExprLoc>.end}` where
+      // each ExprLoc is `sourceCode.getLoc(<node>)` or just `<node>`.
+      // Maps to a custom span built from nodeSpan/tokenStart bounds.
+      const locR = tryExtractLocSpan(p.value, scope);
+      if (locR) loc = locR;
     }
-    // data, fix, loc — ignored at IR level
+    // data — ignored at IR level
   }
   if (!messageId) return { ok: false, reason: "missing string messageId" };
   if (!nodeExpr) {
     if (scope.nodeParamName) nodeExpr = { op: "node-ref" };
     else return { ok: false, reason: "missing node" };
   }
-  return { ok: true, node: nodeExpr, messageId };
+  return { ok: true, node: nodeExpr, messageId, fix, loc };
+}
+
+// `{ start: getLoc(X).start, end: getLoc(Y).end }` (or `.start`/`.end` on
+// bare node refs) → { start: <startExpr IR>, end: <endExpr IR> } position
+// pair.  Returns null on any other shape so the caller drops loc silently.
+function tryExtractLocSpan(locVal, scope) {
+  if (!locVal || locVal.type !== "ObjectExpression") return null;
+  let startExpr = null, endExpr = null;
+  for (const p of locVal.properties) {
+    if (p.type !== "Property") return null;
+    const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
+    if (k !== "start" && k !== "end") return null;
+    // Each value should be `<call|node>.start` or `.end`.
+    const v = p.value;
+    if (v.type !== "MemberExpression" || v.computed) return null;
+    if (v.property?.type !== "Identifier") return null;
+    const which = v.property.name;
+    if (which !== k) return null; // must match parent key (start/end)
+    // Inner: either `sourceCode.getLoc(N)` call OR a bare node expression.
+    let nodeExpr = null;
+    if (v.object.type === "CallExpression"
+        && v.object.callee.type === "MemberExpression"
+        && !v.object.callee.computed
+        && v.object.callee.property?.type === "Identifier"
+        && v.object.callee.property.name === "getLoc"
+        && v.object.arguments.length === 1
+        && isSourceCodeReceiver(v.object.callee.object, scope)) {
+      const r = extractExpr(v.object.arguments[0], scope);
+      if (!r.ok) return null;
+      nodeExpr = r.expr;
+    } else {
+      const r = extractExpr(v.object, scope);
+      if (!r.ok) return null;
+      nodeExpr = r.expr;
+    }
+    if (k === "start") startExpr = { op: "node-span-start", node: nodeExpr };
+    else endExpr = { op: "node-span-end", node: nodeExpr };
+  }
+  if (!startExpr || !endExpr) return null;
+  return { start: startExpr, end: endExpr };
 }
 
 function extractReportCall(call, scope) {
@@ -3409,6 +3941,94 @@ function extractReportCall(call, scope) {
 // More complex fixes (conditional, sourceCode lookups, range-based) are out
 // of scope — codegen needs runtime source slicing to build replacement text
 // from sub-spans, which the current Zig API doesn't yet expose.
+// Extract a generator-fix body — sequence of `yield <fixerCall>;` statements
+// (no early-returns, no conditions).  Returns:
+//   single yield → the underlying fix descriptor (identical to non-generator)
+//   two yields matching the `replaceText(prop, "X") + removeMethodCall(call)`
+//     "rename-and-drop-trailing-call" pattern → combined replace-range fix
+//   anything else → null (drop fix; diagnostic still fires)
+function tryExtractGeneratorFix(bodyStmts, paramName, scope) {
+  const yields = [];
+  for (const s of bodyStmts) {
+    if (s.type !== "ExpressionStatement") return null;
+    if (s.expression.type !== "YieldExpression") return null;
+    if (s.expression.delegate) return null; // yield* not supported
+    if (!s.expression.argument) return null;
+    yields.push(s.expression.argument);
+  }
+  if (yields.length === 0) return null;
+  if (yields.length === 1) {
+    return extractFixerCall(yields[0], paramName, scope);
+  }
+  // Two-yield "rename-and-drop-suffix-call" pattern:
+  //   yield removeMethodCall(fixer, OUTER_CALL, ctx);  // drop .X(args) from end
+  //   yield fixer.replaceText(PROP, "NEWNAME");        // rename method name
+  // Combined: replace [PROP.start, OUTER_CALL.end] with "NEWNAME" + the args
+  // text of the inner call (i.e. NEWNAME + "(" + …mapArgs… + ")").  Used by
+  // prefer-array-flat-map (map(...).flat() → flatMap(...)).
+  //
+  // The two yields may appear in either order.
+  if (yields.length === 2) {
+    const findShape = (yieldExprs) => {
+      let removeYield = null, replaceYield = null;
+      for (const ye of yieldExprs) {
+        if (ye.type !== "CallExpression") return null;
+        if (ye.callee.type === "Identifier" && ye.callee.name === "removeMethodCall"
+            && ye.arguments.length === 3
+            && ye.arguments[0].type === "Identifier" && ye.arguments[0].name === paramName) {
+          removeYield = ye;
+        } else if (ye.callee.type === "MemberExpression" && !ye.callee.computed
+            && ye.callee.object.type === "Identifier" && ye.callee.object.name === paramName
+            && ye.callee.property?.type === "Identifier" && ye.callee.property.name === "replaceText"
+            && ye.arguments.length === 2
+            && ye.arguments[1].type === "Literal" && typeof ye.arguments[1].value === "string") {
+          replaceYield = ye;
+        }
+      }
+      if (!removeYield || !replaceYield) return null;
+      return { removeYield, replaceYield };
+    };
+    const shape = findShape(yields);
+    if (shape) {
+      const outerCallR = extractExpr(shape.removeYield.arguments[1], scope);
+      if (!outerCallR.ok) return null;
+      const propR = extractExpr(shape.replaceYield.arguments[0], scope);
+      if (!propR.ok) return null;
+      const newName = shape.replaceYield.arguments[1].value;
+      // Combined fix range: [prop.start, outerCall.end]
+      // Combined fix text: NEWNAME + argsTextBetweenParens(innerCall)
+      // The inner call = outerCall.callee.object (e.g. `arr.map(...)` for
+      // `arr.map(...).flat()`).  We model `innerCall` IR as
+      // node-main-child-of-callee — but our parser's call_expr.lhs IS the
+      // callee, and the callee is a member_expr whose lhs is innerCall.
+      // So innerCall = nodeData(nodeData(outerCall).lhs).lhs.
+      const innerCallIr2 = {
+        op: "node-main-child",
+        node: { op: "node-main-child", node: outerCallR.expr },
+      };
+      // Text uses argsTextBetweenParens for the args.  Misses paren-
+      // wrapped variants like `((map(...))).flat()` (1 fixture case) but
+      // correctly handles multi-line/whitespace cases that a raw
+      // source-range approach would break.  Trade-off documented; the
+      // remaining case is a span-only mismatch.
+      return {
+        kind: "replace-range",
+        start: { op: "node-span-start", node: propR.expr },
+        end:   { op: "node-span-end",   node: outerCallR.expr },
+        textExpr: {
+          op: "template-string",
+          parts: [
+            { kind: "str", value: newName + "(" },
+            { kind: "expr", expr: { op: "args-text-of", node: innerCallIr2 } },
+            { kind: "str", value: ")" },
+          ],
+        },
+      };
+    }
+  }
+  return null;
+}
+
 function tryExtractFixFn(fixVal, scope) {
   if (!fixVal) return null;
   let paramName;
@@ -3424,6 +4044,14 @@ function tryExtractFixFn(fixVal, scope) {
     paramName = fixVal.params[0].name;
     if (!fixVal.body) return null;
     bodyStmts = fixVal.body.body;
+    // Generator fix `function* fix(fixer) { yield X; yield Y; … }` — ESLint
+    // applies all yields as a single combined edit.  We support:
+    //   N=1 yield → identical to a single-fix return
+    //   N=2 yield (the rename-then-remove-suffix-call pattern used by
+    //     prefer-array-flat-map etc.) → combined replaceTextRange
+    if (fixVal.generator) {
+      return tryExtractGeneratorFix(bodyStmts, paramName, scope);
+    }
   } else {
     return null;
   }
@@ -3499,6 +4127,47 @@ function extractReturnedFixCallFromArg(arg, paramName, scope) {
 // fix without failing the whole extract.
 function extractFixerCall(call, paramName, scope) {
   if (!call || call.type !== "CallExpression") return null;
+  // Unicorn helper: removeArgument(fixer, X, context) — equivalent to
+  // `fixer.remove(X)` when X is the sole argument of its parent call (the
+  // case all current users rely on; for multi-arg removal the comma-handling
+  // is more involved and not yet supported here).
+  if (call.callee?.type === "Identifier" && call.callee.name === "removeArgument"
+      && call.arguments.length === 3
+      && call.arguments[0].type === "Identifier" && call.arguments[0].name === paramName) {
+    const r = extractExpr(call.arguments[1], scope);
+    if (!r.ok) return null;
+    return { kind: "remove", node: r.expr };
+  }
+  // Unicorn helper: removeMethodCall(fixer, CALL, context) — drops the
+  // `.method(args)` suffix from a method call expression.  Equivalent to
+  // replaceTextRange([propertyDot, call.end], "") — anchored at the `.`
+  // BEFORE the method name (which is `tokenStart(propertyMainToken) - 1`).
+  // Using property-relative anchor (instead of receiver.end) correctly
+  // preserves any wrap parens between receiver and `.method`: e.g. for
+  // `(0, date).getTime()` the receiver's nodeSpan ends at `date`'s end
+  // (parens are AST-transparent for the inner SequenceExpression) but the
+  // fix should preserve the trailing `)` of the receiver wrap.
+  if (call.callee?.type === "Identifier" && call.callee.name === "removeMethodCall"
+      && call.arguments.length === 3
+      && call.arguments[0].type === "Identifier" && call.arguments[0].name === paramName) {
+    const r = extractExpr(call.arguments[1], scope);
+    if (!r.ok) return null;
+    const callIr = r.expr;
+    const calleeIr = { op: "node-main-child", node: callIr };          // member_expr
+    const propertyIr = { op: "node-secondary-child", node: calleeIr }; // .method ident
+    // The `.` token is whatever directly precedes `getTime` in the token
+    // stream — using token-before (not `propertyStart - 1`) correctly
+    // handles comments between `.` and the method name:
+    //   `date./* comment */getTime()` → the `.` is far before `getTime`.
+    return {
+      kind: "replace-range",
+      start: { op: "token-start",
+               token: { op: "token-before",
+                        token: { op: "token-of-node", node: propertyIr } } },
+      end:   { op: "node-span-end", node: callIr },
+      text: "",
+    };
+  }
   if (call.callee?.type !== "MemberExpression") return null;
   if (call.callee.object?.type !== "Identifier" || call.callee.object.name !== paramName) return null;
   const method = call.callee.property?.name;
@@ -3519,6 +4188,26 @@ function extractFixerCall(call, paramName, scope) {
     const r = extractExpr(call.arguments[0], scope);
     if (!r.ok) return null;
     return { kind: "remove", node: r.expr };
+  }
+  // fixer.replaceTextRange([startExpr, endExpr], text)
+  // The first argument is an ArrayExpression of two position-typed exprs
+  // (typically `<X>.range[0]` / `.range[1]`, which lift to node-span-start /
+  // node-span-end / token-start / token-end).
+  if (method === "replaceTextRange") {
+    if (call.arguments.length !== 2) return null;
+    const rangeArg = call.arguments[0];
+    if (rangeArg.type !== "ArrayExpression" || rangeArg.elements.length !== 2) return null;
+    const startR = extractExpr(rangeArg.elements[0], scope);
+    if (!startR.ok) return null;
+    const endR = extractExpr(rangeArg.elements[1], scope);
+    if (!endR.ok) return null;
+    const textArg = call.arguments[1];
+    if (textArg.type === "Literal" && typeof textArg.value === "string") {
+      return { kind: "replace-range", start: startR.expr, end: endR.expr, text: textArg.value };
+    }
+    const tx = extractExpr(textArg, scope);
+    if (!tx.ok) return null;
+    return { kind: "replace-range", start: startR.expr, end: endR.expr, textExpr: tx.expr };
   }
   if (method === "insertTextBefore" || method === "insertTextAfter") {
     if (call.arguments.length !== 2) return null;
@@ -3594,6 +4283,18 @@ function expandRegexToSet(pattern) {
   if (!results || results.length === 0 || results.length > 64) return null;
   return results;
 }
+// Expands a `^…`-anchored (but unanchored at end) regex to a finite list of
+// literal prefixes it matches.  Caller can lift to OR(startsWith(prefix)).
+// Returns null when the body has any unbounded metachars.
+function expandRegexToPrefixSet(pattern) {
+  if (!pattern.startsWith("^") || pattern.endsWith("$")) return null;
+  const body = pattern.slice(1);
+  const results = expandPattern(body);
+  if (!results || results.length === 0 || results.length > 64) return null;
+  // Drop empty prefixes (e.g. expansion would be too lax).
+  if (results.some(r => r.length === 0)) return null;
+  return results;
+}
 
 function expandPattern(pat) {
   let results = [""];
@@ -3625,7 +4326,25 @@ function expandPattern(pat) {
       }
       results = next;
       i = end + 1;
-    } else if (/[.*+?{}\\^$]/.test(c)) {
+    } else if (c === "\\" && i + 1 < pat.length) {
+      const next = pat[i + 1];
+      // \d — any decimal digit; expand to 10 alternatives
+      if (next === "d") {
+        const digits = "0123456789".split("");
+        const nextR = [];
+        for (const r of results) for (const d of digits) nextR.push(r + d);
+        results = nextR;
+        i += 2;
+        continue;
+      }
+      // Escaped punctuation (\$ \. \( etc.) — literal char
+      if (/[.+*?^${}()\[\]|\\\/]/.test(next)) {
+        results = results.map(r => r + next);
+        i += 2;
+        continue;
+      }
+      return null;
+    } else if (/[.*+?{}^$]/.test(c)) {
       return null; // complex metachar
     } else {
       results = results.map(r => r + c);
@@ -3902,6 +4621,28 @@ function isTokenExpr(e) {
   return e && TOKEN_EXPR_OPS.has(e.op);
 }
 
+// Recognize an arrow-fn filter of the form `token => token.value === "<lit>"`.
+function isKeywordValueFilter(fn) {
+  if (!fn) return false;
+  if (fn.type !== "ArrowFunctionExpression" && fn.type !== "FunctionExpression") return false;
+  if (!fn.params || fn.params.length !== 1) return false;
+  const paramName = fn.params[0].type === "Identifier" ? fn.params[0].name : null;
+  if (!paramName) return false;
+  let body = fn.body;
+  if (body && body.type === "BlockStatement") {
+    if (body.body.length !== 1 || body.body[0].type !== "ReturnStatement") return false;
+    body = body.body[0].argument;
+  }
+  if (!body || body.type !== "BinaryExpression" || body.operator !== "===") return false;
+  const lhs = body.left, rhs = body.right;
+  const isParamValue = (n) =>
+    n && n.type === "MemberExpression" && !n.computed &&
+    n.object?.type === "Identifier" && n.object.name === paramName &&
+    n.property?.type === "Identifier" && n.property.name === "value";
+  const isStringLit = (n) => n && n.type === "Literal" && typeof n.value === "string";
+  return (isParamValue(lhs) && isStringLit(rhs)) || (isParamValue(rhs) && isStringLit(lhs));
+}
+
 // Recognize sourceCode.getTokenBefore/After/getFirstToken/getLastToken calls.
 // Returns { ok: true, expr } or null if not recognized.
 function tryExtractTokenNavCall(callExpr, scope) {
@@ -3918,6 +4659,13 @@ function tryExtractTokenNavCall(callExpr, scope) {
   const arg = argR.expr;
   if (method === "getFirstToken") {
     // getFirstToken(X) → main token of X
+    // If a filter `token => token.value === "<kw>"` is supplied, the rule is
+    // looking for a specific keyword that may sit inside paren wrappers.
+    // Unwrap grouping so `mainToken(skip-grouping(X))` lands on the keyword
+    // (e.g. `async` inside `((async()=>{}))`).
+    if (args.length >= 2 && isKeywordValueFilter(args[1])) {
+      return { ok: true, expr: { op: "token-of-node", node: { op: "node-skip-grouping", node: arg } } };
+    }
     return { ok: true, expr: { op: "token-of-node", node: arg } };
   }
   if (method === "getLastToken") {
@@ -4056,15 +4804,52 @@ function extractExpr(expr, scope) {
           const nodeR = extractExpr(expr.object.object, scope);
           if (nodeR.ok) return { ok: true, expr: { op: "node-arg-at", node: nodeR.expr, index: expr.property.value } };
         }
+        // <X>.body.body[N] / <X>.body[N] — first/Nth statement of the
+        // block belonging to X.  Common in pattern-matching rules
+        // (no-useless-catch's `node.body.body[0]`).  We pass the outer X
+        // through to ctx.nodeBodyStmtAt and let it figure out which
+        // block-bearing slot to dereference for X's tag.
+        if (expr.object.type === "MemberExpression" && !expr.object.computed
+            && expr.object.property?.type === "Identifier" && expr.object.property.name === "body") {
+          // Two shapes accepted:
+          //   `<X>.body.body[N]`  — outer wraps an inner `.body` (X is the parent of the block)
+          //   `<X>.body[N]`       — X IS already the block (or a node whose body resolves to one)
+          let target = expr.object;
+          if (expr.object.object?.type === "MemberExpression" && !expr.object.object.computed
+              && expr.object.object.property?.type === "Identifier" && expr.object.object.property.name === "body") {
+            target = expr.object.object.object;
+          } else {
+            target = expr.object.object;
+          }
+          const targetR = extractExpr(target, scope);
+          if (targetR.ok) return { ok: true, expr: { op: "node-body-stmt-at", node: targetR.expr, index: expr.property.value } };
+        }
         // <tokenExpr>.range[0] → token-start, <tokenExpr>.range[1] → token-end
+        // <nodeExpr>.range[0] → node-span-start, <nodeExpr>.range[1] → node-span-end
         if (expr.object.type === "MemberExpression" && !expr.object.computed
             && expr.object.property?.type === "Identifier" && expr.object.property.name === "range") {
-          const tokR = extractExpr(expr.object.object, scope);
-          if (tokR.ok && isTokenExpr(tokR.expr)) {
-            if (expr.property.value === 0) return { ok: true, expr: { op: "token-start", token: tokR.expr } };
-            if (expr.property.value === 1) return { ok: true, expr: { op: "token-end", token: tokR.expr } };
+          const tgtR = extractExpr(expr.object.object, scope);
+          if (tgtR.ok) {
+            if (isTokenExpr(tgtR.expr)) {
+              if (expr.property.value === 0) return { ok: true, expr: { op: "token-start", token: tgtR.expr } };
+              if (expr.property.value === 1) return { ok: true, expr: { op: "token-end", token: tgtR.expr } };
+            } else {
+              // Node-valued expression (node-ref, parent-node, node-main-child, …).
+              if (expr.property.value === 0) return { ok: true, expr: { op: "node-span-start", node: tgtR.expr } };
+              if (expr.property.value === 1) return { ok: true, expr: { op: "node-span-end", node: tgtR.expr } };
+            }
           }
         }
+      }
+      // <X>.body.body.length → node-body-stmt-count(X).  Number-valued; the
+      // surrounding boolean / comparison context lifts further as needed.
+      if (!expr.computed && expr.property?.type === "Identifier" && expr.property.name === "length"
+          && expr.object?.type === "MemberExpression" && !expr.object.computed
+          && expr.object.property?.type === "Identifier" && expr.object.property.name === "body"
+          && expr.object.object?.type === "MemberExpression" && !expr.object.object.computed
+          && expr.object.object.property?.type === "Identifier" && expr.object.object.property.name === "body") {
+        const r = extractExpr(expr.object.object.object, scope);
+        if (r.ok) return { ok: true, expr: { op: "node-body-stmt-count", node: r.expr } };
       }
       if (expr.computed) return { ok: false, reason: "computed member access in v2" };
       if (expr.property.type !== "Identifier") return { ok: false, reason: "non-identifier property" };
@@ -4081,8 +4866,13 @@ function extractExpr(expr, scope) {
         if (prop === "type") {
           return { ok: true, expr: { op: "__parent_type_marker__", parent: obj.expr } };
         }
-        if (prop === "callee" || prop === "argument" || prop === "object" || prop === "expression" || prop === "left") {
+        if (prop === "callee" || prop === "argument" || prop === "object" || prop === "expression" || prop === "left"
+            || prop === "param" || prop === "discriminant" || prop === "id") {
           return { ok: true, expr: { op: "node-main-child", node: obj.expr } };
+        }
+        // .init lives in Data.rhs for `declarator` (id=lhs, init=rhs).
+        if (prop === "init") {
+          return { ok: true, expr: { op: "node-secondary-child", node: obj.expr } };
         }
         if (prop === "operator") {
           return { ok: true, expr: { op: "__node_operator_marker__", node: obj.expr } };
@@ -4102,10 +4892,22 @@ function extractExpr(expr, scope) {
         if (prop === "test") {
           return { ok: true, expr: { op: "conditional-test", node: obj.expr } };
         }
-        return { ok: false, reason: `unsupported parent.<${prop}> access` };
+        // `parent.finalizer` — try_stmt's finally block (extra-data slot).
+        // The truthy check `if (parent.finalizer)` lifts to has-finalizer.
+        if (prop === "finalizer") {
+          return { ok: true, expr: { op: "node-has-finalizer", node: obj.expr } };
+        }
+        // Fall through to the generic node-valued path below (parent-node is
+        // in NODE_VALUED_OPS) so newer recognizers (.body, .typeArguments,
+        // .optional, etc.) cover parent without needing duplicate cases here.
       }
-      const isNodeRefBinding = obj.expr.op === "identifier" && obj.expr.name === "__ref_identifier__";
-      const NODE_VALUED_OPS = new Set(["node-ref", "parent-node", "node-main-child", "node-secondary-child", "conditional-consequent", "conditional-alternate", "conditional-test", "node-arg-at", "node-first-arg", "node-callee", "node-main-child-skip-grouping", "parent-node-skip-grouping"]);
+      // Inline-helper markers (`__inline_arg_N__`) are stand-ins for node-typed
+      // helper params; treat as node-valued so `.type`/`.parent`/.member-child
+      // accesses lift correctly during helper-body extraction.  After
+      // call-site substitution the markers are replaced with the real node IR.
+      const isNodeRefBinding = obj.expr.op === "identifier"
+        && (obj.expr.name === "__ref_identifier__" || /^__inline_arg_\d+__$/.test(obj.expr.name));
+      const NODE_VALUED_OPS = new Set(["node-ref", "parent-node", "node-main-child", "node-secondary-child", "conditional-consequent", "conditional-alternate", "conditional-test", "node-arg-at", "node-first-arg", "node-callee", "node-main-child-skip-grouping", "parent-node-skip-grouping", "node-body-stmt-at", "node-body"]);
       const isNodeValued = isNodeRefBinding || NODE_VALUED_OPS.has(obj.expr.op);
       if (isNodeValued) {
         const prop = expr.property.name;
@@ -4117,16 +4919,49 @@ function extractExpr(expr, scope) {
         // all of these across the relevant AST tags: UnaryExpression.argument,
         // CallExpression.callee, MemberExpression.object, BinaryExpression.left,
         // AssignmentExpression.left, ChainExpression.expression, etc.).
-        const MAIN_CHILD_PROPS = new Set(["argument", "callee", "object", "expression", "left"]);
+        const MAIN_CHILD_PROPS = new Set(["argument", "callee", "object", "expression", "left", "param", "discriminant", "id"]);
         if (MAIN_CHILD_PROPS.has(prop)) {
           return { ok: true, expr: { op: "node-main-child", node: obj.expr } };
+        }
+        // .init lives in Data.rhs for declarator (id=lhs, init=rhs).
+        if (prop === "init") {
+          return { ok: true, expr: { op: "node-secondary-child", node: obj.expr } };
+        }
+        // <X>.body — single body slot of a loop / if / function / arrow.
+        // (For block_stmt/static_block/class_body the `body` is an array of
+        // statements, but those flow through the dedicated `.body[N]` /
+        // `.body.length` recognizers above, not this branch.)
+        if (prop === "body") {
+          return { ok: true, expr: { op: "node-body", node: obj.expr } };
+        }
+        // After-binding chains on a `node-body` IR — when a local was bound
+        // to `node.body` upstream, accessing `.body[N]` / `.body.length` /
+        // `.length` shows up as <node-body>.<…> here (the JS-AST recognizer
+        // above only catches the literal three-segment `X.body.body.length`
+        // chain, not the post-substitution shape).
+        if (obj.expr.op === "node-body") {
+          if (prop === "length") {
+            return { ok: true, expr: { op: "node-body-stmt-count", node: obj.expr.node } };
+          }
         }
         // ConditionalExpression/IfStatement-specific children decoded from the
         // extra data (same layout: {consequent, alternate} in both cases).
         // Don't apply for SwitchCase where `.consequent` is a stmt list.
         if (prop === "consequent" || prop === "alternate") {
-          const sel = scope.handlerSelector;
-          if (sel === "ConditionalExpression" || sel === "IfStatement" || !sel) {
+          // .consequent/.alternate on the *root* node (node-ref): only safe
+          // when the selector is Conditional/If — for SwitchCase the field
+          // is a statement-list, not a node, and falls through to the
+          // generic member path so iterate-children can consume it.
+          // Otherwise (nested access on an extracted node), the upstream
+          // type-checks in the rule body ensure validity.
+          if (obj.expr.op === "node-ref") {
+            const sel = scope.handlerSelector;
+            if (sel === "ConditionalExpression" || sel === "IfStatement" || !sel) {
+              return { ok: true, expr: { op: prop === "consequent" ? "conditional-consequent" : "conditional-alternate", node: obj.expr } };
+            }
+            // Fall through to generic member so SwitchCase.consequent etc.
+            // remain as `member(node-ref, "consequent")` for iterate-children.
+          } else {
             return { ok: true, expr: { op: prop === "consequent" ? "conditional-consequent" : "conditional-alternate", node: obj.expr } };
           }
         }
@@ -4163,13 +4998,21 @@ function extractExpr(expr, scope) {
         if (prop === "typeArguments" || prop === "typeParameters") {
           return { ok: true, expr: { op: "node-has-type-arguments", node: obj.expr } };
         }
+        // `.prefix` on UnaryExpression — ESLint's flag that distinguishes
+        // pre/post operators.  Our parser only has prefix unary tags
+        // (`++`/`--` are separate update_expr-style tags that the rule's
+        // surrounding type-check already filters out), so this is always
+        // true for the cases that reach here.
+        if (prop === "prefix") {
+          return { ok: true, expr: { op: "literal", value: true } };
+        }
       }
       return { ok: true, expr: { op: "member", object: obj.expr, property: expr.property.name, computed: false } };
     }
     case "BinaryExpression":
     case "LogicalExpression": {
       const op = expr.operator;
-      if (!["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&", "||"].includes(op)) {
+      if (!["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "+", "-"].includes(op)) {
         return { ok: false, reason: `unsupported operator ${op}` };
       }
       // Specialized: in for-each-unresolved-global-ref bodies, drop the `parent && ...`
@@ -4181,6 +5024,71 @@ function extractExpr(expr, scope) {
           if (lLocal && lLocal.kind === "expr" && lLocal.expr.op === "parent-node") {
             return extractExpr(expr.right, scope);
           }
+        }
+      }
+      // <token-of-node(N)>.type === "RegularExpression" → node-tag-equals(N, regex)
+      // The token's lexer-kind string maps to a parser tag.  Currently only
+      // "RegularExpression" is wired (most other ESLint token types span
+      // multiple parser kinds; opening at one type at a time keeps the lift
+      // honest).
+      if ((op === "===" || op === "==" || op === "!==" || op === "!=")) {
+        const tokenTypeSide = (side) => {
+          if (!side || side.type !== "MemberExpression" || side.computed) return null;
+          if (side.property?.type !== "Identifier" || side.property.name !== "type") return null;
+          const tR = extractExpr(side.object, scope);
+          if (!tR.ok) return null;
+          if (tR.expr.op !== "token-of-node") return null;
+          return tR.expr.node;
+        };
+        const lTok = tokenTypeSide(expr.left);
+        const rIsRegex = expr.right?.type === "Literal" && expr.right.value === "RegularExpression";
+        if (lTok && rIsRegex) {
+          const eq = { op: "node-tag-equals", node: lTok, estreeType: "__RegexLiteral__" };
+          return { ok: true, expr: (op === "===" || op === "==") ? eq : { op: "unary", operator: "!", operand: eq } };
+        }
+        const rTok = tokenTypeSide(expr.right);
+        const lIsRegex = expr.left?.type === "Literal" && expr.left.value === "RegularExpression";
+        if (rTok && lIsRegex) {
+          const eq = { op: "node-tag-equals", node: rTok, estreeType: "__RegexLiteral__" };
+          return { ok: true, expr: (op === "===" || op === "==") ? eq : { op: "unary", operator: "!", operand: eq } };
+        }
+      }
+      // <token>.value[N] === "X" / "X" === <token>.value[N] → node-raw-char-equals
+      // Recognize before generic extraction (which fails on string-index `[N]`).
+      // Inner shape: MemberExpression(computed=true, object=MemberExpression(.value, <tokenJS>), property=Literal(N))
+      // The token's source text equals tokenText(mainToken(node)) when token
+      // came from getFirstToken(node) on a single-token node like a Literal.
+      if ((op === "===" || op === "==" || op === "!==" || op === "!=")) {
+        const charAtSide = (side) => {
+          if (!side || side.type !== "MemberExpression" || !side.computed) return null;
+          if (side.property?.type !== "Literal" || typeof side.property.value !== "number") return null;
+          const inner = side.object;
+          if (!inner || inner.type !== "MemberExpression" || inner.computed) return null;
+          if (inner.property?.type !== "Identifier" || inner.property.name !== "value") return null;
+          // Extract the token-typed inner.object — should resolve to a token IR.
+          const tR = extractExpr(inner.object, scope);
+          if (!tR.ok) return null;
+          if (!isTokenExpr(tR.expr)) return null;
+          // For node-raw-char-equals we need the underlying node, not the token.
+          // Token IR shapes: token-of-node(<node>) | token-before/after(<token>).
+          // Only the token-of-node case is safe (it's the node's own main token,
+          // so tokenText is the node's raw source).  Other token IRs reference
+          // sibling tokens whose text isn't the node's raw.
+          if (tR.expr.op !== "token-of-node") return null;
+          return { node: tR.expr.node, index: side.property.value };
+        };
+        const litStrOf1 = (e) => e?.type === "Literal" && typeof e.value === "string" && e.value.length === 1 ? e.value : null;
+        const lShape = charAtSide(expr.left);
+        const rChar = litStrOf1(expr.right);
+        if (lShape && rChar !== null) {
+          const eq = { op: "node-raw-char-equals", node: lShape.node, index: lShape.index, char: rChar };
+          return { ok: true, expr: (op === "===" || op === "==") ? eq : { op: "unary", operator: "!", operand: eq } };
+        }
+        const rShape = charAtSide(expr.right);
+        const lChar = litStrOf1(expr.left);
+        if (rShape && lChar !== null) {
+          const eq = { op: "node-raw-char-equals", node: rShape.node, index: rShape.index, char: lChar };
+          return { ok: true, expr: (op === "===" || op === "==") ? eq : { op: "unary", operator: "!", operand: eq } };
         }
       }
       // X.indexOf(str) === X.length - 1 → node-raw-ends-with
@@ -4218,6 +5126,27 @@ function extractExpr(expr, scope) {
       if (!L.ok) return L;
       const R = extractExpr(expr.right, scope);
       if (!R.ok) return R;
+      // Lift number-valued IR used as a boolean operand of &&/|| into the
+      // explicit `> 0` check the codegen needs.  Without this `body.body.length`
+      // would emit a usize where Zig expects a bool.
+      if (op === "&&" || op === "||") {
+        const liftBool = (e) => e.op === "node-body-stmt-count"
+          ? { op: "binary", operator: ">", lhs: e, rhs: { op: "literal", value: 0 } } : e;
+        L.expr = liftBool(L.expr);
+        R.expr = liftBool(R.expr);
+      }
+      // <X>.type.indexOf("JSX") === 0 / !== 0 → node-is-jsx(X) (optionally negated)
+      if ((op === "===" || op === "==" || op === "!==" || op === "!=")) {
+        const jsxSide = (a, b) => a?.op === "__jsx_indexof_marker__"
+                                && b?.op === "literal" && b.value === 0
+          ? { ok: true, node: a.node } : null;
+        const j = jsxSide(L.expr, R.expr) || jsxSide(R.expr, L.expr);
+        if (j) {
+          const eq = { op: "node-is-jsx", node: j.node };
+          if (op === "===" || op === "==") return { ok: true, expr: eq };
+          return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
+        }
+      }
       // parent.type === "X" / !== "X" → node-tag-equals (optionally negated)
       if ((op === "===" || op === "==" || op === "!==" || op === "!=")
           && L.expr.op === "__parent_type_marker__"
@@ -4328,6 +5257,21 @@ function extractExpr(expr, scope) {
           && R.expr.op === "literal" && R.expr.value === 0) {
         return { ok: true, expr: { op: "unary", operator: "!", operand: { op: "has-comments-inside-node", node: L.expr.object.node } } };
       }
+      // <X>.body.body.length / <X>.body.body.length === N — block-body
+      // statement count.  Lifts to node-body-stmt-count or its equality
+      // form so the surrounding `> 0` / `=== N` test resolves to bool.
+      const isBodyBodyLen = (e) =>
+        e.op === "member" && e.property === "length"
+        && e.object?.op === "member" && e.object.property === "body"
+        && e.object.object?.op === "member" && e.object.object.property === "body";
+      if ((op === "===" || op === "==") && isBodyBodyLen(L.expr)
+          && R.expr.op === "literal" && typeof R.expr.value === "number" && Number.isInteger(R.expr.value) && R.expr.value >= 0) {
+        return { ok: true, expr: { op: "node-body-stmt-count-equals", node: L.expr.object.object.object, count: R.expr.value } };
+      }
+      if ((op === "===" || op === "==") && isBodyBodyLen(R.expr)
+          && L.expr.op === "literal" && typeof L.expr.value === "number" && Number.isInteger(L.expr.value) && L.expr.value >= 0) {
+        return { ok: true, expr: { op: "node-body-stmt-count-equals", node: R.expr.object.object.object, count: L.expr.value } };
+      }
       // <X>.arguments.length === N → node-args-count-equals(X, N) or node-args-length-zero(X) for N=0
       const isArgsLenCompare = (litSide, memberSide) =>
         litSide.op === "literal" && typeof litSide.value === "number" && Number.isInteger(litSide.value) && litSide.value >= 0
@@ -4368,6 +5312,13 @@ function extractExpr(expr, scope) {
       if (!o.ok) return o;
       // typeof X → leave as a marker so the enclosing === can consume it.
       if (op === "typeof") return { ok: true, expr: { op: "__typeof_marker__", inner: o.expr } };
+      // !<X>.arguments.length → node-args-length-zero(X).  The dedicated
+      // BinaryExpression recognizer covers `=== 0` / `!== 0`; truthy/falsy
+      // unary use shows up here.
+      if (op === "!" && o.expr.op === "member" && o.expr.property === "length"
+          && o.expr.object?.op === "member" && o.expr.object.property === "arguments") {
+        return { ok: true, expr: { op: "node-args-length-zero", node: o.expr.object.object } };
+      }
       return { ok: true, expr: { op: "unary", operator: op, operand: o.expr } };
     }
     case "CallExpression": {
@@ -4478,6 +5429,35 @@ function extractExpr(expr, scope) {
           }
         }
       }
+      // `<X>.type.indexOf("JSX") === 0` shape — JSX-family check.  Used by
+      // `function isJSXElement(node) { return node.type.indexOf("JSX") === 0; }`
+      // in rules like no-multi-str.  Lift to node-is-jsx(X).
+      // Recognise at the call site only — the surrounding BinaryExpression
+      // === 0 / !== 0 wraps this in the appropriate boolean form.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "indexOf"
+          && callee.object?.type === "MemberExpression" && !callee.object.computed
+          && callee.object.property?.type === "Identifier" && callee.object.property.name === "type"
+          && expr.arguments.length === 1
+          && expr.arguments[0].type === "Literal" && expr.arguments[0].value === "JSX") {
+        const r = extractExpr(callee.object.object, scope);
+        if (r.ok) {
+          return { ok: true, expr: { op: "__jsx_indexof_marker__", node: r.expr } };
+        }
+      }
+      // astUtils.LINEBREAK_MATCHER.test(X) — line-terminator presence check.
+      // Matches the same predicate as our Zig helper nodeRawContainsLinebreak,
+      // so lift directly without trying to expand the regex.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "test"
+          && callee.object?.type === "MemberExpression" && !callee.object.computed
+          && callee.object.property?.type === "Identifier" && callee.object.property.name === "LINEBREAK_MATCHER"
+          && expr.arguments.length === 1) {
+        const val = extractExpr(expr.arguments[0], scope);
+        if (val.ok && val.expr.op === "member" && val.expr.property === "raw") {
+          return { ok: true, expr: { op: "node-raw-contains-linebreak", node: val.expr.object } };
+        }
+      }
       // /regex/.test(X) — expand finite regex to set-contains
       if (callee.type === "MemberExpression" && !callee.computed
           && callee.property?.type === "Identifier" && callee.property.name === "test"
@@ -4493,19 +5473,36 @@ function extractExpr(expr, scope) {
             return { ok: true, expr: { op: "set-contains", setName, value: val.expr } };
           }
         }
+        // ^prefix$-style fully-expanded set wasn't possible — try prefix-only
+        // expansion for `^X…` (no `$` anchor).  Lifts to OR(startsWith(p)).
+        const prefixSet = expandRegexToPrefixSet(callee.object.regex.pattern);
+        if (prefixSet) {
+          const val = extractExpr(expr.arguments[0], scope);
+          if (val.ok && val.expr.op === "member" && (val.expr.property === "value" || val.expr.property === "raw")) {
+            const checks = prefixSet.map(p => ({ op: "node-raw-starts-with", node: val.expr.object, prefix: p }));
+            return { ok: true, expr: checks.reduce((a, c) => a ? { op: "binary", operator: "||", lhs: a, rhs: c } : c, null) };
+          }
+        }
         // Fallback: literal prefix (+ optional suffix) → node-raw-starts-with (if anchored) or node-raw-contains
         const pfx = extractRegexLiteralPrefix(callee.object.regex.pattern);
         if (pfx) {
           const val = extractExpr(expr.arguments[0], scope);
           if (val.ok && val.expr.op === "member" && (val.expr.property === "value" || val.expr.property === "raw")) {
             const anchored = callee.object.regex.pattern.startsWith("^");
-            const pfxOp = anchored ? "node-raw-starts-with" : "node-raw-contains";
-            const containsPfx = { op: pfxOp, node: val.expr.object, prefix: pfx };
-            const sfx = extractRegexLiteralSuffix(callee.object.regex.pattern);
-            if (sfx && sfx !== pfx) {
-              return { ok: true, expr: { op: "binary", operator: "&&", lhs: containsPfx, rhs: { op: "node-raw-contains", node: val.expr.object, prefix: sfx } } };
+            // Bail out if the regex has trailing complexity beyond the literal
+            // prefix — silently dropping `\d` etc. produced false positives
+            // (e.g. `^0\d` matched "0" alone).  Only safe when the prefix is
+            // the entire (anchored) pattern.
+            const trimmed = anchored ? callee.object.regex.pattern.slice(1) : callee.object.regex.pattern;
+            if (trimmed === pfx || trimmed === pfx + "$") {
+              const pfxOp = anchored ? "node-raw-starts-with" : "node-raw-contains";
+              const containsPfx = { op: pfxOp, node: val.expr.object, prefix: pfx };
+              const sfx = extractRegexLiteralSuffix(callee.object.regex.pattern);
+              if (sfx && sfx !== pfx) {
+                return { ok: true, expr: { op: "binary", operator: "&&", lhs: containsPfx, rhs: { op: "node-raw-contains", node: val.expr.object, prefix: sfx } } };
+              }
+              return { ok: true, expr: containsPfx };
             }
-            return { ok: true, expr: containsPfx };
           }
         }
       }
@@ -4629,6 +5626,21 @@ function extractExpr(expr, scope) {
           return { ok: true, expr: { op: "set-contains", setName, value: val.expr } };
         }
       }
+      // astUtils.skipChainExpression(X) — unwrap an ESTree ChainExpression
+      // wrapper to its inner call/member.  Our parser does not emit a
+      // ChainExpression wrapper at all (optional calls are direct
+      // optional_call_expr / optional_member_expr nodes), so the call is an
+      // identity for our purposes — just substitute the argument.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "skipChainExpression"
+          && expr.arguments.length === 1) {
+        return extractExpr(expr.arguments[0], scope);
+      }
+      // Bare `skipChainExpression(X)` (when destructured from ast-utils).
+      if (callee.type === "Identifier" && callee.name === "skipChainExpression"
+          && expr.arguments.length === 1) {
+        return extractExpr(expr.arguments[0], scope);
+      }
       // astUtils.isFunction(X) — true if node is any function kind
       if (callee.type === "MemberExpression" && !callee.computed
           && callee.property?.type === "Identifier" && callee.property.name === "isFunction"
@@ -4658,8 +5670,11 @@ function extractExpr(expr, scope) {
           rhs: { op: "nodes-equal", a: { op: "node-main-child", node: parentExpr }, b: argR.expr },
         } };
       }
-      // getStaticPropertyName(X) — emit marker consumed by enclosing === comparison
-      if (callee.type === "Identifier" && callee.name === "getStaticPropertyName"
+      // getStaticPropertyName(X) / astUtils.getStaticPropertyName(X) — emit
+      // marker consumed by the enclosing === comparison.
+      if (((callee.type === "Identifier" && callee.name === "getStaticPropertyName")
+          || (callee.type === "MemberExpression" && !callee.computed
+              && callee.property?.type === "Identifier" && callee.property.name === "getStaticPropertyName"))
           && expr.arguments.length === 1) {
         const argR = extractExpr(expr.arguments[0], scope);
         if (!argR.ok) return argR;
@@ -4672,6 +5687,15 @@ function extractExpr(expr, scope) {
         if (!argR.ok) return argR;
         const h = scope.boolPreds[callee.name];
         return { ok: true, expr: substituteNodeRef(h.cond, argR.expr) };
+      }
+      // Token-equality predicate (hasSameTokens-style) — lift to source-equal.
+      if (callee.type === "Identifier" && scope.helpers?.[callee.name]?.kind === "tokens-equal") {
+        if (expr.arguments.length !== 2) return { ok: false, reason: "tokens-equal helper call must have 2 args" };
+        const aR = extractExpr(expr.arguments[0], scope);
+        if (!aR.ok) return aR;
+        const bR = extractExpr(expr.arguments[1], scope);
+        if (!bR.ok) return bR;
+        return { ok: true, expr: { op: "node-source-equals", a: aR.expr, b: bR.expr } };
       }
       // astUtils helpers — accept both `astUtils.X(...)` and bare `X(...)`
       // (rules often destructure from ./utils/ast-utils).  Match BEFORE the
@@ -4780,6 +5804,11 @@ function extractExpr(expr, scope) {
       if (!e.ok) return e;
       return { ok: true, expr: { op: "ternary", cond: c.expr, then: t.expr, else: e.expr } };
     }
+    case "ChainExpression":
+      // ESTree wraps optional-chain calls/members in a ChainExpression node;
+      // our parser models them as direct optional_call_expr/optional_member_expr
+      // tags with no wrapper.  Unwrap by extracting the inner expression.
+      return extractExpr(expr.expression, scope);
     default:
       return { ok: false, reason: `unsupported expr type ${expr.type}` };
   }
@@ -4926,7 +5955,16 @@ function extractRule(file) {
       }
     }
   }
-  const { handlers, helpers, constants, unsupported } = extractHandlers(ruleObj, file, moduleConstants, meta.defaultOptions, moduleBoolPreds, ast, moduleImports);
+  // Re-parse the rule file before extractHandlers — the import-resolution
+  // loops above may have called parseSource on other files, which uses a
+  // SHARED buffer/NodeView pool and invalidates the NodeView references in
+  // our original `ast` and `ruleObj`.  Re-parse to get fresh references
+  // tied to a buffer that won't be touched again before extractHandlers
+  // finishes.
+  const ast2 = parseFile(file);
+  const ruleObj2 = findExportedObject(ast2);
+  if (!ruleObj2) return { ok: false, unsupported: "no module.exports object literal" };
+  const { handlers, helpers, constants, unsupported } = extractHandlers(ruleObj2, file, moduleConstants, meta.defaultOptions, moduleBoolPreds, ast2, moduleImports);
   if (unsupported) return { ok: false, unsupported };
   // Strip string-scalar constants (used only internally for messageId resolution; not valid in IR).
   const irConstants = constants
@@ -4938,8 +5976,25 @@ function extractRule(file) {
     description: meta.description,
     fixable: meta.fixable,
     messages: meta.messages,
+    // Source-of-truth path (rule-relative).  Emitted in the generated file's
+    // header so regen scripts can skip rules whose origin differs (e.g.
+    // ESLint-core no-negated-condition vs unicorn/no-negated-condition).
+    sourceFile: path.relative(process.cwd(), file),
     constants: irConstants && Object.keys(irConstants).length > 0 ? irConstants : undefined,
-    helpers: helpers && Object.keys(helpers).length > 0 ? helpers : undefined,
+    // inline-statements helpers are entirely inlined at extraction time —
+    // they don't appear in IR-call sites and aren't valid downstream targets.
+    // Strip them so the validator's HELPER_KINDS check doesn't reject them.
+    helpers: (() => {
+      if (!helpers) return undefined;
+      const filtered = {};
+      for (const [k, v] of Object.entries(helpers)) {
+        // Internal-only helpers — inlined at call site, never referenced
+        // from the validated IR and not in HELPER_KINDS.
+        if (v && (v.kind === "inline-statements" || v.kind === "tokens-equal")) continue;
+        filtered[k] = v;
+      }
+      return Object.keys(filtered).length > 0 ? filtered : undefined;
+    })(),
     handlers,
   };
   const v = validateRule(rule);

@@ -1,6 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
-// Rule: no-new-symbol
-// Source rule: tests/conformance/eslint/lib/rules/no-new-symbol.js
+// Rule: no-object-constructor
+// Source rule: tests/conformance/eslint/lib/rules/no-object-constructor.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -12,26 +12,34 @@ const ref_mod = @import("../../../parser/reference.zig");
 const ReferenceId = ref_mod.ReferenceId;
 
 pub const meta = RuleMeta{
-    .name = "no-new-symbol",
-    .category = .correctness,
+    .name = "no-object-constructor",
+    .category = .style,
     .default_severity = .warning,
-    .description = "Disallow `new` operators with the `Symbol` object",
+    .description = "Disallow calls to the `Object` constructor without an argument",
 };
 
 pub const relevant_tags = [_]Node.Tag{};
 
-pub const needs_semantic = true;
-
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
-    noNewSymbol,
+    preferLiteral,
+    useLiteral,
+    useLiteralAfterSemicolon,
 };
 
-const __Symbol_names__ = [_][]const u8{ "Symbol" };
+const __Object_names__ = [_][]const u8{ "Object" };
 
 fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
     for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
     return false;
+}
+
+fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
+    if (n == .none) return false;
+    const d = c.nodeData(n);
+    if (d.rhs == .none) return true;
+    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    return c.extraSlice(sr).len == 0;
 }
 
 pub fn run(_: NodeIndex, _: *const LintContext) void {}
@@ -46,12 +54,14 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const __ref_identifier__ = refs.getNode(ref_id);
         const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));
         var __matches = false;
-        for (__Symbol_names__) |__n| { if (std.mem.eql(u8, __name__, __n)) { __matches = true; break; } }
+        for (__Object_names__) |__n| { if (std.mem.eql(u8, __name__, __n)) { __matches = true; break; } }
         if (!__matches) continue;
         // Respect ESLint globals:"off" (config + inline /* global X:off */)
         if (ctx.globalIsOff(__name__)) continue;
-        if (((ctx.nodeTag(ctx.parentOf(__ref_identifier__)) == .new_expr) and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
-            ctx.reportWithMessageId(__ref_identifier__, "noNewSymbol");
+        if ((((ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)) == .new_expr) or blk: { const __t = ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)); break :blk (__t == .call_expr or __t == .optional_call_expr); }) and (ctx.calleeOf(ctx.parentOfSkipGrouping(__ref_identifier__)) == __ref_identifier__))) {
+            if (nodeArgsLenZero(ctx, ctx.parentOfSkipGrouping(__ref_identifier__))) {
+                ctx.reportWithMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), "preferLiteral");
+            }
         }
     }
 }

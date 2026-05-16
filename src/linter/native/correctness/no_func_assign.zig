@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-func-assign
+// Source rule: tests/conformance/eslint/lib/rules/no-func-assign.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");

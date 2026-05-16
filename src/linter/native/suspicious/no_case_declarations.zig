@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-case-declarations
+// Source rule: tests/conformance/eslint/lib/rules/no-case-declarations.js
 
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;

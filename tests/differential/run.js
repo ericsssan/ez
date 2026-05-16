@@ -877,10 +877,42 @@ if (fs.existsSync(ESLINT_ROOT)) {
 
     // Pre-build native config for this rule (one per rule, reused across cases).
     // @typescript-eslint/foo rules map to the core native 'foo' when available.
+    // Plugin-prefixed rules (unicorn/X, react/X, …) DO NOT route through
+    // base-name lookup by default — base-name name collision between core
+    // and plugin variants gives different semantics (e.g. unicorn/no-
+    // negated-condition reports a different node than core's variant).
+    // The PLUGIN_ROUTE_ALLOWLIST below maps `<plugin>/<X>` to the bare native
+    // rule name iff the registered native impl was extracted from THAT
+    // plugin's source and verified to match.  Add entries only after
+    // confirming spans/messageIds/fixes line up.
+    // Route plugin-prefixed rules to the native impl ONLY when the native
+    // impl is the same semantic variant.  Several rules with the same base
+    // name (no-process-exit, no-negated-condition, no-nested-ternary, …)
+    // have DIFFERENT semantics in ESLint-core vs unicorn — routing them
+    // produces FPs/FNs.  Add entries here only after verifying that the
+    // native impl was extracted from the plugin's own source (or proven to
+    // match its expectations exactly).
+    const PLUGIN_ROUTE_ALLOWLIST = {
+      "unicorn/no-this-assignment": "no-this-assignment",
+      "unicorn/no-unnecessary-array-flat-depth": "no-unnecessary-array-flat-depth",
+      "unicorn/prefer-blob-reading-methods": "prefer-blob-reading-methods",
+      "unicorn/prefer-string-trim-start-end": "prefer-string-trim-start-end",
+      "unicorn/no-negation-in-equality-check": "no-negation-in-equality-check",
+      "unicorn/prefer-array-flat-map": "prefer-array-flat-map",
+      "unicorn/consistent-date-clone": "consistent-date-clone",
+    };
+    // @typescript-eslint/X variants often differ from the ESLint-core rule
+    // they extend (different messageIds, broader/narrower semantics, TS-only
+    // syntax handling).  Only auto-route ts-eslint → core native when the
+    // semantics provably match.
+    const TS_AUTOROUTE_ALLOWLIST = new Set();
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
         const core = ruleName.slice("@typescript-eslint/".length);
-        if (_nativeRuleSet.has(core)) return core;
+        if (TS_AUTOROUTE_ALLOWLIST.has(core) && _nativeRuleSet.has(core)) return core;
+      }
+      if (PLUGIN_ROUTE_ALLOWLIST[ruleName] && _nativeRuleSet.has(PLUGIN_ROUTE_ALLOWLIST[ruleName])) {
+        return PLUGIN_ROUTE_ALLOWLIST[ruleName];
       }
       return ruleName;
     })();
@@ -1135,7 +1167,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
         hybridCases++;
         const hybridResult = (_ruleHasNativeImpl && nativeUsable) ? nativeResult : runnerNormal;
         // Normalize to ruleName (same reason as nativeKeys normalization above).
-        const hybridKeys = new Set(hybridResult.map(r => `${ruleName}:${r.line}`));
+        const _mkKeyForHybrid = nativeOnly ? _mkKeyLoc : _mkKey;
+        const hybridKeys = new Set(hybridResult.map(r => _mkKeyForHybrid({ ...r, rule: ruleName })));
         const caseHybridFn = [...espreeKeys].filter(k => !hybridKeys.has(k)).length;
         const caseHybridFp = [...hybridKeys].filter(k => !espreeKeys.has(k)).length;
         if (caseHybridFn === 0 && caseHybridFp === 0) hybridPass++;

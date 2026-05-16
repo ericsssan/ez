@@ -18,7 +18,7 @@ const no_debugger = @import("correctness/no_debugger.zig");
 const no_func_assign = @import("correctness/no_func_assign.zig");
 // const no_import_assign = @import("correctness/no_import_assign.zig");  // hand-written — disabled per IR-only constraint
 // const no_self_assign = @import("correctness/no_self_assign.zig");  // hand-written — disabled per IR-only constraint
-// const no_self_compare = @import("correctness/no_self_compare.zig");  // hand-written — disabled per IR-only constraint
+const no_self_compare = @import("suspicious/no_self_compare.zig");
 // const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");  // hand-written — disabled per IR-only constraint
 // const no_loss_of_precision = @import("correctness/no_loss_of_precision.zig");  // hand-written — disabled per IR-only constraint
 const no_const_assign = @import("correctness/no_const_assign.zig");
@@ -29,11 +29,11 @@ const no_multi_assign = @import("style/no_multi_assign.zig");
 // v0.4 correctness rules
 // const for_direction = @import("correctness/for_direction.zig");  // hand-written — disabled per IR-only constraint
 // const getter_return = @import("correctness/getter_return.zig");  // hand-written — disabled per IR-only constraint
-// const no_async_promise_executor = @import("correctness/no_async_promise_executor.zig");  // hand-written — disabled per IR-only constraint
+const no_async_promise_executor = @import("correctness/no_async_promise_executor.zig");
 const no_compare_neg_zero = @import("correctness/no_compare_neg_zero.zig");
 // const no_dupe_class_members = @import("correctness/no_dupe_class_members.zig");  // hand-written — disabled per IR-only constraint
 // const no_dupe_else_if = @import("correctness/no_dupe_else_if.zig");  // hand-written — disabled per IR-only constraint
-// const no_duplicate_case = @import("correctness/no_duplicate_case.zig");  // hand-written — disabled per IR-only constraint
+const no_duplicate_case = @import("correctness/no_duplicate_case.zig");
 // const no_empty_pattern = @import("correctness/no_empty_pattern.zig");  // hand-written — disabled per IR-only constraint
 const no_ex_assign = @import("correctness/no_ex_assign.zig");
 // const no_fallthrough = @import("correctness/no_fallthrough.zig");  // hand-written — disabled per IR-only constraint
@@ -46,7 +46,7 @@ const no_obj_calls = @import("correctness/no_obj_calls.zig");
 // const no_setter_return = @import("correctness/no_setter_return.zig");  // hand-written — disabled per IR-only constraint
 const no_template_curly_in_string = @import("correctness/no_template_curly_in_string.zig");
 // const no_this_before_super = @import("correctness/no_this_before_super.zig");  // hand-written — disabled per IR-only constraint
-// const no_useless_catch = @import("correctness/no_useless_catch.zig");  // hand-written — disabled per IR-only constraint
+const no_useless_catch = @import("correctness/no_useless_catch.zig");
 // v0.5 correctness rules
 const no_class_assign = @import("correctness/no_class_assign.zig");
 // const no_unused_expressions = @import("correctness/no_unused_expressions.zig");  // hand-written — disabled per IR-only constraint
@@ -57,17 +57,19 @@ const no_class_assign = @import("correctness/no_class_assign.zig");
 // const no_await_in_loop = @import("correctness/no_await_in_loop.zig");  // hand-written — disabled per IR-only constraint
 // const no_promise_executor_return = @import("correctness/no_promise_executor_return.zig");  // hand-written — disabled per IR-only constraint
 // const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");  // hand-written — disabled per IR-only constraint
-// const no_empty_static_block = @import("correctness/no_empty_static_block.zig");  // hand-written — disabled per IR-only constraint
+const no_empty_static_block = @import("correctness/no_empty_static_block.zig");
 // const no_constructor_new = @import("correctness/no_constructor_new.zig");  // hand-written — disabled per IR-only constraint
 // const accessor_pairs = @import("correctness/no_setter_without_getter.zig");  // hand-written — disabled per IR-only constraint
 // v0.7 correctness rules
 // const no_constant_binary_expression = @import("correctness/no_constant_binary_expression.zig");  // hand-written — disabled per IR-only constraint
-// const no_div_regex = @import("correctness/no_div_regex.zig");  // hand-written — disabled per IR-only constraint
+const no_div_regex = @import("style/no_div_regex.zig");
+const no_this_assignment = @import("style/no_this_assignment.zig");
+const no_negation_in_equality_check = @import("style/no_negation_in_equality_check.zig");
 // const array_callback_return = @import("correctness/array_callback_return.zig");  // hand-written — disabled per IR-only constraint
 // const no_useless_backreference = @import("correctness/no_useless_backreference.zig");  // hand-written — disabled per IR-only constraint
 const no_new_native_nonconstructor = @import("correctness/no_new_native_nonconstructor.zig");
 const no_buffer_constructor = @import("correctness/no_buffer_constructor.zig");
-// const guard_for_in = @import("correctness/guard_for_in.zig");  // hand-written — disabled per IR-only constraint
+const guard_for_in = @import("style/guard_for_in.zig");
 const no_negated_in_lhs = @import("correctness/no_negated_in_lhs.zig");
 const no_new_statics = @import("correctness/no_new_statics.zig");
 const no_invalid_remove_event_listener = @import("correctness/no_invalid_remove_event_listener.zig");
@@ -86,7 +88,7 @@ const no_implied_eval = @import("suspicious/no_implied_eval.zig");
 // const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // hand-written — disabled per IR-only constraint
 // const no_misleading_character_class = @import("suspicious/no_misleading_character_class.zig");  // hand-written — disabled per IR-only constraint
 // const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");  // hand-written — disabled per IR-only constraint
-// const no_multi_str = @import("suspicious/no_multi_str.zig");  // hand-written — disabled per IR-only constraint
+const no_multi_str = @import("suspicious/no_multi_str.zig");
 const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
 // const no_nonoctal_decimal_escape = @import("suspicious/no_nonoctal_decimal_escape.zig");  // hand-written — disabled per IR-only constraint
 // const no_octal = @import("suspicious/no_octal.zig");  // hand-written — disabled per IR-only constraint
@@ -113,9 +115,9 @@ const no_case_declarations = @import("suspicious/no_case_declarations.zig");
 // v0.6 suspicious rules
 // const no_loop_func = @import("suspicious/no_loop_func.zig");  // hand-written — disabled per IR-only constraint
 // const no_implicit_globals = @import("suspicious/no_implicit_globals.zig");  // hand-written — disabled per IR-only constraint
-// const no_process_exit = @import("suspicious/no_process_exit.zig");  // hand-written — disabled per IR-only constraint
+const no_process_exit = @import("suspicious/no_process_exit.zig");
 // const consistent_return = @import("suspicious/consistent_return.zig");  // hand-written — disabled per IR-only constraint
-// const no_object_constructor = @import("suspicious/no_object_constructor.zig");  // hand-written — disabled per IR-only constraint
+const no_object_constructor = @import("suspicious/no_object_constructor.zig");
 // const prefer_promise_reject_errors = @import("suspicious/no_async_with_error.zig");  // hand-written — disabled per IR-only constraint
 // v0.7 suspicious rules
 // const no_return_await = @import("suspicious/no_return_await.zig");  // hand-written — disabled per IR-only constraint
@@ -137,7 +139,7 @@ const no_extra_boolean_cast = @import("style/no_extra_boolean_cast.zig");
 const no_floating_decimal = @import("style/no_floating_decimal.zig");
 const no_iterator = @import("style/no_iterator.zig");
 // const no_labels = @import("style/no_labels.zig");  // hand-written — disabled per IR-only constraint
-// const no_lonely_if = @import("style/no_lonely_if.zig");  // hand-written — disabled per IR-only constraint
+// const no_lonely_if = @import("style/no_lonely_if.zig");  // IR codegen lacks fix; matches runner but worsens hybrid via fix-key mismatch
 // const no_multi_assign = @import("style/no_multi_assign.zig");  // hand-written — disabled per IR-only constraint
 const no_negated_condition = @import("style/no_negated_condition.zig");
 const no_nested_ternary = @import("style/no_nested_ternary.zig");
@@ -197,7 +199,7 @@ const symbol_description = @import("style/symbol_description.zig");
 const no_ternary = @import("style/no_ternary.zig");
 // const prefer_named_capture_group = @import("style/prefer_named_capture_group.zig");  // hand-written — disabled per IR-only constraint
 // const max_depth = @import("style/max_depth.zig");  // hand-written — disabled per IR-only constraint
-// const default_case_last = @import("style/default_case_last.zig");  // hand-written — disabled per IR-only constraint
+const default_case_last = @import("style/default_case_last.zig");
 // const max_lines = @import("style/max_lines.zig");  // hand-written — disabled per IR-only constraint
 // const no_mixed_operators = @import("style/no_mixed_operators.zig");  // hand-written — disabled per IR-only constraint
 // const consistent_this = @import("style/consistent_this.zig");  // hand-written — disabled per IR-only constraint
@@ -293,6 +295,19 @@ pub const all_rules = .{
     no_eq_null,
     no_octal,
     no_multi_assign,
+    no_useless_catch,
+    guard_for_in,
+    no_object_constructor,
+    no_process_exit,
+    no_div_regex,
+    no_this_assignment,
+    no_negation_in_equality_check,
+    no_self_compare,
+    default_case_last,
+    no_multi_str,
+    no_empty_static_block,
+    no_duplicate_case,
+    no_async_promise_executor,
     // for_direction, // runner >> native (runner 72, native 47, gap 25, 6 FP); fall back to JS runner
     // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
     // no_async_promise_executor, // hand-written — disabled

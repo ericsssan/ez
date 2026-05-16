@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-process-env
+// Source rule: tests/conformance/eslint/lib/rules/no-process-env.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");

@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: prefer-blob-reading-methods
+// Source rule: tests/conformance/eslint-plugin-unicorn/rules/prefer-blob-reading-methods.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -16,6 +17,11 @@ pub const meta = RuleMeta{
 };
 
 pub const relevant_tags = [_]Node.Tag{.call_expr, .optional_call_expr};
+
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    @"error",
+};
 
 fn nodeArgsCount(c: *const LintContext, n: NodeIndex) usize {
     if (n == .none) return 0;
@@ -34,5 +40,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!(((ctx.nodeTag(node) == .call_expr) and (nodeArgsCount(ctx, node) == 1) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr) and containsStr(&[_][]const u8{"readAsText", "readAsArrayBuffer"}, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)))))) {
         return;
     }
-    ctx.report(ctx.nodeData(ctx.nodeData(node).lhs).rhs);
+    ctx.reportWithMessageId(ctx.nodeData(ctx.nodeData(node).lhs).rhs, "error");
+    return;
 }

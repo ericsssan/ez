@@ -1,6 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
-// Rule: no-iterator
-// Source rule: tests/conformance/eslint/lib/rules/no-iterator.js
+// Rule: no-empty-static-block
+// Source rule: tests/conformance/eslint/lib/rules/no-empty-static-block.js
 
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
@@ -9,21 +9,22 @@ const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
 pub const meta = RuleMeta{
-    .name = "no-iterator",
+    .name = "no-empty-static-block",
     .category = .style,
     .default_severity = .warning,
-    .description = "Disallow the use of the `__iterator__` property",
+    .description = "Disallow empty static blocks",
 };
 
-pub const relevant_tags = [_]Node.Tag{.member_expr, .optional_member_expr, .computed_member_expr, .optional_computed_member_expr};
+pub const relevant_tags = [_]Node.Tag{.static_block};
 
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
-    noIterator,
+    unexpected,
+    suggestComment,
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (ctx.nodePropNameEquals(node, "__iterator__")) {
-        ctx.reportWithMessageId(node, "noIterator");
+    if (((ctx.nodeBodyStmtCount(node) == 0) and !(ctx.hasCommentsInsideNode(node)))) {
+        ctx.reportSpanWithMessageId(.{ .start = ctx.ast.tokenStart((ctx.nodeMainToken(node) + 1)), .end = ctx.nodeSpan(node).end }, "unexpected");
     }
 }

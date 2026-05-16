@@ -1,6 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
-// Rule: no-path-concat
-// Source rule: tests/conformance/eslint/lib/rules/no-path-concat.js
+// Rule: no-self-compare
+// Source rule: tests/conformance/eslint/lib/rules/no-self-compare.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -10,20 +10,20 @@ const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
 pub const meta = RuleMeta{
-    .name = "no-path-concat",
-    .category = .style,
+    .name = "no-self-compare",
+    .category = .correctness,
     .default_severity = .warning,
-    .description = "Disallow string concatenation with `__dirname` and `__filename`",
+    .description = "Disallow comparisons where both sides are exactly the same",
 };
 
 pub const relevant_tags = [_]Node.Tag{.equal, .not_equal, .strict_equal, .strict_not_equal, .less_than, .greater_than, .less_equal, .greater_equal, .instanceof_expr, .in_expr, .add, .subtract, .multiply, .divide, .modulo, .exponentiate, .bitwise_and, .bitwise_or, .bitwise_xor, .shift_left, .shift_right, .unsigned_shift_right};
 
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
-    usePathFunctions,
+    comparingToSelf,
 };
 
-const MATCHER__set__ = [_][]const u8{ "__dirname", "__filename" };
+const operators = [_][]const u8{ "===", "==", "!==", "!=", ">", "<", ">=", "<=" };
 
 fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
     for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
@@ -31,7 +31,7 @@ fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (((ctx.nodeTag(node) == .add) and (((ctx.nodeTag(ctx.nodeData(node).lhs) == .identifier) and containsStr(MATCHER__set__[0..], ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).lhs)))) or ((ctx.nodeTag(ctx.nodeData(node).rhs) == .identifier) and containsStr(MATCHER__set__[0..], ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).rhs))))))) {
-        ctx.reportWithMessageId(node, "usePathFunctions");
+    if ((blk: { const __t = ctx.nodeTag(node); break :blk (__t == .strict_equal or __t == .equal or __t == .strict_not_equal or __t == .not_equal or __t == .greater_than or __t == .less_than or __t == .greater_equal or __t == .less_equal); } and ctx.nodeTokensEqual(ctx.nodeData(node).lhs, ctx.nodeData(node).rhs))) {
+        ctx.reportWithMessageId(node, "comparingToSelf");
     }
 }

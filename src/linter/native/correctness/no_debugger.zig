@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-debugger
+// Source rule: tests/conformance/eslint/lib/rules/no-debugger.js
 
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;

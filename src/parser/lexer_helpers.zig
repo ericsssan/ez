@@ -376,7 +376,21 @@ pub inline fn numberEnd(src: []const u8, open: u32) u32 {
             else => {},
         }
     }
-    while (i < n) { switch (src[i]) { '0'...'9', '_' => i += 1, else => break } }
+    // Walk decimal digits.  Track whether we hit `8` or `9` — when a
+    // legacy-octal-shaped prefix `0[0-7]*` is followed by 8/9, the whole
+    // literal is a NonOctalDecimalIntegerLiteral (Annex B.1.1) which MAY
+    // have a fractional part / exponent like any decimal.  Without this,
+    // `019.1` was lexed as `019` + `.1` (two tokens, syntax garbage)
+    // instead of a single number.
+    var has_non_octal_digit = false;
+    while (i < n) {
+        switch (src[i]) {
+            '0'...'7', '_' => i += 1,
+            '8', '9' => { has_non_octal_digit = true; i += 1; },
+            else => break,
+        }
+    }
+    if (is_legacy_octal and has_non_octal_digit) is_legacy_octal = false;
     if (!is_legacy_octal and i < n and src[i] == '.') {
         i += 1;
         while (i < n) { switch (src[i]) { '0'...'9', '_' => i += 1, else => break } }

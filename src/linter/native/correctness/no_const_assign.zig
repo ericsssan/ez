@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-const-assign
+// Source rule: tests/conformance/eslint/lib/rules/no-const-assign.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");

@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: prefer-array-flat-map
+// Source rule: tests/conformance/eslint-plugin-unicorn/rules/prefer-array-flat-map.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -63,5 +64,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (blk: { break :blk (ctx.nodeTag(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs) == .member_expr and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs).rhs)), "Children") and ctx.nodeTag(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs).lhs) == .identifier and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs).lhs)), "React")) or (ctx.nodeTag(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs) == .identifier and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs)), "Children")); }) {
         return;
     }
-    ctx.report(node);
+    {
+        const __fix_text = std.fmt.allocPrint(ctx.allocator, "flatMap({s})", .{ ctx.argsTextBetweenParens(ctx.nodeData(ctx.nodeData(node).lhs).lhs) }) catch return;
+        defer ctx.allocator.free(__fix_text);
+        ctx.reportSpanWithFixAndMessageId(.{ .start = ctx.nodeSpan(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).rhs).start, .end = ctx.nodeSpan(node).end }, .{ .start = ctx.nodeSpan(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).rhs).start, .end = ctx.nodeSpan(node).end }, __fix_text, "prefer-array-flat-map");
+    }
+    return;
 }

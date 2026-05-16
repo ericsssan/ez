@@ -186,18 +186,43 @@ function _parseDiags(bytesWritten, srcBytes) {
   return diags;
 }
 
-/** Build a sorted Uint32Array of byte offsets where each line starts. */
+/** Build a sorted Uint32Array of byte offsets where each line starts.
+ *  Line terminators recognised: LF (\n), CR (\r), CRLF (\r\n as one),
+ *  U+2028 (LINE SEPARATOR, E2 80 A8 in UTF-8), U+2029 (PARAGRAPH SEPARATOR,
+ *  E2 80 A9).  Matches the ECMAScript LineTerminator definition that
+ *  ESLint's reporting uses. */
 function _buildLineStarts(bytes) {
-  // First pass: count newlines so we can sized-allocate the typed array.
-  // A single linear scan over the source — O(N) once vs O(N) per diag.
-  let count = 1; // line 1 starts at offset 0
+  // Two-pass: first count line terminators to size the typed array, then
+  // fill it.  Both passes use the same predicate so the second writes
+  // exactly `count` entries.
   const len = bytes.length;
-  for (let i = 0; i < len; i++) if (bytes[i] === 10) count++;
+  let count = 1; // line 1 starts at offset 0
+  for (let i = 0; i < len; i++) {
+    const b = bytes[i];
+    if (b === 10) count++;                                     // LF
+    else if (b === 13) {
+      count++;
+      if (i + 1 < len && bytes[i + 1] === 10) i++;             // CRLF — single terminator
+    }
+    else if (b === 0xE2 && i + 2 < len && bytes[i + 1] === 0x80
+             && (bytes[i + 2] === 0xA8 || bytes[i + 2] === 0xA9)) {
+      count++; i += 2;
+    }
+  }
   const starts = new Uint32Array(count);
   let idx = 1;
   starts[0] = 0;
   for (let i = 0; i < len; i++) {
-    if (bytes[i] === 10) starts[idx++] = i + 1;
+    const b = bytes[i];
+    if (b === 10) { starts[idx++] = i + 1; }
+    else if (b === 13) {
+      if (i + 1 < len && bytes[i + 1] === 10) { starts[idx++] = i + 2; i++; }
+      else { starts[idx++] = i + 1; }
+    }
+    else if (b === 0xE2 && i + 2 < len && bytes[i + 1] === 0x80
+             && (bytes[i + 2] === 0xA8 || bytes[i + 2] === 0xA9)) {
+      starts[idx++] = i + 3; i += 2;
+    }
   }
   return starts;
 }

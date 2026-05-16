@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: prefer-response-static-json
+// Source rule: tests/conformance/eslint-plugin-unicorn/rules/prefer-response-static-json.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -17,6 +18,11 @@ pub const meta = RuleMeta{
 };
 
 pub const relevant_tags = [_]Node.Tag{.new_expr};
+
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    prefer_response_static_json,
+};
 
 fn nodeArgsCount(c: *const LintContext, n: NodeIndex) usize {
     if (n == .none) return 0;
@@ -48,5 +54,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!(((ctx.nodeTag(nodeArgAt(ctx, node, 0)) == .call_expr) and (nodeArgsCount(ctx, nodeArgAt(ctx, node, 0)) == 1) and (ctx.nodeTag(ctx.nodeData(nodeArgAt(ctx, node, 0)).lhs) == .member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(nodeArgAt(ctx, node, 0)).lhs).rhs)), "stringify") and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(nodeArgAt(ctx, node, 0)).lhs).lhs)), "JSON")))) {
         return;
     }
-    ctx.report(ctx.nodeData(nodeArgAt(ctx, node, 0)).lhs);
+    ctx.reportWithMessageId(ctx.nodeData(nodeArgAt(ctx, node, 0)).lhs, "prefer-response-static-json");
+    return;
 }

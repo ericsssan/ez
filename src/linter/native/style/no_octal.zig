@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-octal
+// Source rule: tests/conformance/eslint/lib/rules/no-octal.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -23,7 +24,7 @@ const Messages = enum {
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if ((blk: { const __t = ctx.nodeTag(node); break :blk (__t == .number_literal or __t == .bigint_literal); } and std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "0"))) {
+    if ((blk: { const __t = ctx.nodeTag(node); break :blk (__t == .number_literal or __t == .bigint_literal); } and (((((((((std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "00") or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "01")) or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "02")) or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "03")) or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "04")) or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "05")) or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "06")) or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "07")) or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "08")) or std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), "09")))) {
         ctx.reportWithMessageId(node, "noOctal");
     }
 }

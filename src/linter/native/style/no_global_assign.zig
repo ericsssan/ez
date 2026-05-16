@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-global-assign
+// Source rule: tests/conformance/eslint/lib/rules/no-global-assign.js
 
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;

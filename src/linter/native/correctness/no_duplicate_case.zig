@@ -1,6 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
-// Rule: no-empty-pattern
-// Source rule: tests/conformance/eslint/lib/rules/no-empty-pattern.js
+// Rule: no-duplicate-case
+// Source rule: tests/conformance/eslint/lib/rules/no-duplicate-case.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -10,13 +10,13 @@ const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
 pub const meta = RuleMeta{
-    .name = "no-empty-pattern",
+    .name = "no-duplicate-case",
     .category = .correctness,
     .default_severity = .warning,
-    .description = "Disallow empty destructuring patterns",
+    .description = "Disallow duplicate case labels",
 };
 
-pub const relevant_tags = [_]Node.Tag{.object_pattern, .array_pattern};
+pub const relevant_tags = [_]Node.Tag{.switch_case, .switch_default};
 
 pub const needs_semantic = true;
 
@@ -33,21 +33,7 @@ fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    switch (ctx.nodeTag(node)) {
-        .object_pattern => {
-            if ((ctx.nodeData(node).lhs != ctx.nodeData(node).rhs)) {
-                return;
-            }
-            if ((ctx.getOptionBool("allowObjectPatternsAsParameters", false) and (blk: { const __t = ctx.nodeTag(ctx.parentOf(node)); break :blk (__t == .fn_decl or __t == .async_fn_decl or __t == .generator_fn_decl or __t == .async_generator_fn_decl or __t == .fn_expr or __t == .async_fn_expr or __t == .generator_fn_expr or __t == .async_generator_fn_expr or __t == .arrow_fn or __t == .async_arrow_fn); } or ((((ctx.nodeTag(ctx.parentOf(node)) == .assignment_pattern) and blk: { const __t = ctx.nodeTag(ctx.parentOf(ctx.parentOf(node))); break :blk (__t == .fn_decl or __t == .async_fn_decl or __t == .generator_fn_decl or __t == .async_generator_fn_decl or __t == .fn_expr or __t == .async_fn_expr or __t == .generator_fn_expr or __t == .async_generator_fn_expr or __t == .arrow_fn or __t == .async_arrow_fn); }) and (ctx.nodeTag(ctx.nodeData(ctx.parentOf(node)).rhs) == .object_literal)) and (ctx.nodeData(ctx.nodeData(ctx.parentOf(node)).rhs).lhs == ctx.nodeData(ctx.nodeData(ctx.parentOf(node)).rhs).rhs))))) {
-                return;
-            }
-            ctx.reportWithMessageId(node, "unexpected");
-        },
-        .array_pattern => {
-            if ((ctx.nodeData(node).lhs == ctx.nodeData(node).rhs)) {
-                ctx.reportWithMessageId(node, "unexpected");
-            }
-        },
-        else => {},
+    if (ctx.nodeHasDuplicatePrevCaseTest(node)) {
+        ctx.reportWithMessageId(node, "unexpected");
     }
 }

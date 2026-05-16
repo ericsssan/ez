@@ -1,8 +1,7 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
-// Rule: no-template-curly-in-string
-// Source rule: tests/conformance/eslint/lib/rules/no-template-curly-in-string.js
+// Rule: no-div-regex
+// Source rule: tests/conformance/eslint/lib/rules/no-div-regex.js
 
-const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -10,21 +9,22 @@ const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
 pub const meta = RuleMeta{
-    .name = "no-template-curly-in-string",
-    .category = .correctness,
+    .name = "no-div-regex",
+    .category = .style,
     .default_severity = .warning,
-    .description = "Disallow template literal placeholder syntax in regular strings",
+    .description = "Disallow equal signs explicitly at the beginning of regular expressions",
+    .fixable = true,
 };
 
 pub const relevant_tags = [_]Node.Tag{.number_literal, .string_literal, .boolean_literal, .null_literal, .regex_literal, .bigint_literal};
 
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
-    unexpectedTemplateExpression,
+    unexpected,
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (((ctx.nodeTag(node) == .string_literal) and ((std.mem.indexOf(u8, ctx.tokenText(ctx.nodeMainToken(node)), "${") != null) and (std.mem.indexOf(u8, ctx.tokenText(ctx.nodeMainToken(node)), "}") != null)))) {
-        ctx.reportWithMessageId(node, "unexpectedTemplateExpression");
+    if (((ctx.nodeTag(node) == .regex_literal) and (blk: { const __t = ctx.tokenText(ctx.nodeMainToken(node)); break :blk __t.len > 1 and __t[1] == 61; }))) {
+        ctx.reportWithFixAndMessageId(node, (.{ .start = (ctx.ast.tokenStart(ctx.nodeMainToken(node)) + 1), .end = (ctx.ast.tokenStart(ctx.nodeMainToken(node)) + 2) }), "[=]", "unexpected");
     }
 }

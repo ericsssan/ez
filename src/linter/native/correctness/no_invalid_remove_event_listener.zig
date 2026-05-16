@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-invalid-remove-event-listener
+// Source rule: tests/conformance/eslint-plugin-unicorn/rules/no-invalid-remove-event-listener.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -48,11 +49,13 @@ fn nodeArgAt(c: *const LintContext, n: NodeIndex, idx: u32) NodeIndex {
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (!(((((ctx.nodeTag(node) == .call_expr) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr or ctx.nodeTag(ctx.nodeData(node).lhs) == .optional_member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "removeEventListener")) and !((ctx.nodeTag(nodeArgAt(ctx, node, 0)) == .spread_element))) and (((ctx.nodeTag(nodeArgAt(ctx, node, 1)) == .fn_expr) or (ctx.nodeTag(nodeArgAt(ctx, node, 1)) == .arrow_fn)) or ((ctx.nodeTag(nodeArgAt(ctx, node, 1)) == .call_expr) and (ctx.nodeTag(ctx.nodeData(nodeArgAt(ctx, node, 1)).lhs) == .member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(nodeArgAt(ctx, node, 1)).lhs).rhs)), "bind")))))) {
+    if (!(((((ctx.nodeTag(node) == .call_expr) and (nodeArgsCount(ctx, node) >= 2) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr or ctx.nodeTag(ctx.nodeData(node).lhs) == .optional_member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "removeEventListener")) and !((ctx.nodeTag(nodeArgAt(ctx, node, 0)) == .spread_element))) and (((ctx.nodeTag(nodeArgAt(ctx, node, 1)) == .fn_expr) or (ctx.nodeTag(nodeArgAt(ctx, node, 1)) == .arrow_fn)) or ((ctx.nodeTag(nodeArgAt(ctx, node, 1)) == .call_expr) and (ctx.nodeTag(ctx.nodeData(nodeArgAt(ctx, node, 1)).lhs) == .member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(nodeArgAt(ctx, node, 1)).lhs).rhs)), "bind")))))) {
         return;
     }
     if (blk: { const __tis = ctx.nodeTag(nodeArgAt(ctx, node, 1)); break :blk (__tis == .arrow_fn or __tis == .fn_expr); }) {
-        ctx.report(nodeArgAt(ctx, node, 1));
+        ctx.reportWithMessageId(nodeArgAt(ctx, node, 1), "no-invalid-remove-event-listener");
+        return;
     }
-    ctx.report(ctx.nodeData(ctx.nodeData(nodeArgAt(ctx, node, 1)).lhs).rhs);
+    ctx.reportWithMessageId(ctx.nodeData(ctx.nodeData(nodeArgAt(ctx, node, 1)).lhs).rhs, "no-invalid-remove-event-listener");
+    return;
 }

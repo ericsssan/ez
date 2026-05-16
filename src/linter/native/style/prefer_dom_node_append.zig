@@ -1,5 +1,6 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: prefer-dom-node-append
+// Source rule: tests/conformance/eslint-plugin-unicorn/rules/prefer-dom-node-append.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -49,8 +50,9 @@ fn nodeArgAt(c: *const LintContext, n: NodeIndex, idx: u32) NodeIndex {
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (((!(((ctx.nodeTag(node) == .call_expr) and (nodeArgsCount(ctx, node) == 1) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr or ctx.nodeTag(ctx.nodeData(node).lhs) == .optional_member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "appendChild"))) or (blk: { const __tis = ctx.nodeTag(ctx.nodeData(ctx.nodeData(node).lhs).lhs); break :blk (__tis == .arrow_fn or __tis == .fn_expr or __tis == .number_literal or __tis == .string_literal or __tis == .boolean_literal or __tis == .null_literal or __tis == .regex_literal or __tis == .bigint_literal); } or ((ctx.nodeTag(ctx.nodeData(ctx.nodeData(node).lhs).lhs) == .identifier) and (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).lhs)), "undefined"))))) or (blk: { const __tis = ctx.nodeTag(nodeArgAt(ctx, node, 0)); break :blk (__tis == .arrow_fn or __tis == .fn_expr or __tis == .number_literal or __tis == .string_literal or __tis == .boolean_literal or __tis == .null_literal or __tis == .regex_literal or __tis == .bigint_literal); } or ((ctx.nodeTag(nodeArgAt(ctx, node, 0)) == .identifier) and (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(nodeArgAt(ctx, node, 0))), "undefined")))))) {
+    if (((!(((ctx.nodeTag(node) == .call_expr) and (nodeArgsCount(ctx, node) == 1) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr or ctx.nodeTag(ctx.nodeData(node).lhs) == .optional_member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "appendChild"))) or (blk: { const __tis = ctx.nodeTag(ctx.nodeData(ctx.nodeData(node).lhs).lhs); break :blk (__tis == .array_literal or __tis == .arrow_fn or __tis == .fn_expr or __tis == .number_literal or __tis == .string_literal or __tis == .boolean_literal or __tis == .null_literal or __tis == .regex_literal or __tis == .bigint_literal or __tis == .object_literal or __tis == .template_literal); } or ((ctx.nodeTag(ctx.nodeData(ctx.nodeData(node).lhs).lhs) == .identifier) and (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).lhs)), "undefined"))))) or (blk: { const __tis = ctx.nodeTag(nodeArgAt(ctx, node, 0)); break :blk (__tis == .array_literal or __tis == .arrow_fn or __tis == .fn_expr or __tis == .number_literal or __tis == .string_literal or __tis == .boolean_literal or __tis == .null_literal or __tis == .regex_literal or __tis == .bigint_literal or __tis == .object_literal or __tis == .template_literal); } or ((ctx.nodeTag(nodeArgAt(ctx, node, 0)) == .identifier) and (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(nodeArgAt(ctx, node, 0))), "undefined")))))) {
         return;
     }
-    ctx.report(node);
+    ctx.reportWithMessageId(node, "prefer-dom-node-append");
+    return;
 }

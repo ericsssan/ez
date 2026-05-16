@@ -70,12 +70,20 @@ const EXPR_OPS = new Set([
   "node-arg-at", "node-callee", "parent-node-skip-grouping", "node-in-bool-ctx",
   "node-is-boolean-call", "node-main-child-skip-grouping", "node-elements-has-null",
   "node-tag-in-set",
+  // Unwrap `grouping_expr` wrappers from a node-valued IR.  Returns the
+  // node as-is if it isn't a grouping_expr.  Used when an attribute-filter
+  // recognizer wants to look at the underlying expression regardless of
+  // surrounding parens (`Promise(((async () => {})))` → look at the async
+  // arrow, not the outer grouping).
+  "node-skip-grouping",
   "node-prop-name-equals",
   "node-operator-in-set",
   "node-literal-value-equals",
   "node-raw-starts-with",
   "node-raw-ends-with",
   "node-raw-contains",
+  // <node>.<token-source>[idx] === "X" — single-char check at byte index
+  "node-raw-char-equals",
   "conditional-test",
   "node-is-function",
   "node-is-loop",
@@ -88,6 +96,18 @@ const EXPR_OPS = new Set([
   "is-node-matches",
   "node-string-value-equals",
   "node-args-count-equals",
+  // Block-body indexed access: <node>.body.body[idx] — first/last/Nth
+  // statement of a BlockStatement-bearing node (catch.body, try.block,
+  // function.body, etc.).  When N is negative-from-end it stays as a
+  // positive count from end via `fromEnd: true`.
+  "node-body-stmt-at",
+  "node-body-stmt-count",
+  "node-body-stmt-count-equals",
+  // <X>.body — single body statement of a loop / if / function / arrow
+  // (resolves to the body block for fn/arrow/while/for/etc).  Node-valued.
+  "node-body",
+  // try_stmt has-finalizer check (`parent.finalizer` truthy).
+  "node-has-finalizer",
   // Null/not-null checks on specific child slots
   "node-secondary-child-is-none",
   "node-secondary-child-not-none",
@@ -108,6 +128,27 @@ const EXPR_OPS = new Set([
   // Token position (u32-valued):
   "token-start",          // byte offset of token start
   "token-end",            // byte offset of token end (start + len)
+  // Node position (u32-valued):
+  "node-span-start",      // byte offset of node start (ctx.nodeSpan(n).start)
+  "node-span-end",        // byte offset of node end   (ctx.nodeSpan(n).end)
+  // Source text between two byte offsets (string-valued).
+  "source-text-range",
+  // True when two nodes have identical source text (token-equivalent).
+  // Stand-in for no-self-compare's hasSameTokens, no-dupe-else-if's equal, etc.
+  "node-source-equals",
+  // True when node is the last case in its parent switch_stmt's `cases`
+  // SubRange.  Used by the default-case-last recognizer.
+  "node-is-last-switch-case",
+  // True when this switch_case has a `test` that token-equals any
+  // PRECEDING switch_case's test within the same switch_stmt.  Used by
+  // the no-duplicate-case recognizer.
+  "node-has-duplicate-prev-case-test",
+  // True when node's source text contains a line-terminator character.
+  // Equivalent to ESLint's astUtils.LINEBREAK_MATCHER.test(rawText).
+  "node-raw-contains-linebreak",
+  // True when node's tag is one of the JSX-family tags.  Stand-in for
+  // ESLint rules' `isJSXElement` / `node.type.indexOf("JSX") === 0`.
+  "node-is-jsx",
   // Token boolean checks:
   "token-has-newline-before",  // tok.has_newline_before
   "token-tag-equals",          // tok.tag == <TagName>
@@ -140,7 +181,7 @@ const HELPER_KINDS = new Set(["node-type-predicate", "report-if", "direct-report
 const CONSTANT_KINDS = new Set(["string-set", "string-array"]);
 
 // Binary operators understood by codegen.
-const BINARY_OPS = new Set(["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]);
+const BINARY_OPS = new Set(["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "+", "-"]);
 
 // Unary operators understood by codegen.
 const UNARY_OPS = new Set(["!", "-", "+", "typeof"]);
@@ -397,6 +438,9 @@ function validateExpr(e, path) {
   if (e.op === "node-main-child-skip-grouping") {
     return validateExpr(e.node, `${path}.node`);
   }
+  if (e.op === "node-skip-grouping") {
+    return validateExpr(e.node, `${path}.node`);
+  }
   if (e.op === "node-elements-has-null") {
     return validateExpr(e.node, `${path}.node`);
   }
@@ -425,8 +469,34 @@ function validateExpr(e, path) {
       return fail("node-args-count-equals.count must be non-negative integer", path);
     return validateExpr(e.node, `${path}.node`);
   }
+  if (e.op === "node-body-stmt-at") {
+    if (typeof e.index !== "number" || !Number.isInteger(e.index))
+      return fail("node-body-stmt-at.index must be integer", path);
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-body-stmt-count") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-body-stmt-count-equals") {
+    if (typeof e.count !== "number" || !Number.isInteger(e.count) || e.count < 0)
+      return fail("node-body-stmt-count-equals.count must be non-negative integer", path);
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-has-finalizer") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-body") {
+    return validateExpr(e.node, `${path}.node`);
+  }
   if (e.op === "node-raw-starts-with" || e.op === "node-raw-ends-with" || e.op === "node-raw-contains") {
     if (typeof e.prefix !== "string") return fail(`${e.op}.prefix must be string`, path);
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-raw-char-equals") {
+    if (typeof e.index !== "number" || !Number.isInteger(e.index) || e.index < 0)
+      return fail("node-raw-char-equals.index must be a non-negative integer", path);
+    if (typeof e.char !== "string" || e.char.length !== 1)
+      return fail("node-raw-char-equals.char must be a single-char string", path);
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "node-is-function" || e.op === "node-is-loop" || e.op === "node-body-length-zero") {
@@ -465,6 +535,25 @@ function validateExpr(e, path) {
   }
   if (e.op === "token-start" || e.op === "token-end" || e.op === "token-has-newline-before") {
     return validateExpr(e.token, `${path}.token`);
+  }
+  if (e.op === "node-span-start" || e.op === "node-span-end") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "source-text-range") {
+    const s = validateExpr(e.start, `${path}.start`);
+    if (!s.ok) return s;
+    return validateExpr(e.end, `${path}.end`);
+  }
+  if (e.op === "node-source-equals") {
+    const a = validateExpr(e.a, `${path}.a`);
+    if (!a.ok) return a;
+    return validateExpr(e.b, `${path}.b`);
+  }
+  if (e.op === "node-is-last-switch-case"
+      || e.op === "node-raw-contains-linebreak"
+      || e.op === "node-is-jsx"
+      || e.op === "node-has-duplicate-prev-case-test") {
+    return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "token-tag-equals") {
     if (typeof e.tag !== "string") return fail("token-tag-equals.tag must be string", path);

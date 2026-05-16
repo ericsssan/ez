@@ -243,6 +243,17 @@ pub const LintContext = struct {
         return child;
     }
 
+    /// Strip any grouping_expr wrappers from `n` itself, returning the inner
+    /// node.  Useful when an arg/operand may be parenthesized but the rule
+    /// only cares about the unwrapped expression's tag.
+    pub fn nodeSkipGrouping(self: *const LintContext, n: NodeIndex) NodeIndex {
+        var cur = n;
+        while (cur != .none and self.ast.nodeTag(cur) == .grouping_expr) {
+            cur = self.ast.nodeData(cur).lhs;
+        }
+        return cur;
+    }
+
     /// Returns true when `n` is a call or new expression whose callee is the
     /// bare identifier "Boolean" (e.g. `Boolean(x)` or `new Boolean(x)`).
     pub fn nodeIsBooleanCall(self: *const LintContext, n: NodeIndex) bool {
@@ -316,6 +327,32 @@ pub const LintContext = struct {
         if (n == .none) return false;
         if (self.ast.nodeTag(n) != .number_literal) return false;
         const text = self.ast.tokenText(self.ast.nodeMainToken(n));
+        // Handle non-decimal numeric prefixes (0b…, 0o…, 0x…, and legacy octal 0…).
+        // std.fmt.parseFloat only understands the decimal/scientific form.
+        if (text.len >= 2 and text[0] == '0' and (text[1] == 'b' or text[1] == 'B' or text[1] == 'o' or text[1] == 'O' or text[1] == 'x' or text[1] == 'X')) {
+            const base: u8 = switch (text[1]) {
+                'b', 'B' => 2,
+                'o', 'O' => 8,
+                'x', 'X' => 16,
+                else => unreachable,
+            };
+            const digits = text[2..];
+            // Allow numeric separators ('_') and trailing 'n' (BigInt — skip).
+            var n_int: u64 = 0;
+            for (digits) |c| {
+                if (c == '_') continue;
+                if (c == 'n') break;
+                const d: u8 = switch (c) {
+                    '0'...'9' => c - '0',
+                    'a'...'f' => c - 'a' + 10,
+                    'A'...'F' => c - 'A' + 10,
+                    else => return false,
+                };
+                if (d >= base) return false;
+                n_int = n_int * base + d;
+            }
+            return @as(f64, @floatFromInt(n_int)) == val;
+        }
         const parsed = std.fmt.parseFloat(f64, text) catch return false;
         return parsed == val;
     }
@@ -360,6 +397,116 @@ pub const LintContext = struct {
         const src = self.ast.source;
         if (sp.start > sp.end or sp.end > src.len) return "";
         return src[sp.start..sp.end];
+    }
+
+    /// Source text between two byte offsets.  Used by fix-codegen when
+    /// the replacement needs to preserve characters between two AST nodes
+    /// (e.g. wrap parens, comments) that the nodes themselves don't carry.
+    pub fn sourceTextRange(self: *const LintContext, start: u32, end: u32) []const u8 {
+        const src = self.ast.source;
+        if (start > end or end > src.len) return "";
+        return src[start..end];
+    }
+
+    /// True when two nodes' token sequences are identical (same tags and
+    /// same text per token).  Equivalent to ESLint's
+    /// `sourceCode.getTokens(a).every(...) === b's tokens` — used by
+    /// no-self-compare / no-dupe-else-if to compare "same expression
+    /// modulo whitespace and comments".  Distinct from sourceText
+    /// equality which is byte-exact (and so trips on whitespace
+    /// differences like `foo.bar` vs `foo .bar`).
+    pub fn nodeTokensEqual(self: *const LintContext, a: NodeIndex, b: NodeIndex) bool {
+        if (a == .none or b == .none) return a == b;
+        const ai = a.toInt();
+        const bi = b.toInt();
+        if (ai >= self.node_min_toks.len or bi >= self.node_min_toks.len) return false;
+        const a_first = self.node_min_toks[ai];
+        const a_last  = self.node_max_toks[ai];
+        const b_first = self.node_min_toks[bi];
+        const b_last  = self.node_max_toks[bi];
+        const a_len = a_last + 1 - a_first;
+        const b_len = b_last + 1 - b_first;
+        if (a_len != b_len) return false;
+        var k: u32 = 0;
+        while (k < a_len) : (k += 1) {
+            const at: u32 = a_first + k;
+            const bt: u32 = b_first + k;
+            if (self.ast.tokenTag(at) != self.ast.tokenTag(bt)) return false;
+            if (!std.mem.eql(u8, self.tokenText(at), self.tokenText(bt))) return false;
+        }
+        return true;
+    }
+
+    /// True when `node`'s raw source text contains a line terminator
+    /// (CR, LF, U+2028 paragraph sep, or U+2029 line sep).  Equivalent to
+    /// astUtils.LINEBREAK_MATCHER.test(rawText) in ESLint rules like
+    /// no-multi-str.
+    pub fn nodeRawContainsLinebreak(self: *const LintContext, node: NodeIndex) bool {
+        const text = self.sourceText(node);
+        for (text, 0..) |c, i| {
+            if (c == '\r' or c == '\n') return true;
+            // U+2028 (E2 80 A8) / U+2029 (E2 80 A9)
+            if (c == 0xE2 and i + 2 < text.len and text[i+1] == 0x80
+                and (text[i+2] == 0xA8 or text[i+2] == 0xA9)) return true;
+        }
+        return false;
+    }
+
+    /// True when `node`'s tag is one of the JSX-family AST tags.  Mirrors
+    /// ESLint's `astUtils.isJSXElement(node)` / `node.type.startsWith("JSX")`.
+    pub fn nodeIsJsx(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        return switch (self.nodeTag(node)) {
+            .jsx_element, .jsx_self_closing, .jsx_fragment,
+            .jsx_opening_element, .jsx_closing_element,
+            .jsx_attribute, .jsx_spread_attribute,
+            .jsx_expression_container, .jsx_spread_child,
+            .jsx_text_node, .jsx_identifier, .jsx_member_expr,
+            .jsx_namespaced_name, .jsx_empty_expr, .jsx_gap_node => true,
+            else => false,
+        };
+    }
+
+    /// True when `node` is a switch_case whose `test` token-equals any
+    /// preceding switch_case's test within the same switch_stmt.  Used by
+    /// no-duplicate-case.  Returns false (no-report) for any node that
+    /// isn't a switch_case with a test, or whose parent isn't a switch_stmt.
+    pub fn nodeHasDuplicatePrevCaseTest(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        if (self.nodeTag(node) != .switch_case) return false;
+        const my_test = self.nodeData(node).lhs;
+        if (my_test == .none) return false; // switch_default
+        const parent = self.parentOf(node);
+        if (parent == .none or self.nodeTag(parent) != .switch_stmt) return false;
+        const pd = self.nodeData(parent);
+        if (pd.rhs == .none) return false;
+        const sr = self.extraData(SubRange, @intFromEnum(pd.rhs));
+        const cases = self.extraSlice(sr);
+        for (cases) |raw| {
+            const c: NodeIndex = @enumFromInt(raw);
+            if (c == node) return false; // hit self, no duplicate found
+            if (self.nodeTag(c) != .switch_case) continue;
+            const c_test = self.nodeData(c).lhs;
+            if (c_test == .none) continue;
+            if (self.nodeTokensEqual(c_test, my_test)) return true;
+        }
+        return false;
+    }
+
+    /// True when `node` is the last case in its parent switch_stmt's cases
+    /// SubRange.  Used by default-case-last.  Returns true (no-report) for
+    /// any node whose parent isn't a switch_stmt — defensive default.
+    pub fn nodeIsLastSwitchCase(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return true;
+        const parent = self.parentOf(node);
+        if (parent == .none) return true;
+        if (self.nodeTag(parent) != .switch_stmt) return true;
+        const data = self.nodeData(parent);
+        if (data.rhs == .none) return true;
+        const sr = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const cases = self.extraSlice(sr);
+        if (cases.len == 0) return true;
+        return @as(NodeIndex, @enumFromInt(cases[cases.len - 1])) == node;
     }
 
     /// True when `node` is the leftmost expression of an ExpressionStatement.
@@ -469,8 +616,26 @@ pub const LintContext = struct {
         const span = self.nodeSpan(node);
         const src = self.ast.source;
         if (span.start >= src.len or span.end > src.len) return false;
-        var i: usize = span.start;
-        while (i + 1 < span.end) : (i += 1) {
+        // For brace/bracket-bearing nodes, only look at comments BETWEEN the
+        // opening and closing braces — comments adjacent to the keyword
+        // (e.g. `static /* X */ {}`) belong "before {", not "inside the
+        // body", and rules like no-empty-static-block treat them
+        // differently.  Find the first `{` and last `}` in the node's span;
+        // restrict the scan to the interior.
+        var scan_start: usize = span.start;
+        var scan_end: usize = span.end;
+        const tag = self.nodeTag(node);
+        if (tag == .static_block or tag == .block_stmt or tag == .class_body
+            or tag == .object_literal or tag == .object_pattern) {
+            var p: usize = span.start;
+            while (p < span.end and src[p] != '{') p += 1;
+            if (p < span.end) scan_start = p + 1;
+            var q: usize = if (span.end > 0) span.end - 1 else 0;
+            while (q > scan_start and src[q] != '}') q -= 1;
+            scan_end = q;
+        }
+        var i: usize = scan_start;
+        while (i + 1 < scan_end) : (i += 1) {
             if (src[i] == '/' and (src[i + 1] == '/' or src[i + 1] == '*'))
                 return true;
         }
@@ -514,6 +679,94 @@ pub const LintContext = struct {
     /// fix replacing `Array(  x , y  )` with `[<text>]` keeps the original
     /// inner formatting.  Returns "" when the call has no parens (e.g.
     /// `new Array` with no arg list).
+    /// Resolve `<node>.body` to the block_stmt it owns, regardless of where
+    /// the parser stores it (.lhs, .rhs, or in extra-data).  Returns the
+    /// block node itself when called with a block_stmt directly — so
+    /// `block.body[N]` and `<parent>.body.body[N]` both go through the
+    /// same indexing helper.
+    pub fn nodeBodyBlock(self: *const LintContext, node: NodeIndex) NodeIndex {
+        if (node == .none) return .none;
+        const tag = self.nodeTag(node);
+        const data = self.nodeData(node);
+        return switch (tag) {
+            // Block-bearing statements where body is rhs.
+            .catch_clause, .while_stmt, .with_stmt, .if_stmt => data.rhs,
+            // for_in_stmt / for_of_stmt: body lives in ForInOfData.body (extra).
+            .for_in_stmt, .for_of_stmt => blk: {
+                if (data.lhs == .none) break :blk .none;
+                const fd = self.extraData(ast_mod.ForInOfData, @intFromEnum(data.lhs));
+                break :blk fd.body;
+            },
+            // for_stmt: body is rhs (lhs = ForData extra).
+            .for_stmt => data.rhs,
+            // try_stmt: lhs is the try block.
+            .try_stmt => data.lhs,
+            // do_while_stmt: lhs is body.
+            .do_while_stmt => data.lhs,
+            // Functions: body lives in extra-data (FnData.body).
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => blk: {
+                if (data.lhs == .none) break :blk .none;
+                const fd = self.extraData(ast_mod.FnData, @intFromEnum(data.lhs));
+                break :blk fd.body;
+            },
+            // arrow_fn: ArrowData.body in extra-data; body may be a block OR an expression.
+            .arrow_fn, .async_arrow_fn => blk: {
+                if (data.lhs == .none) break :blk .none;
+                const ad = self.extraData(ast_mod.ArrowData, @intFromEnum(data.lhs));
+                break :blk ad.body;
+            },
+            // Block already — return self for `block.body[N]` access.
+            .block_stmt, .static_block, .class_body => node,
+            else => .none,
+        };
+    }
+
+    /// Statements of a BlockStatement-like node — returns the indexed
+    /// statement or `.none` when out of range.  Accepts any node whose
+    /// nodeBodyBlock(self) resolves to a block_stmt (see above).  Negative
+    /// indices count from the end (-1 = last).  Mirrors ESLint rules'
+    /// `node.body.body[i]` and `block.body[i]` access patterns.
+    pub fn nodeBodyStmtAt(self: *const LintContext, node: NodeIndex, index: i32) NodeIndex {
+        const block = self.nodeBodyBlock(node);
+        if (block == .none) return .none;
+        const tag = self.nodeTag(block);
+        if (tag != .block_stmt and tag != .static_block and tag != .class_body) return .none;
+        const data = self.nodeData(block);
+        const sr: SubRange = .{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        const stmts = self.extraSlice(sr);
+        if (stmts.len == 0) return .none;
+        const idx: usize = if (index >= 0) @intCast(index)
+                           else blk: {
+                               const neg: usize = @intCast(-index);
+                               if (neg > stmts.len) break :blk stmts.len; // out-of-range
+                               break :blk stmts.len - neg;
+                           };
+        if (idx >= stmts.len) return .none;
+        return @enumFromInt(stmts[idx]);
+    }
+
+    /// True when a try_stmt has a finally block (TryData.finally_body != .none).
+    /// Mirrors `tryNode.finalizer` truthy access.
+    pub fn nodeHasFinalizer(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        if (self.nodeTag(node) != .try_stmt) return false;
+        const data = self.nodeData(node);
+        if (data.rhs == .none) return false;
+        const td = self.extraData(ast_mod.TryData, @intFromEnum(data.rhs));
+        return td.finally_body != .none;
+    }
+
+    pub fn nodeBodyStmtCount(self: *const LintContext, node: NodeIndex) u32 {
+        const block = self.nodeBodyBlock(node);
+        if (block == .none) return 0;
+        const tag = self.nodeTag(block);
+        if (tag != .block_stmt and tag != .static_block and tag != .class_body) return 0;
+        const data = self.nodeData(block);
+        const sr: SubRange = .{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        return @intCast(self.extraSlice(sr).len);
+    }
+
     pub fn argsTextBetweenParens(self: *const LintContext, call: NodeIndex) []const u8 {
         if (call == .none) return "";
         const data = self.nodeData(call);
@@ -605,13 +858,27 @@ pub const LintContext = struct {
         const tag = self.nodeTag(index);
         const src = self.ast.source;
         // grouping_expr's `)` isn't a child node's main_token so it doesn't
-        // propagate into node_max_toks.  Scan forward for the next `)` past
-        // the wrapped expression — there can't be anything but whitespace/
-        // comments between the inner expression's end and the close paren.
+        // propagate into node_max_toks.  Scan from the OUTER opening paren
+        // (main_token) with depth=1 to find the matching `)` past any
+        // nested groupings — `((c))` would otherwise see only the innermost
+        // `)` because every nested grouping_expr's `end` lands at the same
+        // inner `c` token, so a naive "next `)`" scan finds the same first
+        // `)` for every level.
         if (tag == .grouping_expr) {
-            var p: usize = end;
-            while (p < src.len and src[p] != ')') p += 1;
-            if (p < src.len) end = @intCast(p + 1);
+            const open_pos = self.ast.tokenStart(main_tok);
+            var depth: i32 = 1;
+            var p: usize = open_pos + 1;
+            while (p < src.len) : (p += 1) {
+                const c = src[p];
+                if (c == '(') depth += 1
+                else if (c == ')') {
+                    depth -= 1;
+                    if (depth == 0) {
+                        if (@as(u32, @intCast(p + 1)) > end) end = @intCast(p + 1);
+                        break;
+                    }
+                }
+            }
             return .{ .start = first_start, .end = end };
         }
         // Call/new parens also aren't tracked, plus the callee may itself be
@@ -629,15 +896,22 @@ pub const LintContext = struct {
         // propagates through inner subtrees.
         const open_close: ?[2]u8 = switch (tag) {
             .array_literal, .array_pattern => [2]u8{ '[', ']' },
-            .object_literal, .object_pattern, .block_stmt, .class_body => [2]u8{ '{', '}' },
+            .object_literal, .object_pattern, .block_stmt, .class_body, .static_block => [2]u8{ '{', '}' },
             else => null,
         };
         if (open_close) |oc| {
             const open = oc[0];
             const close = oc[1];
-            // main_token sits at the OUTER opening bracket — start the scan
-            // there with depth=1 already accounted for.
-            const open_pos = self.ast.tokenStart(main_tok);
+            // For most tags, main_token IS the OUTER opening bracket and the
+            // depth scan from there with depth=1 finds the matching close.
+            // static_block is the exception: its main_token is the `static`
+            // keyword, not `{`.  Scan forward from main_token until we hit
+            // the `{`, then start the bracket scan from there.
+            var open_pos: usize = self.ast.tokenStart(main_tok);
+            if (tag == .static_block) {
+                while (open_pos < src.len and src[open_pos] != open) open_pos += 1;
+                if (open_pos >= src.len) return .{ .start = first_start, .end = end };
+            }
             var depth: i32 = 1;
             var p: usize = open_pos + 1;
             while (p < src.len) : (p += 1) {
@@ -1339,6 +1613,30 @@ pub const LintContext = struct {
         self.diagnostics.append(self.allocator, .{
             .rule_index = self.current_rule_index,
             .span = self.nodeSpan(node_idx),
+            .severity = self.severity_override orelse .warning,
+            .fix = .{ .span = fix_span, .text = text_copy },
+            .message_id = message_id,
+        }) catch {};
+    }
+
+    /// Report a diagnostic at a custom span with an autofix.  Used by rules
+    /// whose `loc:` differs from the rule's primary node — the diagnostic
+    /// span equals `diag_span`, the fix range equals `fix_span` (which may
+    /// or may not match `diag_span`).
+    pub fn reportSpanWithFixAndMessageId(
+        self: *const LintContext,
+        diag_span: Span,
+        fix_span: Span,
+        fix_text: []const u8,
+        message_id: []const u8,
+    ) void {
+        const text_copy = self.allocator.dupe(u8, fix_text) catch {
+            self.reportSpanWithMessageId(diag_span, message_id);
+            return;
+        };
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = diag_span,
             .severity = self.severity_override orelse .warning,
             .fix = .{ .span = fix_span, .text = text_copy },
             .message_id = message_id,
