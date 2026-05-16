@@ -87,6 +87,9 @@ const SELECTOR_TO_TAG_MULTI = {
   // (esquery) used by rules like no-async-promise-executor.
   __AsyncFunction__: ["async_fn_decl", "async_fn_expr", "async_arrow_fn", "async_generator_fn_decl", "async_generator_fn_expr"],
   __BigIntLiteral__: ["bigint_literal"],
+  // Constructor MethodDefinition specifically — distinct from generic
+  // method/getter/setter defs.  Used by no-constructor-return.
+  __ConstructorDef__: ["constructor_def"],
   // Pseudo-types for IfStatement with/without else.
   __IfNoElse__: ["if_stmt"],
   __IfWithElse__: ["if_else_stmt"],
@@ -231,7 +234,8 @@ function emit(rule) {
       || irUsesOp(rule, "node-is-last-switch-case") || irUsesOp(rule, "node-has-duplicate-prev-case-test")
       || irUsesOp(rule, "no-return-assign-check")
       || irUsesOp(rule, "is-global-reference") || irUsesOp(rule, "name-has-no-user-binding")
-      || irUsesOp(rule, "identifier-shadows-binding")) {
+      || irUsesOp(rule, "identifier-shadows-binding")
+      || irUsesOp(rule, "node-nearest-function-ancestor")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1135,6 +1139,10 @@ function emitExpr(e, ctx) {
       return `ctx.nameHasNoUserBinding(${emitExpr(e.node, ctx)}, "${zigStr(e.name)}")`;
     case "identifier-shadows-binding":
       return `ctx.identifierShadowsBinding(${emitExpr(e.node, ctx)})`;
+    case "node-nearest-function-ancestor":
+      return `ctx.nodeNearestFunctionAncestor(${emitExpr(e.node, ctx)})`;
+    case "is-constructor-method":
+      return `ctx.isConstructorMethod(${emitExpr(e.node, ctx)})`;
     case "token-of-node-last":
       return `ctx.nodeLastToken(${emitExpr(e.node, ctx)})`;
     case "token-of-node-penultimate":

@@ -209,6 +209,14 @@ const EXPR_OPS = new Set([
   // reachable from its smallest enclosing scope.  Used by no-label-var:
   // `astUtils.getVariableByName(scope, node.label.name) !== null`.
   "identifier-shadows-binding",
+  // Nearest function-like ancestor of a node (fn_decl/fn_expr/arrow_fn and
+  // async/generator variants).  Stand-in for ESLint's onCodePathStart/End
+  // stack lookup when a rule only needs "the enclosing function" — no real
+  // code-path graph required.  Returns `.none` at program scope.
+  "node-nearest-function-ancestor",
+  // True when a node is a class constructor — method_def whose key is the
+  // identifier `constructor` (or constructor_def for TS-ambient shapes).
+  "is-constructor-method",
 ]);
 
 // Helper-function kinds.
@@ -629,7 +637,9 @@ function validateExpr(e, path) {
       || e.op === "node-non-spread-args-count"
       || e.op === "node-main-token-text" || e.op === "node-eslint-type-name"
       || e.op === "is-global-reference"
-      || e.op === "identifier-shadows-binding") {
+      || e.op === "identifier-shadows-binding"
+      || e.op === "node-nearest-function-ancestor"
+      || e.op === "is-constructor-method") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "name-has-no-user-binding") {

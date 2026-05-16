@@ -374,7 +374,14 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
   }
 
   const irHandlers = [];
+  // ESLint code-path lifecycle hooks (onCodePathStart/End/SegmentStart/End/
+  // SegmentLoop) are bookkeeping; rules that emulate "stack.at(-1)" via
+  // nodeNearestFunctionAncestor don't need them.  Drop silently so the
+  // surrounding rule still extracts.
+  const CODE_PATH_HOOKS = new Set(["onCodePathStart", "onCodePathEnd",
+    "onCodePathSegmentStart", "onCodePathSegmentEnd", "onCodePathSegmentLoop"]);
   for (const h of expandedHandlers) {
+    if (CODE_PATH_HOOKS.has(h.selector)) continue;
     const stmts = getFunctionBodyStatements(h.handler);
     if (stmts == null) {
       return { handlers: [], unsupported: `handler body shape: ${h.handler?.type}` };
@@ -396,6 +403,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoDuplicateCaseHandler, // no-duplicate-case
       extractNoReturnAssignHandler,  // no-return-assign
       extractNoLabelVarHandler,      // no-label-var
+      extractNoConstructorReturnHandler, // no-constructor-return
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -563,6 +571,70 @@ function extractNoLabelVarHandler(rawHandler, stmts, { sourceFile } = {}) {
         cond: { op: "identifier-shadows-binding", node: { op: "node-ref" } },
         then: [{ op: "report", node: { op: "node-ref" }, messageId }],
       }],
+    },
+  };
+}
+
+// Recognize the no-constructor-return rule shape:
+//
+//   onCodePathStart(_, node) { stack.push(node); }
+//   onCodePathEnd() { stack.pop(); }
+//   ReturnStatement(node) {
+//     const last = stack.at(-1);
+//     if (!last.parent) return;
+//     if (last.parent.type === "MethodDefinition"
+//         && last.parent.kind === "constructor"
+//         && node.argument) {
+//       context.report({ node, messageId: "unexpected" });
+//     }
+//   }
+//
+// Equivalent: register on ReturnStatement, check that the nearest enclosing
+// function's parent is a constructor_def AND the return has an argument.
+// No actual code-path graph needed — `stack.at(-1)` here is just the
+// innermost function ancestor.
+function extractNoConstructorReturnHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-constructor-return.js")) return { ok: false };
+  if (rawHandler.selector !== "ReturnStatement") return { ok: false };
+  // Pull the messageId from the final if's report.
+  let messageId = null;
+  const walkIfTree = (s) => {
+    if (s?.type !== "IfStatement") return;
+    const body = s.consequent?.body;
+    if (body && body.length === 1 && body[0]?.type === "ExpressionStatement") {
+      const call = body[0].expression;
+      if (call?.type === "CallExpression" && call.arguments?.length === 1
+          && call.arguments[0]?.type === "ObjectExpression") {
+        for (const p of call.arguments[0].properties) {
+          if (p.type !== "Property") continue;
+          const k = p.key?.name || p.key?.value;
+          if (k === "messageId" && p.value?.type === "Literal" && typeof p.value.value === "string") {
+            messageId = p.value.value;
+          }
+        }
+      }
+    }
+    if (s.alternate) walkIfTree(s.alternate);
+  };
+  for (const s of stmts) walkIfTree(s);
+  if (!messageId) return { ok: false };
+  // Build the condition tree.  In our AST, the method/getter/setter/
+  // constructor def carries the body directly (no nested fn_expr), so
+  // nodeNearestFunctionAncestor on a return inside `constructor() { … }`
+  // returns the constructor_def itself.
+  //   nearestFnAncestor(node).tag == constructor_def
+  //   AND node.lhs != .none (return has argument)
+  const ancestor = { op: "node-nearest-function-ancestor", node: { op: "node-ref" } };
+  const cond = {
+    op: "binary", operator: "&&",
+    lhs: { op: "is-constructor-method", node: ancestor },
+    rhs: { op: "node-main-child-not-none", node: { op: "node-ref" } },
+  };
+  return {
+    ok: true,
+    handler: {
+      selector: "ReturnStatement",
+      body: [{ op: "if", cond, then: [{ op: "report", node: { op: "node-ref" }, messageId }] }],
     },
   };
 }

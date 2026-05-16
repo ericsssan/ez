@@ -1459,6 +1459,46 @@ pub const LintContext = struct {
         return start;
     }
 
+    /// True when `n` is a class constructor — i.e. a method_def whose key
+    /// is the identifier `constructor`.  Our parser only emits the
+    /// dedicated `constructor_def` tag for TS-ambient signatures (no body);
+    /// constructors with bodies share the `method_def` tag and need this
+    /// shape check.  Used by no-constructor-return.
+    pub fn isConstructorMethod(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        const tag = self.ast.nodeTag(n);
+        if (tag != .method_def and tag != .constructor_def) return false;
+        if (tag == .constructor_def) return true;
+        const key = self.ast.nodeData(n).lhs;
+        if (key == .none) return false;
+        if (self.ast.nodeTag(key) != .identifier) return false;
+        return std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(key)), "constructor");
+    }
+
+    /// Nearest ancestor of `n` whose tag is a function-like node
+    /// (function declaration/expression, arrow function, including async
+    /// and generator variants).  Returns `.none` if no such ancestor.
+    /// Mirrors ESLint's onCodePathStart/End stack lookup for rules that
+    /// just need "the enclosing function" (no real code-path analysis).
+    pub fn nodeNearestFunctionAncestor(self: *const LintContext, n: NodeIndex) NodeIndex {
+        var cur = self.parentOf(n);
+        while (cur != .none) {
+            switch (self.ast.nodeTag(cur)) {
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+                .arrow_fn, .async_arrow_fn,
+                // method_def & friends carry the function body directly (no
+                // nested fn_expr), so they're the function-ancestor for any
+                // statement inside the method body.
+                .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+                .setter_def, .computed_setter_def, .constructor_def => return cur,
+                else => {},
+            }
+            cur = self.parentOf(cur);
+        }
+        return .none;
+    }
+
     /// Body of an arrow function node (`(params) => body`).  Returns the
     /// body NodeIndex — block_stmt for braced arrows, expression for
     /// concise-body arrows.  `.none` for non-arrow inputs.
