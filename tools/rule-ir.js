@@ -43,6 +43,11 @@
 //   return              — early exit (no value)
 //   iterate-children    — for-loop over `node.<prop>` yielding each element
 const STMT_OPS = new Set(["report", "if", "return", "iterate-children", "report-at-token",
+  // no-fallthrough: when `reportUnusedFallthroughComment` option is true
+  // and the previous case doesn't actually fall through but has a
+  // fall-through comment, emit `unusedFallthroughComment` at the comment
+  // span.  Internally checks the option and finds the comment.
+  "report-unused-fallthrough-comment",
   // Rule-specific composite statement: walks parents from the current node
   // up to the nearest sentinel ancestor (any *Statement, ArrowFunctionExpr,
   // FunctionExpr, ClassExpr) and emits a `returnMsgId` report when that
@@ -407,6 +412,12 @@ function validateStatement(s, path) {
   if (s.op === "report-at-token") {
     if (typeof s.messageId !== "string") return fail("report-at-token.messageId must be string", path);
     return validateExpr(s.token, `${path}.token`);
+  }
+  if (s.op === "report-unused-fallthrough-comment") {
+    if (typeof s.messageId !== "string") return fail("report-unused-fallthrough-comment.messageId must be string", path);
+    const a = validateExpr(s.prev, `${path}.prev`);
+    if (!a.ok) return a;
+    return validateExpr(s.curr, `${path}.curr`);
   }
   if (s.op === "no-return-assign-check") {
     if (typeof s.returnMsgId !== "string") return fail("no-return-assign-check.returnMsgId must be string", path);

@@ -383,7 +383,7 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
     // hydrates d.endLine/d.endCol/d.messageId.  Use them directly instead of
     // the old "walk-forward-from-identifier" heuristic — the rule's own span
     // is authoritative and matches ESLint's report node convention.
-    return diags
+    const mapped = diags
       .filter(d => d.ruleName === _nativeName)
       .filter(d => {
         if (_hasUnknownRefNative) return false;
@@ -409,6 +409,7 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
         const message   = meta.message ?? null;
         return {
           rule: _nativeName,
+          ruleId: _nativeName, // alias for applyDisableDirectives
           line,
           column,
           endLine,
@@ -419,6 +420,9 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
           fix: d.fix ?? null,
         };
       });
+    // ESLint's oracle suppresses violations covered by `eslint-disable*`
+    // comments; mirror that on native diags so the comparison is fair.
+    return applyDisableDirectives(code, mapped);
   } catch { return null; }
 }
 

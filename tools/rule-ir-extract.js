@@ -808,11 +808,24 @@ function extractNoFallthroughHandler(rawHandler, stmts, { sourceFile } = {}) {
     then: [{ op: "report", node: { op: "node-ref" }, messageId: defaultMsgId }],
     else: [{ op: "report", node: { op: "node-ref" }, messageId: caseMsgId }],
   };
+  // Second pass: when `reportUnusedFallthroughComment: true` AND the
+  // previous case DOESN'T actually fall through but has a fall-through
+  // comment, report the comment as unused.  Independent of the
+  // fall-through report above (firing condition is `!exitReachable(prev)`).
+  const unusedReport = {
+    op: "report-unused-fallthrough-comment",
+    prev,
+    curr: { op: "node-ref" },
+    messageId: "unusedFallthroughComment",
+  };
   return {
     ok: true,
     handler: {
       selector: "__SwitchCaseOrDefault__",
-      body: [{ op: "if", cond, then: [inner] }],
+      body: [
+        { op: "if", cond, then: [inner] },
+        unusedReport,
+      ],
     },
   };
 }

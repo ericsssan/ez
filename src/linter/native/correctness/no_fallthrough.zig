@@ -42,4 +42,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             ctx.reportWithMessageId(node, "case");
         }
     }
+    ctx.reportUnusedFallthroughCommentIfNeeded(ctx.previousSwitchCase(node), node, "unusedFallthroughComment");
 }

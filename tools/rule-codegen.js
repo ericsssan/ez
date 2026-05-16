@@ -1056,6 +1056,11 @@ function emitStatement(stmt, indent, ctx) {
     out.push(`${ind}}`);
     return out;
   }
+  if (stmt.op === "report-unused-fallthrough-comment") {
+    const prev = emitExpr(stmt.prev, ctx);
+    const curr = emitExpr(stmt.curr, ctx);
+    return [`${ind}ctx.reportUnusedFallthroughCommentIfNeeded(${prev}, ${curr}, "${zigStr(stmt.messageId)}");`];
+  }
   if (stmt.op === "no-return-assign-check") {
     const out = [];
     // Mode "always" (options[0] === "always") reports parenthesised

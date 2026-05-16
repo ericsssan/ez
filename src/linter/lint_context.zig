@@ -1795,6 +1795,51 @@ pub const LintContext = struct {
         return self.semantic.node_reachable[i] != 0;
     }
 
+    /// Return the source-byte span of the comment immediately before the
+    /// `}` at `block_span.end` if it matches the fall-through pattern.
+    /// Distinct from commentImmediatelyBeforeCloseBraceMatches (which just
+    /// returns bool); used for the unused-fallthrough-comment report.
+    fn findCommentBeforeCloseBraceSpan(self: *const LintContext, block_span: Span, custom: ?[]const u8) ?Span {
+        const src = self.ast.source;
+        if (block_span.end == 0 or block_span.end > src.len) return null;
+        var i: usize = block_span.end;
+        if (i == 0) return null;
+        i -= 1;
+        if (src[i] != '}') return null;
+        while (i > block_span.start) {
+            i -= 1;
+            const c = src[i];
+            if (c == ' ' or c == '\t' or c == '\r' or c == '\n') continue;
+            break;
+        }
+        if (i >= 1 and src[i] == '/' and src[i - 1] == '*') {
+            var j: usize = i - 1;
+            while (j > block_span.start) {
+                j -= 1;
+                if (src[j] == '/' and j + 1 < src.len and src[j + 1] == '*') {
+                    if (commentMatchesFallthrough(src[j + 2 .. i - 1], custom)) {
+                        return .{ .start = @intCast(j), .end = @intCast(i + 1) };
+                    }
+                    return null;
+                }
+            }
+            return null;
+        }
+        const line_end = i + 1;
+        var k: usize = i;
+        while (k > block_span.start) {
+            if (src[k] == '\n') break;
+            if (k >= 1 and src[k - 1] == '/' and src[k] == '/') {
+                if (k + 1 <= line_end and commentMatchesFallthrough(src[k + 1 .. line_end], custom)) {
+                    return .{ .start = @intCast(k - 1), .end = @intCast(line_end) };
+                }
+                return null;
+            }
+            k -= 1;
+        }
+        return null;
+    }
+
     /// True when the comment IMMEDIATELY preceding the close brace of the
     /// given block_stmt matches the fall-through pattern.  Mirrors
     /// ESLint's `getCommentsBefore(trailingCloseBrace).pop()` — only the
@@ -1941,6 +1986,12 @@ pub const LintContext = struct {
     /// prefix up to the first metachar (covers shapes like `"no break"`
     /// and `"no break:\\s?\\w+"` — for the second we match on `no break:`).
     fn commentMatchesFallthrough(text: []const u8, custom: ?[]const u8) bool {
+        // ESLint rejects comments that are ESLint directives even when the
+        // fall-through pattern would otherwise match.  e.g.
+        // `// eslint-enable no-fallthrough` contains "fallthrough" but is a
+        // directive — not a fall-through marker.  Match ESLint's
+        // `directivesPattern` prefix list.
+        if (isEslintDirectiveComment(text)) return false;
         if (custom) |pat| {
             // Trim regex anchors and tail metachars; use prefix up to first
             // metachar as a literal substring.
@@ -1955,6 +2006,24 @@ pub const LintContext = struct {
             if (lit.len > 0 and substringCaseInsensitive(text, lit)) return true;
         }
         return commentLooksLikeFallThrough(text);
+    }
+
+    /// Mirrors ESLint's `directivesPattern`: a leading `eslint`, `eslint-`,
+    /// `global` / `globals`, or `exported` token at the start of the
+    /// comment (after stripping leading whitespace).  Such comments are
+    /// configuration directives, not natural-language fall-through markers.
+    fn isEslintDirectiveComment(text: []const u8) bool {
+        var i: usize = 0;
+        while (i < text.len and (text[i] == ' ' or text[i] == '\t')) i += 1;
+        const rest = text[i..];
+        const prefixes = [_][]const u8{ "eslint-", "eslint ", "eslint\t", "eslint*", "global ", "globals ", "exported " };
+        for (prefixes) |p| {
+            if (rest.len >= p.len and std.ascii.eqlIgnoreCase(rest[0..p.len], p)) return true;
+        }
+        // Bare "eslint" at end of comment.
+        if (rest.len >= 6 and std.ascii.eqlIgnoreCase(rest[0..6], "eslint")
+            and (rest.len == 6 or !std.ascii.isAlphanumeric(rest[6]))) return true;
+        return false;
     }
 
     fn substringCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
@@ -1982,6 +2051,74 @@ pub const LintContext = struct {
             if (j + 7 <= text.len and std.ascii.eqlIgnoreCase(text[j..j + 7], "through")) return true;
         }
         return false;
+    }
+
+    /// If `reportUnusedFallthroughComment: true` and there's a fall-through-
+    /// pattern comment between prev_case and curr_case BUT prev doesn't
+    /// actually fall through (already exited via return/break/etc.), emit
+    /// an "unusedFallthroughComment" diagnostic at the comment span.
+    /// No-op when prev or curr is .none or option is false.
+    pub fn reportUnusedFallthroughCommentIfNeeded(self: *const LintContext, prev_case: NodeIndex, curr_case: NodeIndex, message_id: []const u8) void {
+        if (prev_case == .none or curr_case == .none) return;
+        if (!self.getOptionBool("reportUnusedFallthroughComment", false)) return;
+        // Prev MUST not fall through (exit unreachable) — otherwise the
+        // comment is legitimately about fall-through.
+        if (self.switchCaseExitReachable(prev_case)) return;
+        // Find the LAST fall-through-marker comment span in the gap between
+        // cases.  Same scope ESLint uses for getCommentsBefore(next).pop().
+        const span = self.findLastFallthroughCommentSpan(prev_case, curr_case) orelse return;
+        self.reportSpanWithMessageId(span, message_id);
+    }
+
+    /// Locate the source-byte span of the LAST fall-through-pattern comment
+    /// between prev_case end and curr_case start.  Honors the custom
+    /// `commentPattern` option.  Returns null if no qualifying comment.
+    fn findLastFallthroughCommentSpan(self: *const LintContext, prev_case: NodeIndex, curr_case: NodeIndex) ?Span {
+        const src = self.ast.source;
+        const custom = self.getOptionString("commentPattern");
+        // For single-block consequents, the marker may live inside the
+        // block right before the trailing `}` (ESLint's getCommentsBefore(
+        // trailingCloseBrace).pop()).  Check that span first.
+        const single_block = self.switchCaseSingleBlockBody(prev_case);
+        if (single_block != .none) {
+            const bspan = self.nodeSpan(single_block);
+            if (self.findCommentBeforeCloseBraceSpan(bspan, custom)) |s| return s;
+        }
+        const lo: usize = @min(self.nodeSpan(prev_case).end, src.len);
+        const hi: usize = @min(self.nodeSpan(curr_case).start, src.len);
+        if (lo >= hi) return null;
+        var last_span_start: ?usize = null;
+        var last_span_end: usize = 0;
+        var i: usize = lo;
+        while (i + 1 < hi) : (i += 1) {
+            if (src[i] != '/') continue;
+            if (src[i + 1] == '/') {
+                const cstart = i;
+                var j = i + 2;
+                const text_start = j;
+                while (j < src.len and j < hi and src[j] != '\n') j += 1;
+                if (commentMatchesFallthrough(src[text_start..j], custom)) {
+                    last_span_start = cstart;
+                    last_span_end = j;
+                }
+                i = j;
+                continue;
+            }
+            if (src[i + 1] == '*') {
+                const cstart = i;
+                var j = i + 2;
+                const text_start = j;
+                while (j + 1 < src.len and !(src[j] == '*' and src[j + 1] == '/')) j += 1;
+                if (j + 1 >= src.len) break;
+                if (commentMatchesFallthrough(src[text_start..j], custom)) {
+                    last_span_start = cstart;
+                    last_span_end = j + 2; // include `*/`
+                }
+                i = j + 1;
+            }
+        }
+        if (last_span_start) |s| return .{ .start = @intCast(s), .end = @intCast(last_span_end) };
+        return null;
     }
 
     /// True when the given switch_case's body falls through to the next
