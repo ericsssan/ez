@@ -412,6 +412,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoAwaitInLoopHandler,   // no-await-in-loop
       extractPreferRestParamsHandler, // prefer-rest-params
       extractNoUndefHandler,         // no-undef
+      extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1057,6 +1058,43 @@ function extractNoUndefHandler(rawHandler, stmts, { sourceFile } = {}) {
       messageId,
       // typeof option default false → don't flag `typeof X` shapes.
       considerTypeof: false,
+    },
+  };
+}
+
+// Recognize default-param-last.  Dispatches on FunctionDeclaration,
+// FunctionExpression, ArrowFunctionExpression — each calls the
+// reportDefaultParamLast helper, which iterates the function's params
+// and reports defaults that precede a required param.
+function extractDefaultParamLastHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/default-param-last.js")) return { ok: false };
+  const accepted = new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+  if (!accepted.has(rawHandler.selector)) return { ok: false };
+  let messageId = null;
+  const SKIP_KEYS = new Set(["parent", "loc", "range", "start", "end"]);
+  const visit = (n) => {
+    if (!n || typeof n !== "object" || !n.type) return;
+    if (n.type === "Property"
+        && (n.key?.name === "messageId" || n.key?.value === "messageId")
+        && n.value?.type === "Literal" && typeof n.value.value === "string") {
+      messageId = messageId || n.value.value;
+    }
+    for (const k of ["body", "consequent", "alternate", "argument", "expression",
+                      "object", "property", "callee", "arguments", "init", "test",
+                      "left", "right", "key", "value", "properties", "params"]) {
+      if (SKIP_KEYS.has(k)) continue;
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  for (const s of rawHandler.__createBody || []) visit(s);
+  if (!messageId) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      selector: "__AnyFunction__",
+      body: [{ op: "report-default-param-last", node: { op: "node-ref" }, messageId }],
     },
   };
 }

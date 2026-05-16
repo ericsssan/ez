@@ -98,6 +98,11 @@ const SELECTOR_TO_TAG_MULTI = {
   // for-await-of).  Used by no-unreachable-loop.
   __AnyLoop__: ["while_stmt", "do_while_stmt", "for_stmt",
                 "for_in_stmt", "for_of_stmt", "for_await_of_stmt"],
+  // Any function-bearing node — declaration, expression, arrow, async &
+  // generator variants.  Used by default-param-last.
+  __AnyFunction__: ["fn_decl", "async_fn_decl", "generator_fn_decl", "async_generator_fn_decl",
+                    "fn_expr", "async_fn_expr", "generator_fn_expr", "async_generator_fn_expr",
+                    "arrow_fn", "async_arrow_fn"],
   // Return/Throw + both labeled and unlabeled break/continue — used by
   // no-unsafe-finally.
   __ReturnThrowBreakContinue__: ["return_stmt", "throw_stmt",
@@ -1086,6 +1091,10 @@ function emitStatement(stmt, indent, ctx) {
     }
     out.push(`${ind}}`);
     return out;
+  }
+  if (stmt.op === "report-default-param-last") {
+    const node = emitExpr(stmt.node, ctx);
+    return [`${ind}ctx.reportDefaultParamLast(${node}, "${zigStr(stmt.messageId)}");`];
   }
   if (stmt.op === "report-unused-fallthrough-comment") {
     const prev = emitExpr(stmt.prev, ctx);

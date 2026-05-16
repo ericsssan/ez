@@ -2167,6 +2167,79 @@ pub const LintContext = struct {
         return self.optionArrayContains("ignore", type_name);
     }
 
+    /// Iterate `fn_node`'s formal params right-to-left.  For each
+    /// non-required param (AssignmentPattern / RestElement), if any
+    /// required param appears LATER in the list, report at the
+    /// non-required param.  Implements default-param-last.
+    pub fn reportDefaultParamLast(self: *const LintContext, fn_node: NodeIndex, message_id: []const u8) void {
+        if (fn_node == .none) return;
+        const params = self.functionParams(fn_node);
+        if (params.len == 0) return;
+        // Find the rightmost required-param index; any default param to
+        // its LEFT is a violation.
+        var rightmost_required: ?usize = null;
+        var i: usize = params.len;
+        while (i > 0) : (i -= 1) {
+            const p: NodeIndex = @enumFromInt(params[i - 1]);
+            if (self.isRequiredParam(p)) {
+                rightmost_required = i - 1;
+                break;
+            }
+        }
+        if (rightmost_required == null) return;
+        // Walk left-to-right; report defaults that precede the rightmost-required.
+        var j: usize = 0;
+        while (j < rightmost_required.?) : (j += 1) {
+            const p: NodeIndex = @enumFromInt(params[j]);
+            if (!self.isRequiredParam(p)) {
+                self.reportWithMessageId(p, message_id);
+            }
+        }
+    }
+
+    /// Return the parameter slice for `fn_node` — works on fn_decl/expr,
+    /// arrow_fn (ArrowData params), and method_def (MethodData params).
+    /// Empty slice on unknown shapes.
+    pub fn functionParams(self: *const LintContext, fn_node: NodeIndex) []const u32 {
+        if (fn_node == .none) return &.{};
+        const d = self.nodeData(fn_node);
+        if (d.lhs == .none) return &.{};
+        switch (self.ast.nodeTag(fn_node)) {
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => {
+                const fd = self.extraData(ast_mod.FnData, @intFromEnum(d.lhs));
+                const start: usize = fd.params;
+                const end: usize = fd.params_end;
+                if (end <= start or end > self.ast.extra_data.len) return &.{};
+                return self.ast.extra_data[start..end];
+            },
+            .arrow_fn, .async_arrow_fn => {
+                const ad = self.extraData(ast_mod.ArrowData, @intFromEnum(d.lhs));
+                const start: usize = ad.params_start;
+                const end: usize = ad.params_end;
+                if (end <= start or end > self.ast.extra_data.len) return &.{};
+                return self.ast.extra_data[start..end];
+            },
+            else => return &.{},
+        }
+    }
+
+    /// True when a parameter node is "required" — not AssignmentPattern,
+    /// RestElement, and not marked optional (TS `?`).  Mirrors the
+    /// default-param-last `isRequiredParameter` helper.
+    pub fn isRequiredParam(self: *const LintContext, param: NodeIndex) bool {
+        if (param == .none) return false;
+        const tag = self.ast.nodeTag(param);
+        if (tag == .assignment_pattern or tag == .rest_element) return false;
+        // TS optional param marker (`a?: number`).  Parser encodes the
+        // `?` on the identifier node by setting data.lhs to .root.
+        if (tag == .identifier) {
+            const d = self.nodeData(param);
+            if (d.lhs == .root) return false;
+        }
+        return true;
+    }
+
     /// True when an `arguments` identifier reference qualifies as a
     /// prefer-rest-params violation: it's not the object of a non-computed
     /// member access (so `arguments.length` doesn't fire) AND its enclosing

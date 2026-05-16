@@ -48,6 +48,9 @@ const STMT_OPS = new Set(["report", "if", "return", "iterate-children", "report-
   // fall-through comment, emit `unusedFallthroughComment` at the comment
   // span.  Internally checks the option and finds the comment.
   "report-unused-fallthrough-comment",
+  // default-param-last: for each function param right-to-left, report
+  // non-required params that precede a required one.
+  "report-default-param-last",
   // Rule-specific composite statement: walks parents from the current node
   // up to the nearest sentinel ancestor (any *Statement, ArrowFunctionExpr,
   // FunctionExpr, ClassExpr) and emits a `returnMsgId` report when that
@@ -438,6 +441,10 @@ function validateStatement(s, path) {
   if (s.op === "report-at-token") {
     if (typeof s.messageId !== "string") return fail("report-at-token.messageId must be string", path);
     return validateExpr(s.token, `${path}.token`);
+  }
+  if (s.op === "report-default-param-last") {
+    if (typeof s.messageId !== "string") return fail("report-default-param-last.messageId must be string", path);
+    return validateExpr(s.node, `${path}.node`);
   }
   if (s.op === "report-unused-fallthrough-comment") {
     if (typeof s.messageId !== "string") return fail("report-unused-fallthrough-comment.messageId must be string", path);
