@@ -63,6 +63,8 @@ const SELECTOR_TO_TAG = {
   ObjectPattern: "object_pattern",
   ArrayPattern: "array_pattern",
   TSNonNullExpression: "ts_non_null_expr",
+  AwaitExpression: "await_expr",
+  YieldExpression: "yield_expr",
   PropertyDefinition: "property_def",
   ThisExpression: "this_expr",
   StaticBlock: "static_block",
@@ -101,6 +103,10 @@ const SELECTOR_TO_TAG_MULTI = {
   __ReturnThrowBreakContinue__: ["return_stmt", "throw_stmt",
                                   "break_stmt", "break_label",
                                   "continue_stmt", "continue_label"],
+  // `await EXPR`, `for await of`, or `(let|const|var)` declarations
+  // (which catch `await using` via main-token check) — no-await-in-loop.
+  __AwaitOrForAwaitOf__: ["await_expr", "for_await_of_stmt",
+                          "var_decl", "let_decl", "const_decl"],
   // All generator function shapes (sync + async, decl + expr).  Stand-in
   // for `node.generator === true` filtering on Function* selectors.
   __Generator__: ["generator_fn_decl", "generator_fn_expr",
@@ -260,7 +266,8 @@ function emit(rule) {
       || irUsesOp(rule, "node-subtree-contains-tag")
       || irUsesOp(rule, "switch-case-exit-reachable")
       || irUsesOp(rule, "loop-has-iteration-back-edge")
-      || irUsesOp(rule, "node-is-inside-finally-before-sentinel")) {
+      || irUsesOp(rule, "node-is-inside-finally-before-sentinel")
+      || irUsesOp(rule, "await-is-in-loop")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1195,6 +1202,8 @@ function emitExpr(e, ctx) {
       return `ctx.optionIgnoreContainsNodeType(${emitExpr(e.node, ctx)})`;
     case "node-is-inside-finally-before-sentinel":
       return `ctx.nodeIsInsideFinallyBeforeSentinel(${emitExpr(e.node, ctx)})`;
+    case "await-is-in-loop":
+      return `ctx.awaitIsInLoop(${emitExpr(e.node, ctx)})`;
     case "node-not-none":
       return `(${emitExpr(e.node, ctx)} != .none)`;
     case "switch-cases-have-fallthrough-comment":

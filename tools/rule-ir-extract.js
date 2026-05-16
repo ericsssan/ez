@@ -409,6 +409,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoFallthroughHandler,   // no-fallthrough
       extractNoUnreachableLoopHandler, // no-unreachable-loop
       extractNoUnsafeFinallyHandler, // no-unsafe-finally
+      extractNoAwaitInLoopHandler,   // no-await-in-loop
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -931,6 +932,50 @@ function extractNoUnsafeFinallyHandler(rawHandler, stmts, { sourceFile } = {}) {
           // data: { nodeType: node.type }
           data: [{ key: "nodeType", value: { op: "node-eslint-type-name", node: { op: "node-ref" } } }],
         }],
+      }],
+    },
+  };
+}
+
+// Recognize the no-await-in-loop rule.  Dispatches on AwaitExpression
+// and checks awaitIsInLoop.  Drops the ForOfStatement / VariableDeclaration
+// branches the rule also registers (those handle `for await of` and
+// `await using` — both nuanced; the AwaitExpression branch covers the
+// dominant cases).
+function extractNoAwaitInLoopHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-await-in-loop.js")) return { ok: false };
+  // The rule binds AwaitExpression / ForOfStatement / VariableDeclaration
+  // to the same `validate` fn.  Accept any selector and emit one handler.
+  const accepted = new Set(["AwaitExpression", "ForOfStatement", "VariableDeclaration"]);
+  if (!accepted.has(rawHandler.selector)) return { ok: false };
+  let messageId = null;
+  const SKIP_KEYS = new Set(["parent", "loc", "range", "start", "end"]);
+  const visit = (n) => {
+    if (!n || typeof n !== "object" || !n.type) return;
+    if (n.type === "Property"
+        && (n.key?.name === "messageId" || n.key?.value === "messageId")
+        && n.value?.type === "Literal" && typeof n.value.value === "string") {
+      messageId = messageId || n.value.value;
+    }
+    for (const k of ["body", "consequent", "alternate", "argument", "expression",
+                      "object", "property", "callee", "arguments", "init", "test",
+                      "left", "right", "key", "value", "properties", "params"]) {
+      if (SKIP_KEYS.has(k)) continue;
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  for (const s of rawHandler.__createBody || []) visit(s);
+  if (!messageId) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      selector: "__AwaitOrForAwaitOf__",
+      body: [{
+        op: "if",
+        cond: { op: "await-is-in-loop", node: { op: "node-ref" } },
+        then: [{ op: "report", node: { op: "node-ref" }, messageId }],
       }],
     },
   };

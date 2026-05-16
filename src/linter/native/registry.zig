@@ -54,7 +54,7 @@ const no_class_assign = @import("correctness/no_class_assign.zig");
 // v0.6 correctness rules
 // const require_await = @import("correctness/require_await.zig");  // hand-written — disabled per IR-only constraint
 const no_constructor_return = @import("correctness/no_constructor_return.zig");  // IR-generated via node-nearest-function-ancestor op
-// const no_await_in_loop = @import("correctness/no_await_in_loop.zig");  // hand-written — disabled per IR-only constraint
+const no_await_in_loop = @import("correctness/no_await_in_loop.zig");  // IR-generated via await-is-in-loop op
 // const no_promise_executor_return = @import("correctness/no_promise_executor_return.zig");  // hand-written — disabled per IR-only constraint
 const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");  // IR-generated via loop-has-iteration-back-edge op
 const no_empty_static_block = @import("correctness/no_empty_static_block.zig");
@@ -337,7 +337,7 @@ pub const all_rules = .{
     // Correctness v0.6 (8)
     // require_await, // hand-written — disabled
     no_constructor_return,
-    // no_await_in_loop, // runner >> native (runner 37, native 28, 9 FN); fall back
+    no_await_in_loop,
     // no_promise_executor_return, // runner >> native (runner 124/124, native 121/124, 3 more FN); fall back
     no_unreachable_loop,
     // no_empty_static_block, // hand-written — disabled

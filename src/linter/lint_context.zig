@@ -1129,6 +1129,26 @@ pub const LintContext = struct {
                 const body_span = self.nodeSpan(data.lhs);
                 if (body_span.end > end) end = body_span.end;
             }
+            // For variable declarations: recurse into the LAST declarator's
+            // init so its closing parens/braces are included.  Without
+            // this, `let x = foo()` reports end = `foo` identifier end and
+            // misses the call's `)`, causing endColumn off-by-N.
+            if (tag == .var_decl or tag == .let_decl or tag == .const_decl) {
+                const sr_start = @intFromEnum(data.lhs);
+                const sr_end = @intFromEnum(data.rhs);
+                if (sr_end > sr_start and sr_end <= self.ast.extra_data.len) {
+                    const last_decl_raw = self.ast.extra_data[sr_end - 1];
+                    const last_decl: NodeIndex = @enumFromInt(last_decl_raw);
+                    if (last_decl != .none and self.ast.nodeTag(last_decl) == .declarator) {
+                        const dd = self.nodeData(last_decl);
+                        const init = dd.rhs;
+                        if (init != .none) {
+                            const init_span = self.nodeSpan(init);
+                            if (init_span.end > end) end = init_span.end;
+                        }
+                    }
+                }
+            }
             var p: usize = end;
             while (p < src.len and (src[p] == ' ' or src[p] == '\t')) p += 1;
             if (p < src.len and src[p] == ';') end = @intCast(p + 1);
@@ -2145,6 +2165,75 @@ pub const LintContext = struct {
         if (n == .none) return false;
         const type_name = self.nodeEslintTypeName(n);
         return self.optionArrayContains("ignore", type_name);
+    }
+
+    /// True when the given await_expr sits inside the test/update/body of
+    /// an enclosing loop (mirrors ESLint's no-await-in-loop check).  Stops
+    /// at function boundaries and at `for await of` (whose body's await
+    /// is intentional async iteration machinery).
+    pub fn awaitIsInLoop(self: *const LintContext, await_node: NodeIndex) bool {
+        if (await_node == .none) return false;
+        const t = self.ast.nodeTag(await_node);
+        // Accept either an await_expr OR a for_await_of_stmt (whose own
+        // await is intentional but reports if nested inside another loop)
+        // OR an `await using` declaration (const_decl whose main_token is
+        // the `await` keyword).
+        const is_await_using = (t == .const_decl or t == .let_decl or t == .var_decl) and blk: {
+            const main_text = self.tokenText(self.ast.nodeMainToken(await_node));
+            break :blk std.mem.eql(u8, main_text, "await");
+        };
+        if (t != .await_expr and t != .for_await_of_stmt and !is_await_using) return false;
+        var cur = await_node;
+        var parent = self.parentOf(cur);
+        while (parent != .none) {
+            const ptag = self.ast.nodeTag(parent);
+            switch (ptag) {
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+                .arrow_fn, .async_arrow_fn,
+                .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+                .setter_def, .computed_setter_def, .constructor_def,
+                .for_await_of_stmt => return false,
+                else => {},
+            }
+            if (self.childIsLoopBodyOrControl(cur, parent)) return true;
+            cur = parent;
+            parent = self.parentOf(cur);
+        }
+        return false;
+    }
+
+    /// True when `child` occupies a slot in `parent` that's part of the
+    /// loop's iterative control (test / update / body for for/while/
+    /// do-while; body for for-in/of).  Used by no-await-in-loop.
+    fn childIsLoopBodyOrControl(self: *const LintContext, child: NodeIndex, parent: NodeIndex) bool {
+        const data = self.nodeData(parent);
+        switch (self.ast.nodeTag(parent)) {
+            .while_stmt => return data.lhs == child or data.rhs == child,
+            .do_while_stmt => return data.lhs == child or data.rhs == child,
+            .for_stmt => {
+                if (data.rhs == child) return true; // body
+                if (data.lhs == .none) return false;
+                const fd = self.extraData(ast_mod.ForData, @intFromEnum(data.lhs));
+                return fd.condition == child or fd.update == child;
+            },
+            .for_in_stmt, .for_of_stmt => {
+                if (data.lhs == .none) return false;
+                const fd = self.extraData(ast_mod.ForInOfData, @intFromEnum(data.lhs));
+                if (fd.body == child) return true;
+                // `await using` binding on the left side of for-of counts
+                // (the await happens once per iteration).
+                if (fd.binding == child) {
+                    const ctag = self.ast.nodeTag(child);
+                    if (ctag == .var_decl or ctag == .let_decl or ctag == .const_decl) {
+                        const main_text = self.tokenText(self.ast.nodeMainToken(child));
+                        if (std.mem.eql(u8, main_text, "await")) return true;
+                    }
+                }
+                return false;
+            },
+            else => return false,
+        }
     }
 
     /// True when walking up from `n` we hit a finally block (the

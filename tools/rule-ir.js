@@ -250,6 +250,9 @@ const EXPR_OPS = new Set([
   // block before crossing the no-unsafe-finally sentinel boundary.
   // Statement-kind-aware: break/continue have wider sentinel sets.
   "node-is-inside-finally-before-sentinel",
+  // True when the given await_expr sits inside the test/update/body of
+  // an enclosing loop — no-await-in-loop's core check.
+  "await-is-in-loop",
   "switch-case-exit-reachable",
   "switch-case-has-consequent",
   // True when prev_case has a consequent OR `allowEmptyCase: false` AND
@@ -706,7 +709,8 @@ function validateExpr(e, path) {
       || e.op === "loop-has-iteration-back-edge"
       || e.op === "node-reachable"
       || e.op === "option-ignore-contains-node-type"
-      || e.op === "node-is-inside-finally-before-sentinel") {
+      || e.op === "node-is-inside-finally-before-sentinel"
+      || e.op === "await-is-in-loop") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "switch-cases-have-fallthrough-comment"
