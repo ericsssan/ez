@@ -200,10 +200,11 @@ function emit(rule) {
   if (!v.ok) throw new Error(`invalid IR: ${v.reason} at ${v.path}`);
 
   const hasSymbolHandler = rule.handlers.some(h => h.kind === "for-each-unresolved-global-ref");
+  const hasReportAllUnresolvedRefs = rule.handlers.some(h => h.kind === "report-all-unresolved-refs");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -213,7 +214,7 @@ function emit(rule) {
 
   // For-each-node handlers supply their own relevant_tags from their selector.
   let relevantTags;
-  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs) {
     relevantTags = [];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
@@ -268,7 +269,8 @@ function emit(rule) {
       || irUsesOp(rule, "loop-has-iteration-back-edge")
       || irUsesOp(rule, "node-is-inside-finally-before-sentinel")
       || irUsesOp(rule, "await-is-in-loop")
-      || irUsesOp(rule, "arguments-ref-is-restable-violation")) {
+      || irUsesOp(rule, "arguments-ref-is-restable-violation")
+      || hasReportAllUnresolvedRefs) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -391,7 +393,17 @@ function emit(rule) {
   }
 
   // run function.
-  if (hasSymbolHandler) {
+  if (hasReportAllUnresolvedRefs) {
+    out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
+    out.push(``);
+    out.push(`pub fn runOnSymbols(ctx: *const LintContext) void {`);
+    for (const h of rule.handlers) {
+      if (h.kind !== "report-all-unresolved-refs") continue;
+      const ct = h.considerTypeof ? "true" : "false";
+      out.push(`    ctx.reportAllUnresolvedRefs("${zigStr(h.messageId)}", ${ct});`);
+    }
+    out.push(`}`);
+  } else if (hasSymbolHandler) {
     out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
     out.push(``);
     for (const h of rule.handlers) {

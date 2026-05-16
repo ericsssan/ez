@@ -2216,6 +2216,33 @@ pub const LintContext = struct {
         return true;
     }
 
+    /// Walk every reference in the file; for each unresolved one
+    /// (escaped to the global scope and didn't bind to any symbol), report
+    /// at the identifier with `message_id` and `data: { name }`.  Used by
+    /// no-undef.  When `consider_typeof` is false, skip references that
+    /// are operands of a `typeof` operator (the default `typeof X` shape
+    /// where X is undeclared is allowed — `typeof X === "undefined"` etc).
+    pub fn reportAllUnresolvedRefs(self: *const LintContext, message_id: []const u8, consider_typeof: bool) void {
+        const refs = self.semantic.references;
+        var r: u32 = 0;
+        const count = refs.count();
+        while (r < count) : (r += 1) {
+            const ref_id = reference_mod.ReferenceId.fromInt(r);
+            if (refs.isResolved(ref_id)) continue;
+            const id_node = refs.getNode(ref_id);
+            if (id_node == .none) continue;
+            const name = self.tokenText(self.ast.nodeMainToken(id_node));
+            // Skip `typeof X` shapes when default option is in effect.
+            if (!consider_typeof) {
+                const parent = self.parentOf(id_node);
+                if (parent != .none and self.ast.nodeTag(parent) == .typeof_expr) continue;
+            }
+            self.reportWithMessageIdAndData(id_node, message_id, &[_]MessageDataEntry{
+                .{ .key = "name", .val = name },
+            });
+        }
+    }
+
     /// True when the given await_expr sits inside the test/update/body of
     /// an enclosing loop (mirrors ESLint's no-await-in-loop check).  Stops
     /// at function boundaries and at `for await of` (whose body's await

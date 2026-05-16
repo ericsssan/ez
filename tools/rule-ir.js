@@ -345,6 +345,13 @@ function validateRule(rule) {
   for (let hi = 0; hi < rule.handlers.length; hi++) {
     const h = rule.handlers[hi];
     const path = `handlers[${hi}]`;
+    // Handler kinds that don't dispatch on AST nodes (pure symbol-phase
+    // walkers) skip the selector requirement.
+    if (h.kind === "report-all-unresolved-refs") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      if (typeof h.considerTypeof !== "boolean") return fail("considerTypeof must be bool", path);
+      continue;
+    }
     if (typeof h.selector !== "string") return fail("selector must be string", path);
     // Optional handler kind — e.g. "for-each-unresolved-global-ref" — triggers
     // a symbol-phase emit instead of the default AST-walk dispatch.

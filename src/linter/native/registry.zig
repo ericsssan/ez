@@ -13,7 +13,8 @@ const no_debugger = @import("correctness/no_debugger.zig");
 // const use_isnan = @import("correctness/use_isnan.zig");  // hand-written — disabled per IR-only constraint
 // const valid_typeof = @import("correctness/valid_typeof.zig");  // hand-written — disabled per IR-only constraint
 // const no_unused_vars = @import("correctness/no_unused_vars.zig");  // hand-written — disabled per IR-only constraint
-// const no_undef = @import("correctness/no_undef.zig");  // hand-written — disabled per IR-only constraint
+// no-undef IR-generated, unregistered (see registry array for reason).
+// const no_undef = @import("correctness/no_undef.zig");
 // const no_constant_condition = @import("correctness/no_constant_condition.zig");  // hand-written — disabled per IR-only constraint
 const no_func_assign = @import("correctness/no_func_assign.zig");
 // const no_import_assign = @import("correctness/no_import_assign.zig");  // hand-written — disabled per IR-only constraint
@@ -283,7 +284,9 @@ pub const all_rules = .{
     // use_isnan, // runner >> native (runner 214, native 176, gap 38); fall back to JS runner
     // valid_typeof, // hand-written — disabled
     // no_unused_vars, // runner >> native (runner 436, native 297, gap 139, 51 FP); fall back to JS runner
-    // no_undef, // runner >> native (runner 101, native 76, 5 FN 22 FP); fall back
+    // no_undef, // IR-generated but native has 37 FP (parser ref-resolution
+    // misses TDZ/hoisting cases like `class C extends C`); regresses hybrid
+    // by 29 — keep disabled until ref resolution is tightened.
     // no_constant_condition, // hand-written, 91 FP vs ESLint; fall back to JS runner
 
     no_func_assign,
