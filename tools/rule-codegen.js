@@ -96,6 +96,11 @@ const SELECTOR_TO_TAG_MULTI = {
   // for-await-of).  Used by no-unreachable-loop.
   __AnyLoop__: ["while_stmt", "do_while_stmt", "for_stmt",
                 "for_in_stmt", "for_of_stmt", "for_await_of_stmt"],
+  // Return/Throw + both labeled and unlabeled break/continue — used by
+  // no-unsafe-finally.
+  __ReturnThrowBreakContinue__: ["return_stmt", "throw_stmt",
+                                  "break_stmt", "break_label",
+                                  "continue_stmt", "continue_label"],
   // All generator function shapes (sync + async, decl + expr).  Stand-in
   // for `node.generator === true` filtering on Function* selectors.
   __Generator__: ["generator_fn_decl", "generator_fn_expr",
@@ -254,7 +259,8 @@ function emit(rule) {
       || irUsesOp(rule, "node-nearest-function-ancestor")
       || irUsesOp(rule, "node-subtree-contains-tag")
       || irUsesOp(rule, "switch-case-exit-reachable")
-      || irUsesOp(rule, "loop-has-iteration-back-edge")) {
+      || irUsesOp(rule, "loop-has-iteration-back-edge")
+      || irUsesOp(rule, "node-is-inside-finally-before-sentinel")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1187,6 +1193,8 @@ function emitExpr(e, ctx) {
       return `ctx.nodeReachable(${emitExpr(e.node, ctx)})`;
     case "option-ignore-contains-node-type":
       return `ctx.optionIgnoreContainsNodeType(${emitExpr(e.node, ctx)})`;
+    case "node-is-inside-finally-before-sentinel":
+      return `ctx.nodeIsInsideFinallyBeforeSentinel(${emitExpr(e.node, ctx)})`;
     case "node-not-none":
       return `(${emitExpr(e.node, ctx)} != .none)`;
     case "switch-cases-have-fallthrough-comment":

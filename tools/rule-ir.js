@@ -246,6 +246,10 @@ const EXPR_OPS = new Set([
   // True when `options[0].ignore` array contains the ESLint type name of
   // the given node — used by no-unreachable-loop's `ignore: [...]` option.
   "option-ignore-contains-node-type",
+  // True when walking up from `n` we hit a TryStatement's finalizer
+  // block before crossing the no-unsafe-finally sentinel boundary.
+  // Statement-kind-aware: break/continue have wider sentinel sets.
+  "node-is-inside-finally-before-sentinel",
   "switch-case-exit-reachable",
   "switch-case-has-consequent",
   // True when prev_case has a consequent OR `allowEmptyCase: false` AND
@@ -701,7 +705,8 @@ function validateExpr(e, path) {
       || e.op === "node-not-none"
       || e.op === "loop-has-iteration-back-edge"
       || e.op === "node-reachable"
-      || e.op === "option-ignore-contains-node-type") {
+      || e.op === "option-ignore-contains-node-type"
+      || e.op === "node-is-inside-finally-before-sentinel") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "switch-cases-have-fallthrough-comment"

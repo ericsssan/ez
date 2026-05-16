@@ -408,6 +408,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractRequireYieldHandler,    // require-yield
       extractNoFallthroughHandler,   // no-fallthrough
       extractNoUnreachableLoopHandler, // no-unreachable-loop
+      extractNoUnsafeFinallyHandler, // no-unsafe-finally
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -883,6 +884,54 @@ function extractNoUnreachableLoopHandler(rawHandler, stmts, { sourceFile } = {})
     handler: {
       selector: "__AnyLoop__",
       body: [{ op: "if", cond, then: [{ op: "report", node: { op: "node-ref" }, messageId }] }],
+    },
+  };
+}
+
+// Recognize the no-unsafe-finally rule.  Reports return/throw/break/
+// continue statements that sit inside a TryStatement's finalizer block.
+// `data: { nodeType }` interpolates the statement's AST type into the
+// message.
+function extractNoUnsafeFinallyHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-unsafe-finally.js")) return { ok: false };
+  const accepted = new Set(["ReturnStatement", "ThrowStatement", "BreakStatement", "ContinueStatement"]);
+  if (!accepted.has(rawHandler.selector)) return { ok: false };
+  // messageId from createBody.
+  let messageId = null;
+  const SKIP_KEYS = new Set(["parent", "loc", "range", "start", "end"]);
+  const visit = (n) => {
+    if (!n || typeof n !== "object" || !n.type) return;
+    if (n.type === "Property"
+        && (n.key?.name === "messageId" || n.key?.value === "messageId")
+        && n.value?.type === "Literal" && typeof n.value.value === "string") {
+      messageId = messageId || n.value.value;
+    }
+    for (const k of ["body", "consequent", "alternate", "argument", "expression",
+                      "object", "property", "callee", "arguments", "init", "test",
+                      "left", "right", "key", "value", "properties", "params"]) {
+      if (SKIP_KEYS.has(k)) continue;
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  for (const s of rawHandler.__createBody || []) visit(s);
+  if (!messageId) return { ok: false };
+  // Dispatch on all 6 tags (return/throw + both break/continue forms).
+  // The Zig helper handles statement-kind sentinel differences internally.
+  return {
+    ok: true,
+    handler: {
+      selector: "__ReturnThrowBreakContinue__",
+      body: [{
+        op: "if",
+        cond: { op: "node-is-inside-finally-before-sentinel", node: { op: "node-ref" } },
+        then: [{
+          op: "report", node: { op: "node-ref" }, messageId,
+          // data: { nodeType: node.type }
+          data: [{ key: "nodeType", value: { op: "node-eslint-type-name", node: { op: "node-ref" } } }],
+        }],
+      }],
     },
   };
 }
