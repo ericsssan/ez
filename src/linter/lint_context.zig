@@ -604,6 +604,69 @@ pub const LintContext = struct {
         return @as(NodeIndex, @enumFromInt(cases[cases.len - 1])) == node;
     }
 
+    /// Returns the previous sibling SwitchCase in the same switch_stmt, or
+    /// `.none` if `node` is the first case (or not a SwitchCase).
+    pub fn previousSwitchCase(self: *const LintContext, node: NodeIndex) NodeIndex {
+        if (node == .none) return .none;
+        const parent = self.parentOf(node);
+        if (parent == .none) return .none;
+        if (self.nodeTag(parent) != .switch_stmt) return .none;
+        const data = self.nodeData(parent);
+        if (data.rhs == .none) return .none;
+        const sr = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const cases = self.extraSlice(sr);
+        for (cases, 0..) |c, i| {
+            if (@as(NodeIndex, @enumFromInt(c)) == node) {
+                if (i == 0) return .none;
+                return @enumFromInt(cases[i - 1]);
+            }
+        }
+        return .none;
+    }
+
+    /// True when control flow from `prev_case` qualifies for the no-fallthrough
+    /// report: prev has a consequent OR (`allowEmptyCase: false` AND blank
+    /// lines separate the two cases).  Mirrors ESLint's combined check.
+    pub fn switchCaseQualifiesForFallthrough(self: *const LintContext, prev_case: NodeIndex, curr_case: NodeIndex) bool {
+        if (self.switchCaseHasConsequent(prev_case)) return true;
+        // Default for allowEmptyCase is true → empty cases don't fall through.
+        // With false, an empty case followed by blank lines DOES fall through.
+        const allow_empty = self.getOptionBool("allowEmptyCase", true);
+        if (allow_empty) return false;
+        return self.casesHaveBlankLineBetween(prev_case, curr_case);
+    }
+
+    /// True when at least two line breaks separate prev_case from curr_case
+    /// in source — covers both blank-line-only and content-on-line-between
+    /// shapes (matches ESLint's hasBlankLinesBetween semantics).
+    fn casesHaveBlankLineBetween(self: *const LintContext, prev_case: NodeIndex, curr_case: NodeIndex) bool {
+        if (prev_case == .none or curr_case == .none) return false;
+        const src = self.ast.source;
+        const a: usize = @min(self.nodeSpan(prev_case).end, src.len);
+        const b: usize = @min(self.nodeSpan(curr_case).start, src.len);
+        if (a >= b) return false;
+        var newlines: u32 = 0;
+        var i: usize = a;
+        while (i < b) : (i += 1) {
+            if (src[i] == '\n') newlines += 1;
+        }
+        return newlines >= 2;
+    }
+
+    /// True when the given SwitchCase has at least one consequent statement.
+    /// Used by no-fallthrough to skip cases that are empty (those don't
+    /// constitute a fall-through risk).
+    pub fn switchCaseHasConsequent(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        const tag = self.nodeTag(node);
+        if (tag != .switch_case and tag != .switch_default) return false;
+        const data = self.nodeData(node);
+        // switch_case: rhs is SubRange of consequent statements
+        if (data.rhs == .none) return false;
+        const sr = self.extraData(SubRange, @intFromEnum(data.rhs));
+        return sr.end > sr.start;
+    }
+
     /// True when `node` is the leftmost expression of an ExpressionStatement.
     /// Mirrors ESLint's `astUtils.isStartOfExpressionStatement`: walks parents
     /// while their span starts at the same byte as `node`, returning true
@@ -1730,6 +1793,262 @@ pub const LintContext = struct {
         const i = @intFromEnum(index);
         if (i >= self.semantic.node_reachable.len) return true;
         return self.semantic.node_reachable[i] != 0;
+    }
+
+    /// True when the comment IMMEDIATELY preceding the close brace of the
+    /// given block_stmt matches the fall-through pattern.  Mirrors
+    /// ESLint's `getCommentsBefore(trailingCloseBrace).pop()` — only the
+    /// directly-adjacent comment counts; nested-block comments don't.
+    fn commentImmediatelyBeforeCloseBraceMatches(self: *const LintContext, block_node: NodeIndex, custom: ?[]const u8) bool {
+        const src = self.ast.source;
+        const span = self.nodeSpan(block_node);
+        if (span.end == 0 or span.end > src.len) return false;
+        // Walk back from the position of `}` (= span.end - 1) skipping
+        // whitespace; if we hit `/`, look for `*/...` (block) or
+        // `... //` (line) to extract the immediately-preceding comment.
+        var i: usize = span.end;
+        if (i == 0) return false;
+        i -= 1; // i now points at `}`
+        if (i == 0 or src[i] != '}') return false;
+        // Skip whitespace before `}`.
+        while (i > span.start) {
+            i -= 1;
+            const c = src[i];
+            if (c == ' ' or c == '\t' or c == '\r' or c == '\n') continue;
+            break;
+        }
+        // Block comment: ends in `*/`.
+        if (i >= 1 and src[i] == '/' and src[i - 1] == '*') {
+            // Find matching `/*` going back.
+            var j: usize = i - 1;
+            while (j > span.start) {
+                j -= 1;
+                if (src[j] == '/' and j + 1 < src.len and src[j + 1] == '*') {
+                    return commentMatchesFallthrough(src[j + 2 .. i - 1], custom);
+                }
+            }
+            return false;
+        }
+        // Line comment: `// ...` ending at \n directly before whitespace.
+        // Already skipped trailing whitespace; if we're at end of a line
+        // comment, src[i] is the last char of the comment text.  Walk
+        // back to `//` looking at this line only.
+        const line_end = i + 1;
+        var k: usize = i;
+        while (k > span.start) {
+            if (src[k] == '\n') break;
+            if (k >= 1 and src[k - 1] == '/' and src[k] == '/') {
+                if (k + 1 <= line_end) return commentMatchesFallthrough(src[k + 1 .. line_end], custom);
+            }
+            k -= 1;
+        }
+        return false;
+    }
+
+    /// Returns the body of `case`'s single-block consequent — i.e. the
+    /// block_stmt when `case X: { … }` is the entire consequent.  Returns
+    /// `.none` if the consequent has multiple statements or isn't a block.
+    /// Used by switchCasesHaveFallthroughComment to scope the "comment
+    /// inside block before trailing brace" allowance.
+    pub fn switchCaseSingleBlockBody(self: *const LintContext, case_node: NodeIndex) NodeIndex {
+        if (case_node == .none) return .none;
+        const tag = self.nodeTag(case_node);
+        if (tag != .switch_case and tag != .switch_default) return .none;
+        const data = self.nodeData(case_node);
+        if (data.rhs == .none) return .none;
+        const sr = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const consequent = self.extraSlice(sr);
+        if (consequent.len != 1) return .none;
+        const only: NodeIndex = @enumFromInt(consequent[0]);
+        if (self.nodeTag(only) != .block_stmt) return .none;
+        return only;
+    }
+
+    /// True when a `/falls?\s?through/i` comment exists in the source bytes
+    /// between two adjacent switch cases.  ESLint's fall-through allowance
+    /// is more nuanced (checks comments before the subsequent case OR
+    /// inside a single-block consequent of the previous case) but the
+    /// byte-range scan covers both forms cheaply.
+    pub fn switchCasesHaveFallthroughComment(self: *const LintContext, prev_case: NodeIndex, curr_case: NodeIndex) bool {
+        if (prev_case == .none or curr_case == .none) return false;
+        const prev_span = self.nodeSpan(prev_case);
+        const curr_span = self.nodeSpan(curr_case);
+        const src = self.ast.source;
+        // Honor `options[0].commentPattern` — when supplied, any comment
+        // matching that regex (we approximate via case-insensitive
+        // substring of a literal prefix) allows fallthrough.  Without it,
+        // fall back to ESLint's default "falls through" pattern.
+        const custom_pattern = self.getOptionString("commentPattern");
+        // Scan two precise ranges: (a) the gap between prev case's end and
+        // curr case's start (catches `/* falls through */ case 1:`), and
+        // (b) inside prev case's single-block consequent if it has exactly
+        // one BlockStatement consequent (catches `case 0: { /* falls
+        // through */ }`).  Multi-stmt consequents don't get the in-block
+        // allowance, matching ESLint's rule.
+        const hi: usize = @min(curr_span.start, src.len);
+        // First check: inside the single-block consequent's trailing-brace
+        // comment slot.  ESLint only allows the fall-through marker when
+        // it's the comment IMMEDIATELY before the close brace — nested
+        // blocks don't count.
+        const single_block_body = self.switchCaseSingleBlockBody(prev_case);
+        if (single_block_body != .none) {
+            if (self.commentImmediatelyBeforeCloseBraceMatches(single_block_body, custom_pattern)) return true;
+        }
+        // Then the standard "between cases" gap.  Only the LAST comment
+        // in the gap counts (mirrors ESLint's .pop() on getCommentsBefore).
+        return self.lastCommentInRangeMatches(@min(prev_span.end, src.len), hi, custom_pattern);
+    }
+
+    /// Find the last comment in `src[lo..hi]`; return true if it matches
+    /// the fall-through pattern.  Used for the gap-between-cases scan
+    /// where ESLint's getCommentsBefore(next).pop() picks the immediate
+    /// predecessor comment.
+    fn lastCommentInRangeMatches(self: *const LintContext, lo: usize, hi: usize, custom: ?[]const u8) bool {
+        const src = self.ast.source;
+        if (lo >= hi or hi > src.len) return false;
+        var last_lo: ?usize = null;
+        var last_hi: usize = 0;
+        var i: usize = lo;
+        while (i + 1 < hi) : (i += 1) {
+            if (src[i] != '/') continue;
+            if (src[i + 1] == '/') {
+                var j = i + 2;
+                const start = j;
+                while (j < src.len and j < hi and src[j] != '\n') j += 1;
+                last_lo = start;
+                last_hi = j;
+                i = j;
+                continue;
+            }
+            if (src[i + 1] == '*') {
+                var j = i + 2;
+                const start = j;
+                while (j + 1 < src.len and !(src[j] == '*' and src[j + 1] == '/')) j += 1;
+                if (j + 1 >= src.len) break;
+                last_lo = start;
+                last_hi = j;
+                i = j + 1;
+            }
+        }
+        if (last_lo) |s| return commentMatchesFallthrough(src[s..last_hi], custom);
+        return false;
+    }
+
+    /// Either matches the ESLint default `/falls?\s?through/iu` or, when
+    /// the rule was configured with `commentPattern: "<X>"`, contains the
+    /// literal-prefix portion of that pattern as a case-insensitive
+    /// substring.  Regex metachars in the user pattern fall back to the
+    /// prefix up to the first metachar (covers shapes like `"no break"`
+    /// and `"no break:\\s?\\w+"` — for the second we match on `no break:`).
+    fn commentMatchesFallthrough(text: []const u8, custom: ?[]const u8) bool {
+        if (custom) |pat| {
+            // Trim regex anchors and tail metachars; use prefix up to first
+            // metachar as a literal substring.
+            var end: usize = 0;
+            while (end < pat.len) : (end += 1) {
+                const c = pat[end];
+                if (c == '\\' or c == '(' or c == ')' or c == '[' or c == ']'
+                    or c == '{' or c == '}' or c == '|' or c == '?' or c == '*'
+                    or c == '+' or c == '.' or c == '^' or c == '$') break;
+            }
+            const lit = pat[0..end];
+            if (lit.len > 0 and substringCaseInsensitive(text, lit)) return true;
+        }
+        return commentLooksLikeFallThrough(text);
+    }
+
+    fn substringCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0 or needle.len > haystack.len) return false;
+        var i: usize = 0;
+        while (i + needle.len <= haystack.len) : (i += 1) {
+            if (std.ascii.eqlIgnoreCase(haystack[i..i + needle.len], needle)) return true;
+        }
+        return false;
+    }
+
+    fn commentLooksLikeFallThrough(text: []const u8) bool {
+        // Case-insensitive match for "fall through" or "falls through".  The
+        // ESLint default pattern is /falls?\s?through/iu — we approximate by
+        // looking for the substring "fall" followed by optional s/space and
+        // "through".
+        var i: usize = 0;
+        while (i + 4 <= text.len) : (i += 1) {
+            if (!std.ascii.eqlIgnoreCase(text[i..i + 4], "fall")) continue;
+            var j: usize = i + 4;
+            // optional 's'
+            if (j < text.len and (text[j] == 's' or text[j] == 'S')) j += 1;
+            // optional whitespace (space, tab, etc.)
+            while (j < text.len and (text[j] == ' ' or text[j] == '\t' or text[j] == '-' or text[j] == '_')) j += 1;
+            if (j + 7 <= text.len and std.ascii.eqlIgnoreCase(text[j..j + 7], "through")) return true;
+        }
+        return false;
+    }
+
+    /// True when the given switch_case's body falls through to the next
+    /// case — i.e. at SwitchCase:exit at least one live segment is still
+    /// reachable.  Mirrors ESLint's no-fallthrough check.  Returns true
+    /// (conservative) when the rule runs without code-path analysis.
+    ///
+    /// Walks the event stream maintaining a live-segment set; when we see
+    /// the seg_end event with node == case_node and phase == exit, the
+    /// snapshot of live segments at that point tells us reachability.
+    pub fn switchCaseExitReachable(self: *const LintContext, case_node: NodeIndex) bool {
+        if (case_node == .none) return false;
+        const cpr = self.semantic.code_path_result orelse return true;
+        // Track active segments across the event stream.  When we see the
+        // seg_start event marking case_node entering, remember the segment
+        // we're "in".  Then continue walking — every seg_end with the
+        // matching segment id closes that segment (an unreachable_seg may
+        // replace it via a fresh seg_start in the same case body).  At the
+        // moment a SUBSEQUENT case enters (seg_end with phase=.enter on
+        // some other switch_case_or_default), the segment being ended is
+        // the one whose reachability decides fallthrough.
+        var saw_case = false;
+        var last_active_seg: u32 = 0;
+        for (cpr.events) |ev| {
+            if (!saw_case) {
+                // Find the start of case_node's body.
+                if ((ev.type == .seg_start or ev.type == .unreachable_seg_start)
+                    and ev.node == case_node and ev.phase == .after_enter) {
+                    saw_case = true;
+                    last_active_seg = ev.data1;
+                }
+                continue;
+            }
+            // Track replacements: a new seg_start INSIDE the case body
+            // updates last_active_seg.  We don't know exact case boundaries
+            // mid-body; assume any seg_start that isn't a sibling case
+            // entering belongs to the current case.
+            switch (ev.type) {
+                .seg_start, .unreachable_seg_start => {
+                    // Subsequent case starting → previous case ended; the
+                    // last_active_seg is what fell through (or not).
+                    if (ev.phase == .after_enter and ev.node != case_node) {
+                        const tag = self.ast.nodeTag(ev.node);
+                        if (tag == .switch_case or tag == .switch_default) {
+                            if (last_active_seg >= cpr.seg_reachable.len) return false;
+                            return cpr.seg_reachable[last_active_seg] != 0;
+                        }
+                    }
+                    last_active_seg = ev.data1;
+                },
+                .seg_end, .unreachable_seg_end => {
+                    // A seg_end with phase=.enter and node being a
+                    // sibling case marks the boundary directly.
+                    if (ev.phase == .enter) {
+                        const tag = self.ast.nodeTag(ev.node);
+                        if (tag == .switch_case or tag == .switch_default and ev.node != case_node) {
+                            if (ev.data1 >= cpr.seg_reachable.len) return false;
+                            return cpr.seg_reachable[ev.data1] != 0;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+        // No subsequent case — case_node is the last.  Whether it falls
+        // through is moot (no-fallthrough doesn't fire on the last case).
+        return false;
     }
 
     /// Returns whether a loop's body can complete and iterate again.

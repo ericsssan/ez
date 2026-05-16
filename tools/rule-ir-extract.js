@@ -379,7 +379,8 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
   // nodeNearestFunctionAncestor don't need them.  Drop silently so the
   // surrounding rule still extracts.
   const CODE_PATH_HOOKS = new Set(["onCodePathStart", "onCodePathEnd",
-    "onCodePathSegmentStart", "onCodePathSegmentEnd", "onCodePathSegmentLoop"]);
+    "onCodePathSegmentStart", "onCodePathSegmentEnd", "onCodePathSegmentLoop",
+    "onUnreachableCodePathSegmentStart", "onUnreachableCodePathSegmentEnd"]);
   for (const h of expandedHandlers) {
     if (CODE_PATH_HOOKS.has(h.selector)) continue;
     const stmts = getFunctionBodyStatements(h.handler);
@@ -405,6 +406,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoLabelVarHandler,      // no-label-var
       extractNoConstructorReturnHandler, // no-constructor-return
       extractRequireYieldHandler,    // require-yield
+      extractNoFallthroughHandler,   // no-fallthrough
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -724,6 +726,93 @@ function extractRequireYieldHandler(rawHandler, stmts, { sourceFile } = {}) {
     handler: {
       selector: "__GeneratorFnOrMethod__",
       body: [{ op: "if", cond: fullCond, then: [report] }],
+    },
+  };
+}
+
+// Recognize the no-fallthrough rule shape:
+//
+//   SwitchCase(node) {
+//     if (previousCase && previousCase.node.parent === node.parent) {
+//       … if previousCase.isFallthrough && no fall-through comment → report at node
+//     }
+//   }
+//   SwitchCase:exit(node) { previousCase = { isSwitchExitReachable, isFallthrough } }
+//
+// Lifted to: dispatch on switch_case/switch_default; check that the previous
+// sibling case is reachable at its exit AND had a consequent.  Drops the
+// fall-through-comment allowance (v1) and the empty-case-no-blank-line
+// allowance — both would need source-comment scanning we don't yet expose.
+function extractNoFallthroughHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-fallthrough.js")) return { ok: false };
+  if (rawHandler.selector !== "SwitchCase" && rawHandler.selector !== "SwitchCase:exit") {
+    return { ok: false };
+  }
+  // Pull messageIds (case + default) from the create body.
+  const SKIP_KEYS = new Set(["parent", "loc", "range", "start", "end"]);
+  const ids = new Set();
+  const visit = (n) => {
+    if (!n || typeof n !== "object" || !n.type) return;
+    if (n.type === "Property"
+        && (n.key?.name === "messageId" || n.key?.value === "messageId")
+        && n.value?.type === "Literal" && typeof n.value.value === "string") {
+      ids.add(n.value.value);
+    }
+    for (const k of ["body", "consequent", "alternate", "argument", "expression",
+                      "object", "property", "callee", "arguments", "init", "test",
+                      "left", "right", "key", "value", "properties", "params"]) {
+      if (SKIP_KEYS.has(k)) continue;
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  const createBody = rawHandler.__createBody || [];
+  for (const s of createBody) visit(s);
+  // no-fallthrough's messageIds are baked into a `node.test ? "case" : "default"`
+  // conditional inside report.  The recognizer can't pull them via Literal
+  // search; hardcode since the rule's meta.messages keys are stable.
+  const caseMsgId = "case";
+  const defaultMsgId = "default";
+
+  // Build IR:
+  //   const prev = previousSwitchCase(node);
+  //   if (prev != .none AND switchCaseExitReachable(prev) AND switchCaseHasConsequent(prev)) {
+  //     if (tag(node) == switch_default) report(node, "default")
+  //     else report(node, "case")
+  //   }
+  // Since `prev` is referenced 3 times, just inline it.
+  const prev = { op: "node-previous-switch-case", node: { op: "node-ref" } };
+  const cond = {
+    op: "binary", operator: "&&",
+    lhs: {
+      op: "binary", operator: "&&",
+      lhs: {
+        op: "binary", operator: "&&",
+        lhs: { op: "node-not-none", node: prev },
+        rhs: { op: "switch-case-exit-reachable", node: prev },
+      },
+      rhs: { op: "switch-case-qualifies-for-fallthrough",
+             prev, curr: { op: "node-ref" } },
+    },
+    rhs: {
+      op: "unary", operator: "!",
+      operand: { op: "switch-cases-have-fallthrough-comment",
+                 prev, curr: { op: "node-ref" } },
+    },
+  };
+  // Inner branch: tag(node) == switch_default → "default", else "case".
+  const inner = {
+    op: "if",
+    cond: { op: "node-tag-in-set", setName: "__SwitchDefault__", node: { op: "node-ref" } },
+    then: [{ op: "report", node: { op: "node-ref" }, messageId: defaultMsgId }],
+    else: [{ op: "report", node: { op: "node-ref" }, messageId: caseMsgId }],
+  };
+  return {
+    ok: true,
+    handler: {
+      selector: "__SwitchCaseOrDefault__",
+      body: [{ op: "if", cond, then: [inner] }],
     },
   };
 }

@@ -90,6 +90,8 @@ const SELECTOR_TO_TAG_MULTI = {
   // Constructor MethodDefinition specifically — distinct from generic
   // method/getter/setter defs.  Used by no-constructor-return.
   __ConstructorDef__: ["constructor_def"],
+  // Both switch case shapes — `case X:` and `default:`.
+  __SwitchCaseOrDefault__: ["switch_case", "switch_default"],
   // All generator function shapes (sync + async, decl + expr).  Stand-in
   // for `node.generator === true` filtering on Function* selectors.
   __Generator__: ["generator_fn_decl", "generator_fn_expr",
@@ -246,7 +248,8 @@ function emit(rule) {
       || irUsesOp(rule, "is-global-reference") || irUsesOp(rule, "name-has-no-user-binding")
       || irUsesOp(rule, "identifier-shadows-binding")
       || irUsesOp(rule, "node-nearest-function-ancestor")
-      || irUsesOp(rule, "node-subtree-contains-tag")) {
+      || irUsesOp(rule, "node-subtree-contains-tag")
+      || irUsesOp(rule, "switch-case-exit-reachable")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1162,6 +1165,18 @@ function emitExpr(e, ctx) {
       return `ctx.nodeFunctionHeadSpan(${emitExpr(e.node, ctx)}).start`;
     case "node-fn-head-span-end":
       return `ctx.nodeFunctionHeadSpan(${emitExpr(e.node, ctx)}).end`;
+    case "node-previous-switch-case":
+      return `ctx.previousSwitchCase(${emitExpr(e.node, ctx)})`;
+    case "switch-case-exit-reachable":
+      return `ctx.switchCaseExitReachable(${emitExpr(e.node, ctx)})`;
+    case "switch-case-has-consequent":
+      return `ctx.switchCaseHasConsequent(${emitExpr(e.node, ctx)})`;
+    case "node-not-none":
+      return `(${emitExpr(e.node, ctx)} != .none)`;
+    case "switch-cases-have-fallthrough-comment":
+      return `ctx.switchCasesHaveFallthroughComment(${emitExpr(e.prev, ctx)}, ${emitExpr(e.curr, ctx)})`;
+    case "switch-case-qualifies-for-fallthrough":
+      return `ctx.switchCaseQualifiesForFallthrough(${emitExpr(e.prev, ctx)}, ${emitExpr(e.curr, ctx)})`;
     case "token-of-node-last":
       return `ctx.nodeLastToken(${emitExpr(e.node, ctx)})`;
     case "token-of-node-penultimate":

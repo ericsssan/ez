@@ -229,6 +229,22 @@ const EXPR_OPS = new Set([
   // non-arrow shapes.
   "node-fn-head-span-start",
   "node-fn-head-span-end",
+  // SwitchCase helpers used by no-fallthrough: previous sibling case
+  // (node-valued; .none for first/non-case), exit-reachability flag, and
+  // non-empty-consequent check.
+  "node-previous-switch-case",
+  "switch-case-exit-reachable",
+  "switch-case-has-consequent",
+  // True when prev_case has a consequent OR `allowEmptyCase: false` AND
+  // blank lines separate the cases — combined fallthrough qualifier.
+  "switch-case-qualifies-for-fallthrough",
+  // True when a `falls through` comment sits between the two adjacent
+  // switch cases in source — caller passes (prev, curr).
+  "switch-cases-have-fallthrough-comment",
+  // Generic "this node is not .none" check.  Useful when a node-valued op
+  // (e.g. previous-switch-case, nearest-function-ancestor) needs an
+  // existence guard.
+  "node-not-none",
 ]);
 
 // Helper-function kinds.
@@ -659,8 +675,18 @@ function validateExpr(e, path) {
     if (typeof e.tag !== "string") return fail("node-subtree-contains-tag.tag must be string", path);
     return validateExpr(e.node, `${path}.node`);
   }
-  if (e.op === "node-fn-head-span-start" || e.op === "node-fn-head-span-end") {
+  if (e.op === "node-fn-head-span-start" || e.op === "node-fn-head-span-end"
+      || e.op === "node-previous-switch-case"
+      || e.op === "switch-case-exit-reachable"
+      || e.op === "switch-case-has-consequent"
+      || e.op === "node-not-none") {
     return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "switch-cases-have-fallthrough-comment"
+      || e.op === "switch-case-qualifies-for-fallthrough") {
+    const a = validateExpr(e.prev, `${path}.prev`);
+    if (!a.ok) return a;
+    return validateExpr(e.curr, `${path}.curr`);
   }
   if (e.op === "name-has-no-user-binding") {
     if (typeof e.name !== "string") return fail("name-has-no-user-binding.name must be string", path);
