@@ -92,6 +92,10 @@ const SELECTOR_TO_TAG_MULTI = {
   __ConstructorDef__: ["constructor_def"],
   // Both switch case shapes — `case X:` and `default:`.
   __SwitchCaseOrDefault__: ["switch_case", "switch_default"],
+  // All loop statement shapes (while / do-while / for / for-in / for-of /
+  // for-await-of).  Used by no-unreachable-loop.
+  __AnyLoop__: ["while_stmt", "do_while_stmt", "for_stmt",
+                "for_in_stmt", "for_of_stmt", "for_await_of_stmt"],
   // All generator function shapes (sync + async, decl + expr).  Stand-in
   // for `node.generator === true` filtering on Function* selectors.
   __Generator__: ["generator_fn_decl", "generator_fn_expr",
@@ -249,7 +253,8 @@ function emit(rule) {
       || irUsesOp(rule, "identifier-shadows-binding")
       || irUsesOp(rule, "node-nearest-function-ancestor")
       || irUsesOp(rule, "node-subtree-contains-tag")
-      || irUsesOp(rule, "switch-case-exit-reachable")) {
+      || irUsesOp(rule, "switch-case-exit-reachable")
+      || irUsesOp(rule, "loop-has-iteration-back-edge")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1176,6 +1181,12 @@ function emitExpr(e, ctx) {
       return `ctx.switchCaseExitReachable(${emitExpr(e.node, ctx)})`;
     case "switch-case-has-consequent":
       return `ctx.switchCaseHasConsequent(${emitExpr(e.node, ctx)})`;
+    case "loop-has-iteration-back-edge":
+      return `ctx.loopHasIterationBackEdge(${emitExpr(e.node, ctx)})`;
+    case "node-reachable":
+      return `ctx.nodeReachable(${emitExpr(e.node, ctx)})`;
+    case "option-ignore-contains-node-type":
+      return `ctx.optionIgnoreContainsNodeType(${emitExpr(e.node, ctx)})`;
     case "node-not-none":
       return `(${emitExpr(e.node, ctx)} != .none)`;
     case "switch-cases-have-fallthrough-comment":

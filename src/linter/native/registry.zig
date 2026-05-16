@@ -56,7 +56,7 @@ const no_class_assign = @import("correctness/no_class_assign.zig");
 const no_constructor_return = @import("correctness/no_constructor_return.zig");  // IR-generated via node-nearest-function-ancestor op
 // const no_await_in_loop = @import("correctness/no_await_in_loop.zig");  // hand-written — disabled per IR-only constraint
 // const no_promise_executor_return = @import("correctness/no_promise_executor_return.zig");  // hand-written — disabled per IR-only constraint
-// const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");  // hand-written — disabled per IR-only constraint
+const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");  // IR-generated via loop-has-iteration-back-edge op
 const no_empty_static_block = @import("correctness/no_empty_static_block.zig");
 // const no_constructor_new = @import("correctness/no_constructor_new.zig");  // hand-written — disabled per IR-only constraint
 // const accessor_pairs = @import("correctness/no_setter_without_getter.zig");  // hand-written — disabled per IR-only constraint
@@ -339,7 +339,7 @@ pub const all_rules = .{
     no_constructor_return,
     // no_await_in_loop, // runner >> native (runner 37, native 28, 9 FN); fall back
     // no_promise_executor_return, // runner >> native (runner 124/124, native 121/124, 3 more FN); fall back
-    // no_unreachable_loop, // hand-written, 781 FP vs ESLint; fall back to JS runner
+    no_unreachable_loop,
     // no_empty_static_block, // hand-written — disabled
     // no_constructor_new, // hand-written — disabled
     // accessor_pairs, // runner >> native (50%, 7 FP); fall back to JS runner

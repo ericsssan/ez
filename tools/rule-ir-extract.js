@@ -407,6 +407,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoConstructorReturnHandler, // no-constructor-return
       extractRequireYieldHandler,    // require-yield
       extractNoFallthroughHandler,   // no-fallthrough
+      extractNoUnreachableLoopHandler, // no-unreachable-loop
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -826,6 +827,62 @@ function extractNoFallthroughHandler(rawHandler, stmts, { sourceFile } = {}) {
         { op: "if", cond, then: [inner] },
         unusedReport,
       ],
+    },
+  };
+}
+
+// Recognize the no-unreachable-loop rule shape.  ESLint uses
+// onCodePathSegmentLoop tracking to figure out whether a loop's body can
+// reach the next iteration.  Equivalent native check: dispatch on each
+// loop tag, report when the loop is reachable AND has no iteration
+// back-edge in the code-path event stream.
+//
+// Drops the `ignore: [LoopType…]` option for v1 (default ignore=[]); add
+// runtime filtering when a fixture forces it.
+function extractNoUnreachableLoopHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-unreachable-loop.js")) return { ok: false };
+  // The rule binds many selectors (a runtime-computed loopSelector +
+  // several lifecycle hooks + Program:exit).  Accept ANY selector while
+  // this file owns the rule — one emitted handler replaces them all and
+  // the deduper drops copies.
+  // Pull messageId from createBody.
+  let messageId = null;
+  const SKIP_KEYS = new Set(["parent", "loc", "range", "start", "end"]);
+  const visit = (n) => {
+    if (!n || typeof n !== "object" || !n.type) return;
+    if (n.type === "Property"
+        && (n.key?.name === "messageId" || n.key?.value === "messageId")
+        && n.value?.type === "Literal" && typeof n.value.value === "string") {
+      messageId = messageId || n.value.value;
+    }
+    for (const k of ["body", "consequent", "alternate", "argument", "expression",
+                      "object", "property", "callee", "arguments", "init", "test",
+                      "left", "right", "key", "value", "properties", "params"]) {
+      if (SKIP_KEYS.has(k)) continue;
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  for (const s of rawHandler.__createBody || []) visit(s);
+  if (!messageId) return { ok: false };
+  // Single emitted handler: on each loop, if reachable AND no back-edge → report.
+  const cond = {
+    op: "binary", operator: "&&",
+    lhs: {
+      op: "binary", operator: "&&",
+      lhs: { op: "node-reachable", node: { op: "node-ref" } },
+      rhs: { op: "unary", operator: "!",
+             operand: { op: "option-ignore-contains-node-type", node: { op: "node-ref" } } },
+    },
+    rhs: { op: "unary", operator: "!",
+           operand: { op: "loop-has-iteration-back-edge", node: { op: "node-ref" } } },
+  };
+  return {
+    ok: true,
+    handler: {
+      selector: "__AnyLoop__",
+      body: [{ op: "if", cond, then: [{ op: "report", node: { op: "node-ref" }, messageId }] }],
     },
   };
 }

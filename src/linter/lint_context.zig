@@ -1092,6 +1092,24 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
+        // do-while loop: `do BODY while (TEST)` — the test's closing `)`
+        // isn't a tracked child, so extend past the next `)` after the
+        // existing end.  (The TEST sub-tree's end lands at the test
+        // expression's last char; we want to include the `)` and the
+        // optional trailing `;` that ESTree's range includes.)
+        if (tag == .do_while_stmt) {
+            // Walk forward from current end skipping whitespace; expect `)`.
+            var p: usize = end;
+            while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\r' or src[p] == '\n')) p += 1;
+            if (p < src.len and src[p] == ')') {
+                end = @intCast(p + 1);
+                // Continue past optional trailing semicolon (ESTree includes it).
+                var q: usize = end;
+                while (q < src.len and (src[q] == ' ' or src[q] == '\t')) q += 1;
+                if (q < src.len and src[q] == ';') end = @intCast(q + 1);
+            }
+            return .{ .start = first_start, .end = end };
+        }
         // Statements that include their trailing `;` in ESTree's `range` —
         // declarations, simple statements, and expression statements all
         // count.  If the next non-whitespace char past the existing end is
@@ -2119,6 +2137,57 @@ pub const LintContext = struct {
         }
         if (last_span_start) |s| return .{ .start = @intCast(s), .end = @intCast(last_span_end) };
         return null;
+    }
+
+    /// True when the rule's `options[0].ignore` array contains the
+    /// ESLint-flavored type name of `n`.  Generic ignore-list filter.
+    pub fn optionIgnoreContainsNodeType(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        const type_name = self.nodeEslintTypeName(n);
+        return self.optionArrayContains("ignore", type_name);
+    }
+
+    /// True when the given loop has at least one back-edge in the code path
+    /// — i.e. some control-flow event loops back to the loop's "looping
+    /// target" segment (next-iteration start).  Source must be either the
+    /// loop node itself (body end iterating) OR a continue statement
+    /// targeting this loop.  ForIn/Of's `.right` evaluation doesn't count
+    /// (mirrors ESLint's no-unreachable-loop check).
+    pub fn loopHasIterationBackEdge(self: *const LintContext, loop_node: NodeIndex) bool {
+        if (loop_node == .none) return false;
+        const cpr = self.semantic.code_path_result orelse return true;
+        for (cpr.events) |ev| {
+            if (ev.type != .seg_loop) continue;
+            if (ev.node == loop_node) return true;
+            const tag = self.ast.nodeTag(ev.node);
+            if (tag == .continue_stmt or tag == .continue_label) {
+                if (self.continueTargetsLoop(ev.node, loop_node)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// True when a continue statement targets the given loop node — i.e.
+    /// walking up from the continue, `loop_node` is the first enclosing
+    /// loop (or the label matches, for labeled continue).
+    fn continueTargetsLoop(self: *const LintContext, continue_node: NodeIndex, loop_node: NodeIndex) bool {
+        var cur = self.parentOf(continue_node);
+        while (cur != .none) {
+            if (cur == loop_node) return true;
+            switch (self.ast.nodeTag(cur)) {
+                .while_stmt, .do_while_stmt, .for_stmt,
+                .for_in_stmt, .for_of_stmt, .for_await_of_stmt => {
+                    // Hit a different loop before our target → continue
+                    // targets that one, not ours.  (Labeled continues
+                    // could still target ours; punt — labeled jumps are
+                    // rare and the rule conservatively skips on them.)
+                    if (cur != loop_node) return false;
+                },
+                else => {},
+            }
+            cur = self.parentOf(cur);
+        }
+        return false;
     }
 
     /// True when the given switch_case's body falls through to the next

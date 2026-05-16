@@ -238,6 +238,14 @@ const EXPR_OPS = new Set([
   // (node-valued; .none for first/non-case), exit-reachability flag, and
   // non-empty-consequent check.
   "node-previous-switch-case",
+  // True when a loop's code path has at least one back-edge (the loop
+  // body actually iterates).  False ≡ no-unreachable-loop should fire.
+  "loop-has-iteration-back-edge",
+  // True when `nodeReachable(n)` — entry reachability from semantic.
+  "node-reachable",
+  // True when `options[0].ignore` array contains the ESLint type name of
+  // the given node — used by no-unreachable-loop's `ignore: [...]` option.
+  "option-ignore-contains-node-type",
   "switch-case-exit-reachable",
   "switch-case-has-consequent",
   // True when prev_case has a consequent OR `allowEmptyCase: false` AND
@@ -690,7 +698,10 @@ function validateExpr(e, path) {
       || e.op === "node-previous-switch-case"
       || e.op === "switch-case-exit-reachable"
       || e.op === "switch-case-has-consequent"
-      || e.op === "node-not-none") {
+      || e.op === "node-not-none"
+      || e.op === "loop-has-iteration-back-edge"
+      || e.op === "node-reachable"
+      || e.op === "option-ignore-contains-node-type") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "switch-cases-have-fallthrough-comment"
