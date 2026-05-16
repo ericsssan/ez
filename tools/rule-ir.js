@@ -253,6 +253,10 @@ const EXPR_OPS = new Set([
   // True when the given await_expr sits inside the test/update/body of
   // an enclosing loop — no-await-in-loop's core check.
   "await-is-in-loop",
+  // True when an `arguments` identifier reference qualifies as a
+  // prefer-rest-params violation (not a member-access object + inside a
+  // non-arrow function-binding scope).
+  "arguments-ref-is-restable-violation",
   "switch-case-exit-reachable",
   "switch-case-has-consequent",
   // True when prev_case has a consequent OR `allowEmptyCase: false` AND
@@ -710,7 +714,8 @@ function validateExpr(e, path) {
       || e.op === "node-reachable"
       || e.op === "option-ignore-contains-node-type"
       || e.op === "node-is-inside-finally-before-sentinel"
-      || e.op === "await-is-in-loop") {
+      || e.op === "await-is-in-loop"
+      || e.op === "arguments-ref-is-restable-violation") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "switch-cases-have-fallthrough-comment"

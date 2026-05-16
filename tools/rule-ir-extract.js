@@ -410,6 +410,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUnreachableLoopHandler, // no-unreachable-loop
       extractNoUnsafeFinallyHandler, // no-unsafe-finally
       extractNoAwaitInLoopHandler,   // no-await-in-loop
+      extractPreferRestParamsHandler, // prefer-rest-params
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -975,6 +976,47 @@ function extractNoAwaitInLoopHandler(rawHandler, stmts, { sourceFile } = {}) {
       body: [{
         op: "if",
         cond: { op: "await-is-in-loop", node: { op: "node-ref" } },
+        then: [{ op: "report", node: { op: "node-ref" }, messageId }],
+      }],
+    },
+  };
+}
+
+// Recognize prefer-rest-params.  Dispatches on every Identifier; the
+// argumentsRefIsRestableViolation helper filters to `arguments` refs
+// that are not `.length`/`.callee` member access and sit inside a real
+// (non-arrow) function scope.
+function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/prefer-rest-params.js")) return { ok: false };
+  const accepted = new Set(["FunctionDeclaration:exit", "FunctionExpression:exit"]);
+  if (!accepted.has(rawHandler.selector)) return { ok: false };
+  let messageId = null;
+  const SKIP_KEYS = new Set(["parent", "loc", "range", "start", "end"]);
+  const visit = (n) => {
+    if (!n || typeof n !== "object" || !n.type) return;
+    if (n.type === "Property"
+        && (n.key?.name === "messageId" || n.key?.value === "messageId")
+        && n.value?.type === "Literal" && typeof n.value.value === "string") {
+      messageId = messageId || n.value.value;
+    }
+    for (const k of ["body", "consequent", "alternate", "argument", "expression",
+                      "object", "property", "callee", "arguments", "init", "test",
+                      "left", "right", "key", "value", "properties", "params"]) {
+      if (SKIP_KEYS.has(k)) continue;
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  for (const s of rawHandler.__createBody || []) visit(s);
+  if (!messageId) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      selector: "Identifier",
+      body: [{
+        op: "if",
+        cond: { op: "arguments-ref-is-restable-violation", node: { op: "node-ref" } },
         then: [{ op: "report", node: { op: "node-ref" }, messageId }],
       }],
     },

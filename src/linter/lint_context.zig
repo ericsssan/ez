@@ -2167,6 +2167,55 @@ pub const LintContext = struct {
         return self.optionArrayContains("ignore", type_name);
     }
 
+    /// True when an `arguments` identifier reference qualifies as a
+    /// prefer-rest-params violation: it's not the object of a non-computed
+    /// member access (so `arguments.length` doesn't fire) AND its enclosing
+    /// function isn't a top-level / arrow / class field initializer scope
+    /// (i.e. it's inside a real function/method that binds `arguments`).
+    pub fn argumentsRefIsRestableViolation(self: *const LintContext, id_node: NodeIndex) bool {
+        if (id_node == .none) return false;
+        if (self.ast.nodeTag(id_node) != .identifier) return false;
+        const name = self.tokenText(self.ast.nodeMainToken(id_node));
+        if (!std.mem.eql(u8, name, "arguments")) return false;
+        // Skip declaration sites — they're bindings, not references.
+        // (Without this, `function foo(arguments) { … }` reports the param
+        // identifier itself.)  An identifier with no associated reference
+        // entry is a declaration site or a member-access property name.
+        if (self.nodeRefId(id_node) == .none) return false;
+        // Skip when this identifier is the `.object` of a non-computed member
+        // expression (e.g. `arguments.length`, `arguments.callee`).
+        const parent = self.parentOf(id_node);
+        if (parent != .none) {
+            const ptag = self.ast.nodeTag(parent);
+            if (ptag == .member_expr) {
+                const pd = self.nodeData(parent);
+                if (pd.lhs == id_node) return false; // we ARE the object
+            }
+        }
+        // Walk up looking for a function that binds arguments (non-arrow
+        // function / method / getter / setter / constructor).  Arrows
+        // inherit `arguments` from outer fn — keep walking past them.
+        var cur = self.parentOf(id_node);
+        var enclosing_fn: NodeIndex = .none;
+        while (cur != .none) {
+            switch (self.ast.nodeTag(cur)) {
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+                .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+                .setter_def, .computed_setter_def, .constructor_def => { enclosing_fn = cur; break; },
+                else => {},
+            }
+            cur = self.parentOf(cur);
+        }
+        if (enclosing_fn == .none) return false;
+        // Skip when the function shadows `arguments` via a parameter or
+        // `var arguments` — that's a user binding, not the implicit one.
+        // nameHasNoUserBinding walks scope from id_node's resolved ref;
+        // when false, a user-declared `arguments` exists in scope.
+        if (!self.nameHasNoUserBinding(id_node, "arguments")) return false;
+        return true;
+    }
+
     /// True when the given await_expr sits inside the test/update/body of
     /// an enclosing loop (mirrors ESLint's no-await-in-loop check).  Stops
     /// at function boundaries and at `for await of` (whose body's await

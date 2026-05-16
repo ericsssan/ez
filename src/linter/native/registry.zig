@@ -164,7 +164,7 @@ const no_unneeded_ternary = @import("style/no_unneeded_ternary.zig");
 const symbol_description = @import("style/symbol_description.zig");
 // const no_useless_rename = @import("style/no_useless_rename.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 style rules
-// const prefer_rest_params = @import("style/prefer_rest_params.zig");  // hand-written — disabled per IR-only constraint
+const prefer_rest_params = @import("correctness/prefer_rest_params.zig");  // IR-generated via arguments-ref-is-restable-violation
 // const prefer_spread = @import("style/prefer_spread.zig");  // hand-written — disabled per IR-only constraint
 // const no_useless_call = @import("style/no_useless_call.zig");  // hand-written — disabled per IR-only constraint
 // const max_params = @import("style/max_params.zig");  // hand-written — disabled per IR-only constraint
@@ -443,7 +443,7 @@ pub const all_rules = .{
     symbol_description,
     // no_useless_rename, // runner >> native (runner 163, native 78, gap 85, 13 FP); fall back to JS runner
     // Style v0.6 (13)
-    // prefer_rest_params, // native has 6 FP making hybrid 5 vs runner 11; fall back to JS runner
+    prefer_rest_params,
     // prefer_spread, // hand-written — disabled
     // no_useless_call, // runner >> native (runner 44, native 21, gap 23, 2 FP); fall back to JS runner
     // max_params, // runner >> native (runner 52, native 25, gap 28); fall back to JS runner

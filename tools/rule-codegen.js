@@ -267,7 +267,8 @@ function emit(rule) {
       || irUsesOp(rule, "switch-case-exit-reachable")
       || irUsesOp(rule, "loop-has-iteration-back-edge")
       || irUsesOp(rule, "node-is-inside-finally-before-sentinel")
-      || irUsesOp(rule, "await-is-in-loop")) {
+      || irUsesOp(rule, "await-is-in-loop")
+      || irUsesOp(rule, "arguments-ref-is-restable-violation")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1204,6 +1205,8 @@ function emitExpr(e, ctx) {
       return `ctx.nodeIsInsideFinallyBeforeSentinel(${emitExpr(e.node, ctx)})`;
     case "await-is-in-loop":
       return `ctx.awaitIsInLoop(${emitExpr(e.node, ctx)})`;
+    case "arguments-ref-is-restable-violation":
+      return `ctx.argumentsRefIsRestableViolation(${emitExpr(e.node, ctx)})`;
     case "node-not-none":
       return `(${emitExpr(e.node, ctx)} != .none)`;
     case "switch-cases-have-fallthrough-comment":
