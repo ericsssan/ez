@@ -213,6 +213,8 @@ const default_case_last = @import("style/default_case_last.zig");
 // const class_methods_use_this = @import("style/class_methods_use_this.zig");  // hand-written — disabled per IR-only constraint
 const avoid_new = @import("style/avoid_new.zig");
 // unicorn style rules
+// `no_lonely_if` extracted but unregistered — bare-name collides with eslint-core
+// no-lonely-if (different semantics); needs plugin-scoped registration first.
 const consistent_date_clone = @import("style/consistent_date_clone.zig");
 const prefer_dom_node_append = @import("style/prefer_dom_node_append.zig");
 const no_unnecessary_array_flat_depth = @import("style/no_unnecessary_array_flat_depth.zig");
@@ -489,6 +491,7 @@ pub const all_rules = .{
     // no_useless_switch_case, // hand-written — disabled
     // class_methods_use_this, // hand-written, 63 FP vs ESLint; fall back to JS runner
     avoid_new,
+    // no_lonely_if, // unicorn variant; collides with eslint-core no-lonely-if (different semantics) — regresses hybrid
     consistent_date_clone,
     prefer_dom_node_append,
     no_unnecessary_array_flat_depth,
