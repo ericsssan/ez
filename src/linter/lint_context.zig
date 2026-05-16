@@ -19,6 +19,7 @@ const symbol_mod = parser.symbol;
 const SymbolTable = symbol_mod.SymbolTable;
 const reference_mod = parser.reference;
 const ReferenceTable = reference_mod.ReferenceTable;
+const ReferenceId = reference_mod.ReferenceId;
 
 // ── Lint Fix ───────────────────────────────────────────────
 
@@ -1400,6 +1401,59 @@ pub const LintContext = struct {
 
     pub fn references(self: *const LintContext) *const ReferenceTable {
         return &self.semantic.references;
+    }
+
+    /// Find the reference id for an identifier node.  Linear scan of the
+    /// reference table — fine for the handful of scope-aware rules that
+    /// query per Identifier node, but build a cache here if hot.
+    /// Returns `.none` when the node has no associated reference (literal,
+    /// member-expression property name, declaration site, etc.).
+    pub fn nodeRefId(self: *const LintContext, n: NodeIndex) ReferenceId {
+        if (n == .none) return .none;
+        const node_ids = self.semantic.references.node_ids.items;
+        for (node_ids, 0..) |nid, i| {
+            if (nid == n) return ReferenceId.fromInt(@intCast(i));
+        }
+        return .none;
+    }
+
+    /// True when `n` is an Identifier reference that resolves to a global
+    /// binding (implicit_global) or stays unresolved (also treated as a
+    /// global ref by ESLint).  Mirrors `sourceCode.isGlobalReference(node)`.
+    pub fn isGlobalReference(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        if (self.ast.nodeTag(n) != .identifier) return false;
+        const ref_id = self.nodeRefId(n);
+        if (ref_id == .none) return false;
+        const sym_id = self.semantic.references.getSymbol(ref_id);
+        // Unresolved reference → escaped to global scope.
+        if (sym_id == .none) return true;
+        return self.semantic.symbols.isImplicitGlobal(sym_id);
+    }
+
+    /// True when there is no user-declared binding named `name` reachable
+    /// from `n`'s scope chain — i.e. the bare name `name` would resolve
+    /// to a global of the same name (or stay unresolved).  Approximates
+    /// `astUtils.getVariableByName(scope, name).defs.length === 0`.
+    pub fn nameHasNoUserBinding(self: *const LintContext, n: NodeIndex, name: []const u8) bool {
+        const ref_id = self.nodeRefId(n);
+        if (ref_id == .none) return true;
+        var scope_id = self.semantic.references.getScope(ref_id);
+        const scopes_t = &self.semantic.scopes;
+        const syms = &self.semantic.symbols;
+        while (scope_id != .none) {
+            const start = scopes_t.getBindingsStart(scope_id);
+            const count = scopes_t.getBindingsCount(scope_id);
+            var i: u32 = 0;
+            while (i < count) : (i += 1) {
+                const sym = symbol_mod.SymbolId.fromInt(start + i);
+                if (std.mem.eql(u8, syms.getName(sym), name) and !syms.isImplicitGlobal(sym)) return false;
+            }
+            const parent = scopes_t.parent(scope_id);
+            if (parent == scope_id) break;
+            scope_id = parent;
+        }
+        return true;
     }
 
     /// Returns whether a node is reachable (entry reachability).

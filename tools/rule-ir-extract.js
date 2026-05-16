@@ -5421,6 +5421,13 @@ function extractExpr(expr, scope) {
         const tokNav = tryExtractTokenNavCall(expr, scope);
         if (tokNav) return tokNav;
       }
+      // sourceCode.isGlobalReference(<node>) → is-global-reference
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "isGlobalReference"
+          && isSourceCodeReceiver(callee.object, scope) && expr.arguments.length === 1) {
+        const r = extractExpr(expr.arguments[0], scope);
+        if (r.ok) return { ok: true, expr: { op: "is-global-reference", node: r.expr } };
+      }
       // sourceCode.isSpaceBetween(t1, t2) → token-has-space-between
       if (callee.type === "MemberExpression" && !callee.computed
           && callee.property?.type === "Identifier" && callee.property.name === "isSpaceBetween"

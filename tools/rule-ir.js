@@ -176,6 +176,16 @@ const EXPR_OPS = new Set([
   // ESLint AST type name for a node (e.g. "BlockStatement").  Used by rules
   // that drop `node.type` into a message template.
   "node-eslint-type-name",
+  // ── Scope-aware ──────────────────────────────────────────────────────────
+  // `sourceCode.isGlobalReference(<node>)` — true iff the identifier reference
+  // resolves to a global binding (implicit-global or unresolved).  Used by
+  // rules like no-implied-eval, no-setter-return that gate on whether the
+  // callee is the built-in `Object`/`setTimeout`/etc.
+  "is-global-reference",
+  // `astUtils.getVariableByName(scope, "<name>").defs.length === 0` — true
+  // when no user-declared binding named `<name>` is reachable from `node`'s
+  // scope chain (so the bare identifier `name` would resolve to a global).
+  "name-has-no-user-binding",
 ]);
 
 // Helper-function kinds.
@@ -587,7 +597,12 @@ function validateExpr(e, path) {
       || e.op === "has-comments-before-args" || e.op === "has-comments-inside-node"
       || e.op === "node-is-optional" || e.op === "node-has-type-arguments"
       || e.op === "node-non-spread-args-count"
-      || e.op === "node-main-token-text" || e.op === "node-eslint-type-name") {
+      || e.op === "node-main-token-text" || e.op === "node-eslint-type-name"
+      || e.op === "is-global-reference") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "name-has-no-user-binding") {
+    if (typeof e.name !== "string") return fail("name-has-no-user-binding.name must be string", path);
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "template-string") {

@@ -1108,6 +1108,10 @@ function emitExpr(e, ctx) {
       return `ctx.tokenText(ctx.nodeMainToken(${emitExpr(e.node, ctx)}))`;
     case "node-eslint-type-name":
       return `ctx.nodeEslintTypeName(${emitExpr(e.node, ctx)})`;
+    case "is-global-reference":
+      return `ctx.isGlobalReference(${emitExpr(e.node, ctx)})`;
+    case "name-has-no-user-binding":
+      return `ctx.nameHasNoUserBinding(${emitExpr(e.node, ctx)}, "${zigStr(e.name)}")`;
     case "node-body-stmt-at":
       return `ctx.nodeBodyStmtAt(${emitExpr(e.node, ctx)}, ${e.index})`;
     case "node-body-stmt-count":
