@@ -3636,12 +3636,29 @@ function extractStatement(stmt, scope) {
           const srcR = extractExpr(decl.init.object, scope);
           if (srcR.ok) argSourceNode = srcR.expr;
         }
+        // Detect `sourceCode.getLastTokens(node, 2)` destructure → bind
+        // elements as [penultimate, last] of node.  Only N=2 supported.
+        let lastTokensSourceNode = null;
+        if (decl.init.type === "CallExpression"
+            && decl.init.callee?.type === "MemberExpression" && !decl.init.callee.computed
+            && decl.init.callee.property?.type === "Identifier"
+            && decl.init.callee.property.name === "getLastTokens"
+            && isSourceCodeReceiver(decl.init.callee.object, scope)
+            && decl.init.arguments.length === 2
+            && decl.init.arguments[1].type === "Literal"
+            && decl.init.arguments[1].value === 2) {
+          const srcR = extractExpr(decl.init.arguments[0], scope);
+          if (srcR.ok) lastTokensSourceNode = srcR.expr;
+        }
         for (let i = 0; i < decl.id.elements.length; i++) {
           const el = decl.id.elements[i];
           if (!el || el.type === "RestElement") continue;
           if (el.type !== "Identifier") continue;
           if (argSourceNode) {
             scope.locals.set(el.name, { kind: "expr", expr: { op: "node-arg-at", node: argSourceNode, index: i } });
+          } else if (lastTokensSourceNode && (i === 0 || i === 1)) {
+            const op = i === 0 ? "token-of-node-penultimate" : "token-of-node-last";
+            scope.locals.set(el.name, { kind: "expr", expr: { op, node: lastTokensSourceNode } });
           } else {
             scope.unknownLocals = scope.unknownLocals || new Set();
             scope.unknownLocals.add(el.name);
@@ -3939,8 +3956,11 @@ function tryExtractLocSpan(locVal, scope) {
       if (!r.ok) return null;
       nodeExpr = r.expr;
     }
-    if (k === "start") startExpr = { op: "node-span-start", node: nodeExpr };
-    else endExpr = { op: "node-span-end", node: nodeExpr };
+    // Token-valued expressions (getLastTokens destructure, getFirstToken,
+    // etc.) need token-start/token-end; node expressions get node-span-*.
+    const isTok = isTokenExpr(nodeExpr);
+    if (k === "start") startExpr = isTok ? { op: "token-start", token: nodeExpr } : { op: "node-span-start", node: nodeExpr };
+    else                endExpr   = isTok ? { op: "token-end",   token: nodeExpr } : { op: "node-span-end",   node: nodeExpr };
   }
   if (!startExpr || !endExpr) return null;
   return { start: startExpr, end: endExpr };
@@ -4253,6 +4273,21 @@ function extractFixerCall(call, paramName, scope) {
     const r = extractExpr(call.arguments[1], scope);
     if (!r.ok) return null;
     return { kind: "remove", node: r.expr };
+  }
+  // Unicorn helper: appendArgument(fixer, CALL, "TEXT", context) — inserts
+  // `TEXT` before the call's last token.  For empty-arg calls this is
+  // equivalent to `insertTextBefore(closingParen, TEXT)`; for non-empty
+  // calls appendArgument prefixes a comma, which we don't yet support so
+  // we limit ourselves to the empty-call shape.
+  if (call.callee?.type === "Identifier" && call.callee.name === "appendArgument"
+      && call.arguments.length === 4
+      && call.arguments[0].type === "Identifier" && call.arguments[0].name === paramName
+      && call.arguments[2].type === "Literal" && typeof call.arguments[2].value === "string") {
+    const r = extractExpr(call.arguments[1], scope);
+    if (!r.ok) return null;
+    const lastTok = { op: "token-of-node-last", node: r.expr };
+    const startExpr = { op: "token-start", token: lastTok };
+    return { kind: "replace-range", start: startExpr, end: startExpr, text: call.arguments[2].value };
   }
   // Unicorn helper: removeMethodCall(fixer, CALL, context) — drops the
   // `.method(args)` suffix from a method call expression.  Equivalent to
@@ -4731,7 +4766,10 @@ function tryInlineKnownHelper(name, src, args, scope) {
 
 // ── Token-level IR helpers ──
 
-const TOKEN_EXPR_OPS = new Set(["token-of-node", "token-before", "token-after"]);
+const TOKEN_EXPR_OPS = new Set([
+  "token-of-node", "token-before", "token-after",
+  "token-of-node-last", "token-of-node-penultimate", "token-after-matching-punct",
+]);
 
 function isTokenExpr(e) {
   return e && TOKEN_EXPR_OPS.has(e.op);
@@ -4785,7 +4823,9 @@ function tryExtractTokenNavCall(callExpr, scope) {
     return { ok: true, expr: { op: "token-of-node", node: arg } };
   }
   if (method === "getLastToken") {
-    // getLastToken(X) — no clean equivalent; approximate as main token for single-token nodes
+    // Prefer the real last-token helper for node-typed args; bare token args
+    // resolve directly through the existing pipeline.
+    if (!isTokenExpr(arg)) return { ok: true, expr: { op: "token-of-node-last", node: arg } };
     return { ok: true, expr: { op: "token-of-node", node: arg } };
   }
   if (method === "getTokenBefore") {
@@ -4794,8 +4834,48 @@ function tryExtractTokenNavCall(callExpr, scope) {
     return { ok: true, expr: { op: "token-before", token: { op: "token-of-node", node: arg } } };
   }
   if (method === "getTokenAfter") {
+    // getTokenAfter(X, isCommaToken / isOpeningBraceToken / …) — when the
+    // 2nd arg is a known astUtils punctuator predicate, walk forward token
+    // by token instead of returning the immediately-next token.
+    const punct = args.length >= 2 ? identifyPunctuatorPredicate(args[1]) : null;
+    if (punct) {
+      const startTok = isTokenExpr(arg) ? arg : { op: "token-of-node", node: arg };
+      return { ok: true, expr: { op: "token-after-matching-punct", start: startTok, punct } };
+    }
     if (isTokenExpr(arg)) return { ok: true, expr: { op: "token-after", token: arg } };
     return { ok: true, expr: { op: "token-after", token: { op: "token-of-node", node: arg } } };
+  }
+  return null;
+}
+
+// Map known astUtils punctuator predicates to the punctuator text they
+// match.  Used to lower `getTokenAfter(X, isCommaToken)` etc. into the
+// `token-after-matching-punct` IR op.
+const PUNCT_PREDICATE_TEXT = {
+  isCommaToken: ",",
+  isSemicolonToken: ";",
+  isColonToken: ":",
+  isDotToken: ".",
+  isQuestionDotToken: "?.",
+  isArrowToken: "=>",
+  isOpeningParenToken: "(",
+  isClosingParenToken: ")",
+  isOpeningBraceToken: "{",
+  isClosingBraceToken: "}",
+  isOpeningBracketToken: "[",
+  isClosingBracketToken: "]",
+};
+function identifyPunctuatorPredicate(node) {
+  if (!node) return null;
+  // Bare reference: isCommaToken
+  if (node.type === "Identifier" && PUNCT_PREDICATE_TEXT[node.name]) {
+    return PUNCT_PREDICATE_TEXT[node.name];
+  }
+  // Member access: astUtils.isCommaToken
+  if (node.type === "MemberExpression" && !node.computed
+      && node.property?.type === "Identifier"
+      && PUNCT_PREDICATE_TEXT[node.property.name]) {
+    return PUNCT_PREDICATE_TEXT[node.property.name];
   }
   return null;
 }

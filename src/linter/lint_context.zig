@@ -1417,6 +1417,48 @@ pub const LintContext = struct {
         return .none;
     }
 
+    /// Last token of `n` (the highest TokenIndex whose start falls within
+    /// `nodeSpan(n)`).  Uses binary search over the token-start array which
+    /// is monotonically increasing.  Comments are stored separately from
+    /// tokens so this mirrors ESLint's `getLastToken(node)` semantics.
+    pub fn nodeLastToken(self: *const LintContext, n: NodeIndex) TokenIndex {
+        if (n == .none) return 0;
+        const span = self.nodeSpan(n);
+        const starts = self.ast.tokens.items(.start);
+        if (starts.len == 0) return 0;
+        // Binary-search for the largest token whose start < span.end.
+        var lo: usize = 0;
+        var hi: usize = starts.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (starts[mid] < span.end) lo = mid + 1 else hi = mid;
+        }
+        // lo is first index where start >= span.end; we want one before.
+        return @intCast(if (lo == 0) 0 else lo - 1);
+    }
+
+    /// Second-to-last token of `n`.  Returns 0 when `n` has fewer than 2
+    /// tokens — callers should already know the shape (rules using this
+    /// typically already established the node has `()` or similar).
+    pub fn nodePenultimateToken(self: *const LintContext, n: NodeIndex) TokenIndex {
+        const last = self.nodeLastToken(n);
+        return if (last == 0) 0 else last - 1;
+    }
+
+    /// Walk tokens forward starting just after `start` until one whose text
+    /// equals `punct`.  Returns the matching TokenIndex or `start` if no
+    /// match is found before the token stream ends.  `start` is typically a
+    /// node's main token; the helper is used for the
+    /// `sourceCode.getTokenAfter(X, isCommaToken)` shape.
+    pub fn tokenAfterMatchingPunct(self: *const LintContext, start: TokenIndex, punct: []const u8) TokenIndex {
+        const tokens_len: u32 = @intCast(self.ast.tokens.items(.start).len);
+        var i: TokenIndex = start + 1;
+        while (i < tokens_len) : (i += 1) {
+            if (std.mem.eql(u8, self.ast.tokenText(i), punct)) return i;
+        }
+        return start;
+    }
+
     /// Body of an arrow function node (`(params) => body`).  Returns the
     /// body NodeIndex — block_stmt for braced arrows, expression for
     /// concise-body arrows.  `.none` for non-arrow inputs.

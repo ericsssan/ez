@@ -1132,6 +1132,12 @@ function emitExpr(e, ctx) {
       return `ctx.isGlobalReference(${emitExpr(e.node, ctx)})`;
     case "name-has-no-user-binding":
       return `ctx.nameHasNoUserBinding(${emitExpr(e.node, ctx)}, "${zigStr(e.name)}")`;
+    case "token-of-node-last":
+      return `ctx.nodeLastToken(${emitExpr(e.node, ctx)})`;
+    case "token-of-node-penultimate":
+      return `ctx.nodePenultimateToken(${emitExpr(e.node, ctx)})`;
+    case "token-after-matching-punct":
+      return `ctx.tokenAfterMatchingPunct(${emitExpr(e.start, ctx)}, "${zigStr(e.punct)}")`;
     case "node-body-stmt-at":
       return `ctx.nodeBodyStmtAt(${emitExpr(e.node, ctx)}, ${e.index})`;
     case "node-body-stmt-count":

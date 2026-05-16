@@ -41,6 +41,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if ((!(((ctx.nodeTag(node) == .call_expr) and (nodeArgsCount(ctx, node) == 0) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr or ctx.nodeTag(ctx.nodeData(node).lhs) == .optional_member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "toFixed"))) or (ctx.nodeTag(ctx.nodeData(ctx.nodeData(node).lhs).lhs) == .new_expr))) {
         return;
     }
-    ctx.reportWithMessageId(node, "require-number-to-fixed-digits-argument");
+    ctx.reportSpanWithFixAndMessageId(.{ .start = ctx.ast.tokenStart(ctx.nodePenultimateToken(node)), .end = ctx.tokenEnd(ctx.nodeLastToken(node)) }, .{ .start = ctx.ast.tokenStart(ctx.nodeLastToken(node)), .end = ctx.ast.tokenStart(ctx.nodeLastToken(node)) }, "0", "require-number-to-fixed-digits-argument");
     return;
 }

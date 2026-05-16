@@ -900,6 +900,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "unicorn/no-negation-in-equality-check": "no-negation-in-equality-check",
       "unicorn/prefer-array-flat-map": "prefer-array-flat-map",
       "unicorn/consistent-date-clone": "consistent-date-clone",
+      "unicorn/require-number-to-fixed-digits-argument": "require-number-to-fixed-digits-argument",
     };
     // @typescript-eslint/X variants often differ from the ESLint-core rule
     // they extend (different messageIds, broader/narrower semantics, TS-only

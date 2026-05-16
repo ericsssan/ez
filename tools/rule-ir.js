@@ -184,6 +184,17 @@ const EXPR_OPS = new Set([
   // ESLint AST type name for a node (e.g. "BlockStatement").  Used by rules
   // that drop `node.type` into a message template.
   "node-eslint-type-name",
+  // ── Token-of-node by position ────────────────────────────────────────────
+  // Last token of a node (TokenIndex-valued).  Mirrors ESLint's
+  // `sourceCode.getLastToken(node)`.
+  "token-of-node-last",
+  // Second-to-last token of a node — used by `getLastTokens(node, 2)`
+  // destructure into `[penultimate, last]`.
+  "token-of-node-penultimate",
+  // First token at or after `start` whose text equals the literal `punct`.
+  // Walk semantics matche ESLint's `getTokenAfter(X, isCommaToken)` etc.
+  // when the predicate is a known punctuator check.
+  "token-after-matching-punct",
   // ── Scope-aware ──────────────────────────────────────────────────────────
   // `sourceCode.isGlobalReference(<node>)` — true iff the identifier reference
   // resolves to a global binding (implicit-global or unresolved).  Used by
@@ -619,6 +630,13 @@ function validateExpr(e, path) {
   if (e.op === "name-has-no-user-binding") {
     if (typeof e.name !== "string") return fail("name-has-no-user-binding.name must be string", path);
     return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "token-of-node-last" || e.op === "token-of-node-penultimate") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "token-after-matching-punct") {
+    if (typeof e.punct !== "string") return fail("token-after-matching-punct.punct must be string", path);
+    return validateExpr(e.start, `${path}.start`);
   }
   if (e.op === "template-string") {
     if (!Array.isArray(e.parts)) return fail("template-string.parts must be array", path);
