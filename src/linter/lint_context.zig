@@ -811,6 +811,13 @@ pub const LintContext = struct {
                 const ad = self.extraData(ast_mod.ArrowData, @intFromEnum(data.lhs));
                 break :blk ad.body;
             },
+            // Methods (and getter/setter/constructor): body lives in MethodData.body via data.rhs.
+            .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def, .constructor_def => blk: {
+                if (data.rhs == .none) break :blk .none;
+                const md = self.extraData(ast_mod.MethodData, @intFromEnum(data.rhs));
+                break :blk md.body;
+            },
             // Block already — return self for `block.body[N]` access.
             .block_stmt, .static_block, .class_body => node,
             else => .none,
@@ -1457,6 +1464,82 @@ pub const LintContext = struct {
             if (std.mem.eql(u8, self.ast.tokenText(i), punct)) return i;
         }
         return start;
+    }
+
+    /// ESLint-style "function head" span: from the function's first token
+    /// (`function` / `async`) up to (but not including) the `(` of its
+    /// parameter list.  Matches ESLint's astUtils.getFunctionHeadLoc for
+    /// the non-arrow shapes used by require-yield, no-unused-vars-head,
+    /// etc.  For methods and arrows the span may differ from ESLint's;
+    /// extend if a fixture requires it.
+    pub fn nodeFunctionHeadSpan(self: *const LintContext, n: NodeIndex) Span {
+        const main = self.ast.nodeMainToken(n);
+        // For method generators (`*foo()`) and async methods (`async foo()`)
+        // ESLint's head starts at the prefix token, not the method name.
+        // Walk back from main_token while the previous token is `*` or `async`.
+        var start_tok = main;
+        while (start_tok > 0) {
+            const prev_text = self.ast.tokenText(start_tok - 1);
+            if (std.mem.eql(u8, prev_text, "*") or std.mem.eql(u8, prev_text, "async")) {
+                start_tok -= 1;
+            } else break;
+        }
+        const start = self.ast.tokenStart(start_tok);
+        const open_paren = self.tokenAfterMatchingPunct(main, "(");
+        const end = if (open_paren == main) self.tokenEnd(main) else self.ast.tokenStart(open_paren);
+        return .{ .start = start, .end = end };
+    }
+
+    /// True when any descendant of `root` (excluding `root` itself) has the
+    /// given tag.  The walk stops at nested function boundaries — a yield
+    /// inside an inner function doesn't count for the outer one (mirrors
+    /// ESLint's stack-based per-function tracking).  Linear scan over the
+    /// node table; precompute a subtree index if this becomes hot.
+    pub fn subtreeContainsTag(self: *const LintContext, root: NodeIndex, target: Node.Tag) bool {
+        if (root == .none) return false;
+        const tags = self.ast.nodes.items(.tag);
+        for (tags, 0..) |t, i| {
+            if (t != target) continue;
+            const idx: NodeIndex = @enumFromInt(@as(u32, @intCast(i)));
+            if (idx == root) continue;
+            // Walk parents; if `root` shows up first (no nested fn between),
+            // idx is a descendant we care about.
+            var cur = self.parentOf(idx);
+            while (cur != .none) {
+                if (cur == root) return true;
+                // Stop at any function-like ancestor that isn't root —
+                // descendants past it belong to a nested function.
+                switch (self.ast.nodeTag(cur)) {
+                    .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                    .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+                    .arrow_fn, .async_arrow_fn,
+                    .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+                    .setter_def, .computed_setter_def, .constructor_def => break,
+                    else => {},
+                }
+                cur = self.parentOf(cur);
+            }
+        }
+        return false;
+    }
+
+    /// True when `n` is a generator function in any form — bare
+    /// generator_fn_*, async_generator_fn_*, OR a method_def/computed_method_def
+    /// with the generator modifier bit set (`*foo()` in classes/object
+    /// literals).  Mirrors ESLint's `node.generator === true` filter.
+    pub fn isGeneratorFunctionOrMethod(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        switch (self.ast.nodeTag(n)) {
+            .generator_fn_decl, .generator_fn_expr,
+            .async_generator_fn_decl, .async_generator_fn_expr => return true,
+            .method_def, .computed_method_def => {
+                const d = self.nodeData(n);
+                if (d.rhs == .none) return false;
+                const md = self.extraData(ast_mod.MethodData, @intFromEnum(d.rhs));
+                return (md.modifiers & ast_mod.ModifierBit.generator) != 0;
+            },
+            else => return false,
+        }
     }
 
     /// True when `n` is a class constructor — i.e. a method_def whose key

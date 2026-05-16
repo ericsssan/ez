@@ -101,7 +101,7 @@ const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
 // const no_useless_escape = @import("suspicious/no_useless_escape.zig");  // hand-written — disabled per IR-only constraint
 const no_void = @import("suspicious/no_void.zig");
 const no_with = @import("suspicious/no_with.zig");
-// const require_yield = @import("suspicious/require_yield.zig");  // hand-written — disabled per IR-only constraint
+const require_yield = @import("correctness/require_yield.zig");  // IR-generated via subtree-contains-tag op
 const no_case_declarations = @import("suspicious/no_case_declarations.zig");
 // const no_sequences = @import("suspicious/no_sequences.zig");  // hand-written — disabled per IR-only constraint
 // const no_throw_literal = @import("suspicious/no_throw_literal.zig");  // hand-written — disabled per IR-only constraint
@@ -381,7 +381,7 @@ pub const all_rules = .{
     // no_useless_escape, // runner >> native (runner 288, native 215, gap 73, 5 FP); fall back to JS runner
     no_void,
     no_with,
-    // require_yield, // hand-written — disabled
+    require_yield,
     no_case_declarations,
     // no_sequences, // runner >> native (runner 42, native 32, gap 10); fall back to JS runner
     // no_throw_literal, // hand-written — disabled

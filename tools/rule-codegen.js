@@ -90,6 +90,16 @@ const SELECTOR_TO_TAG_MULTI = {
   // Constructor MethodDefinition specifically — distinct from generic
   // method/getter/setter defs.  Used by no-constructor-return.
   __ConstructorDef__: ["constructor_def"],
+  // All generator function shapes (sync + async, decl + expr).  Stand-in
+  // for `node.generator === true` filtering on Function* selectors.
+  __Generator__: ["generator_fn_decl", "generator_fn_expr",
+                  "async_generator_fn_decl", "async_generator_fn_expr"],
+  // Function-like tags that could carry the `generator` modifier — used
+  // when the runtime check `isGeneratorFunctionOrMethod` will filter
+  // non-generators at runtime.
+  __GeneratorFnOrMethod__: ["generator_fn_decl", "generator_fn_expr",
+                            "async_generator_fn_decl", "async_generator_fn_expr",
+                            "method_def", "computed_method_def"],
   // Pseudo-types for IfStatement with/without else.
   __IfNoElse__: ["if_stmt"],
   __IfWithElse__: ["if_else_stmt"],
@@ -235,7 +245,8 @@ function emit(rule) {
       || irUsesOp(rule, "no-return-assign-check")
       || irUsesOp(rule, "is-global-reference") || irUsesOp(rule, "name-has-no-user-binding")
       || irUsesOp(rule, "identifier-shadows-binding")
-      || irUsesOp(rule, "node-nearest-function-ancestor")) {
+      || irUsesOp(rule, "node-nearest-function-ancestor")
+      || irUsesOp(rule, "node-subtree-contains-tag")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1143,6 +1154,14 @@ function emitExpr(e, ctx) {
       return `ctx.nodeNearestFunctionAncestor(${emitExpr(e.node, ctx)})`;
     case "is-constructor-method":
       return `ctx.isConstructorMethod(${emitExpr(e.node, ctx)})`;
+    case "is-generator-function-or-method":
+      return `ctx.isGeneratorFunctionOrMethod(${emitExpr(e.node, ctx)})`;
+    case "node-subtree-contains-tag":
+      return `ctx.subtreeContainsTag(${emitExpr(e.node, ctx)}, .${e.tag})`;
+    case "node-fn-head-span-start":
+      return `ctx.nodeFunctionHeadSpan(${emitExpr(e.node, ctx)}).start`;
+    case "node-fn-head-span-end":
+      return `ctx.nodeFunctionHeadSpan(${emitExpr(e.node, ctx)}).end`;
     case "token-of-node-last":
       return `ctx.nodeLastToken(${emitExpr(e.node, ctx)})`;
     case "token-of-node-penultimate":

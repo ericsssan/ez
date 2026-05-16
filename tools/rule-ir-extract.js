@@ -404,6 +404,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoReturnAssignHandler,  // no-return-assign
       extractNoLabelVarHandler,      // no-label-var
       extractNoConstructorReturnHandler, // no-constructor-return
+      extractRequireYieldHandler,    // require-yield
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -635,6 +636,94 @@ function extractNoConstructorReturnHandler(rawHandler, stmts, { sourceFile } = {
     handler: {
       selector: "ReturnStatement",
       body: [{ op: "if", cond, then: [{ op: "report", node: { op: "node-ref" }, messageId }] }],
+    },
+  };
+}
+
+// Recognize the require-yield rule shape:
+//
+//   function beginChecking(node) { if (node.generator) stack.push(0); }
+//   function endChecking(node) {
+//     if (!node.generator) return;
+//     const countYield = stack.pop();
+//     if (countYield === 0 && node.body.body.length > 0) {
+//       context.report({ loc: astUtils.getFunctionHeadLoc(node, sourceCode), messageId });
+//     }
+//   }
+//   YieldExpression() { if (stack.length > 0) stack[stack.length-1] += 1; }
+//
+// All selectors emulated as: on generator_fn_decl / generator_fn_expr (and
+// async generator variants), check whether the body subtree contains any
+// yield_expr AND body has statements.  Drops the state-tracked counter.
+//
+// Span uses node's main_token (the `function` keyword) — close enough to
+// ESLint's getFunctionHeadLoc for the cases we hit; if a fixture demands
+// the full signature range we'd need a dedicated head-loc helper.
+function extractRequireYieldHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/require-yield.js")) return { ok: false };
+  // The rule registers under multiple selectors but we only emit once.
+  // Use the *first* FunctionDeclaration:exit handler as the canonical hook
+  // since that's where the report happens; deduper later removes copies.
+  // The rule binds 5 selectors (begin/end on Function*, plus YieldExpression).
+  // Match any of them — the dedicated handler we emit replaces all of them;
+  // the per-rule deduper drops the extra copies later.
+  const accepted = new Set(["FunctionDeclaration", "FunctionDeclaration:exit",
+    "FunctionExpression", "FunctionExpression:exit", "YieldExpression"]);
+  if (!accepted.has(rawHandler.selector)) return { ok: false };
+  // Walk the entire create() body looking for any context.report messageId
+  // literal.  The report lives inside endChecking — separate from the
+  // selector handler we're being called for, so we can't just inspect
+  // `stmts`.  __createBody holds all top-level create() statements.
+  let messageId = null;
+  const SKIP_KEYS = new Set(["parent", "loc", "range", "start", "end"]);
+  const visit = (n) => {
+    if (!n || typeof n !== "object" || !n.type) return;
+    if (n.type === "Property"
+        && (n.key?.name === "messageId" || n.key?.value === "messageId")
+        && n.value?.type === "Literal" && typeof n.value.value === "string") {
+      messageId = messageId || n.value.value;
+    }
+    // NodeView wrappers don't enumerate via Object.keys — walk known ESTree
+    // child slots explicitly to find the report.
+    for (const k of ["body", "consequent", "alternate", "argument", "expression",
+                      "object", "property", "callee", "arguments", "init", "test",
+                      "left", "right", "key", "value", "properties", "params"]) {
+      if (SKIP_KEYS.has(k)) continue;
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  const createBody = rawHandler.__createBody || [];
+  for (const s of createBody) visit(s);
+  if (!messageId) return { ok: false };
+  // Build a single handler that emits on every generator function shape.
+  // The selector __Generator__ expands to all generator fn tags.
+  const cond = {
+    op: "binary", operator: "&&",
+    lhs: { op: "unary", operator: "!",
+           operand: { op: "node-subtree-contains-tag", tag: "yield_expr", node: { op: "node-ref" } } },
+    rhs: { op: "binary", operator: ">",
+           lhs: { op: "node-body-stmt-count", node: { op: "node-body", node: { op: "node-ref" } } },
+           rhs: { op: "literal", value: 0 } },
+  };
+  // Report at the function head loc — matches ESLint's getFunctionHeadLoc.
+  const report = {
+    op: "report", node: { op: "node-ref" }, messageId,
+    loc: {
+      start: { op: "node-fn-head-span-start", node: { op: "node-ref" } },
+      end:   { op: "node-fn-head-span-end",   node: { op: "node-ref" } },
+    },
+  };
+  // Dispatch on all function-like shapes, then runtime-filter to generators
+  // (handles `*foo() {}` methods which share the method_def tag).
+  const generatorGuard = { op: "is-generator-function-or-method", node: { op: "node-ref" } };
+  const fullCond = { op: "binary", operator: "&&", lhs: generatorGuard, rhs: cond };
+  return {
+    ok: true,
+    handler: {
+      selector: "__GeneratorFnOrMethod__",
+      body: [{ op: "if", cond: fullCond, then: [report] }],
     },
   };
 }

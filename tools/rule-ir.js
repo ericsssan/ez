@@ -217,6 +217,18 @@ const EXPR_OPS = new Set([
   // True when a node is a class constructor — method_def whose key is the
   // identifier `constructor` (or constructor_def for TS-ambient shapes).
   "is-constructor-method",
+  // True when a node is a generator function in any form — bare generator
+  // function decl/expr OR method_def with generator modifier (`*foo() {}`).
+  "is-generator-function-or-method",
+  // True when any descendant of the given node has the given tag.  Used by
+  // require-yield to check whether a generator's body contains any
+  // YieldExpression — avoids real state tracking across handler invocations.
+  "node-subtree-contains-tag",
+  // Byte offsets of the ESLint "function head" span — from the function's
+  // first token up to the `(` of params.  Mirrors getFunctionHeadLoc for
+  // non-arrow shapes.
+  "node-fn-head-span-start",
+  "node-fn-head-span-end",
 ]);
 
 // Helper-function kinds.
@@ -639,7 +651,15 @@ function validateExpr(e, path) {
       || e.op === "is-global-reference"
       || e.op === "identifier-shadows-binding"
       || e.op === "node-nearest-function-ancestor"
-      || e.op === "is-constructor-method") {
+      || e.op === "is-constructor-method"
+      || e.op === "is-generator-function-or-method") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-subtree-contains-tag") {
+    if (typeof e.tag !== "string") return fail("node-subtree-contains-tag.tag must be string", path);
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-fn-head-span-start" || e.op === "node-fn-head-span-end") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "name-has-no-user-binding") {
