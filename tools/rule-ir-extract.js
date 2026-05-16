@@ -3896,6 +3896,7 @@ function extractReportCall(call, scope) {
   let nodeExpr = { op: "node-ref" };
   let messageId = null;
   let fix = null;
+  let data = null;
   for (const p of arg.properties) {
     if (p.type !== "Property") return { ok: false, reason: "report arg has non-Property entry" };
     const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
@@ -3911,7 +3912,11 @@ function extractReportCall(call, scope) {
     } else if (k === "suggest") {
       // Ignore for v2 — suggestions aren't in Ez's report API yet.
     } else if (k === "data") {
-      // Ignore — Ez doesn't yet apply message data templates.
+      // Best-effort: drop the data on shapes we can't lower (conditional values,
+      // function calls).  Falls back to a null message — same behaviour as
+      // before message-data support landed.
+      const r = extractMessageData(p.value, scope);
+      if (r.ok) data = r.data;
     } else if (k === "loc") {
       return { ok: false, reason: `report.loc not supported in v2` };
     } else if (k === "fix") {
@@ -3928,7 +3933,54 @@ function extractReportCall(call, scope) {
   }
   const reportStmt = { op: "report", node: nodeExpr, messageId };
   if (fix) reportStmt.fix = fix;
+  if (data) reportStmt.data = data;
   return { ok: true, stmts: [reportStmt] };
+}
+
+// Extract a `data: { K: V, ... }` object literal into IR entries.  Each
+// value is lowered to a string-valued IR expression so codegen can dup it
+// into the diag's MessageDataEntry slice.
+//
+// Supported value shapes:
+//   "literal"                  → { op: "literal", value: "literal" }
+//   X.name / X.operator        → node-main-token-text(<X>)
+//   X.type                     → node-eslint-type-name(<X>)
+//   X (Identifier)             → if bound to a node-valued expr in scope,
+//                                node-main-token-text of that node
+//
+// Returns { ok: true, data: [...] } or { ok: false, reason }.
+function extractMessageData(value, scope) {
+  if (!value || value.type !== "ObjectExpression") {
+    return { ok: false, reason: "data must be object literal" };
+  }
+  const data = [];
+  for (const prop of value.properties) {
+    if (prop.type !== "Property" || prop.computed) {
+      return { ok: false, reason: "data has non-Property/computed entry" };
+    }
+    const key = prop.key?.type === "Identifier" ? prop.key.name : prop.key?.value;
+    if (typeof key !== "string") return { ok: false, reason: "data key must be string" };
+    const v = prop.value;
+    let ir = null;
+    if (v.type === "Literal" && typeof v.value === "string") {
+      ir = { op: "literal", value: v.value };
+    } else if (v.type === "MemberExpression" && !v.computed
+               && v.property?.type === "Identifier") {
+      const objR = extractExpr(v.object, scope);
+      if (!objR.ok) return { ok: false, reason: `data.${key}: ${objR.reason}` };
+      const propName = v.property.name;
+      if (propName === "name" || propName === "operator") {
+        ir = { op: "node-main-token-text", node: objR.expr };
+      } else if (propName === "type") {
+        ir = { op: "node-eslint-type-name", node: objR.expr };
+      }
+    }
+    if (!ir) {
+      return { ok: false, reason: `unsupported data.${key} value` };
+    }
+    data.push({ key, value: ir });
+  }
+  return { ok: true, data };
 }
 
 // Extract a fix arrow/function with body `return fixer.replaceText(<node>, "literal")`

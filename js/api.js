@@ -230,16 +230,22 @@ function _fromRunnerReport(r) {
 }
 
 function _fromNativeDiag(d) {
-  // Wire format carries (offset, endOffset, ruleName, [messageId], [fix]).
+  // Wire format carries (offset, endOffset, ruleName, [messageId], [fix], [data]).
   // Hydrate ESLint-shape fields on the JS side: message text from
   // rule.meta.messages, line/col from precomputed line-starts in _parseDiags.
   const template = getNativeMessageTemplate(d.ruleName, d.messageId);
+  // Interpolate `{{key}}` placeholders if the native side sent template data
+  // — so dynamic messages like "Duplicate param 'X'." come out fully formed.
+  let message = template ?? (d.messageId ? `[${d.ruleName}/${d.messageId}]` : `[${d.ruleName}]`);
+  if (template && d.data) {
+    message = template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => d.data[k] ?? `{{${k}}}`);
+  }
   // ESLint columns are 1-based; native diags carry 0-based byte columns.
   const col    = d.col != null ? d.col + 1 : 0;
   const endCol = d.endCol != null ? d.endCol + 1 : undefined;
   return {
     ruleId: d.ruleName,
-    message: template ?? (d.messageId ? `[${d.ruleName}/${d.messageId}]` : `[${d.ruleName}]`),
+    message,
     messageId: d.messageId ?? undefined,
     severity: d.severity || 2,
     line: d.line ?? 0,

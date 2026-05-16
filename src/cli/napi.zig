@@ -1426,8 +1426,11 @@ fn filterDiagsByDisables(
 //   u8  flags           bits 0-1 = severity (1=warn, 2=error)
 //                       bit 2    = has_fix
 //                       bit 3    = has_message_id
-//   if has_message_id: u8 msg_id_len + bytes
-//   if has_fix:        u32 fix.start + u32 fix.end + u16 text_len + text bytes
+//                       bit 4    = has_message_data
+//   if has_message_id:   u8 msg_id_len + bytes
+//   if has_fix:          u32 fix.start + u32 fix.end + u16 text_len + text bytes
+//   if has_message_data: u8 count, then per entry: u8 key_len, key bytes,
+//                                                  u16 val_len, val bytes
 fn serializeDiag(out: []u8, pos_in: u32, diag: linter_root.LintDiagnostic) ?u32 {
     var pos = pos_in;
     if (pos + 11 > out.len) return null;
@@ -1435,9 +1438,10 @@ fn serializeDiag(out: []u8, pos_in: u32, diag: linter_root.LintDiagnostic) ?u32 
     std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
     std.mem.writeInt(u32, out[pos..][0..4], diag.span.end,   .little); pos += 4;
     const sev_val: u8 = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 };
-    const has_fix:    u8 = if (diag.fix != null) 0x04 else 0;
-    const has_msg_id: u8 = if (diag.message_id != null) 0x08 else 0;
-    out[pos] = sev_val | has_fix | has_msg_id; pos += 1;
+    const has_fix:      u8 = if (diag.fix != null) 0x04 else 0;
+    const has_msg_id:   u8 = if (diag.message_id != null) 0x08 else 0;
+    const has_msg_data: u8 = if (diag.message_data != null and diag.message_data.?.len > 0) 0x10 else 0;
+    out[pos] = sev_val | has_fix | has_msg_id | has_msg_data; pos += 1;
     if (diag.message_id) |mid| {
         const mlen: u8 = @intCast(@min(mid.len, 0xFF));
         if (pos + 1 + mlen > out.len) return null;
@@ -1452,6 +1456,20 @@ fn serializeDiag(out: []u8, pos_in: u32, diag: linter_root.LintDiagnostic) ?u32 
         std.mem.writeInt(u16, out[pos..][0..2], tlen,           .little); pos += 2;
         @memcpy(out[pos..][0..tlen], fix.text[0..tlen]); pos += tlen;
     }
+    if (diag.message_data) |entries| if (entries.len > 0) {
+        const count: u8 = @intCast(@min(entries.len, 0xFF));
+        if (pos + 1 > out.len) return null;
+        out[pos] = count; pos += 1;
+        for (entries[0..count]) |e| {
+            const klen: u8 = @intCast(@min(e.key.len, 0xFF));
+            const vlen: u16 = @intCast(@min(e.val.len, 0xFFFF));
+            if (pos + 1 + klen + 2 + vlen > out.len) return null;
+            out[pos] = klen; pos += 1;
+            @memcpy(out[pos..][0..klen], e.key[0..klen]); pos += klen;
+            std.mem.writeInt(u16, out[pos..][0..2], vlen, .little); pos += 2;
+            @memcpy(out[pos..][0..vlen], e.val[0..vlen]); pos += vlen;
+        }
+    };
     return pos;
 }
 

@@ -814,10 +814,32 @@ function emitHandlerBody(body, indent, ctx) {
 // Emit lines for a single fix branch or plain (no-fix) report.
 // `fix` may be null/undefined → emit ctx.reportWithMessageId only.
 // Returns the emitted lines, indented to `indent`.
-function emitFixOrPlainReport(fix, node, msgId, indent, ctx) {
+// Emit an inline `&[_]MessageDataEntry{ ... }` literal for a `data:` array.
+// Returns null when `data` is absent/empty so callers can pick a no-data
+// reporter path.  Each entry's value lowers via emitExpr (string-valued ops:
+// node-main-token-text, node-eslint-type-name, literal-string).
+function emitMessageDataLiteral(data, ctx) {
+  if (!data || !Array.isArray(data) || data.length === 0) return null;
+  const entries = data.map(({ key, value }) => {
+    let valExpr;
+    if (value.op === "literal" && typeof value.value === "string") {
+      valExpr = `"${zigStr(value.value)}"`;
+    } else {
+      valExpr = emitExpr(value, ctx);
+    }
+    return `.{ .key = "${zigStr(key)}", .val = ${valExpr} }`;
+  });
+  return `&[_]@import("../../lint_context.zig").MessageDataEntry{ ${entries.join(", ")} }`;
+}
+
+function emitFixOrPlainReport(fix, node, msgId, indent, ctx, data) {
   const ind = "    ".repeat(indent);
   if (!fix) {
     if (msgId === `""`) return [`${ind}ctx.report(${node});`];
+    const dataInfo = emitMessageDataLiteral(data, ctx);
+    if (dataInfo) {
+      return [`${ind}ctx.reportWithMessageIdAndData(${node}, ${msgId}, ${dataInfo});`];
+    }
     return [`${ind}ctx.reportWithMessageId(${node}, ${msgId});`];
   }
   // replace-range: explicit start/end IR exprs (from fixer.replaceTextRange).
@@ -935,6 +957,10 @@ function emitStatement(stmt, indent, ctx) {
   const ind = "    ".repeat(indent);
   if (stmt.op === "report") {
     const msgId = stmt.messageId ? `"${zigStr(stmt.messageId)}"` : `""`;
+    // Build a `&[_]MessageDataEntry{ ... }` literal for `data: { K: V }`
+    // interpolation, or null when the report has no data.  Returns either
+    // a single inline expression or a block with the data wrapping prepended.
+    const dataInfo = emitMessageDataLiteral(stmt.data, ctx);
     // Token-typed report node — emit reportSpanWithMessageId using the
     // token's span instead of reportWithMessageId(node).  Common for rules
     // that report at a specific token (e.g. the bang of `!x === y`).
@@ -942,12 +968,18 @@ function emitStatement(stmt, indent, ctx) {
     // rare and would need a separate span+fix variant.
     if ((stmt.node.op === "token-of-node" || stmt.node.op === "token-before" || stmt.node.op === "token-after") && !stmt.fix) {
       const tok = emitExpr(stmt.node, ctx);
+      if (dataInfo) {
+        return [`${ind}ctx.reportSpanWithMessageIdAndData(.{ .start = ctx.ast.tokenStart(${tok}), .end = ctx.tokenEnd(${tok}) }, ${msgId}, ${dataInfo});`];
+      }
       return [`${ind}ctx.reportSpanWithMessageId(.{ .start = ctx.ast.tokenStart(${tok}), .end = ctx.tokenEnd(${tok}) }, ${msgId});`];
     }
     // Custom `loc:` field from descriptor-return — explicit start/end exprs.
     if (stmt.loc && !stmt.fix) {
       const startExpr = emitExpr(stmt.loc.start, ctx);
       const endExpr = emitExpr(stmt.loc.end, ctx);
+      if (dataInfo) {
+        return [`${ind}ctx.reportSpanWithMessageIdAndData(.{ .start = ${startExpr}, .end = ${endExpr} }, ${msgId}, ${dataInfo});`];
+      }
       return [`${ind}ctx.reportSpanWithMessageId(.{ .start = ${startExpr}, .end = ${endExpr} }, ${msgId});`];
     }
     // Custom `loc:` + fix (typically replace-range) — emit
@@ -991,7 +1023,7 @@ function emitStatement(stmt, indent, ctx) {
       out.push(`${ind}}`);
       return out;
     }
-    return emitFixOrPlainReport(stmt.fix, node, msgId, indent, ctx);
+    return emitFixOrPlainReport(stmt.fix, node, msgId, indent, ctx, stmt.data);
   }
   if (stmt.op === "if") {
     const out = [`${ind}if (${emitExpr(stmt.cond, ctx)}) {`];
@@ -1072,6 +1104,10 @@ function emitExpr(e, ctx) {
       return `ctx.sourceText(${emitExpr(e.node, ctx)})`;
     case "args-text-of":
       return `ctx.argsTextBetweenParens(${emitExpr(e.node, ctx)})`;
+    case "node-main-token-text":
+      return `ctx.tokenText(ctx.nodeMainToken(${emitExpr(e.node, ctx)}))`;
+    case "node-eslint-type-name":
+      return `ctx.nodeEslintTypeName(${emitExpr(e.node, ctx)})`;
     case "node-body-stmt-at":
       return `ctx.nodeBodyStmtAt(${emitExpr(e.node, ctx)}, ${e.index})`;
     case "node-body-stmt-count":

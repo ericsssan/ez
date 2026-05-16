@@ -31,6 +31,14 @@ pub const Fix = struct {
     text: []const u8,
 };
 
+/// One `{{key}} → value` entry that fills a message template placeholder.
+/// Both slices must outlive the diagnostic; codegen passes literals or text
+/// borrowed from the source buffer (which lives at least as long as the diag).
+pub const MessageDataEntry = struct {
+    key: []const u8,
+    val: []const u8,
+};
+
 // ── Lint Diagnostic ────────────────────────────────────────
 
 pub const LintDiagnostic = struct {
@@ -43,6 +51,9 @@ pub const LintDiagnostic = struct {
     /// JS-side looks up the message template from the rule's meta.messages map.
     /// String must outlive the diagnostic — codegen passes string literals.
     message_id: ?[]const u8 = null,
+    /// Optional `{{key}}` template substitutions for the message template.
+    /// JS-side replaces each `{{key}}` placeholder with the matching value.
+    message_data: ?[]const MessageDataEntry = null,
 
     /// Format as "file:line:col: severity(rule-name)"
     pub fn format(
@@ -160,6 +171,89 @@ pub const LintContext = struct {
 
     pub fn tokenText(self: *const LintContext, index: TokenIndex) []const u8 {
         return self.ast.tokenText(index);
+    }
+
+    /// ESLint-flavored AST type name for `n` (e.g. "BlockStatement",
+    /// "ArrayExpression").  Used by message-template `{{type}}` substitutions.
+    /// Falls back to the lowercase tag name when no ESLint mapping exists.
+    pub fn nodeEslintTypeName(self: *const LintContext, n: NodeIndex) []const u8 {
+        if (n == .none) return "Node";
+        return switch (self.ast.nodeTag(n)) {
+            .block_stmt => "BlockStatement",
+            .empty_stmt => "EmptyStatement",
+            .expression_stmt => "ExpressionStatement",
+            .switch_stmt => "SwitchStatement",
+            .switch_case, .switch_default => "SwitchCase",
+            .if_stmt, .if_else_stmt => "IfStatement",
+            .for_stmt => "ForStatement",
+            .for_in_stmt => "ForInStatement",
+            .for_of_stmt, .for_await_of_stmt => "ForOfStatement",
+            .while_stmt => "WhileStatement",
+            .do_while_stmt => "DoWhileStatement",
+            .return_stmt => "ReturnStatement",
+            .throw_stmt => "ThrowStatement",
+            .break_stmt, .break_label => "BreakStatement",
+            .continue_stmt, .continue_label => "ContinueStatement",
+            .try_stmt => "TryStatement",
+            .catch_clause => "CatchClause",
+            .debugger_stmt => "DebuggerStatement",
+            .with_stmt => "WithStatement",
+            .labeled_stmt => "LabeledStatement",
+            .var_decl, .let_decl, .const_decl => "VariableDeclaration",
+            .declarator => "VariableDeclarator",
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => "FunctionDeclaration",
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => "FunctionExpression",
+            .arrow_fn, .async_arrow_fn => "ArrowFunctionExpression",
+            .class_decl => "ClassDeclaration",
+            .class_expr => "ClassExpression",
+            .class_body => "ClassBody",
+            .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def, .constructor_def => "MethodDefinition",
+            .property_def, .computed_property_def => "PropertyDefinition",
+            .static_block => "StaticBlock",
+            .object_literal => "ObjectExpression",
+            .array_literal => "ArrayExpression",
+            .object_pattern => "ObjectPattern",
+            .array_pattern => "ArrayPattern",
+            .assignment_pattern => "AssignmentPattern",
+            .rest_element => "RestElement",
+            .spread_element => "SpreadElement",
+            .property, .shorthand_property, .computed_property => "Property",
+            .member_expr, .computed_member_expr,
+            .optional_member_expr, .optional_computed_member_expr => "MemberExpression",
+            .call_expr, .optional_call_expr => "CallExpression",
+            .new_expr => "NewExpression",
+            .assign, .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign,
+            .exp_assign, .and_assign, .or_assign, .xor_assign, .shl_assign, .shr_assign,
+            .ushr_assign, .logical_and_assign, .logical_or_assign, .nullish_assign => "AssignmentExpression",
+            .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
+            .equal, .not_equal, .strict_equal, .strict_not_equal,
+            .less_than, .greater_than, .less_equal, .greater_equal,
+            .instanceof_expr, .in_expr,
+            .bitwise_and, .bitwise_or, .bitwise_xor,
+            .shift_left, .shift_right, .unsigned_shift_right => "BinaryExpression",
+            .logical_and, .logical_or, .nullish_coalesce => "LogicalExpression",
+            .unary_plus, .unary_minus, .bitwise_not, .logical_not,
+            .typeof_expr, .void_expr, .delete_expr => "UnaryExpression",
+            .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec => "UpdateExpression",
+            .conditional => "ConditionalExpression",
+            .sequence_expr => "SequenceExpression",
+            .yield_expr, .yield_delegate => "YieldExpression",
+            .await_expr => "AwaitExpression",
+            .this_expr => "ThisExpression",
+            .super_expr => "Super",
+            .identifier => "Identifier",
+            .string_literal, .number_literal, .boolean_literal,
+            .null_literal, .regex_literal, .bigint_literal => "Literal",
+            .template_literal => "TemplateLiteral",
+            .tagged_template => "TaggedTemplateExpression",
+            .template_element => "TemplateElement",
+            .grouping_expr => "ParenthesizedExpression",
+            .import_expr => "ImportExpression",
+            .import_meta => "MetaProperty",
+            .new_target => "MetaProperty",
+            else => @tagName(self.ast.nodeTag(n)),
+        };
     }
 
     pub fn tokenLen(self: *const LintContext, index: TokenIndex) u32 {
@@ -1566,6 +1660,60 @@ pub const LintContext = struct {
             .severity = self.severity_override orelse .warning,
             .message_id = message_id,
         }) catch {};
+    }
+
+    /// Like reportWithMessageId but carries message-template data so the
+    /// JS side can interpolate `{{key}}` placeholders.  `data` must outlive
+    /// the diagnostic — codegen typically dupes per-entry text into the
+    /// lint arena before calling.
+    pub fn reportWithMessageIdAndData(
+        self: *const LintContext,
+        node_idx: NodeIndex,
+        message_id: []const u8,
+        data: []const MessageDataEntry,
+    ) void {
+        const data_copy = self.dupeMessageData(data) orelse {
+            self.reportWithMessageId(node_idx, message_id);
+            return;
+        };
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = self.nodeSpan(node_idx),
+            .severity = self.severity_override orelse .warning,
+            .message_id = message_id,
+            .message_data = data_copy,
+        }) catch {};
+    }
+
+    pub fn reportSpanWithMessageIdAndData(
+        self: *const LintContext,
+        span: Span,
+        message_id: []const u8,
+        data: []const MessageDataEntry,
+    ) void {
+        const data_copy = self.dupeMessageData(data) orelse {
+            self.reportSpanWithMessageId(span, message_id);
+            return;
+        };
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = span,
+            .severity = self.severity_override orelse .warning,
+            .message_id = message_id,
+            .message_data = data_copy,
+        }) catch {};
+    }
+
+    /// Duplicate the data slice + each entry's val into the lint arena so
+    /// the caller can pass borrowed-from-source slices safely.  Keys are
+    /// always static string literals from codegen and don't need duping.
+    fn dupeMessageData(self: *const LintContext, data: []const MessageDataEntry) ?[]MessageDataEntry {
+        const out = self.allocator.alloc(MessageDataEntry, data.len) catch return null;
+        for (data, 0..) |entry, i| {
+            const val_copy = self.allocator.dupe(u8, entry.val) catch return null;
+            out[i] = .{ .key = entry.key, .val = val_copy };
+        }
+        return out;
     }
 
     /// Report a diagnostic with an autofix.

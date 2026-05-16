@@ -127,8 +127,11 @@ function _getNativeRuleNames() {
  *     flags bits 0-1 = severity (1=warn, 2=error)
  *     flag  bit  2   = has_fix
  *     flag  bit  3   = has_message_id
- *   if has_message_id: u8 msg_id_len + bytes
- *   if has_fix:        u32 fix_start + u32 fix_end + u16 text_len + text bytes
+ *     flag  bit  4   = has_message_data
+ *   if has_message_id:   u8 msg_id_len + bytes
+ *   if has_fix:          u32 fix_start + u32 fix_end + u16 text_len + text bytes
+ *   if has_message_data: u8 count, then per entry: u8 key_len + key bytes,
+ *                                                   u16 val_len + val bytes
  *
  * span_end is needed so we can compute endLine/endColumn — without it the
  * differential vs ESLint reports every diag as a field mismatch.  message_id
@@ -155,6 +158,7 @@ function _parseDiags(bytesWritten, srcBytes) {
     const severity  = flags & 0x03;
     const hasFix    = (flags & 0x04) !== 0;
     const hasMsgId  = (flags & 0x08) !== 0;
+    const hasData   = (flags & 0x10) !== 0;
     const ruleName  = ruleNames[ruleIndex] || `native-rule-${ruleIndex}`;
     const diag = { offset, endOffset, severity, ruleName };
     if (lineStarts) {
@@ -180,6 +184,22 @@ function _parseDiags(bytesWritten, srcBytes) {
       if (pos + fixTextLen > bytesWritten) break;
       const fixTextBytes = new Uint8Array(_lintOutBuf, pos, fixTextLen); pos += fixTextLen;
       diag.fix = { range: [fixStart, fixEnd], text: td.decode(fixTextBytes) };
+    }
+    if (hasData) {
+      if (pos + 1 > bytesWritten) break;
+      const count = dv.getUint8(pos); pos += 1;
+      const data = {};
+      for (let j = 0; j < count; j++) {
+        if (pos + 1 > bytesWritten) break;
+        const klen = dv.getUint8(pos); pos += 1;
+        if (pos + klen + 2 > bytesWritten) break;
+        const kBytes = new Uint8Array(_lintOutBuf, pos, klen); pos += klen;
+        const vlen = dv.getUint16(pos, true); pos += 2;
+        if (pos + vlen > bytesWritten) break;
+        const vBytes = new Uint8Array(_lintOutBuf, pos, vlen); pos += vlen;
+        data[td.decode(kBytes)] = td.decode(vBytes);
+      }
+      diag.data = data;
     }
     diags.push(diag);
   }

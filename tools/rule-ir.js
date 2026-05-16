@@ -168,6 +168,14 @@ const EXPR_OPS = new Set([
   "node-is-optional",           // node.optional → tag is one of optional_*
   "node-has-type-arguments",    // node.typeArguments → callee is ts_instantiation_expr
   "node-non-spread-args-count", // n.arguments.reduce(non-spread count) → u32
+  // ── Message-data value ops (string-valued; lowered into `data:` entries) ──
+  // Identifier name / operator keyword text — both resolve to ctx.tokenText(
+  // ctx.nodeMainToken(<node>)).  Use main-token-text for any "the keyword
+  // or identifier this node leads with" case (`node.name`, `node.operator`).
+  "node-main-token-text",
+  // ESLint AST type name for a node (e.g. "BlockStatement").  Used by rules
+  // that drop `node.type` into a message template.
+  "node-eslint-type-name",
 ]);
 
 // Helper-function kinds.
@@ -302,6 +310,15 @@ function validateStatement(s, path) {
   if (!STMT_OPS.has(s.op)) return fail(`unsupported stmt op '${s.op}'`, path);
   if (s.op === "report") {
     if (typeof s.messageId !== "string") return fail("report.messageId must be string", path);
+    if (s.data) {
+      if (!Array.isArray(s.data)) return fail("report.data must be array", path);
+      for (let i = 0; i < s.data.length; i++) {
+        const kv = s.data[i];
+        if (!kv || typeof kv.key !== "string") return fail(`report.data[${i}].key must be string`, path);
+        const v = validateExpr(kv.value, `${path}.data[${i}].value`);
+        if (!v.ok) return v;
+      }
+    }
     return validateExpr(s.node, `${path}.node`);
   }
   if (s.op === "if") {
@@ -569,7 +586,8 @@ function validateExpr(e, path) {
       || e.op === "is-start-of-expression-statement" || e.op === "needs-preceding-semicolon"
       || e.op === "has-comments-before-args" || e.op === "has-comments-inside-node"
       || e.op === "node-is-optional" || e.op === "node-has-type-arguments"
-      || e.op === "node-non-spread-args-count") {
+      || e.op === "node-non-spread-args-count"
+      || e.op === "node-main-token-text" || e.op === "node-eslint-type-name") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "template-string") {
