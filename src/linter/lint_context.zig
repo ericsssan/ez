@@ -1527,6 +1527,56 @@ pub const LintContext = struct {
         return self.semantic.symbols.isImplicitGlobal(sym_id);
     }
 
+    /// True when an identifier node `n` shadows a binding with the SAME
+    /// name as `n` itself — used by rules like no-label-var to detect
+    /// `<label-name>:` colliding with a reachable variable.  Walks scope
+    /// chain from the smallest enclosing scope of `n`, comparing each
+    /// binding name to `tokenText(mainToken(n))`.  Considers any
+    /// non-implicit-global binding a collision.
+    pub fn identifierShadowsBinding(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        // Caller passes either an Identifier node or any node whose main
+        // token text is the name to look up (e.g. labeled_stmt's label).
+        const name = self.tokenText(self.ast.nodeMainToken(n));
+        const scope_id = self.smallestEnclosingScope(n);
+        if (scope_id == .none) return false;
+        const scopes_t = &self.semantic.scopes;
+        const syms = &self.semantic.symbols;
+        var cur = scope_id;
+        while (cur != .none) {
+            const start = scopes_t.getBindingsStart(cur);
+            const count = scopes_t.getBindingsCount(cur);
+            var i: u32 = 0;
+            while (i < count) : (i += 1) {
+                const sym = symbol_mod.SymbolId.fromInt(start + i);
+                if (std.mem.eql(u8, syms.getName(sym), name) and !syms.isImplicitGlobal(sym)) return true;
+            }
+            const parent = scopes_t.parent(cur);
+            if (parent == cur) break;
+            cur = parent;
+        }
+        return false;
+    }
+
+    /// Walk parents of `n` until we find an ancestor that owns a scope,
+    /// then return that scope id.  Linear scan over all scopes per walk
+    /// step — fine for the handful of scope-aware rules that need it, but
+    /// build a node→scope index here if hot.
+    pub fn smallestEnclosingScope(self: *const LintContext, n: NodeIndex) scope_mod.ScopeId {
+        const scopes_t = &self.semantic.scopes;
+        const scope_count = scopes_t.len();
+        var cur = n;
+        while (cur != .none) {
+            var i: u32 = 0;
+            while (i < scope_count) : (i += 1) {
+                const sid = scope_mod.ScopeId.fromInt(i);
+                if (scopes_t.nodeId(sid) == cur) return sid;
+            }
+            cur = self.parentOf(cur);
+        }
+        return .none;
+    }
+
     /// True when there is no user-declared binding named `name` reachable
     /// from `n`'s scope chain — i.e. the bare name `name` would resolve
     /// to a global of the same name (or stay unresolved).  Approximates

@@ -84,7 +84,7 @@ const no_delete_var = @import("suspicious/no_delete_var.zig");
 // const no_empty_character_class = @import("suspicious/no_empty_character_class.zig");  // hand-written — disabled per IR-only constraint
 // const no_eval = @import("suspicious/no_eval.zig");  // hand-written — disabled per IR-only constraint
 const no_implied_eval = @import("suspicious/no_implied_eval.zig");
-// const no_label_var = @import("suspicious/no_label_var.zig");  // hand-written — disabled per IR-only constraint
+const no_label_var = @import("correctness/no_label_var.zig");  // IR-generated via identifier-shadows-binding op
 // const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // hand-written — disabled per IR-only constraint
 // const no_misleading_character_class = @import("suspicious/no_misleading_character_class.zig");  // hand-written — disabled per IR-only constraint
 // const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");  // hand-written — disabled per IR-only constraint
@@ -364,7 +364,7 @@ pub const all_rules = .{
     // no_empty_character_class, // hand-written — disabled
     // no_eval, // runner >> native (runner 102, native 64, gap 38); fall back to JS runner
     // no_implied_eval, // runner >> native (runner 173, native 103, gap 70); fall back to JS runner
-    // no_label_var, // hand-written — disabled
+    no_label_var,
     // no_lone_blocks, // hand-written — disabled
     // no_misleading_character_class, // runner >> native (49%, 18 FP); fall back to JS runner
     // no_mixed_spaces_and_tabs, // hand-written — disabled

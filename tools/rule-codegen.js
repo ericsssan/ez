@@ -230,7 +230,8 @@ function emit(rule) {
   if (irUsesOp(rule, "parent-node") || irUsesOp(rule, "node-in-bool-ctx") || irUsesOp(rule, "node-is-boolean-call")
       || irUsesOp(rule, "node-is-last-switch-case") || irUsesOp(rule, "node-has-duplicate-prev-case-test")
       || irUsesOp(rule, "no-return-assign-check")
-      || irUsesOp(rule, "is-global-reference") || irUsesOp(rule, "name-has-no-user-binding")) {
+      || irUsesOp(rule, "is-global-reference") || irUsesOp(rule, "name-has-no-user-binding")
+      || irUsesOp(rule, "identifier-shadows-binding")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1132,6 +1133,8 @@ function emitExpr(e, ctx) {
       return `ctx.isGlobalReference(${emitExpr(e.node, ctx)})`;
     case "name-has-no-user-binding":
       return `ctx.nameHasNoUserBinding(${emitExpr(e.node, ctx)}, "${zigStr(e.name)}")`;
+    case "identifier-shadows-binding":
+      return `ctx.identifierShadowsBinding(${emitExpr(e.node, ctx)})`;
     case "token-of-node-last":
       return `ctx.nodeLastToken(${emitExpr(e.node, ctx)})`;
     case "token-of-node-penultimate":

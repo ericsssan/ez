@@ -205,6 +205,10 @@ const EXPR_OPS = new Set([
   // when no user-declared binding named `<name>` is reachable from `node`'s
   // scope chain (so the bare identifier `name` would resolve to a global).
   "name-has-no-user-binding",
+  // True when an Identifier node shadows a binding of the same name
+  // reachable from its smallest enclosing scope.  Used by no-label-var:
+  // `astUtils.getVariableByName(scope, node.label.name) !== null`.
+  "identifier-shadows-binding",
 ]);
 
 // Helper-function kinds.
@@ -624,7 +628,8 @@ function validateExpr(e, path) {
       || e.op === "node-is-optional" || e.op === "node-has-type-arguments"
       || e.op === "node-non-spread-args-count"
       || e.op === "node-main-token-text" || e.op === "node-eslint-type-name"
-      || e.op === "is-global-reference") {
+      || e.op === "is-global-reference"
+      || e.op === "identifier-shadows-binding") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "name-has-no-user-binding") {

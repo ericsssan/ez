@@ -395,6 +395,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoEmptyStaticBlockHandler, // no-empty-static-block
       extractNoDuplicateCaseHandler, // no-duplicate-case
       extractNoReturnAssignHandler,  // no-return-assign
+      extractNoLabelVarHandler,      // no-label-var
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -509,6 +510,59 @@ function extractNoReturnAssignHandler(rawHandler, stmts, { sourceFile } = {}) {
                returnMsgId,
                arrowMsgId,
                exceptParens: true }],
+    },
+  };
+}
+
+// Recognize the no-label-var rule's LabeledStatement handler:
+//
+//   LabeledStatement(node) {
+//     const scope = sourceCode.getScope(node);
+//     if (findIdentifier(scope, node.label.name)) {
+//       context.report({ node, messageId: "identifierClashWithLabel" });
+//     }
+//   }
+//
+// where `findIdentifier(scope, name) === (getVariableByName(scope, name) !== null)`.
+// Lowered to the `identifier-shadows-binding` IR op applied to `node.label`.
+function extractNoLabelVarHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-label-var.js")) return { ok: false };
+  if (rawHandler.selector !== "LabeledStatement") return { ok: false };
+  // Find the if-statement that wraps the report — its consequent is the
+  // single context.report({...messageId:"X"}).
+  let messageId = null;
+  for (const s of stmts) {
+    if (s.type !== "IfStatement") continue;
+    const block = s.consequent;
+    const body = block?.body;
+    if (!body || body.length !== 1) continue;
+    const es = body[0];
+    if (es?.type !== "ExpressionStatement") continue;
+    const call = es.expression;
+    if (call?.type !== "CallExpression" || call.arguments?.length !== 1) continue;
+    const obj = call.arguments[0];
+    if (obj?.type !== "ObjectExpression") continue;
+    for (const p of obj.properties) {
+      if (p.type !== "Property") continue;
+      const k = p.key?.name || p.key?.value;
+      if (k === "messageId" && p.value?.type === "Literal" && typeof p.value.value === "string") {
+        messageId = p.value.value;
+      }
+    }
+    if (messageId) break;
+  }
+  if (!messageId) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      selector: "LabeledStatement",
+      body: [{
+        op: "if",
+        // For labeled_stmt the label is encoded as the node's main_token, so
+        // identifier-shadows-binding looks up tokenText(mainToken(node)).
+        cond: { op: "identifier-shadows-binding", node: { op: "node-ref" } },
+        then: [{ op: "report", node: { op: "node-ref" }, messageId }],
+      }],
     },
   };
 }
