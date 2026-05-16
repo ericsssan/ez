@@ -228,7 +228,9 @@ function emit(rule) {
   // node-is-last-switch-case and node-has-duplicate-prev-case-test also walk
   // parents (to find the enclosing switch_stmt).
   if (irUsesOp(rule, "parent-node") || irUsesOp(rule, "node-in-bool-ctx") || irUsesOp(rule, "node-is-boolean-call")
-      || irUsesOp(rule, "node-is-last-switch-case") || irUsesOp(rule, "node-has-duplicate-prev-case-test")) {
+      || irUsesOp(rule, "node-is-last-switch-case") || irUsesOp(rule, "node-has-duplicate-prev-case-test")
+      || irUsesOp(rule, "no-return-assign-check")
+      || irUsesOp(rule, "is-global-reference") || irUsesOp(rule, "name-has-no-user-binding")) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -1032,6 +1034,24 @@ function emitStatement(stmt, indent, ctx) {
       out.push(`${ind}} else {`);
       for (const s of stmt.else) for (const l of emitStatement(s, indent + 1, ctx)) out.push(l);
     }
+    out.push(`${ind}}`);
+    return out;
+  }
+  if (stmt.op === "no-return-assign-check") {
+    const out = [];
+    // Mode "always" (options[0] === "always") reports parenthesised
+    // assignments too; default ("except-parens") skips them.  Parens in our
+    // AST == parent.tag is grouping_expr.
+    if (stmt.exceptParens) {
+      out.push(`${ind}if (!ctx.optionEqualsString("always") and ctx.nodeTag(ctx.parentOf(node)) == .grouping_expr) return;`);
+    }
+    out.push(`${ind}const __raw = ctx.nodeReturnAssignAncestor(node);`);
+    out.push(`${ind}if (__raw.ancestor != .none) {`);
+    out.push(`${ind}    if (ctx.nodeTag(__raw.ancestor) == .return_stmt) {`);
+    out.push(`${ind}        ctx.reportWithMessageId(__raw.ancestor, "${zigStr(stmt.returnMsgId)}");`);
+    out.push(`${ind}    } else if ((ctx.nodeTag(__raw.ancestor) == .arrow_fn or ctx.nodeTag(__raw.ancestor) == .async_arrow_fn) and ctx.arrowFnBody(__raw.ancestor) == __raw.child) {`);
+    out.push(`${ind}        ctx.reportWithMessageId(__raw.ancestor, "${zigStr(stmt.arrowMsgId)}");`);
+    out.push(`${ind}    }`);
     out.push(`${ind}}`);
     return out;
   }

@@ -42,7 +42,15 @@
 //   if                  — conditional
 //   return              — early exit (no value)
 //   iterate-children    — for-loop over `node.<prop>` yielding each element
-const STMT_OPS = new Set(["report", "if", "return", "iterate-children", "report-at-token"]);
+const STMT_OPS = new Set(["report", "if", "return", "iterate-children", "report-at-token",
+  // Rule-specific composite statement: walks parents from the current node
+  // up to the nearest sentinel ancestor (any *Statement, ArrowFunctionExpr,
+  // FunctionExpr, ClassExpr) and emits a `returnMsgId` report when that
+  // ancestor is a ReturnStatement, an `arrowMsgId` report when it's an
+  // ArrowFunctionExpression whose body is the walk's last step.  Implements
+  // the no-return-assign check shape end-to-end.
+  "no-return-assign-check",
+]);
 
 // Expr ops.
 //   node-ref        — the handler's bound node parameter
@@ -348,6 +356,13 @@ function validateStatement(s, path) {
   if (s.op === "report-at-token") {
     if (typeof s.messageId !== "string") return fail("report-at-token.messageId must be string", path);
     return validateExpr(s.token, `${path}.token`);
+  }
+  if (s.op === "no-return-assign-check") {
+    if (typeof s.returnMsgId !== "string") return fail("no-return-assign-check.returnMsgId must be string", path);
+    if (typeof s.arrowMsgId !== "string") return fail("no-return-assign-check.arrowMsgId must be string", path);
+    if (s.exceptParens != null && typeof s.exceptParens !== "boolean")
+      return fail("no-return-assign-check.exceptParens must be boolean", path);
+    return { ok: true };
   }
   if (s.op === "iterate-children") {
     // { op: "iterate-children", source: Expr (must be member of node-ref, e.g. node.consequent),

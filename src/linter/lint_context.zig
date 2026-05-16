@@ -1417,6 +1417,60 @@ pub const LintContext = struct {
         return .none;
     }
 
+    /// Body of an arrow function node (`(params) => body`).  Returns the
+    /// body NodeIndex — block_stmt for braced arrows, expression for
+    /// concise-body arrows.  `.none` for non-arrow inputs.
+    pub fn arrowFnBody(self: *const LintContext, n: NodeIndex) NodeIndex {
+        if (n == .none) return .none;
+        const tag = self.ast.nodeTag(n);
+        if (tag != .arrow_fn and tag != .async_arrow_fn) return .none;
+        const d = self.nodeData(n);
+        if (d.lhs == .none) return .none;
+        const arrow = self.extraData(ast_mod.ArrowData, @intFromEnum(d.lhs));
+        return arrow.body;
+    }
+
+    /// Sentinel for no-return-assign's parent walk: ESLint's
+    /// `/^(?:[a-zA-Z]+?Statement|ArrowFunctionExpression|FunctionExpression|ClassExpression)$/`
+    /// expressed as tag membership.  Statements + function/arrow/class expressions
+    /// (NOT function/class *declarations* — those don't end in "Statement").
+    fn isReturnAssignSentinel(tag: Node.Tag) bool {
+        return switch (tag) {
+            .block_stmt, .empty_stmt, .expression_stmt,
+            .if_stmt, .if_else_stmt,
+            .while_stmt, .do_while_stmt,
+            .for_stmt, .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
+            .switch_stmt,
+            .return_stmt, .throw_stmt,
+            .break_stmt, .break_label, .continue_stmt, .continue_label,
+            .labeled_stmt, .try_stmt, .debugger_stmt, .with_stmt,
+            .var_decl, .let_decl, .const_decl,
+            .arrow_fn, .async_arrow_fn,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .class_expr => true,
+            else => false,
+        };
+    }
+
+    /// Result of the no-return-assign sentinel walk: the nearest sentinel
+    /// ancestor (`ancestor`) and the immediate child of that ancestor in
+    /// the walk path (`child`).  `ancestor == .none` when the walk reaches
+    /// the program root without hitting a sentinel.
+    pub const ReturnAssignWalkResult = struct {
+        ancestor: NodeIndex,
+        child: NodeIndex,
+    };
+
+    pub fn nodeReturnAssignAncestor(self: *const LintContext, start: NodeIndex) ReturnAssignWalkResult {
+        var cur = start;
+        var anc = self.parentOf(cur);
+        while (anc != .none and !isReturnAssignSentinel(self.ast.nodeTag(anc))) {
+            cur = anc;
+            anc = self.parentOf(cur);
+        }
+        return .{ .ancestor = anc, .child = cur };
+    }
+
     /// True when `n` is an Identifier reference that resolves to a global
     /// binding (implicit_global) or stays unresolved (also treated as a
     /// global ref by ESLint).  Mirrors `sourceCode.isGlobalReference(node)`.
@@ -1628,6 +1682,16 @@ pub const LintContext = struct {
     /// Get a string field from the rule's JSON options object.
     pub fn getOptionString(self: *const LintContext, key: []const u8) ?[]const u8 {
         return _jsonFieldString(self.rule_options, key);
+    }
+
+    /// True when rule_options is the bare string `needle` (i.e. the rule
+    /// was configured as `["…", needle, …]` and we're inspecting items[1]).
+    /// Used by rules whose first option is an enum string ("always" /
+    /// "except-parens" / "never") rather than an object.
+    pub fn optionEqualsString(self: *const LintContext, needle: []const u8) bool {
+        const opts = self.rule_options orelse return false;
+        if (opts.* != .string) return false;
+        return std.mem.eql(u8, opts.string, needle);
     }
 
     /// Get a boolean field from the rule's JSON options object.

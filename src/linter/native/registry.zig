@@ -153,7 +153,7 @@ const no_process_env = @import("style/no_process_env.zig");
 // const no_plusplus = @import("style/no_plusplus.zig");  // hand-written — disabled per IR-only constraint
 const no_proto = @import("style/no_proto.zig");
 const no_path_concat = @import("style/no_path_concat.zig");
-// const no_return_assign = @import("style/no_return_assign.zig");  // hand-written — disabled per IR-only constraint
+const no_return_assign = @import("style/no_return_assign.zig");  // IR-generated via no-return-assign-check op
 // const no_script_url = @import("style/no_script_url.zig");  // hand-written — disabled per IR-only constraint
 const no_unneeded_ternary = @import("style/no_unneeded_ternary.zig");
 // const no_useless_computed_key = @import("style/no_useless_computed_key.zig");  // hand-written — disabled per IR-only constraint
@@ -432,7 +432,7 @@ pub const all_rules = .{
     // no_plusplus, // hand-written — disabled
     no_proto,
     no_path_concat,
-    // no_return_assign, // runner >> native (runner 30, native 25, 5 FN); fall back
+    no_return_assign,
     // no_script_url, // hand-written — disabled
     no_unneeded_ternary,
     // no_useless_computed_key, // hand-written, 65 FP vs ESLint; fall back to JS runner

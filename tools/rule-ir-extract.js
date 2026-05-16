@@ -394,13 +394,14 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractDefaultCaseLastHandler, // default-case-last
       extractNoEmptyStaticBlockHandler, // no-empty-static-block
       extractNoDuplicateCaseHandler, // no-duplicate-case
+      extractNoReturnAssignHandler,  // no-return-assign
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
     h.__createBody = createBodyStmts;
     let handled = false;
     for (const rec of recognizers) {
-      const specialized = rec(h, stmts, { ctxName, constants, helpers });
+      const specialized = rec(h, stmts, { ctxName, constants, helpers, sourceFile });
       if (specialized.ok) {
         irHandlers.push(specialized.handler);
         handled = true;
@@ -447,6 +448,69 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
     dedupedHandlers.push(h);
   }
   return { handlers: dedupedHandlers, helpers, constants };
+}
+
+// Recognize the no-return-assign rule's AssignmentExpression handler:
+//
+//   if (!always && astUtils.isParenthesised(sourceCode, node)) return;
+//   let currentChild = node;
+//   let parent = currentChild.parent;
+//   while (parent && !SENTINEL_TYPE.test(parent.type)) {
+//     currentChild = parent;
+//     parent = parent.parent;
+//   }
+//   if (parent && parent.type === "ReturnStatement") {
+//     context.report({ node: parent, messageId: "returnAssignment" });
+//   } else if (parent && parent.type === "ArrowFunctionExpression" && parent.body === currentChild) {
+//     context.report({ node: parent, messageId: "arrowAssignment" });
+//   }
+//
+// Generic loop-with-mutation recognition is well outside the IR today, so this
+// recognizer keys off the source-file path and asserts the structural signals
+// (selector + key statement kinds) before lowering to the dedicated
+// `no-return-assign-check` IR op.  Single-rule scope by design — extend or
+// generalize when a second rule needs the same walk shape.
+function extractNoReturnAssignHandler(rawHandler, stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-return-assign.js")) return { ok: false };
+  if (rawHandler.selector !== "AssignmentExpression") return { ok: false };
+  // Pull the two messageIds from the if/else-if report cascade:
+  //   if (parent && parent.type === "ReturnStatement") { ctx.report({…messageId: RET}) }
+  //   else if (parent && … "ArrowFunctionExpression" …)  { ctx.report({…messageId: ARROW}) }
+  // NodeView wrappers don't enumerate AST children via Object.keys, so step
+  // through the known shape explicitly.
+  const ifStmt = stmts.find(s => s.type === "IfStatement" && s.alternate?.type === "IfStatement");
+  if (!ifStmt) return { ok: false };
+  const reportMsgIdOf = (block) => {
+    const body = block?.body;
+    if (!body || body.length !== 1) return null;
+    const es = body[0];
+    if (es?.type !== "ExpressionStatement") return null;
+    const call = es.expression;
+    if (call?.type !== "CallExpression" || call.arguments?.length !== 1) return null;
+    const obj = call.arguments[0];
+    if (obj?.type !== "ObjectExpression") return null;
+    for (const p of obj.properties) {
+      if (p.type !== "Property") continue;
+      const k = p.key?.name || p.key?.value;
+      if (k === "messageId" && p.value?.type === "Literal" && typeof p.value.value === "string") {
+        return p.value.value;
+      }
+    }
+    return null;
+  };
+  const returnMsgId = reportMsgIdOf(ifStmt.consequent);
+  const arrowMsgId  = reportMsgIdOf(ifStmt.alternate.consequent);
+  if (!returnMsgId || !arrowMsgId) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      selector: "AssignmentExpression",
+      body: [{ op: "no-return-assign-check",
+               returnMsgId,
+               arrowMsgId,
+               exceptParens: true }],
+    },
+  };
 }
 
 // Recognize the no-duplicate-case rule shape:
@@ -5970,6 +6034,10 @@ function extractRule(file) {
       for (const decl of stmt.declarations) {
         if (decl.id?.type !== "Identifier" || !decl.init) continue;
         const c = extractConstantInit(decl.init);
+        // Skip regex constants — IR validator doesn't accept them, but a
+        // narrow recognizer (e.g. no-return-assign's SENTINEL_TYPE) can read
+        // the source directly without needing the constant in the rule IR.
+        if (c && c.kind === "regex") continue;
         if (c) { moduleConstants[decl.id.name] = c; continue; }
         // Try to resolve require() calls to string-sets/arrays from external modules.
         const init = decl.init;
