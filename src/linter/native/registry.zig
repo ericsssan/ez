@@ -128,7 +128,7 @@ const no_object_constructor = @import("suspicious/no_object_constructor.zig");
 // const no_var = @import("style/no_var.zig");  // hand-written — disabled per IR-only constraint
 // const prefer_const = @import("style/prefer_const.zig");  // hand-written — disabled per IR-only constraint
 const no_array_constructor = @import("style/no_array_constructor.zig");
-// const no_bitwise = @import("style/no_bitwise.zig");  // hand-written — disabled per IR-only constraint
+const no_bitwise = @import("style/no_bitwise.zig");  // IR-generated via option-array-contains-operator
 const no_caller = @import("style/no_caller.zig");
 const no_continue = @import("style/no_continue.zig");
 // const no_else_return = @import("style/no_else_return.zig");  // hand-written — disabled per IR-only constraint
@@ -410,7 +410,7 @@ pub const all_rules = .{
     // no_var, // hand-written, 62 FP vs ESLint; fall back to JS runner
     // prefer_const, // hand-written — disabled
     no_array_constructor,
-    // no_bitwise, // runner >> native (runner 26, native 16, gap 10, 4 FP); fall back to JS runner
+    no_bitwise,
     no_caller,
     no_continue,
     // no_else_return, // hand-written, 82 FP vs ESLint; fall back to JS runner

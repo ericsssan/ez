@@ -200,6 +200,23 @@ const OPERATOR_TO_TAG = {
   "&&": "logical_and",
   "||": "logical_or",
   "??": "nullish_coalesce",
+  // Assignment ops
+  "=": "assign",
+  "+=": "add_assign",
+  "-=": "sub_assign",
+  "*=": "mul_assign",
+  "/=": "div_assign",
+  "%=": "mod_assign",
+  "**=": "exp_assign",
+  "&=": "and_assign",
+  "|=": "or_assign",
+  "^=": "xor_assign",
+  "<<=": "shl_assign",
+  ">>=": "shr_assign",
+  ">>>=": "ushr_assign",
+  "&&=": "logical_and_assign",
+  "||=": "logical_or_assign",
+  "??=": "nullish_assign",
 };
 const OPERATOR_TO_TAG_BY_CATEGORY = {
   unary: { "+": "unary_plus", "-": "unary_minus" },
@@ -1547,6 +1564,12 @@ function emitExpr(e, ctx) {
       return `ctx.nodeRawHasOctalEscape(${emitExpr(e.node, ctx)})`;
     case "option-equals-string":
       return `ctx.optionEqualsString("${zigStr(e.needle)}")`;
+    case "option-array-contains-string":
+      return `ctx.optionArrayContains("${zigStr(e.optionName)}", "${zigStr(e.value)}")`;
+    case "option-array-contains-operator": {
+      const n = emitExpr(e.node, ctx);
+      return `ctx.optionArrayContains("${zigStr(e.optionName)}", ctx.tokenText(ctx.nodeMainToken(${n})))`;
+    }
     case "node-literal-value-equals":
       return `ctx.nodeNumericValueEquals(${emitExpr(e.node, ctx)}, ${e.value})`;
     case "node-string-value-equals":

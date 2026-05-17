@@ -183,6 +183,18 @@ function extractMeta(ruleObj, moduleStringScalars, moduleObjectLiterals) {
         const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
         if (!k) continue;
         if (p.value?.type === "Literal") defaultOptions[k] = p.value.value;
+        // Empty/literal-only arrays are captured as their JS value so the
+        // option-array destructuring branch sees Array.isArray(default) === true
+        // and registers the local as kind "option-array".
+        else if (p.value?.type === "ArrayExpression") {
+          const arr = [];
+          let ok = true;
+          for (const el of p.value.elements) {
+            if (el?.type === "Literal" && (typeof el.value === "string" || typeof el.value === "number" || typeof el.value === "boolean")) arr.push(el.value);
+            else { ok = false; break; }
+          }
+          if (ok) defaultOptions[k] = arr;
+        }
       }
     }
   }
@@ -293,6 +305,12 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
               // Handle alias: { opt: localName } or shorthand: { opt }
               const localName = prop.value?.type === "Identifier" ? prop.value.name : optName;
               const defVal = defaultOptions?.[optName] ?? null;
+              // Array-valued options (e.g. allow: ["~", "|"]) — register as
+              // option-array kind so `<local>.includes(X)` lifts to ctx.optionArrayContains.
+              if (Array.isArray(defVal)) {
+                optionLocals.set(localName, { kind: "option-array", optionName: optName });
+                continue;
+              }
               const irOp = typeof defVal === "string" ? "get-option-string" : "get-option-bool";
               const irDefault = typeof defVal === "string" ? defVal : (defVal === true ? true : false);
               optionLocals.set(localName, { kind: "expr", expr: { op: irOp, name: optName, default: irDefault } });
@@ -5801,6 +5819,11 @@ function extractExpr(expr, scope) {
           // Pre-bound IR expression (e.g. idNode → identifier, parent → parent-node).
           return { ok: true, expr: local.expr };
         }
+        if (local.kind === "option-array") {
+          // Array-valued option binding — surfaced as a marker so the
+          // enclosing `<X>.includes(value)` lifts to optionArrayContains.
+          return { ok: true, expr: { op: "__option_array_marker__", optionName: local.optionName } };
+        }
         return { ok: true, expr: { op: "identifier", name: expr.name } };
       }
       if (scope.unknownLocals?.has(expr.name)) {
@@ -6740,6 +6763,34 @@ function extractExpr(expr, scope) {
           }
           if (arrName) {
             return { ok: true, expr: { op: "node-tag-in-set", node: argR.expr.parent, setName: arrName } };
+          }
+        }
+      }
+      // <option-array-marker>.includes(value) — lift to ctx.optionArrayContains.
+      // Value must extract to a string-valued expr: a literal, the
+      // operator marker, or the static-prop-name marker.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "includes"
+          && expr.arguments.length === 1
+          && callee.object.type === "Identifier") {
+        const local = scope.locals?.get(callee.object.name);
+        if (local && local.kind === "option-array") {
+          const argR = extractExpr(expr.arguments[0], scope);
+          if (argR.ok) {
+            if (argR.expr.op === "__node_operator_marker__") {
+              return { ok: true, expr: {
+                op: "option-array-contains-operator",
+                optionName: local.optionName,
+                node: argR.expr.node,
+              } };
+            }
+            if (argR.expr.op === "literal" && typeof argR.expr.value === "string") {
+              return { ok: true, expr: {
+                op: "option-array-contains-string",
+                optionName: local.optionName,
+                value: argR.expr.value,
+              } };
+            }
           }
         }
       }

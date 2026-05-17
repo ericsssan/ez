@@ -100,6 +100,8 @@ const EXPR_OPS = new Set([
   "node-static-string-starts-with-i",
   "node-raw-has-octal-escape",
   "option-equals-string",
+  "option-array-contains-string",
+  "option-array-contains-operator",
   "node-operator-in-set",
   "node-literal-value-equals",
   "node-raw-starts-with",
@@ -623,6 +625,15 @@ function validateExpr(e, path) {
   if (e.op === "option-equals-string") {
     if (typeof e.needle !== "string") return fail("option-equals-string.needle must be string", path);
     return { ok: true };
+  }
+  if (e.op === "option-array-contains-string") {
+    if (typeof e.optionName !== "string") return fail("option-array-contains-string.optionName must be string", path);
+    if (typeof e.value !== "string") return fail("option-array-contains-string.value must be string", path);
+    return { ok: true };
+  }
+  if (e.op === "option-array-contains-operator") {
+    if (typeof e.optionName !== "string") return fail("option-array-contains-operator.optionName must be string", path);
+    return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "node-operator-in-set") {
     if (typeof e.setName !== "string") return fail("node-operator-in-set.setName must be string", path);
