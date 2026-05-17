@@ -31,5 +31,21 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(node) != .typeof_expr) return;
     const sibling = ctx.validTypeofInvalidSibling(node);
     if (sibling == .none) return;
-    ctx.reportWithMessageId(sibling, "invalidValue");
+    const require_strings = ctx.validTypeofRequireStringLiterals();
+    if (ctx.ast.nodeTag(sibling) == .identifier
+        and std.mem.eql(u8, ctx.ast.tokenText(ctx.ast.nodeMainToken(sibling)), "undefined"))
+    {
+        const span = ctx.nodeSpan(sibling);
+        const sugg = [_]LintContext.SuggestionInput{
+            .{ .message_id = "suggestString", .fix_span = span, .fix_text = "\"undefined\"" },
+        };
+        const data = [_]@import("../../lint_context.zig").MessageDataEntry{
+            .{ .key = "type", .val = "undefined" },
+        };
+        const mid: []const u8 = if (require_strings) "notString" else "invalidValue";
+        ctx.reportSpanWithDataAndSuggestions(span, mid, &data, &sugg);
+        return;
+    }
+    const mid_def: []const u8 = if (require_strings) "notString" else "invalidValue";
+    ctx.reportWithMessageId(sibling, mid_def);
 }

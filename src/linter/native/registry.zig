@@ -79,9 +79,9 @@ const no_invalid_remove_event_listener = @import("correctness/no_invalid_remove_
 // (count unchanged)
 // const eqeqeq = @import("suspicious/eqeqeq.zig");  // hand-written — disabled per IR-only constraint
 // const no_cond_assign = @import("suspicious/no_cond_assign.zig");  // hand-written — disabled per IR-only constraint
-// const no_control_regex = @import("suspicious/no_control_regex.zig");  // hand-written — disabled per IR-only constraint
+const no_control_regex = @import("suspicious/no_control_regex.zig");  // IR-generated via no-control-regex-check handler
 const no_delete_var = @import("suspicious/no_delete_var.zig");
-// const no_empty_character_class = @import("suspicious/no_empty_character_class.zig");  // hand-written — disabled per IR-only constraint
+const no_empty_character_class = @import("suspicious/no_empty_character_class.zig");  // IR-generated via no-empty-char-class-check handler
 // const no_eval = @import("suspicious/no_eval.zig");  // hand-written — disabled per IR-only constraint
 const no_implied_eval = @import("suspicious/no_implied_eval.zig");
 const no_label_var = @import("correctness/no_label_var.zig");  // IR-generated via identifier-shadows-binding op
@@ -93,7 +93,7 @@ const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
 // const no_nonoctal_decimal_escape = @import("suspicious/no_nonoctal_decimal_escape.zig");  // hand-written — disabled per IR-only constraint
 // const no_octal = @import("suspicious/no_octal.zig");  // hand-written — disabled per IR-only constraint
 // const no_redeclare = @import("suspicious/no_redeclare.zig");  // hand-written — disabled per IR-only constraint
-// const no_regex_spaces = @import("suspicious/no_regex_spaces.zig");  // hand-written — disabled per IR-only constraint
+const no_regex_spaces = @import("suspicious/no_regex_spaces.zig");  // IR-generated via no-regex-spaces-check handler
 // const no_shadow_restricted_names = @import("suspicious/no_shadow_restricted_names.zig");  // hand-written — disabled per IR-only constraint
 const no_unsafe_finally = @import("correctness/no_unsafe_finally.zig");  // IR-generated via node-is-inside-finally-before-sentinel
 const no_unused_labels = @import("suspicious/no_unused_labels.zig");  // IR-generated via no-unused-labels-check handler
@@ -368,9 +368,9 @@ pub const all_rules = .{
     // Suspicious (28)
     // eqeqeq, // hand-written, 45 FP vs ESLint; fall back to JS runner
     // no_cond_assign, // runner >> native (runner 45, native 32, 13 FN); fall back
-    // no_control_regex, // runner >> native (runner 36, native 23, gap 13, 1 FP); fall back to JS runner
+    no_control_regex,
     no_delete_var,
-    // no_empty_character_class, // hand-written — disabled
+    no_empty_character_class,
     // no_eval, // runner >> native (runner 102, native 64, gap 38); fall back to JS runner
     // no_implied_eval, // runner >> native (runner 173, native 103, gap 70); fall back to JS runner
     no_label_var,
@@ -382,7 +382,7 @@ pub const all_rules = .{
     // no_nonoctal_decimal_escape, // native has 4 FP making hybrid worse (runner 83, native 79); fall back to JS runner
     // no_octal, // hand-written — disabled
     // no_redeclare, // runner >> native (runner 67, native 28, gap 39); fall back to JS runner
-    // no_regex_spaces, // hand-written — disabled
+    no_regex_spaces,
     // no_shadow_restricted_names, // hand-written — disabled
     no_unsafe_finally,
     no_unused_labels,

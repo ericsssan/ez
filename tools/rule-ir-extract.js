@@ -500,6 +500,9 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoExtraSemiHandler,     // no-extra-semi (EmptyStatement only)
       extractDefaultParamLastHandler, // default-param-last
       extractUseIsnanHandler,        // use-isnan (BinaryExpression only)
+      extractNoRegexSpacesHandler,   // no-regex-spaces
+      extractNoEmptyCharClassHandler, // no-empty-character-class
+      extractNoControlRegexHandler,   // no-control-regex
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1163,6 +1166,42 @@ function extractValidTypeofHandler(rawHandler, _stmts, { sourceFile } = {}) {
 // handlers in the rule (SwitchStatement, CallExpression for indexOf) are
 // dropped to noop-stub for now — TODO: re-enable when their option toggles
 // land.
+// no-regex-spaces: flag the first run of 2+ literal spaces inside a regex
+// literal pattern.  The whole rule lowers to a single Zig helper that does
+// the bracket-aware scan + autofix.
+function extractNoRegexSpacesHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-regex-spaces.js")) return { ok: false };
+  if (rawHandler.selector === "Literal") {
+    return { ok: true, handler: { kind: "no-regex-spaces-check" } };
+  }
+  if (rawHandler.selector === "CallExpression" || rawHandler.selector === "NewExpression") {
+    return { ok: true, handler: { kind: "no-regex-spaces-call-check" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractNoEmptyCharClassHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-empty-character-class.js")) return { ok: false };
+  if (rawHandler.selector === "Literal[regex]" || rawHandler.selector === "Literal") {
+    return { ok: true, handler: { kind: "no-empty-char-class-check" } };
+  }
+  if (rawHandler.selector === "CallExpression" || rawHandler.selector === "NewExpression") {
+    return { ok: true, handler: { kind: "no-empty-char-class-call-check" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractNoControlRegexHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-control-regex.js")) return { ok: false };
+  if (rawHandler.selector === "Literal" || rawHandler.selector === "Literal[regex]") {
+    return { ok: true, handler: { kind: "no-control-regex-check" } };
+  }
+  if (rawHandler.selector === "CallExpression" || rawHandler.selector === "NewExpression") {
+    return { ok: true, handler: { kind: "no-control-regex-call-check" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 function extractUseIsnanHandler(rawHandler, _stmts, { sourceFile } = {}) {
   if (!sourceFile || !sourceFile.endsWith("/use-isnan.js")) return { ok: false };
   if (rawHandler.selector === "BinaryExpression") {
@@ -5104,6 +5143,7 @@ function extractReportCall(call, scope) {
   let fix = null;
   let data = null;
   let loc = null;
+  let suggestions = null;
   for (const p of arg.properties) {
     if (p.type !== "Property") return { ok: false, reason: "report arg has non-Property entry" };
     const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
@@ -5117,7 +5157,13 @@ function extractReportCall(call, scope) {
       }
       messageId = p.value.value;
     } else if (k === "suggest") {
-      // Ignore for v2 — suggestions aren't in Ez's report API yet.
+      // Try to extract a static suggestions array.  Each entry should be
+      // `{ messageId: "...", fix(fixer) { ... } }` whose fix lowers via
+      // tryExtractFixFn to a replace-range descriptor.  We drop the whole
+      // array (no suggestions in IR) if any entry doesn't fit — diagnostic
+      // still fires.
+      const extracted = tryExtractSuggestArray(p.value, scope);
+      if (extracted) suggestions = extracted;
     } else if (k === "data") {
       // Best-effort: drop the data on shapes we can't lower (conditional values,
       // function calls).  Falls back to a null message — same behaviour as
@@ -5144,7 +5190,45 @@ function extractReportCall(call, scope) {
   if (fix) reportStmt.fix = fix;
   if (data) reportStmt.data = data;
   if (loc) reportStmt.loc = loc;
+  if (suggestions && suggestions.length > 0) reportStmt.suggestions = suggestions;
   return { ok: true, stmts: [reportStmt] };
+}
+
+// Lower a `suggest: [...]` array literal into an IR suggestions array.
+// Each entry must be an ObjectExpression with `messageId: "..."` and
+// `fix(fixer)` / `fix: fixer => ...` whose body produces a single
+// fixer.replaceText (or other replace-range shape) — anything else returns
+// null and the whole `suggest` array is dropped.
+function tryExtractSuggestArray(value, scope) {
+  if (!value || value.type !== "ArrayExpression") return null;
+  if (value.elements.length === 0) return null;
+  const out = [];
+  for (const el of value.elements) {
+    if (!el || el.type !== "ObjectExpression") return null;
+    let mid = null;
+    let fixDesc = null;
+    for (const p of el.properties) {
+      if (p.type !== "Property") return null;
+      const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
+      if (k === "messageId") {
+        if (p.value.type !== "Literal" || typeof p.value.value !== "string") return null;
+        mid = p.value.value;
+      } else if (k === "fix") {
+        fixDesc = tryExtractFixFn(p.value, scope);
+        if (!fixDesc || fixDesc.kind !== "replace-range") return null;
+      } else if (k === "data") {
+        // Per-suggestion message data isn't surfaced yet — tolerate when
+        // present but don't fail.  Codegen receives the suggestion without
+        // template substitution; the message template still gets the data
+        // from the parent report only.
+      } else {
+        return null;
+      }
+    }
+    if (!mid || !fixDesc) return null;
+    out.push({ messageId: mid, fix: fixDesc });
+  }
+  return out;
 }
 
 // Lower `loc:` arg of context.report() into IR { start, end } u32 exprs.

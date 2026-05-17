@@ -742,6 +742,17 @@ pub const LintContext = struct {
     /// literal, return the static-string sibling node iff its value
     /// isn't a valid type string.  Returns .none when the shape doesn't
     /// match or the value is valid.
+    /// True when valid-typeof's `requireStringLiterals` option is enabled.
+    pub fn validTypeofRequireStringLiterals(self: *const LintContext) bool {
+        const all = self.rule_options_all orelse return false;
+        for (all) |item| {
+            if (item != .object) continue;
+            const v = item.object.get("requireStringLiterals") orelse continue;
+            if (v == .bool) return v.bool;
+        }
+        return false;
+    }
+
     pub fn validTypeofInvalidSibling(self: *const LintContext, typeof_node: NodeIndex) NodeIndex {
         if (self.ast.nodeTag(typeof_node) != .typeof_expr) return .none;
         const parent = self.parentOf(typeof_node);
@@ -750,6 +761,17 @@ pub const LintContext = struct {
         if (pt != .equal and pt != .not_equal and pt != .strict_equal and pt != .strict_not_equal) return .none;
         const pd = self.ast.nodeData(parent);
         const sibling = if (pd.lhs == typeof_node) pd.rhs else pd.lhs;
+        // Bare \`undefined\` identifier: ESLint treats this as an invalid
+        // comparison value (and attaches a `suggestString` opt-in to quote it).
+        // Only when it resolves to the GLOBAL undefined — if there's a local
+        // `undefined` binding in scope (e.g. `function f(undefined)`), the
+        // comparison is intentional and we skip.
+        if (self.ast.nodeTag(sibling) == .identifier and
+            std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(sibling)), "undefined") and
+            self.isGlobalReference(sibling))
+        {
+            return sibling;
+        }
         const sname = self.nodeStaticStringValue(sibling) orelse return .none;
         const valid = [_][]const u8{
             "symbol", "undefined", "object", "boolean", "number",
@@ -4058,6 +4080,524 @@ pub const LintContext = struct {
         }) catch {};
     }
 
+    // ── Regex helpers ──────────────────────────────────────────
+    // Locate the body of a regex_literal in the source — the slice between
+    // the opening and closing `/` (flags excluded).  Returns a slice into
+    // `ast.source` and the absolute start offset of the pattern.  When the
+    // node isn't a regex_literal or the closing slash can't be found,
+    // returns null.
+    pub fn regexPatternSlice(self: *const LintContext, node: NodeIndex) ?struct { text: []const u8, start: u32 } {
+        if (self.ast.nodeTag(node) != .regex_literal) return null;
+        const sp = self.nodeSpan(node);
+        const src = self.ast.source;
+        if (sp.start >= sp.end or sp.start >= src.len) return null;
+        if (src[sp.start] != '/') return null;
+        const pat_start: u32 = sp.start + 1;
+        // Scan for the closing `/`, mirroring the parser's regex tokenizer:
+        // skip `\`-escaped characters and treat `[...]` as a char class
+        // where `/` is not a delimiter.
+        var i: u32 = pat_start;
+        var in_class = false;
+        while (i < sp.end and i < src.len) : (i += 1) {
+            const c = src[i];
+            if (c == '\\') {
+                i += 1;
+                if (i >= sp.end or i >= src.len) break;
+                continue;
+            }
+            if (c == '[') { in_class = true; continue; }
+            if (c == ']') { in_class = false; continue; }
+            if (c == '/' and !in_class) {
+                return .{ .text = src[pat_start..i], .start = pat_start };
+            }
+        }
+        return null;
+    }
+
+    /// no-regex-spaces: find the first run of 2+ literal spaces in a regex
+    /// pattern that lives outside a character class and isn't immediately
+    /// followed by `{` (quantifier).  ESLint's parser-AST version checks
+    /// every run, but per its rule docs only the FIRST one is reported per
+    /// regex (since the autofix collapses subsequent ones together).
+    /// `RegExp("pat")` / `new RegExp("pat")` variant.  Treats the string
+    /// literal's content as the pattern (escapes already decoded by the JS
+    /// engine in ESLint's case; we look at the raw source between the
+    /// quotes so `\\d  ` becomes `\d  ` for scanning purposes).  Reports at
+    /// the call node with the same messageId, but the fix range targets a
+    /// span inside the string literal — only when there are no escape
+    /// sequences before the space run, because absolute byte offsets shift
+    /// when escapes decode to single chars.
+    pub fn checkRegexNoSpacesCall(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag != .call_expr and tag != .new_expr) return;
+        const data = self.ast.nodeData(node);
+        const callee = data.lhs;
+        if (self.ast.nodeTag(callee) != .identifier) return;
+        const callee_name = self.ast.tokenText(self.ast.nodeMainToken(callee));
+        if (!std.mem.eql(u8, callee_name, "RegExp")) return;
+        // Skip when RegExp resolves to a local binding rather than the global.
+        if (!self.isGlobalReference(callee)) return;
+        // Args: call_expr stores SubRange in rhs; new_expr same shape.
+        if (data.rhs == .none) return;
+        const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(range);
+        if (args.len == 0) return;
+        const first_arg: NodeIndex = @enumFromInt(args[0]);
+        if (self.ast.nodeTag(first_arg) != .string_literal) return;
+        // When a flags arg is present and isn't a constant string literal,
+        // we can't statically know whether u/v changed pattern semantics —
+        // bail to avoid FPs from `RegExp('{  ', flags)`-style code.
+        if (args.len >= 2) {
+            const flags_arg: NodeIndex = @enumFromInt(args[1]);
+            if (self.ast.nodeTag(flags_arg) != .string_literal) return;
+            const flags_raw = self.sourceText(flags_arg);
+            if (flags_raw.len < 2) return;
+            const flags_body = flags_raw[1 .. flags_raw.len - 1];
+            // u / v flags can change how `{` and bracket classes parse —
+            // bail rather than reproduce ESLint's regex-parser fallout.
+            if (std.mem.indexOfAny(u8, flags_body, "uv") != null) return;
+        }
+        // Raw string source text including surrounding quotes.
+        const raw = self.sourceText(first_arg);
+        if (raw.len < 2) return;
+        const body = raw[1 .. raw.len - 1];
+        // Walk the body; backslash escapes consume 2 chars and disqualify
+        // the fix (offsets would shift).  ESLint still reports without a
+        // fix in those cases.
+        var i: usize = 0;
+        var class_depth: i32 = 0;
+        var saw_escape = false;
+        while (i < body.len) {
+            const c = body[i];
+            if (c == '\\') {
+                // String-escape decoding: `\[` and `\]` in the source are
+                // just `[`/`]` once the string is evaluated, so adjust the
+                // bracket tracker accordingly.  Other escapes consume both
+                // bytes and disqualify the fix (offsets would shift).
+                if (i + 1 < body.len) {
+                    const nx = body[i + 1];
+                    if (nx == '[') { class_depth += 1; saw_escape = true; i += 2; continue; }
+                    if (nx == ']') { if (class_depth > 0) class_depth -= 1; saw_escape = true; i += 2; continue; }
+                }
+                saw_escape = true;
+                i += 2;
+                continue;
+            }
+            if (c == '[') { class_depth += 1; i += 1; continue; }
+            if (c == ']') { if (class_depth > 0) class_depth -= 1; i += 1; continue; }
+            if (class_depth == 0 and c == ' ') {
+                var j = i + 1;
+                while (j < body.len and body[j] == ' ') j += 1;
+                var run_len = j - i;
+                if (j < body.len) {
+                    const nx = body[j];
+                    if (nx == '*' or nx == '+' or nx == '?' or nx == '{') run_len -= 1;
+                }
+                if (run_len >= 2) {
+                    const length_str = std.fmt.allocPrint(self.allocator, "{d}", .{run_len}) catch return;
+                    const data_entries = [_]MessageDataEntry{
+                        .{ .key = "length", .val = length_str },
+                    };
+                    var maybe_fix: ?Fix = null;
+                    if (!saw_escape) {
+                        const arg_span = self.nodeSpan(first_arg);
+                        // body starts at arg_span.start + 1 (opening quote).
+                        const abs_start: u32 = arg_span.start + 1 + @as(u32, @intCast(i));
+                        const abs_end: u32 = arg_span.start + 1 + @as(u32, @intCast(i + run_len));
+                        const replacement = std.fmt.allocPrint(self.allocator, " {{{d}}}", .{run_len}) catch return;
+                        maybe_fix = .{ .span = .{ .start = abs_start, .end = abs_end }, .text = replacement };
+                    }
+                    self.diagnostics.append(self.allocator, .{
+                        .rule_index = self.current_rule_index,
+                        .span = self.nodeSpan(node),
+                        .severity = self.severity_override orelse .warning,
+                        .message_id = "multipleSpaces",
+                        .message_data = self.dupeMessageData(&data_entries),
+                        .fix = maybe_fix,
+                    }) catch {};
+                    return;
+                }
+                i = j;
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    /// no-control-regex (regex literal): scan the pattern for control
+    /// characters and `\xNN` / `\uNNNN` escapes that resolve to control
+    /// chars (U+0000..U+001F).  Reports once per regex with a
+    /// comma-separated `controlChars` data value matching ESLint's
+    /// `\xNN`-style names.
+    /// True when the regex_literal's flags include `u` or `v` — needed by
+    /// callers that gate `\u{HHHH...}`-style escapes on unicode mode.
+    fn regexFlagsHaveUOrV(self: *const LintContext, node: NodeIndex) bool {
+        const node_text = self.sourceText(node);
+        const pat = self.regexPatternSlice(node) orelse return false;
+        const flags_off = pat.text.len + 2; // pattern + `//`
+        if (flags_off >= node_text.len) return false;
+        return std.mem.indexOfAny(u8, node_text[flags_off..], "uv") != null;
+    }
+
+    pub fn checkRegexNoControl(self: *const LintContext, node: NodeIndex) void {
+        // ESLint's no-control-regex uses a single `Literal` listener that
+        // also handles string-literal first-arguments of RegExp(...) — we
+        // route to checkRegexNoControlCall via the parent when the node
+        // is a bare string literal that fits the RegExp-call shape.
+        if (self.ast.nodeTag(node) == .string_literal) {
+            const parent = self.parentOf(node);
+            if (parent == .none) return;
+            const ptag = self.ast.nodeTag(parent);
+            if (ptag != .call_expr and ptag != .new_expr) return;
+            // Ensure this node is the FIRST arg of the call/new.
+            const pdata = self.ast.nodeData(parent);
+            if (pdata.rhs == .none) return;
+            const range = self.extraData(SubRange, @intFromEnum(pdata.rhs));
+            const args = self.extraSlice(range);
+            if (args.len == 0) return;
+            const first: NodeIndex = @enumFromInt(args[0]);
+            if (first != node) return;
+            self.checkRegexNoControlCall(parent);
+            return;
+        }
+        const pat = self.regexPatternSlice(node) orelse return;
+        const text = pat.text;
+        const has_uv = self.regexFlagsHaveUOrV(node);
+        var chars: std.ArrayList(u8) = .empty;
+        defer chars.deinit(self.allocator);
+        var i: usize = 0;
+        while (i < text.len) {
+            const c = text[i];
+            if (c == '\\' and i + 1 < text.len) {
+                const nx = text[i + 1];
+                if (nx == 'x' and i + 4 <= text.len) {
+                    if (parseHex(text[i + 2 .. i + 4])) |cp| {
+                        if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                    }
+                    i += 4;
+                    continue;
+                }
+                if (nx == 'u' and i + 2 < text.len) {
+                    if (text[i + 2] == '{') {
+                        // \u{HHHH...} — only a Unicode escape under u/v flag.
+                        if (has_uv) {
+                            var j = i + 3;
+                            while (j < text.len and text[j] != '}') j += 1;
+                            if (j < text.len) {
+                                if (parseHexN(text[i + 3 .. j])) |cp| {
+                                    if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                                }
+                                i = j + 1;
+                                continue;
+                            }
+                        }
+                        // Without u/v, `\u{` is just literal `u{`.  Skip
+                        // the backslash and let the `u` and `{` be scanned
+                        // as ordinary chars.
+                        i += 1;
+                        continue;
+                    }
+                    if (i + 6 <= text.len) {
+                        if (parseHex(text[i + 2 .. i + 6])) |cp| {
+                            if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                        }
+                        i += 6;
+                        continue;
+                    }
+                }
+                // Other escapes — skip 2 bytes.
+                i += 2;
+                continue;
+            }
+            if (c <= 0x1f) appendControlChar(self.allocator, &chars, c) catch {};
+            i += 1;
+        }
+        if (chars.items.len == 0) return;
+        const data = [_]MessageDataEntry{
+            .{ .key = "controlChars", .val = chars.items },
+        };
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = self.nodeSpan(node),
+            .severity = self.severity_override orelse .warning,
+            .message_id = "unexpected",
+            .message_data = self.dupeMessageData(&data),
+        }) catch {};
+    }
+
+    pub fn checkRegexNoControlCall(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag != .call_expr and tag != .new_expr) return;
+        const data = self.ast.nodeData(node);
+        const callee = data.lhs;
+        if (self.ast.nodeTag(callee) != .identifier) return;
+        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
+        if (!self.isGlobalReference(callee)) return;
+        if (data.rhs == .none) return;
+        const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(range);
+        if (args.len == 0) return;
+        const first_arg: NodeIndex = @enumFromInt(args[0]);
+        if (self.ast.nodeTag(first_arg) != .string_literal) return;
+        // Determine u/v flag for `\u{...}` gating.  `flags` is the second
+        // arg (string literal); when missing or non-literal we conservatively
+        // assume no u/v (matches ESLint, which can't statically infer either).
+        var has_uv = false;
+        if (args.len >= 2) {
+            const flags_arg: NodeIndex = @enumFromInt(args[1]);
+            if (self.ast.nodeTag(flags_arg) == .string_literal) {
+                const flags_raw = self.sourceText(flags_arg);
+                if (flags_raw.len >= 2) {
+                    has_uv = std.mem.indexOfAny(u8, flags_raw[1 .. flags_raw.len - 1], "uv") != null;
+                }
+            }
+        }
+        const raw = self.sourceText(first_arg);
+        if (raw.len < 2) return;
+        const body = raw[1 .. raw.len - 1];
+        var chars: std.ArrayList(u8) = .empty;
+        defer chars.deinit(self.allocator);
+        // String-literal escapes: `\xNN` / `\uNNNN` already encode the
+        // codepoint directly.  `\\xNN` (literal backslash + xNN) becomes
+        // `\xNN` in the pattern and counts.  Process both forms.
+        var i: usize = 0;
+        while (i < body.len) {
+            const c = body[i];
+            if (c == '\\' and i + 1 < body.len) {
+                const nx = body[i + 1];
+                if (nx == 'x' and i + 4 <= body.len) {
+                    if (parseHex(body[i + 2 .. i + 4])) |cp| {
+                        if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                    }
+                    i += 4;
+                    continue;
+                }
+                if (nx == 'u' and i + 2 < body.len) {
+                    if (body[i + 2] == '{') {
+                        if (has_uv) {
+                            var j = i + 3;
+                            while (j < body.len and body[j] != '}') j += 1;
+                            if (j < body.len) {
+                                if (parseHexN(body[i + 3 .. j])) |cp| {
+                                    if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                                }
+                                i = j + 1;
+                                continue;
+                            }
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if (i + 6 <= body.len) {
+                        if (parseHex(body[i + 2 .. i + 6])) |cp| {
+                            if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                        }
+                        i += 6;
+                        continue;
+                    }
+                }
+                if (nx == '\\') {
+                    // `\\<x|u>` decodes to `\<x|u>` — peek past the second
+                    // backslash to recognise the regex-level escape.
+                    if (i + 2 < body.len) {
+                        const nnx = body[i + 2];
+                        if (nnx == 'x' and i + 5 <= body.len) {
+                            if (parseHex(body[i + 3 .. i + 5])) |cp| {
+                                if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                            }
+                            i += 5;
+                            continue;
+                        }
+                        if (nnx == 'u' and i + 3 < body.len) {
+                            if (body[i + 3] == '{') {
+                                if (has_uv) {
+                                    var j = i + 4;
+                                    while (j < body.len and body[j] != '}') j += 1;
+                                    if (j < body.len) {
+                                        if (parseHexN(body[i + 4 .. j])) |cp| {
+                                            if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                                        }
+                                        i = j + 1;
+                                        continue;
+                                    }
+                                }
+                                i += 2;
+                                continue;
+                            }
+                            if (i + 7 <= body.len) {
+                                if (parseHex(body[i + 3 .. i + 7])) |cp| {
+                                    if (cp <= 0x1f) appendControlChar(self.allocator, &chars, cp) catch {};
+                                }
+                                i += 7;
+                                continue;
+                            }
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+                i += 2;
+                continue;
+            }
+            if (c <= 0x1f) appendControlChar(self.allocator, &chars, c) catch {};
+            i += 1;
+        }
+        if (chars.items.len == 0) return;
+        const data_entries = [_]MessageDataEntry{
+            .{ .key = "controlChars", .val = chars.items },
+        };
+        // ESLint's `Literal(node)` listener reports at the string literal
+        // itself (`node`), not at the wrapping call.  Match that span.
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = self.nodeSpan(first_arg),
+            .severity = self.severity_override orelse .warning,
+            .message_id = "unexpected",
+            .message_data = self.dupeMessageData(&data_entries),
+        }) catch {};
+    }
+
+    /// no-empty-character-class (regex literal): flag `[]` (or `[]i`-style)
+    /// inside the pattern.  ESLint uses regexpp's AST; here we do a simple
+    /// linear scan that bails on the v-flag (nested classes).
+    pub fn checkRegexNoEmptyCharClass(self: *const LintContext, node: NodeIndex) void {
+        const pat = self.regexPatternSlice(node) orelse return;
+        const text = pat.text;
+        const node_text = self.sourceText(node);
+        // v-flag flips nested-class semantics — bail.
+        if (std.mem.indexOfScalar(u8, node_text[@min(pat.text.len + 2, node_text.len)..], 'v') != null) return;
+        var i: usize = 0;
+        while (i < text.len) {
+            const c = text[i];
+            if (c == '\\') { i += 2; continue; }
+            if (c == '[' and i + 1 < text.len and text[i + 1] == ']') {
+                self.reportWithMessageId(node, "unexpected");
+                return;
+            }
+            // Skip over class to avoid `[abc]]` from matching at the inner `]`.
+            if (c == '[') {
+                var j = i + 1;
+                while (j < text.len) {
+                    if (text[j] == '\\') { j += 2; continue; }
+                    if (text[j] == ']') break;
+                    j += 1;
+                }
+                i = j + 1;
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    /// no-empty-character-class for `new RegExp("pat")` / `RegExp("pat")`.
+    pub fn checkRegexNoEmptyCharClassCall(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag != .call_expr and tag != .new_expr) return;
+        const data = self.ast.nodeData(node);
+        const callee = data.lhs;
+        if (self.ast.nodeTag(callee) != .identifier) return;
+        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
+        if (!self.isGlobalReference(callee)) return;
+        if (data.rhs == .none) return;
+        const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(range);
+        if (args.len == 0) return;
+        const first_arg: NodeIndex = @enumFromInt(args[0]);
+        if (self.ast.nodeTag(first_arg) != .string_literal) return;
+        if (args.len >= 2) {
+            const flags_arg: NodeIndex = @enumFromInt(args[1]);
+            if (self.ast.nodeTag(flags_arg) != .string_literal) return;
+            const flags_raw = self.sourceText(flags_arg);
+            if (flags_raw.len >= 2) {
+                if (std.mem.indexOfAny(u8, flags_raw[1 .. flags_raw.len - 1], "v") != null) return;
+            }
+        }
+        const raw = self.sourceText(first_arg);
+        if (raw.len < 2) return;
+        const body = raw[1 .. raw.len - 1];
+        var i: usize = 0;
+        while (i < body.len) {
+            const c = body[i];
+            if (c == '\\') {
+                // `\[` in string = `[` in pattern; consume both and continue
+                // — but only as the bracket itself, not as a class opener.
+                if (i + 1 < body.len and (body[i + 1] == '[' or body[i + 1] == ']')) {
+                    i += 2;
+                    continue;
+                }
+                i += 2;
+                continue;
+            }
+            if (c == '[' and i + 1 < body.len and body[i + 1] == ']') {
+                self.reportWithMessageId(node, "unexpected");
+                return;
+            }
+            if (c == '[') {
+                var j = i + 1;
+                while (j < body.len) {
+                    if (body[j] == '\\') { j += 2; continue; }
+                    if (body[j] == ']') break;
+                    j += 1;
+                }
+                i = j + 1;
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    pub fn checkRegexNoSpaces(self: *const LintContext, node: NodeIndex) void {
+        const pat = self.regexPatternSlice(node) orelse return;
+        const text = pat.text;
+        // v-flag enables nested character classes, which our flat bracket
+        // counter doesn't model correctly; bail rather than risk FPs.
+        const node_text = self.sourceText(node);
+        if (std.mem.indexOfScalar(u8, node_text[@min(pat.text.len + 2, node_text.len)..], 'v') != null) return;
+        var i: usize = 0;
+        var class_depth: i32 = 0;
+        while (i < text.len) {
+            const c = text[i];
+            if (c == '\\') { i += 2; continue; }
+            if (c == '[') { class_depth += 1; i += 1; continue; }
+            if (c == ']') { if (class_depth > 0) class_depth -= 1; i += 1; continue; }
+            if (class_depth == 0 and c == ' ') {
+                var j = i + 1;
+                while (j < text.len and text[j] == ' ') j += 1;
+                var run_len = j - i;
+                if (j < text.len) {
+                    const nx = text[j];
+                    if (nx == '*' or nx == '+' or nx == '?' or nx == '{') {
+                        run_len -= 1;
+                    }
+                }
+                if (run_len >= 2) {
+                    const abs_start: u32 = pat.start + @as(u32, @intCast(i));
+                    const abs_end: u32 = pat.start + @as(u32, @intCast(i + run_len));
+                    const replacement = std.fmt.allocPrint(self.allocator, " {{{d}}}", .{run_len}) catch return;
+                    const length_str = std.fmt.allocPrint(self.allocator, "{d}", .{run_len}) catch return;
+                    const data = [_]MessageDataEntry{
+                        .{ .key = "length", .val = length_str },
+                    };
+                    self.diagnostics.append(self.allocator, .{
+                        .rule_index = self.current_rule_index,
+                        .span = self.nodeSpan(node),
+                        .severity = self.severity_override orelse .warning,
+                        .message_id = "multipleSpaces",
+                        .message_data = self.dupeMessageData(&data),
+                        .fix = .{
+                            .span = .{ .start = abs_start, .end = abs_end },
+                            .text = replacement,
+                        },
+                    }) catch {};
+                    return;
+                }
+                i = j;
+                continue;
+            }
+            i += 1;
+        }
+    }
+
     // ── use-isnan ──────────────────────────────────────────────
     // Helper for ESLint's use-isnan rule.  Detects `X <op> NaN` /
     // `X <op> Number.NaN` (and swapped) where <op> is one of the eight
@@ -4340,34 +4880,75 @@ pub const LintContext = struct {
         message_id: []const u8,
         suggestions: []const SuggestionInput,
     ) void {
-        if (suggestions.len == 0) {
-            self.reportSpanWithMessageId(diag_span, message_id);
-            return;
+        self.reportSpanWithDataAndSuggestions(diag_span, message_id, null, suggestions);
+    }
+
+    /// Most general report API on this struct: span + messageId + optional
+    /// `{{key}}` template data + optional opt-in suggestions.  Use the
+    /// thinner wrappers above when one of those dimensions is unused.
+    pub fn reportSpanWithDataAndSuggestions(
+        self: *const LintContext,
+        diag_span: Span,
+        message_id: []const u8,
+        data: ?[]const MessageDataEntry,
+        suggestions: []const SuggestionInput,
+    ) void {
+        var sugg_slice: ?[]const Suggestion = null;
+        if (suggestions.len > 0) {
+            const owned = self.allocator.alloc(Suggestion, suggestions.len) catch null;
+            if (owned) |buf| {
+                var written: usize = 0;
+                for (suggestions, 0..) |s, i| {
+                    const txt = self.allocator.dupe(u8, s.fix_text) catch break;
+                    buf[i] = .{ .message_id = s.message_id, .fix = .{ .span = s.fix_span, .text = txt } };
+                    written = i + 1;
+                }
+                if (written > 0) sugg_slice = buf[0..written];
+            }
         }
-        const owned = self.allocator.alloc(Suggestion, suggestions.len) catch {
-            self.reportSpanWithMessageId(diag_span, message_id);
-            return;
-        };
-        var written: usize = 0;
-        for (suggestions, 0..) |s, i| {
-            const txt = self.allocator.dupe(u8, s.fix_text) catch {
-                // Truncate to what we successfully built.
-                break;
-            };
-            owned[i] = .{ .message_id = s.message_id, .fix = .{ .span = s.fix_span, .text = txt } };
-            written = i + 1;
-        }
+        const data_copy = if (data) |d| self.dupeMessageData(d) else null;
         self.diagnostics.append(self.allocator, .{
             .rule_index = self.current_rule_index,
             .span = diag_span,
             .severity = self.severity_override orelse .warning,
             .message_id = message_id,
-            .suggestions = if (written == 0) null else owned[0..written],
+            .message_data = data_copy,
+            .suggestions = sugg_slice,
         }) catch {};
     }
 };
 
 /// Shared helper: get a string field from a JSON object pointer.
+fn parseHex(slice: []const u8) ?u32 {
+    if (slice.len == 0) return null;
+    var v: u32 = 0;
+    for (slice) |c| {
+        const d: u32 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => return null,
+        };
+        v = (v << 4) | d;
+    }
+    return v;
+}
+
+fn parseHexN(slice: []const u8) ?u32 {
+    return parseHex(slice);
+}
+
+/// Append `\xNN` (ESLint's control-char format) to `chars`, joining with
+/// `, ` when there are already entries.
+fn appendControlChar(allocator: std.mem.Allocator, chars: *std.ArrayList(u8), cp: u32) !void {
+    if (chars.items.len > 0) {
+        try chars.appendSlice(allocator, ", ");
+    }
+    var buf: [8]u8 = undefined;
+    const formatted = try std.fmt.bufPrint(&buf, "\\x{x:0>2}", .{cp});
+    try chars.appendSlice(allocator, formatted);
+}
+
 fn _jsonFieldString(ptr: ?*const std.json.Value, key: []const u8) ?[]const u8 {
     const obj = ptr orelse return null;
     if (obj.* != .object) return null;

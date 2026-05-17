@@ -251,10 +251,19 @@ function emit(rule) {
   const hasUseIsnanSwitchCheck = rule.handlers.some(h => h.kind === "use-isnan-switch-check");
   const hasUseIsnanIndexOfCheck = rule.handlers.some(h => h.kind === "use-isnan-indexof-check");
   const hasAnyUseIsnan = hasUseIsnanBinaryCheck || hasUseIsnanSwitchCheck || hasUseIsnanIndexOfCheck;
+  const hasNoRegexSpacesCheck = rule.handlers.some(h => h.kind === "no-regex-spaces-check");
+  const hasNoRegexSpacesCallCheck = rule.handlers.some(h => h.kind === "no-regex-spaces-call-check");
+  const hasAnyNoRegexSpaces = hasNoRegexSpacesCheck || hasNoRegexSpacesCallCheck;
+  const hasNoEmptyCharClassCheck = rule.handlers.some(h => h.kind === "no-empty-char-class-check");
+  const hasNoEmptyCharClassCallCheck = rule.handlers.some(h => h.kind === "no-empty-char-class-call-check");
+  const hasAnyNoEmptyCharClass = hasNoEmptyCharClassCheck || hasNoEmptyCharClassCallCheck;
+  const hasNoControlRegexCheck = rule.handlers.some(h => h.kind === "no-control-regex-check");
+  const hasNoControlRegexCallCheck = rule.handlers.some(h => h.kind === "no-control-regex-call-check");
+  const hasAnyNoControlRegex = hasNoControlRegexCheck || hasNoControlRegexCallCheck;
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -288,6 +297,17 @@ function emit(rule) {
     relevantTags = ["typeof_expr"];
   } else if (hasNoExtraSemiCheck) {
     relevantTags = ["empty_stmt"];
+  } else if (hasAnyNoRegexSpaces) {
+    relevantTags = [];
+    if (hasNoRegexSpacesCheck) relevantTags.push("regex_literal");
+    if (hasNoRegexSpacesCallCheck) relevantTags.push("call_expr", "new_expr");
+  } else if (hasAnyNoEmptyCharClass) {
+    relevantTags = [];
+    if (hasNoEmptyCharClassCheck) relevantTags.push("regex_literal");
+    if (hasNoEmptyCharClassCallCheck) relevantTags.push("call_expr", "new_expr");
+  } else if (hasAnyNoControlRegex) {
+    relevantTags = [];
+    if (hasNoControlRegexCheck) relevantTags.push("regex_literal", "string_literal");
   } else if (hasAnyUseIsnan) {
     relevantTags = [];
     if (hasUseIsnanBinaryCheck) relevantTags.push(
@@ -316,7 +336,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -373,7 +393,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -713,7 +733,50 @@ function emit(rule) {
     out.push(`    if (ctx.nodeTag(node) != .typeof_expr) return;`);
     out.push(`    const sibling = ctx.validTypeofInvalidSibling(node);`);
     out.push(`    if (sibling == .none) return;`);
-    out.push(`    ctx.reportWithMessageId(sibling, "${zigStr(h.messageId)}");`);
+    // When the bad sibling is the bare \`undefined\` identifier, attach a
+    // \`suggestString\` opt-in that quotes it.  Mirrors ESLint's valid-typeof
+    // suggestion path and exercises the new SuggestionInput wire format for
+    // a second rule.  Honours \`requireStringLiterals\` (notString vs invalidValue).
+    out.push(`    const require_strings = ctx.validTypeofRequireStringLiterals();`);
+    out.push(`    if (ctx.ast.nodeTag(sibling) == .identifier`);
+    out.push(`        and std.mem.eql(u8, ctx.ast.tokenText(ctx.ast.nodeMainToken(sibling)), "undefined"))`);
+    out.push(`    {`);
+    out.push(`        const span = ctx.nodeSpan(sibling);`);
+    out.push(`        const sugg = [_]LintContext.SuggestionInput{`);
+    out.push(`            .{ .message_id = "suggestString", .fix_span = span, .fix_text = "\\"undefined\\"" },`);
+    out.push(`        };`);
+    out.push(`        const data = [_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`            .{ .key = "type", .val = "undefined" },`);
+    out.push(`        };`);
+    out.push(`        const mid: []const u8 = if (require_strings) "notString" else "${zigStr(h.messageId)}";`);
+    out.push(`        ctx.reportSpanWithDataAndSuggestions(span, mid, &data, &sugg);`);
+    out.push(`        return;`);
+    out.push(`    }`);
+    out.push(`    const mid_def: []const u8 = if (require_strings) "notString" else "${zigStr(h.messageId)}";`);
+    out.push(`    ctx.reportWithMessageId(sibling, mid_def);`);
+    out.push(`}`);
+  } else if (hasAnyNoRegexSpaces) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    switch (ctx.nodeTag(node)) {`);
+    if (hasNoRegexSpacesCheck) out.push(`        .regex_literal => ctx.checkRegexNoSpaces(node),`);
+    if (hasNoRegexSpacesCallCheck) out.push(`        .call_expr, .new_expr => ctx.checkRegexNoSpacesCall(node),`);
+    out.push(`        else => {},`);
+    out.push(`    }`);
+    out.push(`}`);
+  } else if (hasAnyNoEmptyCharClass) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    switch (ctx.nodeTag(node)) {`);
+    if (hasNoEmptyCharClassCheck) out.push(`        .regex_literal => ctx.checkRegexNoEmptyCharClass(node),`);
+    if (hasNoEmptyCharClassCallCheck) out.push(`        .call_expr, .new_expr => ctx.checkRegexNoEmptyCharClassCall(node),`);
+    out.push(`        else => {},`);
+    out.push(`    }`);
+    out.push(`}`);
+  } else if (hasAnyNoControlRegex) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    switch (ctx.nodeTag(node)) {`);
+    out.push(`        .regex_literal, .string_literal => ctx.checkRegexNoControl(node),`);
+    out.push(`        else => {},`);
+    out.push(`    }`);
     out.push(`}`);
   } else if (hasAnyUseIsnan) {
     // use-isnan: tag-switch dispatches to the per-check helpers.  The
@@ -1681,12 +1744,13 @@ function emitStatement(stmt, indent, ctx) {
   if (stmt.op === "report") {
     const msgId = stmt.messageId ? `"${zigStr(stmt.messageId)}"` : `""`;
     // Suggestion-array path: when IR carries `suggestions: [{messageId, fix}]`,
-    // emit a SuggestionInput slice and call reportWithSuggestions /
-    // reportSpanWithSuggestions.  Only the bare-node (or bare-loc) + no
-    // top-level fix/data case is wired here — that's what use-isnan needs.
+    // emit a SuggestionInput slice and route through the general
+    // reportSpanWithDataAndSuggestions helper.  Supports report.data and
+    // report.loc concurrently; the top-level autofix (`stmt.fix`) is not
+    // combined with suggestions and gets a clear error.
     if (Array.isArray(stmt.suggestions) && stmt.suggestions.length > 0) {
-      if (stmt.fix || stmt.data) {
-        throw new Error("report.suggestions with concurrent fix/data not supported");
+      if (stmt.fix) {
+        throw new Error("report.suggestions with a top-level fix is not supported");
       }
       const out = [];
       out.push(`${ind}{`);
@@ -1713,14 +1777,19 @@ function emitStatement(stmt, indent, ctx) {
       out.push(`${inner}const __suggs = [_]LintContext.SuggestionInput{`);
       for (const it of items) out.push(`${inner}${it}`);
       out.push(`${inner}};`);
+      // Diagnostic span: loc when present, otherwise the node's own span.
+      let spanExpr;
       if (stmt.loc) {
         const sStart = emitExpr(stmt.loc.start, ctx);
         const sEnd = emitExpr(stmt.loc.end, ctx);
-        out.push(`${inner}ctx.reportSpanWithSuggestions(.{ .start = ${sStart}, .end = ${sEnd} }, ${msgId}, &__suggs);`);
+        spanExpr = `.{ .start = ${sStart}, .end = ${sEnd} }`;
       } else {
         const n = emitExpr(stmt.node, ctx);
-        out.push(`${inner}ctx.reportWithSuggestions(${n}, ${msgId}, &__suggs);`);
+        spanExpr = `ctx.nodeSpan(${n})`;
       }
+      const dataInfo = emitMessageDataLiteral(stmt.data, ctx);
+      const dataArg = dataInfo ?? `null`;
+      out.push(`${inner}ctx.reportSpanWithDataAndSuggestions(${spanExpr}, ${msgId}, ${dataArg}, &__suggs);`);
       out.push(`${ind}}`);
       return out;
     }
