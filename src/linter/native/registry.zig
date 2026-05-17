@@ -88,11 +88,14 @@ const no_implied_eval = @import("suspicious/no_implied_eval.zig");
 const no_label_var = @import("correctness/no_label_var.zig");  // IR-generated via identifier-shadows-binding op
 // const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // hand-written — disabled per IR-only constraint
 // const no_misleading_character_class = @import("correctness/no_misleading_character_class.zig");
-//   IR-generated subset (surrogatePair + surrogatePairWithoutUFlag) backed by
-//   regex_parser.  Disabled because the bulk of the rule (combiningClass /
-//   zwj / emojiModifier / regionalIndicatorSymbol) needs Unicode property
-//   tables we don't ship yet; enabling causes a >100-case hybrid regression
-//   on the eslint-recommended corpus.  Re-enable once those tables land.
+//   IR-generated, backed by regex_parser + unicode_marks (combining /
+//   zwj / emojiModifier / regionalIndicatorSymbol all detected, plus
+//   surrogate-pair sub-cases).  83/174 vs runner 172 — most of the gap
+//   is the RegExp("..." ) call form (which loses source position fidelity
+//   after JS string-escape decoding and would need a per-byte source
+//   map) plus UTF-16-vs-UTF-8 column counting differences for literal
+//   emoji.  Enabling regresses hybrid by ~90 cases; keep disabled until
+//   either issue lands.
 // const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");  // hand-written — disabled per IR-only constraint
 const no_multi_str = @import("suspicious/no_multi_str.zig");
 const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");

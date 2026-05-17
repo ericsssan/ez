@@ -8,6 +8,7 @@ const TokenIndex = ast_mod.TokenIndex;
 const ExtraIndex = ast_mod.ExtraIndex;
 const SubRange = ast_mod.SubRange;
 const regex_parser = @import("regex_parser.zig");
+const unicode_marks = @import("../parser/unicode_marks.zig");
 const Span = parser.span.Span;
 const Location = parser.span.Location;
 const Severity = parser.diagnostic.Severity;
@@ -4363,14 +4364,77 @@ pub const LintContext = struct {
     }
 
     pub fn checkMisleadingCharClassCall(self: *const LintContext, node: NodeIndex) void {
-        // Call form intentionally noop'd: ESLint's RegExp-call path uses
-        // ReferenceTracker + languageOptions.globals to decide whether
-        // `RegExp` is the global, and bails for non-literal flag args.
-        // We don't have access to ESLint's config-level globals from
-        // here, so any heuristic risks the FPs we saw before.  Leave the
-        // call form to the JS runner.
+        // Call form intentionally noop'd.  Reporting at the wrong span
+        // (the call node, since we lose source-position fidelity after
+        // JS string-escape decoding) produces a strict-key mismatch that
+        // counts as both FN and FP in the differential — strictly worse
+        // than falling back to the JS runner.  Re-enable once we plumb
+        // a source map from decoded pattern bytes back to source offsets.
         _ = self;
         _ = node;
+    }
+
+    fn runMisleadingChecksForCall(
+        self: *const LintContext,
+        alts: []regex_parser.Alternative,
+        pat_text: []const u8,
+        flags: regex_parser.Flags,
+        allow_escape: bool,
+        report_node: NodeIndex,
+    ) void {
+        // Collect ALL misleading-kind findings, then report each at the
+        // caller-supplied node span.  Done as a second pass instead of
+        // hooking the existing report* helpers because span computation
+        // diverges.
+        var found = MisleadingFlags{};
+        self.collectMisleadingFlags(alts, pat_text, flags, allow_escape, &found);
+        if (found.surrogate_pair_without_u_flag) self.reportSpanWithMessageId(self.nodeSpan(report_node), "surrogatePairWithoutUFlag");
+        if (found.surrogate_pair) self.reportSpanWithMessageId(self.nodeSpan(report_node), "surrogatePair");
+        if (found.combining_class) self.reportSpanWithMessageId(self.nodeSpan(report_node), "combiningClass");
+        if (found.emoji_modifier) self.reportSpanWithMessageId(self.nodeSpan(report_node), "emojiModifier");
+        if (found.regional_indicator) self.reportSpanWithMessageId(self.nodeSpan(report_node), "regionalIndicatorSymbol");
+        if (found.zwj) self.reportSpanWithMessageId(self.nodeSpan(report_node), "zwj");
+    }
+
+    pub const MisleadingFlags = struct {
+        surrogate_pair: bool = false,
+        surrogate_pair_without_u_flag: bool = false,
+        combining_class: bool = false,
+        emoji_modifier: bool = false,
+        regional_indicator: bool = false,
+        zwj: bool = false,
+    };
+
+    fn collectMisleadingFlags(
+        self: *const LintContext,
+        alts: []regex_parser.Alternative,
+        pat_text: []const u8,
+        flags: regex_parser.Flags,
+        allow_escape: bool,
+        out: *MisleadingFlags,
+    ) void {
+        const has_uv = flags.unicode or flags.unicode_sets;
+        for (alts) |alt| {
+            for (alt.terms) |t| {
+                switch (t.atom) {
+                    .group => |g| self.collectMisleadingFlags(g.alternatives, pat_text, flags, allow_escape, out),
+                    .char_class => |cc| {
+                        var buf: [256]regex_parser.Character = undefined;
+                        var seq_len: usize = 0;
+                        for (cc.elements) |e| {
+                            if (e == .character) {
+                                if (seq_len < buf.len) { buf[seq_len] = e.character; seq_len += 1; }
+                            } else {
+                                if (seq_len > 0) collectFromSequence(buf[0..seq_len], pat_text, has_uv, allow_escape, out);
+                                seq_len = 0;
+                            }
+                        }
+                        if (seq_len > 0) collectFromSequence(buf[0..seq_len], pat_text, has_uv, allow_escape, out);
+                    },
+                    else => {},
+                }
+            }
+        }
     }
 
     fn walkMisleadingCharClass(self: *const LintContext, alts: []regex_parser.Alternative, pat_start: u32, flags: regex_parser.Flags, pat_text: []const u8, allow_escape: bool) void {
@@ -4405,10 +4469,128 @@ pub const LintContext = struct {
                 }
                 continue;
             }
-            if (seq_len > 0) self.reportSurrogateSeq(buf[0..seq_len], pat_start, flags, pat_text, allow_escape);
+            if (seq_len > 0) {
+                self.reportSurrogateSeq(buf[0..seq_len], pat_start, flags, pat_text, allow_escape);
+                // combiningClass / zwj fire under any flag — both touch
+                // BMP codepoints (U+0300-range marks, U+200D ZWJ) that
+                // regexpp sees regardless of u/v.
+                self.reportCombiningSeq(buf[0..seq_len], pat_start, pat_text, allow_escape);
+                self.reportZwjSeq(buf[0..seq_len], pat_start, pat_text, allow_escape);
+                // emojiModifier / regionalIndicator codepoints sit in the
+                // supplementary plane.  Without u/v regexpp splits them
+                // into surrogate halves which can't match the predicates,
+                // so only fire under u/v.
+                if (flags.unicode or flags.unicode_sets) {
+                    self.reportEmojiModifierSeq(buf[0..seq_len], pat_start, pat_text, allow_escape);
+                    self.reportRegionalIndicatorSeq(buf[0..seq_len], pat_start, pat_text, allow_escape);
+                }
+            }
             seq_start = 0;
             seq_len = 0;
         }
+    }
+
+    fn reportCombiningSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, pat_text: []const u8, allow_escape: bool) void {
+        if (seq.len < 2) return;
+        var i: usize = 1;
+        while (i < seq.len) : (i += 1) {
+            const prev = seq[i - 1];
+            const curr = seq[i];
+            if (!unicode_marks.isCombiningMark(curr.codepoint)) continue;
+            if (unicode_marks.isCombiningMark(prev.codepoint)) continue;
+            if (allow_escape and charIsEscapeForm(curr, pat_text)) continue;
+            self.reportSpanWithMessageId(.{
+                .start = pat_start + prev.start,
+                .end = pat_start + curr.end,
+            }, "combiningClass");
+        }
+    }
+
+    fn reportEmojiModifierSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, pat_text: []const u8, allow_escape: bool) void {
+        if (seq.len < 2) return;
+        var i: usize = 1;
+        while (i < seq.len) : (i += 1) {
+            const prev = seq[i - 1];
+            const curr = seq[i];
+            if (!isEmojiModifier(curr.codepoint)) continue;
+            if (isEmojiModifier(prev.codepoint)) continue;
+            // allowEscape: skip when both chars are escape form.
+            if (allow_escape and charIsEscapeForm(prev, pat_text) and charIsEscapeForm(curr, pat_text)) continue;
+            self.reportSpanWithMessageId(.{
+                .start = pat_start + prev.start,
+                .end = pat_start + curr.end,
+            }, "emojiModifier");
+        }
+    }
+
+    fn reportRegionalIndicatorSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, pat_text: []const u8, allow_escape: bool) void {
+        if (seq.len < 2) return;
+        var i: usize = 1;
+        while (i < seq.len) : (i += 1) {
+            const prev = seq[i - 1];
+            const curr = seq[i];
+            if (!isRegionalIndicator(curr.codepoint)) continue;
+            if (!isRegionalIndicator(prev.codepoint)) continue;
+            if (allow_escape and charIsEscapeForm(prev, pat_text) and charIsEscapeForm(curr, pat_text)) continue;
+            self.reportSpanWithMessageId(.{
+                .start = pat_start + prev.start,
+                .end = pat_start + curr.end,
+            }, "regionalIndicatorSymbol");
+        }
+    }
+
+    fn reportZwjSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, pat_text: []const u8, allow_escape: bool) void {
+        if (seq.len < 3) return;
+        // Walk for ZWJ joiners.  ESLint coalesces overlapping ZWJ-joined
+        // sequences into a single diag, so we emit one report covering
+        // the contiguous run rather than one per joiner.
+        var run_start: ?usize = null;
+        var run_end: usize = 0;
+        var i: usize = 1;
+        while (i + 1 < seq.len) : (i += 1) {
+            const prev = seq[i - 1];
+            const curr = seq[i];
+            const next = seq[i + 1];
+            if (curr.codepoint == 0x200D and prev.codepoint != 0x200D and next.codepoint != 0x200D) {
+                if (allow_escape and charIsEscapeForm(prev, pat_text) and charIsEscapeForm(curr, pat_text) and charIsEscapeForm(next, pat_text)) continue;
+                if (run_start == null) {
+                    run_start = i - 1;
+                    run_end = i + 1;
+                } else if (run_end == i - 1) {
+                    run_end = i + 1;
+                } else {
+                    // Emit previous run.
+                    const s = seq[run_start.?];
+                    const e = seq[run_end];
+                    self.reportSpanWithMessageId(.{
+                        .start = pat_start + s.start,
+                        .end = pat_start + e.end,
+                    }, "zwj");
+                    run_start = i - 1;
+                    run_end = i + 1;
+                }
+            }
+        }
+        if (run_start) |rs| {
+            const s = seq[rs];
+            const e = seq[run_end];
+            self.reportSpanWithMessageId(.{
+                .start = pat_start + s.start,
+                .end = pat_start + e.end,
+            }, "zwj");
+        }
+    }
+
+    /// True for U+1F3FB..U+1F3FF — the Fitzpatrick skin-tone modifiers
+    /// recognised by no-misleading-character-class.
+    fn isEmojiModifier(cp: u32) bool {
+        return cp >= 0x1F3FB and cp <= 0x1F3FF;
+    }
+
+    /// True for U+1F1E6..U+1F1FF — the regional-indicator letters that
+    /// combine in pairs to render national flags.
+    fn isRegionalIndicator(cp: u32) bool {
+        return cp >= 0x1F1E6 and cp <= 0x1F1FF;
     }
 
     fn reportSurrogateSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, flags: regex_parser.Flags, pat_text: []const u8, allow_escape: bool) void {
@@ -5508,6 +5690,95 @@ fn appendCodepoint(arena: std.mem.Allocator, out: *std.ArrayList(u8), cp: u32) !
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(@truncate(cp), &buf) catch return;
     try out.appendSlice(arena, buf[0..len]);
+}
+
+/// Detect each misleading-class kind on `seq` (a sequence of consecutive
+/// Character atoms inside one character class) and set the matching flag
+/// on `out`.  Used by the call-form helper which can't reliably map
+/// back to source spans after JS string escape decoding.
+fn collectFromSequence(
+    seq: []const regex_parser.Character,
+    pat_text: []const u8,
+    has_uv: bool,
+    allow_escape: bool,
+    out: *LintContext.MisleadingFlags,
+) void {
+    if (!has_uv) {
+        var i: usize = 0;
+        while (i + 1 < seq.len) : (i += 1) {
+            const c1 = seq[i];
+            const c2 = seq[i + 1];
+            if (c1.codepoint >= 0xD800 and c1.codepoint <= 0xDBFF
+                and c2.codepoint >= 0xDC00 and c2.codepoint <= 0xDFFF)
+            {
+                if (allow_escape and charIsEscapeForm(c1, pat_text) and charIsEscapeForm(c2, pat_text)) continue;
+                out.surrogate_pair_without_u_flag = true;
+                i += 1;
+            }
+        }
+        for (seq) |c| {
+            if (c.codepoint > 0xFFFF and c.end > c.start and (c.end - c.start) == 4) {
+                out.surrogate_pair_without_u_flag = true;
+            }
+        }
+    } else {
+        var i: usize = 0;
+        while (i + 1 < seq.len) : (i += 1) {
+            const c1 = seq[i];
+            const c2 = seq[i + 1];
+            if (c1.codepoint >= 0xD800 and c1.codepoint <= 0xDBFF
+                and c2.codepoint >= 0xDC00 and c2.codepoint <= 0xDFFF)
+            {
+                if (charSourceIsCurlyU(c1, pat_text) or charSourceIsCurlyU(c2, pat_text)) {
+                    out.surrogate_pair = true;
+                    i += 1;
+                }
+            }
+        }
+    }
+    // Combining
+    var i: usize = 1;
+    while (i < seq.len) : (i += 1) {
+        const prev = seq[i - 1];
+        const curr = seq[i];
+        if (!unicode_marks.isCombiningMark(curr.codepoint)) continue;
+        if (unicode_marks.isCombiningMark(prev.codepoint)) continue;
+        if (allow_escape and charIsEscapeForm(curr, pat_text)) continue;
+        out.combining_class = true;
+    }
+    // Emoji modifier
+    i = 1;
+    while (i < seq.len) : (i += 1) {
+        const prev = seq[i - 1];
+        const curr = seq[i];
+        if (!(curr.codepoint >= 0x1F3FB and curr.codepoint <= 0x1F3FF)) continue;
+        if (prev.codepoint >= 0x1F3FB and prev.codepoint <= 0x1F3FF) continue;
+        if (allow_escape and charIsEscapeForm(prev, pat_text) and charIsEscapeForm(curr, pat_text)) continue;
+        out.emoji_modifier = true;
+    }
+    // Regional indicator
+    i = 1;
+    while (i < seq.len) : (i += 1) {
+        const prev = seq[i - 1];
+        const curr = seq[i];
+        if (!(curr.codepoint >= 0x1F1E6 and curr.codepoint <= 0x1F1FF)) continue;
+        if (!(prev.codepoint >= 0x1F1E6 and prev.codepoint <= 0x1F1FF)) continue;
+        if (allow_escape and charIsEscapeForm(prev, pat_text) and charIsEscapeForm(curr, pat_text)) continue;
+        out.regional_indicator = true;
+    }
+    // ZWJ
+    if (seq.len >= 3) {
+        i = 1;
+        while (i + 1 < seq.len) : (i += 1) {
+            const prev = seq[i - 1];
+            const curr = seq[i];
+            const next = seq[i + 1];
+            if (curr.codepoint != 0x200D) continue;
+            if (prev.codepoint == 0x200D or next.codepoint == 0x200D) continue;
+            if (allow_escape and charIsEscapeForm(prev, pat_text) and charIsEscapeForm(curr, pat_text) and charIsEscapeForm(next, pat_text)) continue;
+            out.zwj = true;
+        }
+    }
 }
 
 /// True when the character's source (taken from a pattern slice) starts
