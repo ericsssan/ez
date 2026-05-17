@@ -2,7 +2,6 @@
 // Rule: no-multi-assign
 // Source rule: tests/conformance/eslint/lib/rules/no-multi-assign.js
 
-const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -24,13 +23,6 @@ pub const needs_semantic = true;
 const Messages = enum {
     unexpectedChain,
 };
-
-const selectors = [_][]const u8{ "VariableDeclarator > AssignmentExpression.init", "PropertyDefinition > AssignmentExpression.value" };
-
-fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
-    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
-    return false;
-}
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     switch (ctx.nodeTag(node)) {

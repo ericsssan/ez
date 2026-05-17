@@ -2,7 +2,6 @@
 // Rule: no-unreachable-loop
 // Source rule: tests/conformance/eslint/lib/rules/no-unreachable-loop.js
 
-const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -24,15 +23,6 @@ pub const needs_semantic = true;
 const Messages = enum {
     invalid,
 };
-
-const allLoopTypes = [_][]const u8{ "WhileStatement", "DoWhileStatement", "ForStatement", "ForInStatement", "ForOfStatement" };
-
-const codePathSegments = [_][]const u8{  };
-
-fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
-    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
-    return false;
-}
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (((ctx.nodeReachable(node) and !(ctx.optionIgnoreContainsNodeType(node))) and !(ctx.loopHasIterationBackEdge(node)))) {

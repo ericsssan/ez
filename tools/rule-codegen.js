@@ -237,7 +237,14 @@ function emit(rule) {
   out.push(`// Rule: ${rule.name}`);
   if (rule.sourceFile) out.push(`// Source rule: ${rule.sourceFile}`);
   out.push(``);
-  const needsStd = Object.keys(rule.constants || {}).length > 0
+  // Drop unreferenced constants up-front so needsStd / containsStr emission
+  // reflect what we actually use.  The extractor hoists every `const X = ...`
+  // it sees at module level, including no-op require() result objects.
+  const usedConstantNames = collectReferencedConstants(rule);
+  const _filteredConstantsForStd = Object.fromEntries(
+    Object.entries(rule.constants || {}).filter(([n]) => usedConstantNames.has(n))
+  );
+  const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
@@ -296,12 +303,13 @@ function emit(rule) {
     out.push(``);
   }
 
-  // Emit top-level constants (currently: string sets).
-  for (const [name, c] of Object.entries(rule.constants || {})) {
+  // Emit top-level constants (filtered above for usage).
+  const filteredConstants = _filteredConstantsForStd;
+  for (const [name, c] of Object.entries(filteredConstants)) {
     for (const line of emitConstant(name, c)) out.push(line);
     out.push(``);
   }
-  if (Object.keys(rule.constants || {}).length > 0) {
+  if (Object.keys(filteredConstants).length > 0) {
     // Shared helper for set containment check.
     out.push(`fn containsStr(haystack: []const []const u8, needle: []const u8) bool {`);
     out.push(`    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;`);
@@ -323,7 +331,7 @@ function emit(rule) {
     out.push(`}`);
     out.push(``);
   }
-  if (needsHelperContains && Object.keys(rule.constants || {}).length === 0) {
+  if (needsHelperContains && Object.keys(filteredConstants).length === 0) {
     out.push(`fn containsStr(haystack: []const []const u8, needle: []const u8) bool {`);
     out.push(`    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;`);
     out.push(`    return false;`);
@@ -833,6 +841,32 @@ function emitComparableOperand(e, ctx) {
     return `ctx.tokenText(ctx.nodeMainToken(node))`;
   }
   return emitExpr(e, ctx);
+}
+
+// Walk the rule IR and collect names of constants actually referenced.
+// Catches IR ops that take a `setName` (set-contains, node-tag-in-set,
+// node-prop-name-in-set, etc.) plus `identifier` ops with kind "const-ref".
+// Used to filter out constants the extractor hoisted opportunistically but
+// nothing in the rule body consumes (typical: a `require()` result object
+// whose keys got string-set'd just in case).
+function collectReferencedConstants(rule) {
+  const used = new Set();
+  const walk = (x) => {
+    if (!x || typeof x !== "object") return;
+    if (typeof x.setName === "string") used.add(x.setName);
+    if (x.op === "identifier" && x.kind === "const-ref" && typeof x.name === "string") used.add(x.name);
+    if (typeof x.namesConstant === "string") used.add(x.namesConstant);
+    if (typeof x.methodsConstant === "string") used.add(x.methodsConstant);
+    if (x.methodChainCheck && typeof x.methodChainCheck.methodsConstant === "string") used.add(x.methodChainCheck.methodsConstant);
+    for (const k of Object.keys(x)) {
+      const v = x[k];
+      if (Array.isArray(v)) for (const e of v) walk(e);
+      else if (v && typeof v === "object") walk(v);
+    }
+  };
+  walk(rule.handlers);
+  walk(rule.helpers);
+  return used;
 }
 
 function emitConstant(name, c) {

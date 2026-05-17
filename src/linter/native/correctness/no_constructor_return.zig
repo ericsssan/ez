@@ -2,7 +2,6 @@
 // Rule: no-constructor-return
 // Source rule: tests/conformance/eslint/lib/rules/no-constructor-return.js
 
-const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -24,13 +23,6 @@ pub const needs_semantic = true;
 const Messages = enum {
     unexpected,
 };
-
-const stack = [_][]const u8{  };
-
-fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
-    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
-    return false;
-}
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if ((ctx.isConstructorMethod(ctx.nodeNearestFunctionAncestor(node)) and (ctx.nodeData(node).lhs != .none))) {
