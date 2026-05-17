@@ -4364,15 +4364,252 @@ pub const LintContext = struct {
     }
 
     pub fn checkMisleadingCharClassCall(self: *const LintContext, node: NodeIndex) void {
-        // Call form intentionally noop'd.  Source positions for chars
-        // inside a string-literal argument get shifted by JS string
-        // escape decoding (`\\u0041` → 1 byte), so the per-codepoint
-        // spans ESLint reports can't be recovered without a per-byte
-        // source map.  Reporting at the call/arg span instead creates
-        // strict-key mismatches that count as both FN + FP and net
-        // worse than the JS runner fallback.
-        _ = self;
-        _ = node;
+        const tag = self.ast.nodeTag(node);
+        if (tag != .call_expr and tag != .new_expr) return;
+        const data = self.ast.nodeData(node);
+        const callee = data.lhs;
+        if (self.ast.nodeTag(callee) != .identifier) return;
+        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
+        if (!self.isGlobalReference(callee)) return;
+        if (data.rhs == .none) return;
+        const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(range);
+        if (args.len == 0) return;
+        const first_arg: NodeIndex = @enumFromInt(args[0]);
+        if (self.ast.nodeTag(first_arg) != .string_literal) return;
+        var flags: []const u8 = "";
+        if (args.len >= 2) {
+            const flags_arg: NodeIndex = @enumFromInt(args[1]);
+            if (self.ast.nodeTag(flags_arg) != .string_literal) return; // bail on non-static flags
+            const fr = self.sourceText(flags_arg);
+            if (fr.len >= 2) flags = fr[1 .. fr.len - 1];
+        }
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const raw = self.sourceText(first_arg);
+        if (raw.len < 2) return;
+        const body = raw[1 .. raw.len - 1];
+        const decoded = decodeJsStringLiteralMapped(arena, body) catch return;
+        if (regexPatternHasSyntaxError(decoded.bytes, true, flags)) return;
+        const flag_set = regex_parser.Flags.fromString(flags);
+        const allow_escape = self.noMisleadingAllowEscape();
+        const pat = regex_parser.parse(arena, decoded.bytes, .{ .flags = flag_set }) catch return;
+        // Source-map base: first byte INSIDE the string literal in source
+        // (just past the opening quote).
+        const body_src_start: u32 = self.nodeSpan(first_arg).start + 1;
+        const map_ctx = CallSourceMap{
+            .map = decoded.source_offsets,
+            .decoded_len = decoded.bytes.len,
+            .body_src_start = body_src_start,
+            .body = body,
+        };
+        self.walkMisleadingCharClassCall(pat.alternatives, decoded.bytes, flag_set, allow_escape, map_ctx);
+    }
+
+    const CallSourceMap = struct {
+        map: []const u32,
+        decoded_len: usize,
+        body_src_start: u32,
+        body: []const u8,
+
+        fn srcStart(self: CallSourceMap, decoded_off: u32) u32 {
+            if (decoded_off >= self.map.len) return self.body_src_start + @as(u32, @intCast(self.decoded_len));
+            return self.body_src_start + self.map[decoded_off];
+        }
+
+        fn srcEnd(self: CallSourceMap, decoded_off: u32) u32 {
+            // Walk forward through duplicate map entries (multi-byte
+            // sequences from one escape) to land on the next char's
+            // source offset, which is this char's source end.
+            var idx: usize = decoded_off;
+            if (idx == 0 or idx > self.map.len) return self.body_src_start + @as(u32, @intCast(self.decoded_len));
+            const prev_src = self.map[idx - 1];
+            while (idx < self.map.len and self.map[idx] == prev_src) idx += 1;
+            if (idx >= self.map.len) return self.body_src_start + @as(u32, @intCast(self.decoded_len));
+            return self.body_src_start + self.map[idx];
+        }
+
+        /// True iff the original source at `decoded_off` started with
+        /// a `\\` (escape form).
+        fn isEscapeFormAt(self: CallSourceMap, decoded_off: u32) bool {
+            if (decoded_off >= self.map.len) return false;
+            const src_off = self.map[decoded_off];
+            if (src_off >= self.body.len) return false;
+            return self.body[src_off] == '\\';
+        }
+    };
+
+    fn walkMisleadingCharClassCall(
+        self: *const LintContext,
+        alts: []regex_parser.Alternative,
+        pat_text: []const u8,
+        flags: regex_parser.Flags,
+        allow_escape: bool,
+        map_ctx: CallSourceMap,
+    ) void {
+        for (alts) |alt| {
+            for (alt.terms) |t| {
+                switch (t.atom) {
+                    .group => |g| self.walkMisleadingCharClassCall(g.alternatives, pat_text, flags, allow_escape, map_ctx),
+                    .char_class => |cc| self.visitCharClassMapped(cc, pat_text, flags, allow_escape, map_ctx),
+                    else => {},
+                }
+            }
+        }
+    }
+
+    fn visitCharClassMapped(
+        self: *const LintContext,
+        cc: *regex_parser.CharacterClass,
+        pat_text: []const u8,
+        flags: regex_parser.Flags,
+        allow_escape: bool,
+        map_ctx: CallSourceMap,
+    ) void {
+        var buf: [256]regex_parser.Character = undefined;
+        var seq_len: usize = 0;
+        for (cc.elements) |e| {
+            if (e == .character) {
+                if (seq_len < buf.len) { buf[seq_len] = e.character; seq_len += 1; }
+            } else {
+                if (seq_len > 0) self.reportMappedSeq(buf[0..seq_len], pat_text, flags, allow_escape, map_ctx);
+                seq_len = 0;
+            }
+        }
+        if (seq_len > 0) self.reportMappedSeq(buf[0..seq_len], pat_text, flags, allow_escape, map_ctx);
+    }
+
+    fn reportMappedSeq(
+        self: *const LintContext,
+        seq: []const regex_parser.Character,
+        pat_text: []const u8,
+        flags: regex_parser.Flags,
+        allow_escape: bool,
+        map_ctx: CallSourceMap,
+    ) void {
+        const has_uv = flags.unicode or flags.unicode_sets;
+        if (!has_uv) {
+            var i: usize = 0;
+            while (i + 1 < seq.len) : (i += 1) {
+                const c1 = seq[i];
+                const c2 = seq[i + 1];
+                if (c1.codepoint >= 0xD800 and c1.codepoint <= 0xDBFF
+                    and c2.codepoint >= 0xDC00 and c2.codepoint <= 0xDFFF)
+                {
+                    if (allow_escape and map_ctx.isEscapeFormAt(c1.start) and map_ctx.isEscapeFormAt(c2.start)) {
+                        i += 1;
+                        continue;
+                    }
+                    self.reportSpanWithMessageId(.{
+                        .start = map_ctx.srcStart(c1.start),
+                        .end = map_ctx.srcEnd(c2.end),
+                    }, "surrogatePairWithoutUFlag");
+                    i += 1;
+                }
+            }
+            for (seq) |c| {
+                if (c.codepoint > 0xFFFF and c.end > c.start and (c.end - c.start) == 4) {
+                    self.reportSpanWithMessageId(.{
+                        .start = map_ctx.srcStart(c.start),
+                        .end = map_ctx.srcEnd(c.end),
+                    }, "surrogatePairWithoutUFlag");
+                }
+            }
+        } else {
+            var i: usize = 0;
+            while (i + 1 < seq.len) : (i += 1) {
+                const c1 = seq[i];
+                const c2 = seq[i + 1];
+                if (c1.codepoint >= 0xD800 and c1.codepoint <= 0xDBFF
+                    and c2.codepoint >= 0xDC00 and c2.codepoint <= 0xDFFF)
+                {
+                    if (charSourceIsCurlyU(c1, pat_text) or charSourceIsCurlyU(c2, pat_text)) {
+                        self.reportSpanWithMessageId(.{
+                            .start = map_ctx.srcStart(c1.start),
+                            .end = map_ctx.srcEnd(c2.end),
+                        }, "surrogatePair");
+                        i += 1;
+                    }
+                }
+            }
+        }
+        // combiningClass / zwj (any flag mode), modifier / regional (u/v).
+        var i: usize = 1;
+        while (i < seq.len) : (i += 1) {
+            const prev = seq[i - 1];
+            const curr = seq[i];
+            if (unicode_marks.isCombiningMark(curr.codepoint) and !unicode_marks.isCombiningMark(prev.codepoint)) {
+                if (allow_escape and map_ctx.isEscapeFormAt(curr.start)) continue;
+                self.reportSpanWithMessageId(.{
+                    .start = map_ctx.srcStart(prev.start),
+                    .end = map_ctx.srcEnd(curr.end),
+                }, "combiningClass");
+            }
+        }
+        if (has_uv) {
+            i = 1;
+            while (i < seq.len) : (i += 1) {
+                const prev = seq[i - 1];
+                const curr = seq[i];
+                if (isEmojiModifier(curr.codepoint) and !isEmojiModifier(prev.codepoint)) {
+                    if (allow_escape and map_ctx.isEscapeFormAt(prev.start) and map_ctx.isEscapeFormAt(curr.start)) continue;
+                    self.reportSpanWithMessageId(.{
+                        .start = map_ctx.srcStart(prev.start),
+                        .end = map_ctx.srcEnd(curr.end),
+                    }, "emojiModifier");
+                }
+            }
+            i = 1;
+            while (i < seq.len) : (i += 1) {
+                const prev = seq[i - 1];
+                const curr = seq[i];
+                if (isRegionalIndicator(curr.codepoint) and isRegionalIndicator(prev.codepoint)) {
+                    if (allow_escape and map_ctx.isEscapeFormAt(prev.start) and map_ctx.isEscapeFormAt(curr.start)) continue;
+                    self.reportSpanWithMessageId(.{
+                        .start = map_ctx.srcStart(prev.start),
+                        .end = map_ctx.srcEnd(curr.end),
+                    }, "regionalIndicatorSymbol");
+                }
+            }
+        }
+        // ZWJ runs.
+        if (seq.len >= 3) {
+            var run_start: ?usize = null;
+            var run_end: usize = 0;
+            i = 1;
+            while (i + 1 < seq.len) : (i += 1) {
+                const prev = seq[i - 1];
+                const curr = seq[i];
+                const next = seq[i + 1];
+                if (curr.codepoint == 0x200D and prev.codepoint != 0x200D and next.codepoint != 0x200D) {
+                    if (allow_escape and map_ctx.isEscapeFormAt(prev.start) and map_ctx.isEscapeFormAt(curr.start) and map_ctx.isEscapeFormAt(next.start)) continue;
+                    if (run_start == null) {
+                        run_start = i - 1;
+                        run_end = i + 1;
+                    } else if (run_end == i - 1) {
+                        run_end = i + 1;
+                    } else {
+                        const s = seq[run_start.?];
+                        const e = seq[run_end];
+                        self.reportSpanWithMessageId(.{
+                            .start = map_ctx.srcStart(s.start),
+                            .end = map_ctx.srcEnd(e.end),
+                        }, "zwj");
+                        run_start = i - 1;
+                        run_end = i + 1;
+                    }
+                }
+            }
+            if (run_start) |rs| {
+                const s = seq[rs];
+                const e = seq[run_end];
+                self.reportSpanWithMessageId(.{
+                    .start = map_ctx.srcStart(s.start),
+                    .end = map_ctx.srcEnd(e.end),
+                }, "zwj");
+            }
+        }
     }
 
     fn runMisleadingChecksForCall(
@@ -5621,29 +5858,49 @@ fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: [
 /// to the corresponding control char), and passes other escapes through
 /// as the second character (matching JS semantics: `\a` → `a`).
 fn decodeJsStringLiteral(arena: std.mem.Allocator, body: []const u8) ![]u8 {
+    const r = try decodeJsStringLiteralMapped(arena, body);
+    return r.bytes;
+}
+
+/// Decode `body` AND track, for every output byte, the source-byte
+/// offset it originated from (relative to the start of `body`).  Multi-
+/// byte UTF-8 sequences from a single escape all map to the escape's
+/// leading `\` position.  Used by rules that need to translate decoded
+/// pattern positions back into source positions for accurate diags.
+const DecodedString = struct {
+    bytes: []u8,
+    /// `source_offsets[i]` = byte offset in `body` where `bytes[i]` came
+    /// from.  Always has the same length as `bytes`.
+    source_offsets: []u32,
+};
+
+fn decodeJsStringLiteralMapped(arena: std.mem.Allocator, body: []const u8) !DecodedString {
     var out: std.ArrayList(u8) = .empty;
+    var map: std.ArrayList(u32) = .empty;
     var i: usize = 0;
     while (i < body.len) {
+        const src_off: u32 = @intCast(i);
         const c = body[i];
         if (c != '\\' or i + 1 >= body.len) {
             try out.append(arena, c);
+            try map.append(arena, src_off);
             i += 1;
             continue;
         }
         const n = body[i + 1];
         switch (n) {
-            'n' => { try out.append(arena, '\n'); i += 2; },
-            't' => { try out.append(arena, '\t'); i += 2; },
-            'r' => { try out.append(arena, '\r'); i += 2; },
-            '\\' => { try out.append(arena, '\\'); i += 2; },
-            '\'' => { try out.append(arena, '\''); i += 2; },
-            '"' => { try out.append(arena, '"'); i += 2; },
-            '`' => { try out.append(arena, '`'); i += 2; },
-            '0' => { try out.append(arena, 0); i += 2; },
+            'n' => { try appendOne(arena, &out, &map, '\n', src_off); i += 2; },
+            't' => { try appendOne(arena, &out, &map, '\t', src_off); i += 2; },
+            'r' => { try appendOne(arena, &out, &map, '\r', src_off); i += 2; },
+            '\\' => { try appendOne(arena, &out, &map, '\\', src_off); i += 2; },
+            '\'' => { try appendOne(arena, &out, &map, '\'', src_off); i += 2; },
+            '"' => { try appendOne(arena, &out, &map, '"', src_off); i += 2; },
+            '`' => { try appendOne(arena, &out, &map, '`', src_off); i += 2; },
+            '0' => { try appendOne(arena, &out, &map, 0, src_off); i += 2; },
             'x' => {
                 if (i + 4 <= body.len) {
                     if (parseHex(body[i + 2 .. i + 4])) |cp| {
-                        try appendCodepoint(arena, &out, cp);
+                        try appendCodepointMapped(arena, &out, &map, cp, src_off);
                     }
                     i += 4;
                 } else { i = body.len; }
@@ -5654,7 +5911,7 @@ fn decodeJsStringLiteral(arena: std.mem.Allocator, body: []const u8) ![]u8 {
                     while (j < body.len and body[j] != '}') j += 1;
                     if (j < body.len) {
                         if (parseHex(body[i + 3 .. j])) |cp| {
-                            try appendCodepoint(arena, &out, cp);
+                            try appendCodepointMapped(arena, &out, &map, cp, src_off);
                         }
                         i = j + 1;
                         continue;
@@ -5662,15 +5919,12 @@ fn decodeJsStringLiteral(arena: std.mem.Allocator, body: []const u8) ![]u8 {
                     i = body.len;
                 } else if (i + 6 <= body.len) {
                     if (parseHex(body[i + 2 .. i + 6])) |cp| {
-                        try appendCodepoint(arena, &out, cp);
+                        try appendCodepointMapped(arena, &out, &map, cp, src_off);
                     }
                     i += 6;
                 } else { i = body.len; }
             },
             '1', '2', '3', '4', '5', '6', '7' => {
-                // Deprecated octal escape (`\1`..`\7`).  Decode greedily up to
-                // 3 octal digits — for our purposes the exact value matters
-                // less than the fact that it's a single-byte char.
                 var val: u32 = n - '0';
                 i += 2;
                 var k: u8 = 0;
@@ -5678,12 +5932,20 @@ fn decodeJsStringLiteral(arena: std.mem.Allocator, body: []const u8) ![]u8 {
                     val = (val << 3) | (body[i] - '0');
                     i += 1;
                 }
-                try appendCodepoint(arena, &out, val);
+                try appendCodepointMapped(arena, &out, &map, val, src_off);
             },
-            else => { try out.append(arena, n); i += 2; },
+            else => { try appendOne(arena, &out, &map, n, src_off); i += 2; },
         }
     }
-    return out.toOwnedSlice(arena);
+    return .{
+        .bytes = try out.toOwnedSlice(arena),
+        .source_offsets = try map.toOwnedSlice(arena),
+    };
+}
+
+fn appendOne(arena: std.mem.Allocator, out: *std.ArrayList(u8), map: *std.ArrayList(u32), byte: u8, src_off: u32) !void {
+    try out.append(arena, byte);
+    try map.append(arena, src_off);
 }
 
 fn appendCodepoint(arena: std.mem.Allocator, out: *std.ArrayList(u8), cp: u32) !void {
@@ -5691,6 +5953,19 @@ fn appendCodepoint(arena: std.mem.Allocator, out: *std.ArrayList(u8), cp: u32) !
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(@truncate(cp), &buf) catch return;
     try out.appendSlice(arena, buf[0..len]);
+}
+
+fn appendCodepointMapped(arena: std.mem.Allocator, out: *std.ArrayList(u8), map: *std.ArrayList(u32), cp: u32, src_off: u32) !void {
+    if (cp < 0x80) {
+        try out.append(arena, @intCast(cp));
+        try map.append(arena, src_off);
+        return;
+    }
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(@truncate(cp), &buf) catch return;
+    try out.appendSlice(arena, buf[0..len]);
+    var k: usize = 0;
+    while (k < len) : (k += 1) try map.append(arena, src_off);
 }
 
 /// Detect each misleading-class kind on `seq` (a sequence of consecutive
