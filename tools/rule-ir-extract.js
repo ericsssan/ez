@@ -251,6 +251,10 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
   // Local-name aliases for `const options = context.options` so downstream
   // recognizers can treat `options[0]` the same as `context.options[0]`.
   const optionsAliases = new Set();
+  // Local-name aliases for `const [options] = context.options` — maps the
+  // local name to the rule's defaultOptions[0] object so `options.KEY`
+  // resolves to the right get-option-* / option-array IR.
+  const optionsObjectAliases = new Map();
 
   // ── Pass 1: register specialized helper recognizers ─────────────
   // (Generic inline helpers are deferred to pass 2 so they can call
@@ -293,6 +297,15 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
     }
     if (stmt.type === "VariableDeclaration") {
       for (const decl of stmt.declarations) {
+        // Pattern: const [options] = context.options — bind `options` as
+        // an alias for the whole first-options object so `options.KEY`
+        // resolves to the right get-option-* IR (or option-array kind).
+        if (decl.id?.type === "ArrayPattern" && isContextOptions(decl.init, ctxName)
+            && decl.id.elements.length === 1
+            && decl.id.elements[0]?.type === "Identifier") {
+          optionsObjectAliases.set(decl.id.elements[0].name, defaultOptions || {});
+          continue;
+        }
         // Pattern: const [{ opt1, opt2, ... }] = context.options
         if (decl.id?.type === "ArrayPattern" && isContextOptions(decl.init, ctxName)) {
           const firstElem = decl.id.elements[0];
@@ -486,7 +499,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
 
     // Seed locals with option bindings from the create() outer scope.
     const initLocals = new Map(optionLocals);
-    const scope = { ctxName, nodeParamName: h.nodeParam, locals: initLocals, helpers, constants, regexConsts, boolPreds, handlerSelector: h.selector, moduleImports: moduleImports || {}, optionsAliases };
+    const scope = { ctxName, nodeParamName: h.nodeParam, locals: initLocals, helpers, constants, regexConsts, boolPreds, handlerSelector: h.selector, moduleImports: moduleImports || {}, optionsAliases, optionsObjectAliases };
     const body = [];
     for (const stmt of stmts) {
       const r = extractStatement(stmt, scope);
@@ -5845,6 +5858,26 @@ function extractExpr(expr, scope) {
       return { ok: false, reason: `identifier '${expr.name}' — not in scope` };
     }
     case "MemberExpression": {
+      // <optionsObjectAlias>.KEY → emit get-option-string / get-option-bool /
+      // option-array marker based on the rule's default for KEY.  The alias
+      // is registered when `const [options] = context.options` is seen at
+      // create()-body top level.
+      if (!expr.computed && expr.property?.type === "Identifier"
+          && expr.object?.type === "Identifier"
+          && scope.optionsObjectAliases?.has(expr.object.name)) {
+        const defaults = scope.optionsObjectAliases.get(expr.object.name);
+        const key = expr.property.name;
+        const defVal = defaults?.[key];
+        if (Array.isArray(defVal)) {
+          return { ok: true, expr: { op: "__option_array_marker__", optionName: key } };
+        }
+        if (typeof defVal === "string") {
+          return { ok: true, expr: { op: "get-option-string", name: key, default: defVal } };
+        }
+        // Default to bool (covers documented bool options + undefined defaults).
+        const defBool = (defVal === true);
+        return { ok: true, expr: { op: "get-option-bool", name: key, default: defBool } };
+      }
       // pkg.AST_NODE_TYPES.TypeName → "TypeName" (TypeScript-ESLint AST_NODE_TYPES enum)
       if (!expr.computed && expr.property?.type === "Identifier"
           && expr.object?.type === "MemberExpression" && !expr.object.computed
@@ -6780,27 +6813,36 @@ function extractExpr(expr, scope) {
         }
       }
       // <option-array-marker>.includes(value) — lift to ctx.optionArrayContains.
-      // Value must extract to a string-valued expr: a literal, the
-      // operator marker, or the static-prop-name marker.
+      // The marker may be a local `allow` bound via destructuring (option-array
+      // kind), OR a MemberExpression like `options.allow` extracting to the
+      // marker through the optionsObjectAliases path.  Both resolve here.
       if (callee.type === "MemberExpression" && !callee.computed
           && callee.property?.type === "Identifier" && callee.property.name === "includes"
-          && expr.arguments.length === 1
-          && callee.object.type === "Identifier") {
-        const local = scope.locals?.get(callee.object.name);
-        if (local && local.kind === "option-array") {
+          && expr.arguments.length === 1) {
+        let optionName = null;
+        if (callee.object.type === "Identifier") {
+          const local = scope.locals?.get(callee.object.name);
+          if (local && local.kind === "option-array") optionName = local.optionName;
+        } else if (callee.object.type === "MemberExpression") {
+          const objR = extractExpr(callee.object, scope);
+          if (objR.ok && objR.expr.op === "__option_array_marker__") {
+            optionName = objR.expr.optionName;
+          }
+        }
+        if (optionName) {
           const argR = extractExpr(expr.arguments[0], scope);
           if (argR.ok) {
             if (argR.expr.op === "__node_operator_marker__") {
               return { ok: true, expr: {
                 op: "option-array-contains-operator",
-                optionName: local.optionName,
+                optionName,
                 node: argR.expr.node,
               } };
             }
             if (argR.expr.op === "literal" && typeof argR.expr.value === "string") {
               return { ok: true, expr: {
                 op: "option-array-contains-string",
-                optionName: local.optionName,
+                optionName,
                 value: argR.expr.value,
               } };
             }
