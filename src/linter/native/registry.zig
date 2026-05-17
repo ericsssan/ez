@@ -151,6 +151,7 @@ const no_octal_escape = @import("suspicious/no_octal_escape.zig");  // IR-genera
 const no_undefined = @import("suspicious/no_undefined.zig");  // IR-generated via for-each-ref-by-name handler
 const no_shadow_restricted_names = @import("correctness/no_shadow_restricted_names.zig");  // IR-generated via for-each-decl-by-name handler
 const no_undef_init = @import("style/no_undef_init.zig");  // IR-generated via no-undef-init-check handler
+const no_restricted_globals = @import("style/no_restricted_globals.zig");  // IR-generated via for-each-ref-by-option-name + checkGlobalObject
 // const no_param_reassign = @import("style/no_param_reassign.zig");  // hand-written — disabled per IR-only constraint
 // const no_plusplus = @import("style/no_plusplus.zig");  // hand-written — disabled per IR-only constraint
 const no_proto = @import("style/no_proto.zig");
@@ -435,6 +436,7 @@ pub const all_rules = .{
     no_undefined,
     no_shadow_restricted_names,
     no_undef_init,
+    no_restricted_globals,
     // no_param_reassign, // runner >> native (runner 76, native 57, gap 21); fall back to JS runner
     // no_plusplus, // hand-written — disabled
     no_proto,

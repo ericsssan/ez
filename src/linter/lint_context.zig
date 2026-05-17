@@ -569,6 +569,38 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// True when `name` is a known global-object identifier eligible for
+    /// no-restricted-globals' checkGlobalObject feature.  Defaults are
+    /// `window`, `self`, `globalThis`; custom names come from the rule's
+    /// `globalObjects` option (object-form, possibly nested under the
+    /// single-options-object form B).
+    pub fn isRestrictedGlobalObjectName(self: *const LintContext, name: []const u8) bool {
+        if (std.mem.eql(u8, name, "window")) return true;
+        if (std.mem.eql(u8, name, "self")) return true;
+        if (std.mem.eql(u8, name, "globalThis")) return true;
+        const all = self.rule_options_all orelse return false;
+        for (all) |item| {
+            if (item != .object) continue;
+            const go = item.object.get("globalObjects") orelse continue;
+            if (go != .array) continue;
+            for (go.array.items) |gi| {
+                if (gi == .string and std.mem.eql(u8, gi.string, name)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// True when checkGlobalObject is enabled via any options entry.
+    pub fn ruleOptionsCheckGlobalObject(self: *const LintContext) bool {
+        const all = self.rule_options_all orelse return false;
+        for (all) |item| {
+            if (item != .object) continue;
+            const cgo = item.object.get("checkGlobalObject") orelse continue;
+            if (cgo == .bool and cgo.bool) return true;
+        }
+        return false;
+    }
+
     /// Look up the per-name message in `no-restricted-globals` options array.
     /// Returns the message when entry is `{ name, message }`, else null
     /// (rule then falls back to the default messageId).
