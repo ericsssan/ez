@@ -4334,6 +4334,91 @@ pub const LintContext = struct {
         return node_text[flags_off..];
     }
 
+    // ── no-unused-private-class-members ────────────────────────
+    // Conservative port: flag a private member (`#x`) only when zero
+    // references to `#x` appear elsewhere in the class body.  The full
+    // rule downgrades write-only assignments (`this.#x = …`) to "not a
+    // use" — we don't model that yet, so we'll under-flag those cases.
+    pub const PrivateDecl = struct { key: NodeIndex, member: NodeIndex, name: []const u8, used: bool };
+
+    pub fn checkNoUnusedPrivateClassMembers(self: *const LintContext, node: NodeIndex) void {
+        if (self.ast.nodeTag(node) != .class_body) return;
+        const data = self.ast.nodeData(node);
+        // class_body data: lhs/rhs are SubRange-style indices into extras.
+        const members = self.ast.extraSlice(.{
+            .start = @intFromEnum(data.lhs),
+            .end = @intFromEnum(data.rhs),
+        });
+        // Collect declared private members: [(key_node, member_node, name)].
+        // Private identifier keys are parsed as a regular `.identifier`
+        // node whose main_token is the `#` token; the name token sits
+        // immediately after.  Read source forward from the `#` position
+        // to harvest the name without relying on nodeSpan (which only
+        // covers the `#` itself).
+        var decls_buf: [64]PrivateDecl = undefined;
+        var decl_count: usize = 0;
+        for (members) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            const mtag = self.ast.nodeTag(m);
+            if (mtag != .property_def and mtag != .method_def) continue;
+            const md = self.ast.nodeData(m);
+            const key = md.lhs;
+            if (key == .none) continue;
+            if (self.ast.nodeTag(key) != .identifier) continue;
+            const main_tok = self.ast.nodeMainToken(key);
+            const tok_start = self.ast.tokenStart(main_tok);
+            const src = self.ast.source;
+            if (tok_start >= src.len or src[tok_start] != '#') continue;
+            // Scan forward through ident chars.
+            var p: usize = tok_start + 1;
+            while (p < src.len and isIdentChar(src[p])) p += 1;
+            if (p == tok_start + 1) continue;
+            const name = src[tok_start + 1 .. p];
+            if (decl_count >= decls_buf.len) break;
+            decls_buf[decl_count] = .{ .key = key, .member = m, .name = name, .used = false };
+            decl_count += 1;
+        }
+        if (decl_count == 0) return;
+        // Walk the class body recursively; for each `#name` identifier
+        // that isn't one of our decl keys, mark its name as used.
+        self.markUsedPrivateNames(node, decls_buf[0..decl_count]);
+        for (decls_buf[0..decl_count]) |d| {
+            if (d.used) continue;
+            // Report at the member node (matches ESLint's `loc: key.loc` close enough).
+            const entries = [_]MessageDataEntry{
+                .{ .key = "classMemberName", .val = d.name },
+            };
+            self.reportSpanWithMessageIdAndData(self.nodeSpan(d.key), "unusedPrivateClassMember", &entries);
+        }
+    }
+
+    fn markUsedPrivateNames(self: *const LintContext, root: NodeIndex, decls: []PrivateDecl) void {
+        const total: u32 = @intCast(self.ast.nodes.len);
+        const root_span = self.nodeSpan(root);
+        const src = self.ast.source;
+        var n: u32 = 0;
+        while (n < total) : (n += 1) {
+            const ni: NodeIndex = @enumFromInt(n);
+            if (self.ast.nodeTag(ni) != .identifier) continue;
+            const main_tok = self.ast.nodeMainToken(ni);
+            const tok_start = self.ast.tokenStart(main_tok);
+            if (tok_start < root_span.start or tok_start >= root_span.end) continue;
+            if (tok_start >= src.len or src[tok_start] != '#') continue;
+            var p: usize = tok_start + 1;
+            while (p < src.len and isIdentChar(src[p])) p += 1;
+            if (p == tok_start + 1) continue;
+            const name = src[tok_start + 1 .. p];
+            var is_decl = false;
+            for (decls) |d| if (d.key == ni) { is_decl = true; break; };
+            if (is_decl) continue;
+            for (decls, 0..) |d, di| {
+                if (std.mem.eql(u8, d.name, name)) {
+                    decls[di].used = true;
+                }
+            }
+        }
+    }
+
     // ── no-unassigned-vars ─────────────────────────────────────
     // Flags `let x;` / `var x;` whose binding is read at least once but
     // never written.  ESLint's per-VariableDeclarator visitor lowered

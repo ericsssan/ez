@@ -441,6 +441,7 @@ function validateRule(rule) {
     if (h.kind === "no-useless-backref-check") continue;
     if (h.kind === "no-useless-backref-call-check") continue;
     if (h.kind === "no-unassigned-vars-check") continue;
+    if (h.kind === "no-unused-private-class-members-check") continue;
     if (h.kind === "no-empty-check") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       if (typeof h.selector !== "string") return fail("selector must be string", path);

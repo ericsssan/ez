@@ -516,6 +516,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoMisleadingCharClassHandler, // no-misleading-character-class
       extractNoUselessBackrefHandler, // no-useless-backreference
       extractNoUnassignedVarsHandler, // no-unassigned-vars
+      extractNoUnusedPrivateMembersHandler, // no-unused-private-class-members
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1256,6 +1257,14 @@ function extractNoUnassignedVarsHandler(rawHandler, _stmts, { sourceFile } = {})
   if (!sourceFile || !sourceFile.endsWith("/no-unassigned-vars.js")) return { ok: false };
   if (rawHandler.selector === "VariableDeclarator") {
     return { ok: true, handler: { kind: "no-unassigned-vars-check" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractNoUnusedPrivateMembersHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-unused-private-class-members.js")) return { ok: false };
+  if (rawHandler.selector === "ClassBody") {
+    return { ok: true, handler: { kind: "no-unused-private-class-members-check" } };
   }
   return { ok: true, handler: { kind: "noop-stub" } };
 }
