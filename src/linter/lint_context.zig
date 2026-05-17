@@ -702,6 +702,69 @@ pub const LintContext = struct {
         return true;
     }
 
+    /// True iff `n` is any function shape — declaration, expression,
+    /// arrow, getter/setter/method/constructor, including async/generator
+    /// variants.  Mirrors the IR op `node-is-function`.
+    pub fn nodeIsFunction(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        const t = self.ast.nodeTag(n);
+        return switch (t) {
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .arrow_fn, .async_arrow_fn,
+            .method_def, .computed_method_def,
+            .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def,
+            .constructor_def => true,
+            else => false,
+        };
+    }
+
+    /// no-unused-labels: scan a labeled_stmt's body subtree for a
+    /// break_label or continue_label whose target identifier matches
+    /// `name`.  Returns true on first match.  Used to decide whether
+    /// a label is reachable from inner break/continue statements.
+    pub fn labelHasInnerReference(self: *const LintContext, body: NodeIndex, name: []const u8) bool {
+        return self.labelHasInnerRefRec(body, name);
+    }
+
+    fn labelHasInnerRefRec(self: *const LintContext, node: NodeIndex, name: []const u8) bool {
+        if (node == .none) return false;
+        const tag = self.ast.nodeTag(node);
+        if (tag == .break_label or tag == .continue_label) {
+            const lbl = self.ast.nodeData(node).lhs;
+            if (lbl != .none) {
+                const lname = self.ast.tokenText(self.ast.nodeMainToken(lbl));
+                if (std.mem.eql(u8, lname, name)) return true;
+            }
+        }
+        // Walk children via the ESTree-like child list.  Use the AST's
+        // generic child traversal: subtreeContainsTag walks every child
+        // node via nodeSpan-bounded slicing.  Here we need to recurse,
+        // so just iterate child slots via the node-childiter the
+        // codegen pattern uses elsewhere — a span-based scan would be
+        // O(N) and good enough.
+        const span = self.nodeSpan(node);
+        // Walk via node index range — any node whose span starts within
+        // `node`'s span is a descendant.  This is the same approach
+        // subtreeContainsTag uses internally.
+        const total = self.ast.nodes.len;
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            if (ni == node) continue;
+            const itag = self.ast.nodeTag(ni);
+            if (itag != .break_label and itag != .continue_label) continue;
+            const isp = self.nodeSpan(ni);
+            if (isp.start < span.start or isp.end > span.end) continue;
+            const lbl = self.ast.nodeData(ni).lhs;
+            if (lbl == .none) continue;
+            const lname = self.ast.tokenText(self.ast.nodeMainToken(lbl));
+            if (std.mem.eql(u8, lname, name)) return true;
+        }
+        return false;
+    }
+
     /// True iff a class method member has no function body — i.e. a TS
     /// overload signature like `foo(a: string): string;`.  Detected by
     /// MethodData.body == .none.  Property fields (no MethodData) return false.

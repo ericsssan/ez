@@ -490,6 +490,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoDupeArgsHandler,      // no-dupe-args
       extractNoDupeKeysHandler,      // no-dupe-keys
       extractNoDupeClassMembersHandler, // no-dupe-class-members
+      extractNoUnusedLabelsHandler,  // no-unused-labels
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1106,6 +1107,17 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-unused-labels: flags labeled statements whose label isn't referenced
+// by any inner break/continue.  Per-LabeledStatement walk that scans the
+// body subtree for a matching break_label/continue_label.
+function extractNoUnusedLabelsHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-unused-labels.js")) return { ok: false };
+  if (rawHandler.selector === "LabeledStatement") {
+    return { ok: true, handler: { kind: "no-unused-labels-check", messageId: "unused" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 // no-dupe-class-members: reports duplicate class member names.  Walks
 // each class_body, applying the same get/set/init collision rules as
 // no-dupe-keys but with separate static and instance groups.  Skips

@@ -240,10 +240,11 @@ function emit(rule) {
   const hasNoDupeArgsCheck = rule.handlers.some(h => h.kind === "no-dupe-args-check");
   const hasNoDupeKeysCheck = rule.handlers.some(h => h.kind === "no-dupe-keys-check");
   const hasNoDupeClassMembersCheck = rule.handlers.some(h => h.kind === "no-dupe-class-members-check");
+  const hasNoUnusedLabelsCheck = rule.handlers.some(h => h.kind === "no-unused-labels-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -263,6 +264,8 @@ function emit(rule) {
     relevantTags = ["object_literal"];
   } else if (hasNoDupeClassMembersCheck) {
     relevantTags = ["class_body"];
+  } else if (hasNoUnusedLabelsCheck) {
+    relevantTags = ["labeled_stmt"];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
   } else {
@@ -284,7 +287,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -341,7 +344,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -660,6 +663,58 @@ function emit(rule) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    if (ctx.nodeTag(node) != .class_body) return;`);
     out.push(`    ctx.checkNoDupeClassMembers(node, "${zigStr(h.messageId)}");`);
+    out.push(`}`);
+  } else if (hasNoUnusedLabelsCheck) {
+    const h = rule.handlers.find(x => x.kind === "no-unused-labels-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    if (ctx.nodeTag(node) != .labeled_stmt) return;`);
+    out.push(`    const body = ctx.nodeData(node).lhs;`);
+    out.push(`    const label_node = ctx.nodeData(node).rhs;`);
+    out.push(`    if (label_node == .none) return;`);
+    out.push(`    const name = ctx.tokenText(ctx.nodeMainToken(label_node));`);
+    out.push(`    if (ctx.labelHasInnerReference(body, name)) return;`);
+    // Fix: remove the label prefix (label name + colon) from the start of
+    // the labeled statement up to the body start.  Skip when there are
+    // comments in the removed range or when removing the label would
+    // turn the body into a directive (`"use strict"`).
+    out.push(`    const stmt_span = ctx.nodeSpan(node);`);
+    out.push(`    const body_span = ctx.nodeSpan(body);`);
+    // Directive risk: only matters when the labeled stmt's effective
+    // ancestor (skipping intermediate LabeledStatements) is Program or a
+    // function body BlockStatement.
+    out.push(`    const at_directive_position = blk: {`);
+    out.push(`        var anc = ctx.parentOf(node);`);
+    out.push(`        while (anc != .none and ctx.nodeTag(anc) == .labeled_stmt) anc = ctx.parentOf(anc);`);
+    out.push(`        if (anc == .none) break :blk false;`);
+    out.push(`        const atag = ctx.nodeTag(anc);`);
+    out.push(`        if (atag == .root) break :blk true;`);
+    out.push(`        if (atag == .block_stmt) {`);
+    out.push(`            const pp = ctx.parentOf(anc);`);
+    out.push(`            break :blk pp != .none and ctx.nodeIsFunction(pp);`);
+    out.push(`        }`);
+    out.push(`        break :blk false;`);
+    out.push(`    };`);
+    out.push(`    const body_is_potential_directive = blk: {`);
+    out.push(`        if (!at_directive_position) break :blk false;`);
+    out.push(`        if (ctx.nodeTag(body) != .expression_stmt) break :blk false;`);
+    out.push(`        const inner = ctx.nodeSkipGrouping(ctx.nodeData(body).lhs);`);
+    out.push(`        if (inner == .none) break :blk false;`);
+    out.push(`        const itag = ctx.nodeTag(inner);`);
+    out.push(`        if (itag == .string_literal) break :blk true;`);
+    out.push(`        if (itag == .template_literal) {`);
+    out.push(`            const raw = ctx.tokenText(ctx.nodeMainToken(inner));`);
+    out.push(`            if (raw.len >= 2 and raw[0] == '\`' and raw[raw.len - 1] == '\`') break :blk true;`);
+    out.push(`        }`);
+    out.push(`        break :blk false;`);
+    out.push(`    };`);
+    out.push(`    const can_fix = !body_is_potential_directive`);
+    out.push(`        and !ctx.rangeContainsComment(stmt_span.start, body_span.start);`);
+    out.push(`    const data = [_]@import("../../lint_context.zig").MessageDataEntry{ .{ .key = "name", .val = name } };`);
+    out.push(`    if (can_fix) {`);
+    out.push(`        ctx.reportSpanWithFixAndMessageId(ctx.nodeSpan(label_node), .{ .start = stmt_span.start, .end = body_span.start }, "", "${zigStr(h.messageId)}");`);
+    out.push(`        return;`);
+    out.push(`    }`);
+    out.push(`    ctx.reportWithMessageIdAndData(label_node, "${zigStr(h.messageId)}", &data);`);
     out.push(`}`);
   } else if (hasNoSelfAssignCheck) {
     const h = rule.handlers.find(x => x.kind === "no-self-assign-check");
