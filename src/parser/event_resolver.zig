@@ -838,11 +838,22 @@ fn resolveFullImpl(
             if (do_cfg and !cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
             if (!do_scope) continue;
             const kind: BindingKind = @enumFromInt(e.aux);
-            // var / function_decl hoist to the nearest enclosing var-scope
-            // (function / global / module / static_block / class_field_init).
-            // let / const / class / params stay in the current lexical scope.
+            // var hoists to the nearest enclosing var-scope (function /
+            // global / module / static_block / class_field_init).  let /
+            // const / class / params stay in the current lexical scope.
+            //
+            // function_decl is more subtle: per ES6 in strict mode,
+            // function-in-block is block-scoped (not hoisted out).  In
+            // sloppy mode, Annex B B.3.2.1 hoists for if/labeled positions
+            // (which the parser flags as `function_decl_annex_b`) but ALSO
+            // applies to plain blocks via the legacy "FunctionDeclaration
+            // in Block" semantics — that case isn't covered here today.
+            // For the strict cases that matter (modules, class static
+            // blocks, "use strict" functions), treat function_decl as
+            // staying in its current scope; only function_decl_annex_b
+            // hoists.
             const target_depth: u32 = blk: {
-                if (kind == .@"var" or kind == .function_decl) {
+                if (kind == .@"var" or kind == .function_decl_annex_b) {
                     var j: i32 = @as(i32, @intCast(sp)) - 1;
                     while (j >= 0) : (j -= 1) {
                         const sk = kind_stack[@intCast(j)];
@@ -852,6 +863,10 @@ fn resolveFullImpl(
                         }
                     }
                 }
+                // function_decl placed DIRECTLY in a var-scope (function
+                // body, static block, etc.) still belongs to that scope —
+                // current scope IS the var-scope.  Function in a block
+                // stays in the block.
                 break :blk sp - 1;
             };
             const scope_id = stack[target_depth];
