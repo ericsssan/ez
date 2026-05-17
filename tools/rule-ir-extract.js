@@ -485,6 +485,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoShadowRestrictedNamesHandler, // no-shadow-restricted-names
       extractNoUndefInitHandler,     // no-undef-init
       extractNoRestrictedGlobalsHandler, // no-restricted-globals
+      extractNoRedeclareHandler,     // no-redeclare
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1101,6 +1102,22 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-redeclare: reports symbols that share name+scope with another symbol
+// (a same-scope var/function redeclaration; our parser allocates separate
+// sym_ids for these and we'd already have routed refs to the first via
+// sym_to_canonical).  Walks the SymbolTable and emits one diag per
+// non-first symbol in each (scope, name) group.
+function extractNoRedeclareHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-redeclare.js")) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      kind: "no-redeclare-check",
+      messageId: "redeclared",
+    },
+  };
+}
+
 // no-restricted-globals: reports references to globals listed in the rule's
 // options.  Each option entry is either a bare string (just the name) or
 // an object `{ name, message }` (custom message).  Walks the reference

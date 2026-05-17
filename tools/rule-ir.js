@@ -379,6 +379,10 @@ function validateRule(rule) {
       if (typeof h.customMessageId !== "string") return fail("customMessageId must be string", path);
       continue;
     }
+    if (h.kind === "no-redeclare-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
     if (h.kind === "noop-stub") {
       continue;
     }

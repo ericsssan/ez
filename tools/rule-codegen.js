@@ -235,10 +235,11 @@ function emit(rule) {
   const hasForEachDeclByName = rule.handlers.some(h => h.kind === "for-each-decl-by-name");
   const hasNoUndefInitCheck = rule.handlers.some(h => h.kind === "no-undef-init-check");
   const hasForEachRefByOptionName = rule.handlers.some(h => h.kind === "for-each-ref-by-option-name");
+  const hasNoRedeclareCheck = rule.handlers.some(h => h.kind === "no-redeclare-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -248,7 +249,7 @@ function emit(rule) {
 
   // For-each-node handlers supply their own relevant_tags from their selector.
   let relevantTags;
-  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasForEachRefByOptionName) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasForEachRefByOptionName || hasNoRedeclareCheck) {
     relevantTags = [];
   } else if (hasNoUndefInitCheck) {
     relevantTags = ["declarator"];
@@ -273,7 +274,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -299,6 +300,9 @@ function emit(rule) {
   }
   if (hasForEachRefByOptionName) {
     out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
+  }
+  if (hasNoRedeclareCheck) {
+    out.push(`const symbol_mod = @import("../../../parser/symbol.zig");`);
   }
   out.push(``);
   out.push(`pub const meta = RuleMeta{`);
@@ -327,7 +331,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -460,6 +464,47 @@ function emit(rule) {
       const ct = h.considerTypeof ? "true" : "false";
       out.push(`    ctx.reportAllUnresolvedRefs("${zigStr(h.messageId)}", ${ct});`);
     }
+    out.push(`}`);
+  } else if (hasNoRedeclareCheck) {
+    const h = rule.handlers.find(x => x.kind === "no-redeclare-check");
+    out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
+    out.push(``);
+    out.push(`pub fn runOnSymbols(ctx: *const LintContext) void {`);
+    out.push(`    const symbols = ctx.symbols();`);
+    out.push(`    const count = symbols.count();`);
+    out.push(`    const check_builtin = ctx.getOptionBool("builtinGlobals", false);`);
+    out.push(`    var i: u32 = 0;`);
+    out.push(`    while (i < count) : (i += 1) {`);
+    out.push(`        const sym_i = symbol_mod.SymbolId.fromInt(i);`);
+    out.push(`        if (symbols.isImplicitGlobal(sym_i)) continue;`);
+    out.push(`        const decl_i = symbols.getDeclNode(sym_i);`);
+    out.push(`        if (decl_i == .none) continue;`);
+    out.push(`        const name_i = symbols.getName(sym_i);`);
+    out.push(`        const scope_i = symbols.getScope(sym_i);`);
+    // Same-scope same-name → "redeclared"; matches against earlier user syms.
+    out.push(`        var j: u32 = 0;`);
+    out.push(`        var is_redecl = false;`);
+    out.push(`        while (j < i) : (j += 1) {`);
+    out.push(`            const sym_j = symbol_mod.SymbolId.fromInt(j);`);
+    out.push(`            if (symbols.isImplicitGlobal(sym_j)) continue;`);
+    out.push(`            if (symbols.getScope(sym_j).toInt() != scope_i.toInt()) continue;`);
+    out.push(`            if (!std.mem.eql(u8, symbols.getName(sym_j), name_i)) continue;`);
+    out.push(`            is_redecl = true;`);
+    out.push(`            break;`);
+    out.push(`        }`);
+    out.push(`        if (is_redecl) {`);
+    out.push(`            ctx.reportWithMessageIdAndData(decl_i, "${zigStr(h.messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`                .{ .key = "id", .val = name_i },`);
+    out.push(`            });`);
+    out.push(`            continue;`);
+    out.push(`        }`);
+    // builtinGlobals: would need readonly vs writeable distinction from
+    // the globals package (Object is writeable, undefined isn't) + correct
+    // module-vs-global scope distinction (our parser may currently put
+    // module top-level vars in scope 0).  Skipped; affects ~33% of
+    // builtinGlobals fixtures both directions.
+    out.push(`        _ = check_builtin;`);
+    out.push(`    }`);
     out.push(`}`);
   } else if (hasForEachRefByOptionName) {
     const h = rule.handlers.find(x => x.kind === "for-each-ref-by-option-name");
