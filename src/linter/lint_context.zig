@@ -32,6 +32,20 @@ pub const Fix = struct {
     text: []const u8,
 };
 
+/// A user-applicable code suggestion attached to a diagnostic.  Unlike `fix`
+/// (which the autofixer applies by default), suggestions are *offered* to the
+/// developer and only applied on explicit acceptance — see ESLint's
+/// `context.report({ suggest: [...] })` shape.  Each suggestion carries its
+/// own messageId (looked up in the rule's `meta.messages` map by the JS side)
+/// and a single text replacement.
+pub const Suggestion = struct {
+    /// The suggestion's messageId (e.g. "replaceWithIsNaN").  Must outlive
+    /// the diagnostic; codegen passes string literals.
+    message_id: []const u8,
+    /// Text replacement that would apply if the user accepts the suggestion.
+    fix: Fix,
+};
+
 /// One `{{key}} → value` entry that fills a message template placeholder.
 /// Both slices must outlive the diagnostic; codegen passes literals or text
 /// borrowed from the source buffer (which lives at least as long as the diag).
@@ -55,6 +69,10 @@ pub const LintDiagnostic = struct {
     /// Optional `{{key}}` template substitutions for the message template.
     /// JS-side replaces each `{{key}}` placeholder with the matching value.
     message_data: ?[]const MessageDataEntry = null,
+    /// Optional user-applicable suggestions surfaced to editors as opt-in
+    /// fixes.  null = no suggestions; empty slice is treated as null on the
+    /// wire.  Slice + entries live in the lint arena.
+    suggestions: ?[]const Suggestion = null,
 
     /// Format as "file:line:col: severity(rule-name)"
     pub fn format(
@@ -4040,6 +4058,235 @@ pub const LintContext = struct {
         }) catch {};
     }
 
+    // ── use-isnan ──────────────────────────────────────────────
+    // Helper for ESLint's use-isnan rule.  Detects `X <op> NaN` /
+    // `X <op> Number.NaN` (and swapped) where <op> is one of the eight
+    // comparison operators, reports `comparisonWithNaN`, and attaches up to
+    // two opt-in suggestions (`replaceWithIsNaN`, `replaceWithCastingAndIsNaN`).
+    // Operator semantics match ESLint:
+    //   * Fixable (suggestable) operators: ==, ===, !=, !==
+    //   * Castable variants (Number.isNaN(Number(x))): only == and !=
+    //   * Relational <, <=, >, >= report but get no suggestions.
+    // Returns silently for non-comparison tags or when neither side is NaN.
+    pub fn checkUseIsnanBinaryComparison(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        const op_info: ?struct { fixable: bool, castable: bool, negate: bool } = switch (tag) {
+            .equal           => .{ .fixable = true,  .castable = true,  .negate = false },
+            .not_equal       => .{ .fixable = true,  .castable = true,  .negate = true  },
+            .strict_equal    => .{ .fixable = true,  .castable = false, .negate = false },
+            .strict_not_equal=> .{ .fixable = true,  .castable = false, .negate = true  },
+            .less_than, .greater_than, .less_equal, .greater_equal
+                             => .{ .fixable = false, .castable = false, .negate = false },
+            else => null,
+        };
+        const op = op_info orelse return;
+
+        const data = self.ast.nodeData(node);
+        const left = data.lhs;
+        const right = data.rhs;
+        const left_is_nan = self.isUseIsnanNaNNode(left);
+        const right_is_nan = self.isUseIsnanNaNNode(right);
+        if (!left_is_nan and !right_is_nan) return;
+
+        const compared = if (left_is_nan) right else left;
+        // Whether the NaN-bearing side is a parenthesised SequenceExpression —
+        // suggestions get skipped (ESLint behavior) and the diag span needs to
+        // include the wrapping parens (which Ez's sequence_expr doesn't track).
+        const nan_side = if (left_is_nan) left else right;
+        const nan_side_is_sequence = self.ast.nodeTag(nan_side) == .sequence_expr;
+        const compared_is_sequence = self.ast.nodeTag(compared) == .sequence_expr;
+
+        // Extend the diagnostic span across the wrapping `(...)` of a
+        // SequenceExpression operand so endColumn / startColumn match ESLint.
+        var diag_span = self.nodeSpan(node);
+        if (nan_side_is_sequence and !left_is_nan) {
+            const src = self.ast.source;
+            var p: usize = diag_span.end;
+            while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\n' or src[p] == '\r')) p += 1;
+            if (p < src.len and src[p] == ')') diag_span.end = @intCast(p + 1);
+        } else if (nan_side_is_sequence and left_is_nan) {
+            const src = self.ast.source;
+            var p: isize = @as(isize, @intCast(diag_span.start)) - 1;
+            while (p >= 0 and (src[@intCast(p)] == ' ' or src[@intCast(p)] == '\t')) p -= 1;
+            if (p >= 0 and src[@intCast(p)] == '(') diag_span.start = @intCast(p);
+        }
+        // ESLint always reports; suggestions are gated on fixable + non-sequence.
+        if (!op.fixable or compared_is_sequence) {
+            self.reportSpanWithMessageId(diag_span, "comparisonWithNaN");
+            return;
+        }
+
+        const compared_text = self.sourceText(compared);
+        const negation: []const u8 = if (op.negate) "!" else "";
+
+        // Two suggestions when castable, one otherwise.  Build the
+        // replacement texts via allocPrint into the lint arena; the
+        // SuggestionInput helper duplicates them again before storing —
+        // we free our locals after emitting.
+        const isnan_text = std.fmt.allocPrint(self.allocator, "{s}Number.isNaN({s})", .{ negation, compared_text }) catch {
+            self.reportSpanWithMessageId(diag_span, "comparisonWithNaN");
+            return;
+        };
+        defer self.allocator.free(isnan_text);
+
+        if (op.castable) {
+            const cast_text = std.fmt.allocPrint(self.allocator, "{s}Number.isNaN(Number({s}))", .{ negation, compared_text }) catch {
+                const sugg = [_]SuggestionInput{
+                    .{ .message_id = "replaceWithIsNaN", .fix_span = diag_span, .fix_text = isnan_text },
+                };
+                self.reportSpanWithSuggestions(diag_span, "comparisonWithNaN", &sugg);
+                return;
+            };
+            defer self.allocator.free(cast_text);
+            const sugg = [_]SuggestionInput{
+                .{ .message_id = "replaceWithIsNaN", .fix_span = diag_span, .fix_text = isnan_text },
+                .{ .message_id = "replaceWithCastingAndIsNaN", .fix_span = diag_span, .fix_text = cast_text },
+            };
+            self.reportSpanWithSuggestions(diag_span, "comparisonWithNaN", &sugg);
+            return;
+        }
+
+        const sugg = [_]SuggestionInput{
+            .{ .message_id = "replaceWithIsNaN", .fix_span = diag_span, .fix_text = isnan_text },
+        };
+        self.reportSpanWithSuggestions(diag_span, "comparisonWithNaN", &sugg);
+    }
+
+    // ── use-isnan: switch + indexOf ────────────────────────────
+    // Switch handler.  Active when `enforceForSwitchCase` option is true
+    // (its default).  Reports `switchNaN` when the discriminant is NaN,
+    // and `caseNaN` at each `case NaN:` clause.  No suggestions.
+    pub fn checkUseIsnanSwitchStatement(self: *const LintContext, node: NodeIndex) void {
+        if (self.ast.nodeTag(node) != .switch_stmt) return;
+        if (!self.useIsnanSwitchEnabled()) return;
+        const data = self.ast.nodeData(node);
+        const discriminant = data.lhs;
+        if (self.isUseIsnanNaNNode(discriminant)) {
+            self.reportWithMessageId(node, "switchNaN");
+        }
+        // cases are an extra-array SubRange in rhs.
+        if (data.rhs == .none) return;
+        const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const cases = self.extraSlice(range);
+        for (cases) |raw| {
+            const case_node: NodeIndex = @enumFromInt(raw);
+            if (self.ast.nodeTag(case_node) != .switch_case) continue;
+            const cdata = self.ast.nodeData(case_node);
+            if (self.isUseIsnanNaNNode(cdata.lhs)) {
+                self.reportWithMessageId(case_node, "caseNaN");
+            }
+        }
+    }
+
+    /// True when use-isnan's options enable the switch check.  Default true
+    /// (ESLint's `enforceForSwitchCase` default).  Look for an explicit
+    /// `enforceForSwitchCase: false` in any options object — if absent, the
+    /// check is enabled.
+    fn useIsnanSwitchEnabled(self: *const LintContext) bool {
+        const all = self.rule_options_all orelse return true;
+        for (all) |item| {
+            if (item != .object) continue;
+            const v = item.object.get("enforceForSwitchCase") orelse continue;
+            if (v == .bool) return v.bool;
+        }
+        return true;
+    }
+
+    /// True when use-isnan's options enable the indexOf check.  Default
+    /// false (ESLint's `enforceForIndexOf` default).
+    fn useIsnanIndexOfEnabled(self: *const LintContext) bool {
+        const all = self.rule_options_all orelse return false;
+        for (all) |item| {
+            if (item != .object) continue;
+            const v = item.object.get("enforceForIndexOf") orelse continue;
+            if (v == .bool) return v.bool;
+        }
+        return false;
+    }
+
+    /// indexOf handler.  Active only when `enforceForIndexOf` option is true.
+    /// Matches `obj.indexOf(NaN[, second])` and `obj.lastIndexOf(...)` with
+    /// at most two args, reports `indexOfNaN` with message data
+    /// `{methodName}`.  Suggestion emission deferred — the ESLint fix is a
+    /// composite (rewrites both the property and the first arg) and doesn't
+    /// fit the single-replace SuggestionInput shape yet.
+    pub fn checkUseIsnanIndexOfCall(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag != .call_expr and tag != .optional_call_expr) return;
+        if (!self.useIsnanIndexOfEnabled()) return;
+        const data = self.ast.nodeData(node);
+        var callee = data.lhs;
+        // Skip ChainExpression (optional-chain wrapper).  In Ez optional
+        // member access is already a distinct tag; if a wrapper grouping is
+        // present, drill through it.
+        while (self.ast.nodeTag(callee) == .grouping_expr) {
+            callee = self.ast.nodeData(callee).lhs;
+            if (callee == .none) return;
+        }
+        const ctag = self.ast.nodeTag(callee);
+        const is_member = ctag == .member_expr or ctag == .optional_member_expr
+            or ctag == .computed_member_expr or ctag == .optional_computed_member_expr;
+        if (!is_member) return;
+        const method_name = self.staticPropertyName(callee) orelse return;
+        if (!std.mem.eql(u8, method_name, "indexOf") and !std.mem.eql(u8, method_name, "lastIndexOf")) return;
+        // call_expr args are stored as SubRange in rhs.
+        if (data.rhs == .none) return;
+        const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(range);
+        if (args.len == 0 or args.len > 2) return;
+        const first_arg: NodeIndex = @enumFromInt(args[0]);
+        if (!self.isUseIsnanNaNNode(first_arg)) return;
+        const entries = [_]MessageDataEntry{ .{ .key = "methodName", .val = method_name } };
+        self.reportWithMessageIdAndData(node, "indexOfNaN", &entries);
+    }
+
+    /// True when `n` is the literal `NaN` identifier or the member access
+    /// `Number.NaN` (non-computed or `Number["NaN"]`).  Mirrors ESLint's
+    /// `isNaNIdentifier`, which unwraps a SequenceExpression to its last
+    /// element before checking.
+    fn isUseIsnanNaNNode(self: *const LintContext, n_in: NodeIndex) bool {
+        if (n_in == .none) return false;
+        var n = n_in;
+        // Walk through any wrapping grouping_expr / sequence_expr to find
+        // the effective comparison value (mirrors ESLint's
+        // `astUtils.isSpecificId(sequenceExpression.expressions.at(-1), ...)`).
+        while (true) {
+            const t = self.ast.nodeTag(n);
+            if (t == .grouping_expr) {
+                const d = self.ast.nodeData(n);
+                if (d.lhs == .none) break;
+                n = d.lhs;
+                continue;
+            }
+            if (t == .sequence_expr) {
+                // sequence_expr.data.{lhs,rhs} stores the [start,end) range
+                // into the extra array directly (NOT a SubRange extra index).
+                const d = self.ast.nodeData(n);
+                const slice = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+                if (slice.len == 0) return false;
+                n = @enumFromInt(slice[slice.len - 1]);
+                continue;
+            }
+            break;
+        }
+        const tag = self.ast.nodeTag(n);
+        if (tag == .identifier) {
+            const tok = self.ast.nodeMainToken(n);
+            return std.mem.eql(u8, self.ast.tokenText(tok), "NaN");
+        }
+        if (tag == .member_expr or tag == .optional_member_expr or
+            tag == .computed_member_expr or tag == .optional_computed_member_expr)
+        {
+            const obj = self.ast.nodeData(n).lhs;
+            if (self.ast.nodeTag(obj) != .identifier) return false;
+            const obj_tok = self.ast.nodeMainToken(obj);
+            if (!std.mem.eql(u8, self.ast.tokenText(obj_tok), "Number")) return false;
+            const prop = self.staticPropertyName(n) orelse return false;
+            return std.mem.eql(u8, prop, "NaN");
+        }
+        return false;
+    }
+
     /// Report a diagnostic at a custom span with an autofix.  Used by rules
     /// whose `loc:` differs from the rule's primary node — the diagnostic
     /// span equals `diag_span`, the fix range equals `fix_span` (which may
@@ -4061,6 +4308,61 @@ pub const LintContext = struct {
             .severity = self.severity_override orelse .warning,
             .fix = .{ .span = fix_span, .text = text_copy },
             .message_id = message_id,
+        }) catch {};
+    }
+
+    /// One entry for `reportWithSuggestions` — codegen-friendly shape that
+    /// keeps the caller free of arena-allocation responsibilities (the
+    /// helper duplicates the replacement text into the lint arena).
+    pub const SuggestionInput = struct {
+        message_id: []const u8,
+        fix_span: Span,
+        fix_text: []const u8,
+    };
+
+    /// Report at a node with a messageId and a slice of opt-in suggestions.
+    /// Each suggestion's `fix_text` is copied into the lint arena.  On any
+    /// allocation failure falls back to a plain `reportWithMessageId` so
+    /// rules never silently drop the primary diagnostic.
+    pub fn reportWithSuggestions(
+        self: *const LintContext,
+        node_idx: NodeIndex,
+        message_id: []const u8,
+        suggestions: []const SuggestionInput,
+    ) void {
+        self.reportSpanWithSuggestions(self.nodeSpan(node_idx), message_id, suggestions);
+    }
+
+    /// Report at a custom span with a messageId and a slice of suggestions.
+    pub fn reportSpanWithSuggestions(
+        self: *const LintContext,
+        diag_span: Span,
+        message_id: []const u8,
+        suggestions: []const SuggestionInput,
+    ) void {
+        if (suggestions.len == 0) {
+            self.reportSpanWithMessageId(diag_span, message_id);
+            return;
+        }
+        const owned = self.allocator.alloc(Suggestion, suggestions.len) catch {
+            self.reportSpanWithMessageId(diag_span, message_id);
+            return;
+        };
+        var written: usize = 0;
+        for (suggestions, 0..) |s, i| {
+            const txt = self.allocator.dupe(u8, s.fix_text) catch {
+                // Truncate to what we successfully built.
+                break;
+            };
+            owned[i] = .{ .message_id = s.message_id, .fix = .{ .span = s.fix_span, .text = txt } };
+            written = i + 1;
+        }
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = diag_span,
+            .severity = self.severity_override orelse .warning,
+            .message_id = message_id,
+            .suggestions = if (written == 0) null else owned[0..written],
         }) catch {};
     }
 };

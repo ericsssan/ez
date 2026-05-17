@@ -246,10 +246,15 @@ function emit(rule) {
   const hasNoSparseArraysCheck = rule.handlers.some(h => h.kind === "no-sparse-arrays-check");
   const hasForDirectionCheck = rule.handlers.some(h => h.kind === "for-direction-check");
   const hasValidTypeofCheck = rule.handlers.some(h => h.kind === "valid-typeof-check");
+  const hasNoExtraSemiCheck = rule.handlers.some(h => h.kind === "no-extra-semi-check");
+  const hasUseIsnanBinaryCheck = rule.handlers.some(h => h.kind === "use-isnan-binary-check");
+  const hasUseIsnanSwitchCheck = rule.handlers.some(h => h.kind === "use-isnan-switch-check");
+  const hasUseIsnanIndexOfCheck = rule.handlers.some(h => h.kind === "use-isnan-indexof-check");
+  const hasAnyUseIsnan = hasUseIsnanBinaryCheck || hasUseIsnanSwitchCheck || hasUseIsnanIndexOfCheck;
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -281,6 +286,15 @@ function emit(rule) {
     relevantTags = ["for_stmt"];
   } else if (hasValidTypeofCheck) {
     relevantTags = ["typeof_expr"];
+  } else if (hasNoExtraSemiCheck) {
+    relevantTags = ["empty_stmt"];
+  } else if (hasAnyUseIsnan) {
+    relevantTags = [];
+    if (hasUseIsnanBinaryCheck) relevantTags.push(
+      "equal", "not_equal", "strict_equal", "strict_not_equal",
+      "less_than", "greater_than", "less_equal", "greater_equal");
+    if (hasUseIsnanSwitchCheck) relevantTags.push("switch_stmt");
+    if (hasUseIsnanIndexOfCheck) relevantTags.push("call_expr", "optional_call_expr");
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
   } else {
@@ -302,7 +316,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -359,7 +373,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -700,6 +714,42 @@ function emit(rule) {
     out.push(`    const sibling = ctx.validTypeofInvalidSibling(node);`);
     out.push(`    if (sibling == .none) return;`);
     out.push(`    ctx.reportWithMessageId(sibling, "${zigStr(h.messageId)}");`);
+    out.push(`}`);
+  } else if (hasAnyUseIsnan) {
+    // use-isnan: tag-switch dispatches to the per-check helpers.  The
+    // binary handler emits suggestions; switch + indexOf are plain reports.
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    switch (ctx.nodeTag(node)) {`);
+    if (hasUseIsnanBinaryCheck) {
+      out.push(`        .equal, .not_equal, .strict_equal, .strict_not_equal,`);
+      out.push(`        .less_than, .greater_than, .less_equal, .greater_equal => ctx.checkUseIsnanBinaryComparison(node),`);
+    }
+    if (hasUseIsnanSwitchCheck) {
+      out.push(`        .switch_stmt => ctx.checkUseIsnanSwitchStatement(node),`);
+    }
+    if (hasUseIsnanIndexOfCheck) {
+      out.push(`        .call_expr, .optional_call_expr => ctx.checkUseIsnanIndexOfCall(node),`);
+    }
+    out.push(`        else => {},`);
+    out.push(`    }`);
+    out.push(`}`);
+  } else if (hasNoExtraSemiCheck) {
+    const h = rule.handlers.find(x => x.kind === "no-extra-semi-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    if (ctx.nodeTag(node) != .empty_stmt) return;`);
+    out.push(`    const parent = ctx.parentOf(node);`);
+    out.push(`    if (parent == .none) return;`);
+    // Allowed parents: loops, if, labeled, with — empty stmt as their body is valid.
+    out.push(`    switch (ctx.nodeTag(parent)) {`);
+    out.push(`        .for_stmt, .for_in_stmt, .for_of_stmt, .for_await_of_stmt,`);
+    out.push(`        .while_stmt, .do_while_stmt, .if_stmt, .if_else_stmt, .labeled_stmt, .with_stmt => return,`);
+    out.push(`        else => {},`);
+    out.push(`    }`);
+    // Fix: remove the empty statement entirely.  ESLint's FixTracker
+    // expands to surrounding tokens; for our purposes a plain
+    // removeRange of the node's span is enough for the common cases.
+    out.push(`    const span = ctx.nodeSpan(node);`);
+    out.push(`    ctx.reportSpanWithFixAndMessageId(span, span, "", "${zigStr(h.messageId)}");`);
     out.push(`}`);
   } else if (hasNoEmptyCheck) {
     const messageId = rule.handlers.find(x => x.kind === "no-empty-check").messageId;
@@ -1630,6 +1680,50 @@ function emitStatement(stmt, indent, ctx) {
   const ind = "    ".repeat(indent);
   if (stmt.op === "report") {
     const msgId = stmt.messageId ? `"${zigStr(stmt.messageId)}"` : `""`;
+    // Suggestion-array path: when IR carries `suggestions: [{messageId, fix}]`,
+    // emit a SuggestionInput slice and call reportWithSuggestions /
+    // reportSpanWithSuggestions.  Only the bare-node (or bare-loc) + no
+    // top-level fix/data case is wired here — that's what use-isnan needs.
+    if (Array.isArray(stmt.suggestions) && stmt.suggestions.length > 0) {
+      if (stmt.fix || stmt.data) {
+        throw new Error("report.suggestions with concurrent fix/data not supported");
+      }
+      const out = [];
+      out.push(`${ind}{`);
+      const inner = "    ".repeat(indent + 1);
+      // Per-suggestion text variables (literal text inlined, textExpr
+      // allocPrint'd into the lint arena via ctx.allocator.dupe so it
+      // outlives this block).
+      const items = [];
+      for (let i = 0; i < stmt.suggestions.length; i++) {
+        const s = stmt.suggestions[i];
+        const sMsg = `"${zigStr(s.messageId)}"`;
+        const fStart = emitExpr(s.fix.start, ctx);
+        const fEnd = emitExpr(s.fix.end, ctx);
+        let textRef;
+        if (s.fix.textExpr === undefined) {
+          textRef = `"${zigStr(s.fix.text)}"`;
+        } else {
+          const v = `__sugg_text_${i}`;
+          out.push(`${inner}const ${v} = ${emitAllocPrint(s.fix.textExpr, ctx)};`);
+          textRef = v;
+        }
+        items.push(`            .{ .message_id = ${sMsg}, .fix_span = .{ .start = ${fStart}, .end = ${fEnd} }, .fix_text = ${textRef} },`);
+      }
+      out.push(`${inner}const __suggs = [_]LintContext.SuggestionInput{`);
+      for (const it of items) out.push(`${inner}${it}`);
+      out.push(`${inner}};`);
+      if (stmt.loc) {
+        const sStart = emitExpr(stmt.loc.start, ctx);
+        const sEnd = emitExpr(stmt.loc.end, ctx);
+        out.push(`${inner}ctx.reportSpanWithSuggestions(.{ .start = ${sStart}, .end = ${sEnd} }, ${msgId}, &__suggs);`);
+      } else {
+        const n = emitExpr(stmt.node, ctx);
+        out.push(`${inner}ctx.reportWithSuggestions(${n}, ${msgId}, &__suggs);`);
+      }
+      out.push(`${ind}}`);
+      return out;
+    }
     // Build a `&[_]MessageDataEntry{ ... }` literal for `data: { K: V }`
     // interpolation, or null when the report has no data.  Returns either
     // a single inline expression or a block with the data wrapping prepended.

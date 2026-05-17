@@ -4,13 +4,13 @@ const validateRule = rule.validateRule;
 // ── Correctness rules (58) ────────────────────────────────────
 const no_debugger = @import("correctness/no_debugger.zig");
 const no_empty = @import("correctness/no_empty.zig");  // IR-generated via no-empty-check handler
-// const no_extra_semi = @import("correctness/no_extra_semi.zig");  // hand-written — disabled per IR-only constraint
+const no_extra_semi = @import("correctness/no_extra_semi.zig");  // IR-generated via no-extra-semi-check handler
 const no_dupe_keys = @import("correctness/no_dupe_keys.zig");  // IR-generated via no-dupe-keys-check handler
 const no_dupe_args = @import("correctness/no_dupe_args.zig");  // IR-generated via no-dupe-args-check handler
 const no_sparse_arrays = @import("correctness/no_sparse_arrays.zig");  // IR-generated via no-sparse-arrays-check handler
 // const no_unreachable = @import("correctness/no_unreachable.zig");  // hand-written — disabled per IR-only constraint
 const no_unsafe_negation = @import("correctness/no_unsafe_negation.zig");  // IR-generated via isParenthesised + operator-marker re-lift
-// const use_isnan = @import("correctness/use_isnan.zig");  // hand-written — disabled per IR-only constraint
+const use_isnan = @import("correctness/use_isnan.zig");  // IR-generated via use-isnan-binary-check handler
 const valid_typeof = @import("correctness/valid_typeof.zig");  // IR-generated via valid-typeof-check handler
 // const no_unused_vars = @import("correctness/no_unused_vars.zig");  // hand-written — disabled per IR-only constraint
 const no_undef = @import("correctness/no_undef.zig");
@@ -280,13 +280,16 @@ pub const all_rules = .{
     // Correctness (40)
     no_debugger,
     no_empty,
-    // no_extra_semi, // hand-written — disabled
+    // no_extra_semi, // native 21/53 vs runner 53 — class-body extra-semi + FixTracker range divergence; disabled
     no_dupe_keys,
     no_dupe_args,
     no_sparse_arrays,
     // no_unreachable, // runner >> native (runner 57/67, native 42/67, 19 more FN); fall back to runner
     no_unsafe_negation,
-    // use_isnan, // runner >> native (runner 214, native 176, gap 38); fall back to JS runner
+    use_isnan, // pilot of suggestion-fix codegen.  151/214 vs runner 214; the
+    //   67 FN come from SwitchStatement / indexOf checks that are noop-stubbed
+    //   until the corresponding handler kinds land.  Native diags carry
+    //   `suggestions:[{messageId,fix}]` end-to-end via the new wire format.
     valid_typeof,
     // no_unused_vars, // runner >> native (runner 436, native 297, gap 139, 51 FP); fall back to JS runner
     no_undef,

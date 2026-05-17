@@ -128,10 +128,14 @@ function _getNativeRuleNames() {
  *     flag  bit  2   = has_fix
  *     flag  bit  3   = has_message_id
  *     flag  bit  4   = has_message_data
+ *     flag  bit  5   = has_suggestions
  *   if has_message_id:   u8 msg_id_len + bytes
  *   if has_fix:          u32 fix_start + u32 fix_end + u16 text_len + text bytes
  *   if has_message_data: u8 count, then per entry: u8 key_len + key bytes,
  *                                                   u16 val_len + val bytes
+ *   if has_suggestions:  u8 count, then per entry:
+ *                          u8 msg_id_len + bytes,
+ *                          u32 fix_start + u32 fix_end + u16 text_len + text bytes
  *
  * span_end is needed so we can compute endLine/endColumn — without it the
  * differential vs ESLint reports every diag as a field mismatch.  message_id
@@ -159,6 +163,7 @@ function _parseDiags(bytesWritten, srcBytes) {
     const hasFix    = (flags & 0x04) !== 0;
     const hasMsgId  = (flags & 0x08) !== 0;
     const hasData   = (flags & 0x10) !== 0;
+    const hasSugg   = (flags & 0x20) !== 0;
     const ruleName  = ruleNames[ruleIndex] || `native-rule-${ruleIndex}`;
     const diag = { offset, endOffset, severity, ruleName };
     if (lineStarts) {
@@ -200,6 +205,25 @@ function _parseDiags(bytesWritten, srcBytes) {
         data[td.decode(kBytes)] = td.decode(vBytes);
       }
       diag.data = data;
+    }
+    if (hasSugg) {
+      if (pos + 1 > bytesWritten) break;
+      const count = dv.getUint8(pos); pos += 1;
+      const suggestions = [];
+      for (let j = 0; j < count; j++) {
+        if (pos + 1 > bytesWritten) break;
+        const mlen = dv.getUint8(pos); pos += 1;
+        if (pos + mlen + 10 > bytesWritten) break;
+        const mBytes = new Uint8Array(_lintOutBuf, pos, mlen); pos += mlen;
+        const messageId = td.decode(mBytes);
+        const fixStart = dv.getUint32(pos, true); pos += 4;
+        const fixEnd   = dv.getUint32(pos, true); pos += 4;
+        const tlen     = dv.getUint16(pos, true); pos += 2;
+        if (pos + tlen > bytesWritten) break;
+        const tBytes = new Uint8Array(_lintOutBuf, pos, tlen); pos += tlen;
+        suggestions.push({ messageId, fix: { range: [fixStart, fixEnd], text: td.decode(tBytes) } });
+      }
+      if (suggestions.length > 0) diag.suggestions = suggestions;
     }
     diags.push(diag);
   }

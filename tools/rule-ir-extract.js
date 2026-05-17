@@ -497,7 +497,9 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractForDirectionHandler,    // for-direction
       extractValidTypeofHandler,     // valid-typeof
       extractNoImportAssignHandler,  // no-import-assign
+      extractNoExtraSemiHandler,     // no-extra-semi (EmptyStatement only)
       extractDefaultParamLastHandler, // default-param-last
+      extractUseIsnanHandler,        // use-isnan (BinaryExpression only)
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1113,6 +1115,17 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-extra-semi: flag EmptyStatement that's not the body of a control
+// statement.  Skips the class-body extra-semi detection — that needs
+// token-stream walking outside our AST shape.
+function extractNoExtraSemiHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-extra-semi.js")) return { ok: false };
+  if (rawHandler.selector === "EmptyStatement") {
+    return { ok: true, handler: { kind: "no-extra-semi-check", messageId: "unexpected" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 // no-import-assign: flags writes to imported bindings.  Reuses the
 // existing for-each-write-ref-of-binding handler with import_binding
 // kind.  Skips the readonlyMember check (namespace member writes) for
@@ -1139,6 +1152,27 @@ function extractValidTypeofHandler(rawHandler, _stmts, { sourceFile } = {}) {
   if (!sourceFile || !sourceFile.endsWith("/valid-typeof.js")) return { ok: false };
   if (rawHandler.selector === "UnaryExpression") {
     return { ok: true, handler: { kind: "valid-typeof-check", messageId: "invalidValue" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+// use-isnan: flags `x == NaN` / `x === Number.NaN` (and swapped) plus the
+// other six comparison operators.  Reports `comparisonWithNaN` with up to two
+// opt-in suggestions.  Handled entirely by a Zig helper; we only need to
+// recognise the BinaryExpression handler that drives the check.  The other
+// handlers in the rule (SwitchStatement, CallExpression for indexOf) are
+// dropped to noop-stub for now — TODO: re-enable when their option toggles
+// land.
+function extractUseIsnanHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/use-isnan.js")) return { ok: false };
+  if (rawHandler.selector === "BinaryExpression") {
+    return { ok: true, handler: { kind: "use-isnan-binary-check", messageId: "comparisonWithNaN" } };
+  }
+  if (rawHandler.selector === "SwitchStatement") {
+    return { ok: true, handler: { kind: "use-isnan-switch-check" } };
+  }
+  if (rawHandler.selector === "CallExpression") {
+    return { ok: true, handler: { kind: "use-isnan-indexof-check" } };
   }
   return { ok: true, handler: { kind: "noop-stub" } };
 }

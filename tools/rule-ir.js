@@ -419,6 +419,16 @@ function validateRule(rule) {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       continue;
     }
+    if (h.kind === "no-extra-semi-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
+    if (h.kind === "use-isnan-binary-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
+    if (h.kind === "use-isnan-switch-check") continue;
+    if (h.kind === "use-isnan-indexof-check") continue;
     if (h.kind === "no-empty-check") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       if (typeof h.selector !== "string") return fail("selector must be string", path);
@@ -513,6 +523,26 @@ function validateStatement(s, path) {
       if (!ls.ok) return ls;
       const le = validateExpr(s.loc.end, `${path}.loc.end`);
       if (!le.ok) return le;
+    }
+    if (s.suggestions !== undefined) {
+      if (!Array.isArray(s.suggestions)) return fail("report.suggestions must be array", path);
+      for (let i = 0; i < s.suggestions.length; i++) {
+        const sg = s.suggestions[i];
+        if (!sg || typeof sg !== "object") return fail(`report.suggestions[${i}] must be object`, path);
+        if (typeof sg.messageId !== "string") return fail(`report.suggestions[${i}].messageId must be string`, path);
+        if (!sg.fix || typeof sg.fix !== "object") return fail(`report.suggestions[${i}].fix must be object`, path);
+        if (sg.fix.kind !== "replace-range") return fail(`report.suggestions[${i}].fix.kind must be 'replace-range'`, path);
+        const fs = validateExpr(sg.fix.start, `${path}.suggestions[${i}].fix.start`);
+        if (!fs.ok) return fs;
+        const fe = validateExpr(sg.fix.end, `${path}.suggestions[${i}].fix.end`);
+        if (!fe.ok) return fe;
+        if (sg.fix.text === undefined && sg.fix.textExpr === undefined)
+          return fail(`report.suggestions[${i}].fix needs text or textExpr`, path);
+        if (sg.fix.textExpr !== undefined) {
+          const te = validateExpr(sg.fix.textExpr, `${path}.suggestions[${i}].fix.textExpr`);
+          if (!te.ok) return te;
+        }
+      }
     }
     return validateExpr(s.node, `${path}.node`);
   }

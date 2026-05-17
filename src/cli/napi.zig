@@ -1526,10 +1526,14 @@ fn filterDiagsByDisables(
 //                       bit 2    = has_fix
 //                       bit 3    = has_message_id
 //                       bit 4    = has_message_data
+//                       bit 5    = has_suggestions
 //   if has_message_id:   u8 msg_id_len + bytes
 //   if has_fix:          u32 fix.start + u32 fix.end + u16 text_len + text bytes
 //   if has_message_data: u8 count, then per entry: u8 key_len, key bytes,
 //                                                  u16 val_len, val bytes
+//   if has_suggestions:  u8 count, then per entry:
+//                          u8  msg_id_len + bytes
+//                          u32 fix.start + u32 fix.end + u16 text_len + text bytes
 fn serializeDiag(out: []u8, pos_in: u32, diag: linter_root.LintDiagnostic) ?u32 {
     var pos = pos_in;
     if (pos + 11 > out.len) return null;
@@ -1540,7 +1544,8 @@ fn serializeDiag(out: []u8, pos_in: u32, diag: linter_root.LintDiagnostic) ?u32 
     const has_fix:      u8 = if (diag.fix != null) 0x04 else 0;
     const has_msg_id:   u8 = if (diag.message_id != null) 0x08 else 0;
     const has_msg_data: u8 = if (diag.message_data != null and diag.message_data.?.len > 0) 0x10 else 0;
-    out[pos] = sev_val | has_fix | has_msg_id | has_msg_data; pos += 1;
+    const has_sugg:     u8 = if (diag.suggestions != null and diag.suggestions.?.len > 0) 0x20 else 0;
+    out[pos] = sev_val | has_fix | has_msg_id | has_msg_data | has_sugg; pos += 1;
     if (diag.message_id) |mid| {
         const mlen: u8 = @intCast(@min(mid.len, 0xFF));
         if (pos + 1 + mlen > out.len) return null;
@@ -1567,6 +1572,22 @@ fn serializeDiag(out: []u8, pos_in: u32, diag: linter_root.LintDiagnostic) ?u32 
             @memcpy(out[pos..][0..klen], e.key[0..klen]); pos += klen;
             std.mem.writeInt(u16, out[pos..][0..2], vlen, .little); pos += 2;
             @memcpy(out[pos..][0..vlen], e.val[0..vlen]); pos += vlen;
+        }
+    };
+    if (diag.suggestions) |sugg| if (sugg.len > 0) {
+        const count: u8 = @intCast(@min(sugg.len, 0xFF));
+        if (pos + 1 > out.len) return null;
+        out[pos] = count; pos += 1;
+        for (sugg[0..count]) |s| {
+            const mlen: u8 = @intCast(@min(s.message_id.len, 0xFF));
+            const tlen: u16 = @intCast(@min(s.fix.text.len, 0xFFFF));
+            if (pos + 1 + mlen + 10 + tlen > out.len) return null;
+            out[pos] = mlen; pos += 1;
+            @memcpy(out[pos..][0..mlen], s.message_id[0..mlen]); pos += mlen;
+            std.mem.writeInt(u32, out[pos..][0..4], s.fix.span.start, .little); pos += 4;
+            std.mem.writeInt(u32, out[pos..][0..4], s.fix.span.end,   .little); pos += 4;
+            std.mem.writeInt(u16, out[pos..][0..2], tlen,             .little); pos += 2;
+            @memcpy(out[pos..][0..tlen], s.fix.text[0..tlen]); pos += tlen;
         }
     };
     return pos;
