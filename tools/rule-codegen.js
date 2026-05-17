@@ -89,6 +89,9 @@ const SELECTOR_TO_TAG_MULTI = {
   // form without a wrapper.  This pseudo-tag is used by extractor recognizers
   // that lift `astUtils.isParenthesised(...)` to a parent-tag check.
   __ParenthesizedExpression__: ["grouping_expr"],
+  // astUtils.isStringLiteral(node) — Literal with typeof value === "string"
+  // (our parser splits Literal into kind tags) or TemplateLiteral.
+  __StringValuedLiteral__: ["string_literal", "template_literal"],
   // Any async-flavored function expression / declaration / arrow.
   // Stand-in for the attribute `arguments.N.async = true` filter
   // (esquery) used by rules like no-async-promise-executor.

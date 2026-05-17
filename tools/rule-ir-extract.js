@@ -6745,6 +6745,16 @@ function extractExpr(expr, scope) {
         if (!argR.ok) return argR;
         return { ok: true, expr: { op: "node-is-loop", node: argR.expr } };
       }
+      // astUtils.isStringLiteral(X) — string_literal OR template_literal.
+      // Our parser splits ESTree's Literal{value:string} into the dedicated
+      // string_literal tag and keeps TemplateLiteral as template_literal.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "isStringLiteral"
+          && expr.arguments.length === 1) {
+        const argR = extractExpr(expr.arguments[0], scope);
+        if (!argR.ok) return argR;
+        return { ok: true, expr: { op: "node-tag-equals", node: argR.expr, estreeType: "__StringValuedLiteral__" } };
+      }
       // astUtils.isCallee(X) — synthesize: parent(X).type === "CallExpression" && parent(X).callee === X
       if (callee.type === "MemberExpression" && !callee.computed
           && callee.property?.type === "Identifier" && callee.property.name === "isCallee"
