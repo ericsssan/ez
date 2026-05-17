@@ -397,6 +397,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoNewFuncHandler,
       extractNewExpressionShadowHandler,
       extractCallOrNewEarlyReturnGlobalHandler, // no-array-constructor
+      extractNoNewShadowedGlobalHandler, // no-new-object
       extractReadonlyGlobalAssignHandler,
       extractDeclaredVariableModifyingRefHandler, // sprint #2
       extractDefaultCaseLastHandler, // default-case-last
@@ -2344,6 +2345,119 @@ function extractCallOrNewEarlyReturnGlobalHandler(rawHandler, stmts, { ctxName, 
       namesConstant,
       refIdentifierBinding: "__ref_identifier__",
       body: [{ op: "if", cond: outerCond, then: guardedReport }],
+    },
+  };
+}
+
+// no-new-object-shape recognizer.  Inverts the order of
+// extractCallOrNewEarlyReturnGlobalHandler: lookup by node.callee.name first,
+// early-return on shadowed, then `if (node.callee.name === "<NAME>") report`.
+//
+// Pattern:
+//   <CallOrNew>(node) {
+//     const variable = astUtils.getVariableByName(sourceCode.getScope(node), node.callee.name);
+//     if (variable && variable.identifiers.length > 0) return;
+//     if (node.callee.name === "<NAME>") context.report({ node, messageId: "X" });
+//   }
+//
+// Lifts to the same Program:exit / for-each-unresolved-global-ref shape so
+// the rule fires once per unshadowed global reference whose parent is a
+// matching call/new with the ref as callee.
+function extractNoNewShadowedGlobalHandler(rawHandler, stmts, { ctxName, constants, helpers }) {
+  if (rawHandler.selector !== "CallExpression" && rawHandler.selector !== "NewExpression") return { ok: false };
+  if (stmts.length !== 3) return { ok: false };
+  const [varDecl, shadowedIf, nameIf] = stmts;
+  const nodeParam = rawHandler.nodeParam;
+
+  // Stmt 1: const variable = getVariableByName(scopeExpr, node.callee.name)
+  if (varDecl.type !== "VariableDeclaration" || varDecl.declarations.length !== 1) return { ok: false };
+  const vd = varDecl.declarations[0];
+  if (vd.id?.type !== "Identifier") return { ok: false };
+  const init = vd.init;
+  if (!init || init.type !== "CallExpression" || init.arguments.length !== 2) return { ok: false };
+  // Second arg must be node.callee.name
+  const arg1 = init.arguments[1];
+  if (arg1.type !== "MemberExpression" || arg1.computed) return { ok: false };
+  if (arg1.property?.type !== "Identifier" || arg1.property.name !== "name") return { ok: false };
+  if (arg1.object?.type !== "MemberExpression" || arg1.object.computed) return { ok: false };
+  if (arg1.object.property?.type !== "Identifier" || arg1.object.property.name !== "callee") return { ok: false };
+  if (arg1.object.object?.type !== "Identifier" || arg1.object.object.name !== nodeParam) return { ok: false };
+  const variableBinding = vd.id.name;
+
+  // Stmt 2: if (variable && variable.{identifiers|defs}.length > 0) return
+  if (shadowedIf.type !== "IfStatement") return { ok: false };
+  if (!isPlainReturn(shadowedIf.consequent)) return { ok: false };
+  if (shadowedIf.alternate) return { ok: false };
+  const t = shadowedIf.test;
+  if (!t || t.type !== "LogicalExpression" || t.operator !== "&&") return { ok: false };
+  if (t.left.type !== "Identifier" || t.left.name !== variableBinding) return { ok: false };
+  const r = t.right;
+  if (r.type !== "BinaryExpression" || r.operator !== ">" && r.operator !== "!==") return { ok: false };
+  if (r.right.type !== "Literal" || r.right.value !== 0) return { ok: false };
+  const lhs = r.left;
+  if (lhs.type !== "MemberExpression" || lhs.computed) return { ok: false };
+  if (lhs.property?.type !== "Identifier" || lhs.property.name !== "length") return { ok: false };
+  const defs = lhs.object;
+  if (defs.type !== "MemberExpression" || defs.computed) return { ok: false };
+  if (defs.property?.type !== "Identifier") return { ok: false };
+  if (defs.property.name !== "identifiers" && defs.property.name !== "defs") return { ok: false };
+  if (defs.object?.type !== "Identifier" || defs.object.name !== variableBinding) return { ok: false };
+
+  // Stmt 3: if (node.callee.name === "<NAME>") <report>
+  if (nameIf.type !== "IfStatement") return { ok: false };
+  const nt = nameIf.test;
+  if (!nt || nt.type !== "BinaryExpression" || (nt.operator !== "===" && nt.operator !== "==")) return { ok: false };
+  // Accept the literal on either side.
+  let nameLiteral = null;
+  const matchCalleeName = (m) =>
+    m.type === "MemberExpression" && !m.computed
+    && m.property?.type === "Identifier" && m.property.name === "name"
+    && m.object?.type === "MemberExpression" && !m.object.computed
+    && m.object.property?.type === "Identifier" && m.object.property.name === "callee"
+    && m.object.object?.type === "Identifier" && m.object.object.name === nodeParam;
+  if (matchCalleeName(nt.left) && nt.right.type === "Literal" && typeof nt.right.value === "string") {
+    nameLiteral = nt.right.value;
+  } else if (matchCalleeName(nt.right) && nt.left.type === "Literal" && typeof nt.left.value === "string") {
+    nameLiteral = nt.left.value;
+  } else {
+    return { ok: false };
+  }
+  const reportBody = nameIf.consequent?.type === "BlockStatement" ? nameIf.consequent.body : [nameIf.consequent];
+  if (reportBody.length !== 1 || reportBody[0].type !== "ExpressionStatement") return { ok: false };
+  const info = extractReportShape(reportBody[0].expression, nodeParam);
+  if (!info) return { ok: false };
+  if (nameIf.alternate) return { ok: false };
+
+  // Hoist single-name set.
+  let namesConstant = null;
+  for (const k of Object.keys(constants)) {
+    const v = constants[k];
+    if (v.kind === "string-set" && v.values.length === 1 && v.values[0] === nameLiteral) {
+      namesConstant = k; break;
+    }
+  }
+  if (!namesConstant) {
+    namesConstant = `__${nameLiteral.replace(/[^A-Za-z0-9_]/g, "_")}_names__`;
+    constants[namesConstant] = { kind: "string-set", values: [nameLiteral] };
+  }
+
+  // Build the handler body: parent of the ref must be the matching
+  // CallExpression / NewExpression, and the ref must BE the callee.
+  const refExpr    = { op: "identifier", name: "__ref_identifier__" };
+  const parentExpr = { op: "parent-node-skip-grouping", node: refExpr };
+  const wantTag = rawHandler.selector === "NewExpression" ? "NewExpression" : "CallExpression";
+  const parentTagCheck = { op: "node-tag-equals", node: parentExpr, estreeType: wantTag };
+  const refIsCallee = { op: "nodes-equal",
+    a: { op: "node-callee", node: parentExpr }, b: refExpr };
+  const outerCond = { op: "binary", operator: "&&", lhs: parentTagCheck, rhs: refIsCallee };
+  return {
+    ok: true,
+    handler: {
+      selector: "Program:exit",
+      kind: "for-each-unresolved-global-ref",
+      namesConstant,
+      refIdentifierBinding: "__ref_identifier__",
+      body: [{ op: "if", cond: outerCond, then: [{ op: "report", node: parentExpr, messageId: info.messageId }] }],
     },
   };
 }
