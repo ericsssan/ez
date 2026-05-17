@@ -4224,6 +4224,124 @@ pub const LintContext = struct {
         }
     }
 
+    // ── no-misleading-character-class ──────────────────────────
+    // Subset port: detects `surrogatePairWithoutUFlag` only — codepoints
+    // above U+FFFF (encoded as 4-byte UTF-8 or `\uHIGH\uLOW` escape pairs)
+    // inside `[...]` without the u or v flag.  Other messageIds
+    // (combiningClass, zwj, emojiModifier, regionalIndicatorSymbol,
+    // surrogatePair) need Unicode property tables and full regex parsing
+    // — out of scope.
+    pub fn checkMisleadingCharClassRegex(self: *const LintContext, node: NodeIndex) void {
+        const pat = self.regexPatternSlice(node) orelse return;
+        const text = pat.text;
+        if (self.regexFlagsHaveUOrV(node)) return;
+        self.scanMisleadingCharClass(text, pat.start, node);
+    }
+
+    pub fn checkMisleadingCharClassCall(self: *const LintContext, node: NodeIndex) void {
+        // ESLint's RegExp-call detection parses the runtime string value
+        // through regexpp, which canonicalises surrogate pairs differently
+        // from regex-literal scanning — a faithful port needs the real
+        // parser.  For now we only handle regex literals; the call form
+        // falls back to the JS runner.
+        _ = self;
+        _ = node;
+    }
+
+    fn scanMisleadingCharClass(self: *const LintContext, text: []const u8, pat_start: u32, node: NodeIndex) void {
+        _ = node;
+        var i: usize = 0;
+        var class_depth: i32 = 0;
+        while (i < text.len) {
+            const b = text[i];
+            if (b == '\\' and i + 1 < text.len) {
+                // Treat `\\` (string escape doubling) as literal `\`.
+                if (text[i + 1] == '\\' and i + 2 < text.len) {
+                    // Look at the regex-level escape that follows.
+                    const k = text[i + 2];
+                    if (k == 'u' and i + 3 < text.len and class_depth > 0) {
+                        // `\\u...` form in a string-literal source.
+                        if (text[i + 3] == '{') {
+                            // \u{H...} — only meaningful under u/v; we already
+                            // returned for u/v above, so this is literal here.
+                            // Walk past `}`.
+                            var j = i + 4;
+                            while (j < text.len and text[j] != '}') j += 1;
+                            if (j < text.len) { i = j + 1; continue; }
+                        } else if (i + 7 <= text.len) {
+                            if (parseHex(text[i + 3 .. i + 7])) |cp| {
+                                if (cp >= 0xD800 and cp <= 0xDBFF) {
+                                    // Look ahead for `\\uXXXX` low surrogate.
+                                    const j = i + 7;
+                                    if (j + 6 <= text.len and text[j] == '\\' and text[j + 1] == '\\'
+                                        and text[j + 2] == 'u' and j + 7 <= text.len)
+                                    {
+                                        if (parseHex(text[j + 3 .. j + 7])) |cp2| {
+                                            if (cp2 >= 0xDC00 and cp2 <= 0xDFFF) {
+                                                const abs_start: u32 = pat_start + @as(u32, @intCast(i));
+                                                const abs_end: u32 = pat_start + @as(u32, @intCast(j + 7));
+                                                self.reportSpanWithMessageId(.{ .start = abs_start, .end = abs_end }, "surrogatePairWithoutUFlag");
+                                                i = j + 7;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            i += 7;
+                            continue;
+                        }
+                    }
+                    i += 3;
+                    continue;
+                }
+                // Direct regex escape (not string-escaped).
+                if (text[i + 1] == 'u' and class_depth > 0) {
+                    if (i + 2 < text.len and text[i + 2] == '{') {
+                        var j = i + 3;
+                        while (j < text.len and text[j] != '}') j += 1;
+                        if (j < text.len) { i = j + 1; continue; }
+                    } else if (i + 6 <= text.len) {
+                        if (parseHex(text[i + 2 .. i + 6])) |cp| {
+                            if (cp >= 0xD800 and cp <= 0xDBFF) {
+                                const j = i + 6;
+                                if (j + 6 <= text.len and text[j] == '\\' and text[j + 1] == 'u') {
+                                    if (parseHex(text[j + 2 .. j + 6])) |cp2| {
+                                        if (cp2 >= 0xDC00 and cp2 <= 0xDFFF) {
+                                            const abs_start: u32 = pat_start + @as(u32, @intCast(i));
+                                            const abs_end: u32 = pat_start + @as(u32, @intCast(j + 6));
+                                            self.reportSpanWithMessageId(.{ .start = abs_start, .end = abs_end }, "surrogatePairWithoutUFlag");
+                                            i = j + 6;
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        i += 6;
+                        continue;
+                    }
+                }
+                i += 2;
+                continue;
+            }
+            if (b == '[') { class_depth += 1; i += 1; continue; }
+            if (b == ']') { if (class_depth > 0) class_depth -= 1; i += 1; continue; }
+            // 4-byte UTF-8 lead (0xF0-0xF7) inside a class → codepoint > U+FFFF.
+            // ESLint reports literal surrogate-pair codepoints as
+            // `surrogatePair` (the rule's own messageId; surrogatePairWithoutUFlag
+            // is reserved for `\uHIGH\uLOW` escape pairs).
+            if (class_depth > 0 and b >= 0xF0 and b <= 0xF7 and i + 4 <= text.len) {
+                const abs_start: u32 = pat_start + @as(u32, @intCast(i));
+                const abs_end: u32 = pat_start + @as(u32, @intCast(i + 4));
+                self.reportSpanWithMessageId(.{ .start = abs_start, .end = abs_end }, "surrogatePair");
+                i += 4;
+                continue;
+            }
+            i += 1;
+        }
+    }
+
     // ── no-invalid-regexp ──────────────────────────────────────
     // Validates `RegExp(...)` and `new RegExp(...)` calls.  Catches the
     // common error categories: invalid flag chars, duplicate flags, u+v

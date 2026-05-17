@@ -504,6 +504,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoEmptyCharClassHandler, // no-empty-character-class
       extractNoControlRegexHandler,   // no-control-regex
       extractNoInvalidRegexpHandler,  // no-invalid-regexp
+      extractNoMisleadingCharClassHandler, // no-misleading-character-class
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1210,6 +1211,21 @@ function extractNoInvalidRegexpHandler(rawHandler, _stmts, { sourceFile } = {}) 
       || rawHandler.selector === "CallExpression"
       || rawHandler.selector === "NewExpression") {
     return { ok: true, handler: { kind: "no-invalid-regexp-check" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractNoMisleadingCharClassHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-misleading-character-class.js")) return { ok: false };
+  // ESLint uses a reference-tracker (CALL/CONSTRUCT) for RegExp + a
+  // Literal[regex] selector for regex literals.  Our subset port only
+  // handles the surrogatePairWithoutUFlag case in either.
+  if (rawHandler.selector === "Literal[regex]" || rawHandler.selector === "Literal") {
+    return { ok: true, handler: { kind: "no-misleading-char-class-check" } };
+  }
+  if (rawHandler.selector === "Program" || rawHandler.selector === "Program:exit") {
+    // ReferenceTracker on Program — gives us the RegExp call sites.
+    return { ok: true, handler: { kind: "no-misleading-char-class-call-check" } };
   }
   return { ok: true, handler: { kind: "noop-stub" } };
 }
