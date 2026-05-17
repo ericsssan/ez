@@ -242,10 +242,11 @@ function emit(rule) {
   const hasNoDupeClassMembersCheck = rule.handlers.some(h => h.kind === "no-dupe-class-members-check");
   const hasNoUnusedLabelsCheck = rule.handlers.some(h => h.kind === "no-unused-labels-check");
   const hasNoExtraLabelCheck = rule.handlers.some(h => h.kind === "no-extra-label-check");
+  const hasNoEmptyCheck = rule.handlers.some(h => h.kind === "no-empty-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -269,6 +270,8 @@ function emit(rule) {
     relevantTags = ["labeled_stmt"];
   } else if (hasNoExtraLabelCheck) {
     relevantTags = ["break_label", "continue_label"];
+  } else if (hasNoEmptyCheck) {
+    relevantTags = ["block_stmt", "switch_stmt", "static_block"];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
   } else {
@@ -290,7 +293,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -347,7 +350,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -666,6 +669,55 @@ function emit(rule) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    if (ctx.nodeTag(node) != .class_body) return;`);
     out.push(`    ctx.checkNoDupeClassMembers(node, "${zigStr(h.messageId)}");`);
+    out.push(`}`);
+  } else if (hasNoEmptyCheck) {
+    const messageId = rule.handlers.find(x => x.kind === "no-empty-check").messageId;
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    const tag = ctx.nodeTag(node);`);
+    out.push(`    switch (tag) {`);
+    out.push(`        .block_stmt => {`);
+    out.push(`            const d = ctx.nodeData(node);`);
+    // body empty when start == end
+    out.push(`            if (@intFromEnum(d.lhs) != @intFromEnum(d.rhs)) return;`);
+    // function body is allowed empty
+    out.push(`            const parent = ctx.parentOf(node);`);
+    out.push(`            if (parent != .none and ctx.nodeIsFunction(parent)) return;`);
+    // allowEmptyCatch option
+    out.push(`            if (parent != .none and ctx.nodeTag(parent) == .catch_clause and ctx.getOptionBool("allowEmptyCatch", false)) return;`);
+    out.push(`            if (ctx.hasCommentsInsideNode(node)) return;`);
+    out.push(`            ctx.reportWithMessageIdAndData(node, "${zigStr(messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`                .{ .key = "type", .val = "block" },`);
+    out.push(`            });`);
+    out.push(`        },`);
+    out.push(`        .static_block => {`);
+    out.push(`            const d = ctx.nodeData(node);`);
+    out.push(`            if (@intFromEnum(d.lhs) != @intFromEnum(d.rhs)) return;`);
+    out.push(`            if (ctx.hasCommentsInsideNode(node)) return;`);
+    out.push(`            ctx.reportWithMessageIdAndData(node, "${zigStr(messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`                .{ .key = "type", .val = "static block" },`);
+    out.push(`            });`);
+    out.push(`        },`);
+    out.push(`        .switch_stmt => {`);
+    out.push(`            const d = ctx.nodeData(node);`);
+    out.push(`            if (d.rhs != .none) {`);
+    out.push(`                const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));`);
+    out.push(`                if (sr.start != sr.end) return;`);
+    out.push(`            }`);
+    // Report span: from `{` to `}` (the empty body braces).
+    out.push(`            const open_brace_tok = ctx.tokenAfterMatchingPunct(ctx.nodeMainToken(node), "{");`);
+    out.push(`            const node_span = ctx.nodeSpan(node);`);
+    out.push(`            const start = ctx.ast.tokenStart(open_brace_tok);`);
+    // Skip when comments live BETWEEN the braces (ESLint's
+    // sourceCode.getCommentsInside filtered to braces region).  Comments
+    // OUTSIDE the braces (between switch keyword and discriminant, etc.)
+    // don't suppress the error.
+    out.push(`            if (ctx.rangeContainsComment(start + 1, node_span.end - 1)) return;`);
+    out.push(`            ctx.reportSpanWithMessageIdAndData(.{ .start = start, .end = node_span.end }, "${zigStr(messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`                .{ .key = "type", .val = "switch" },`);
+    out.push(`            });`);
+    out.push(`        },`);
+    out.push(`        else => {},`);
+    out.push(`    }`);
     out.push(`}`);
   } else if (hasNoExtraLabelCheck) {
     const h = rule.handlers.find(x => x.kind === "no-extra-label-check");

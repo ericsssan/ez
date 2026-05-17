@@ -492,6 +492,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoDupeClassMembersHandler, // no-dupe-class-members
       extractNoUnusedLabelsHandler,  // no-unused-labels
       extractNoExtraLabelHandler,    // no-extra-label
+      extractNoEmptyHandler,         // no-empty
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1108,6 +1109,19 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-empty: flags empty block statements / switch statements / static
+// blocks, except those that are function bodies, comment-bearing, or
+// catch clauses when allowEmptyCatch is set.
+function extractNoEmptyHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-empty.js")) return { ok: false };
+  if (rawHandler.selector === "BlockStatement"
+      || rawHandler.selector === "SwitchStatement"
+      || rawHandler.selector === "StaticBlock") {
+    return { ok: true, handler: { kind: "no-empty-check", messageId: "unexpected", selector: rawHandler.selector } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 // no-extra-label: flags `break LBL` / `continue LBL` when LBL is the nearest
 // enclosing labeled breakable — i.e. the label is redundant because the
 // unlabeled break/continue would target the same statement.

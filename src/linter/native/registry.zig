@@ -3,7 +3,7 @@ const validateRule = rule.validateRule;
 
 // ── Correctness rules (58) ────────────────────────────────────
 const no_debugger = @import("correctness/no_debugger.zig");
-// const no_empty = @import("correctness/no_empty.zig");  // hand-written — disabled per IR-only constraint
+const no_empty = @import("correctness/no_empty.zig");  // IR-generated via no-empty-check handler
 // const no_extra_semi = @import("correctness/no_extra_semi.zig");  // hand-written — disabled per IR-only constraint
 const no_dupe_keys = @import("correctness/no_dupe_keys.zig");  // IR-generated via no-dupe-keys-check handler
 const no_dupe_args = @import("correctness/no_dupe_args.zig");  // IR-generated via no-dupe-args-check handler
@@ -279,7 +279,7 @@ const ts_no_extra_non_null_assertion = @import("typescript/no_extra_non_null_ass
 pub const all_rules = .{
     // Correctness (40)
     no_debugger,
-    // no_empty, // hand-written — disabled
+    no_empty,
     // no_extra_semi, // hand-written — disabled
     no_dupe_keys,
     no_dupe_args,
