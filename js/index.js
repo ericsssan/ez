@@ -167,10 +167,10 @@ function _parseDiags(bytesWritten, srcBytes) {
     const ruleName  = ruleNames[ruleIndex] || `native-rule-${ruleIndex}`;
     const diag = { offset, endOffset, severity, ruleName };
     if (lineStarts) {
-      const lc = _offsetToLineCol(lineStarts, offset);
+      const lc = _offsetToLineCol(lineStarts, offset, srcBytes);
       diag.line = lc.line;
       diag.col = lc.col;
-      const ec = _offsetToLineCol(lineStarts, endOffset);
+      const ec = _offsetToLineCol(lineStarts, endOffset, srcBytes);
       diag.endLine = ec.line;
       diag.endCol = ec.col;
     }
@@ -271,15 +271,42 @@ function _buildLineStarts(bytes) {
   return starts;
 }
 
-/** Binary-search the line-start at or before `offset`; return 1-based line + 0-based col. */
-function _offsetToLineCol(lineStarts, offset) {
+/** Binary-search the line-start at or before `offset`; return 1-based
+ *  line + 0-based col.  When `bytes` is provided, col is counted in
+ *  UTF-16 code units (matches ESTree / ESLint's `loc.column` convention)
+ *  instead of UTF-8 bytes.  Non-ASCII BMP codepoints stay 1 col;
+ *  supplementary-plane codepoints (4-byte UTF-8) count as 2 cols (the
+ *  surrogate pair). */
+function _offsetToLineCol(lineStarts, offset, bytes) {
   let lo = 0, hi = lineStarts.length - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >>> 1;
     if (lineStarts[mid] <= offset) lo = mid;
     else hi = mid - 1;
   }
-  return { line: lo + 1, col: offset - lineStarts[lo] };
+  const lineStart = lineStarts[lo];
+  if (!bytes) return { line: lo + 1, col: offset - lineStart };
+  // Fast path: scan only when the line contains any non-ASCII byte
+  // between lineStart and offset.  ASCII-only is the dominant case.
+  let col = 0;
+  let i = lineStart;
+  const end = offset > bytes.length ? bytes.length : offset;
+  while (i < end) {
+    const b = bytes[i];
+    if (b < 0x80) {
+      col++; i++;
+    } else if ((b & 0xE0) === 0xC0) {
+      col++; i += 2;
+    } else if ((b & 0xF0) === 0xE0) {
+      col++; i += 3;
+    } else if ((b & 0xF8) === 0xF0) {
+      // 4-byte UTF-8 → surrogate pair in UTF-16.
+      col += 2; i += 4;
+    } else {
+      col++; i++;
+    }
+  }
+  return { line: lo + 1, col };
 }
 
 function _ensureLintOutBuf(sourceLen) {

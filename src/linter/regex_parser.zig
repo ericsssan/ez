@@ -536,6 +536,22 @@ const Parser = struct {
             if (self.pos + 4 <= self.src.len) {
                 const cp = parseHexFixed(self.src[self.pos .. self.pos + 4]) orelse 'u';
                 self.pos += 4;
+                // Under u/v flag, a high-surrogate `\uHIGH` immediately
+                // followed by a low-surrogate `\uLOW` combines into a
+                // single supplementary-plane Character — matches regexpp's
+                // canonicalisation that the lint rules depend on.
+                if ((self.flags.unicode or self.flags.unicode_sets)
+                    and cp >= 0xD800 and cp <= 0xDBFF
+                    and self.pos + 6 <= self.src.len
+                    and self.src[self.pos] == '\\' and self.src[self.pos + 1] == 'u')
+                {
+                    const cp2 = parseHexFixed(self.src[self.pos + 2 .. self.pos + 6]) orelse 0;
+                    if (cp2 >= 0xDC00 and cp2 <= 0xDFFF) {
+                        const combined = 0x10000 + ((cp - 0xD800) << 10) + (cp2 - 0xDC00);
+                        self.pos += 6;
+                        return Atom{ .character = .{ .codepoint = combined, .start = start, .end = self.pos } };
+                    }
+                }
                 return Atom{ .character = .{ .codepoint = cp, .start = start, .end = self.pos } };
             }
             return Atom{ .character = .{ .codepoint = 'u', .start = start, .end = self.pos } };

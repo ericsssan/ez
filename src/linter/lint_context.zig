@@ -4364,12 +4364,13 @@ pub const LintContext = struct {
     }
 
     pub fn checkMisleadingCharClassCall(self: *const LintContext, node: NodeIndex) void {
-        // Call form intentionally noop'd.  Reporting at the wrong span
-        // (the call node, since we lose source-position fidelity after
-        // JS string-escape decoding) produces a strict-key mismatch that
-        // counts as both FN and FP in the differential — strictly worse
-        // than falling back to the JS runner.  Re-enable once we plumb
-        // a source map from decoded pattern bytes back to source offsets.
+        // Call form intentionally noop'd.  Source positions for chars
+        // inside a string-literal argument get shifted by JS string
+        // escape decoding (`\\u0041` → 1 byte), so the per-codepoint
+        // spans ESLint reports can't be recovered without a per-byte
+        // source map.  Reporting at the call/arg span instead creates
+        // strict-key mismatches that count as both FN + FP and net
+        // worse than the JS runner fallback.
         _ = self;
         _ = node;
     }

@@ -88,14 +88,12 @@ const no_implied_eval = @import("suspicious/no_implied_eval.zig");
 const no_label_var = @import("correctness/no_label_var.zig");  // IR-generated via identifier-shadows-binding op
 // const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // hand-written — disabled per IR-only constraint
 // const no_misleading_character_class = @import("correctness/no_misleading_character_class.zig");
-//   IR-generated, backed by regex_parser + unicode_marks (combining /
-//   zwj / emojiModifier / regionalIndicatorSymbol all detected, plus
-//   surrogate-pair sub-cases).  83/174 vs runner 172 — most of the gap
-//   is the RegExp("..." ) call form (which loses source position fidelity
-//   after JS string-escape decoding and would need a per-byte source
-//   map) plus UTF-16-vs-UTF-8 column counting differences for literal
-//   emoji.  Enabling regresses hybrid by ~90 cases; keep disabled until
-//   either issue lands.
+//   Native 112/174 vs runner 172 — the 60-case gap is the RegExp("..." )
+//   call form: source positions for chars inside a JS string literal arg
+//   get shifted by escape decoding (`\\u0041` → 1 byte), so the per-codepoint
+//   spans ESLint emits can't be recovered without a per-byte source map.
+//   Keep disabled until that map lands; the regex-literal coverage works
+//   correctly (parser surrogate-combining + UTF-16 column counting both done).
 // const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");  // hand-written — disabled per IR-only constraint
 const no_multi_str = @import("suspicious/no_multi_str.zig");
 const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
