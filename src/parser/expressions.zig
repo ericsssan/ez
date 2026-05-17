@@ -4627,6 +4627,15 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
         break :blk try ts_mod.parseTypeParameterList(p);
     } else .{ .start = 0, .end = 0 };
 
+    // Per ES spec, the class expression's name binding is created BEFORE
+    // the extends clause is evaluated (the name is visible to extends in a
+    // TDZ).  ESLint's scope-analyzer reflects this — `class C extends C {}`
+    // resolves the inner `C` to the class's own name.  Open the class
+    // scope and declare the name BEFORE parsing extends so the reference
+    // resolves to the class-expr-name binding.
+    const class_expr_scope_ev = try p.emitScopeOpen(.class, .none);
+    if (name_node != .none) try p.emitDeclare(.class_expr_name, name_node);
+
     // Optional extends.
     var had_extends = false;
     const super_node: NodeIndex = if (p.eat(.kw_extends)) |_| blk: {
@@ -4673,10 +4682,6 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
         }
         break :blk expr;
     } else .none;
-
-    // Class body.
-    const class_expr_scope_ev = try p.emitScopeOpen(.class, .none);
-    if (name_node != .none) try p.emitDeclare(.class_expr_name, name_node);
     const l_brace_tok = try p.expect(.l_brace);
     const prev_in_class = p.in_class;
     const prev_strict = p.in_strict;

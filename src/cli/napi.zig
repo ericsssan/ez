@@ -1340,6 +1340,63 @@ pub export fn ez_lint(
     return lintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len, null) catch 0;
 }
 
+/// Build a null-separated `name\0name\0…` buffer from the default ES
+/// builtin global list.  event_resolver pre-declares each as an
+/// implicit_global symbol so references resolve cleanly.
+fn buildGlobalsBytes(
+    arena: std.mem.Allocator,
+    inline_globals: []const linter_root.lint_context.InlineGlobalEntry,
+    config: ?*const linter_root.config.Config,
+) ![]u8 {
+    // Only pass through what's explicitly configured: (a) inline
+    // `/* global X */` directives + (b) config.languageOptions.globals.
+    // We deliberately DON'T pre-declare ES builtins here — multiple
+    // existing native rules (no-array-constructor, no-new-symbol, etc.)
+    // rely on builtin names like Array / Object appearing as unresolved
+    // refs.  Pre-declaring them silently makes those rules stop firing.
+    // no-undef's "global must be declared" check therefore needs its own
+    // builtin-aware filter (already partly handled via the builtin global
+    // check in the helper).
+    var total: usize = 0;
+    for (inline_globals) |ig| {
+        if (!ig.is_off) total += ig.name.len + 1;
+    }
+    if (config) |cfg| if (cfg.language_options) |lo| if (lo.* == .object) {
+        if (lo.object.get("globals")) |gv| if (gv == .object) {
+            var it = gv.object.iterator();
+            while (it.next()) |kv| {
+                const v = kv.value_ptr.*;
+                if (v == .string and std.mem.eql(u8, v.string, "off")) continue;
+                total += kv.key_ptr.*.len + 1;
+            }
+        };
+    };
+    const buf = try arena.alloc(u8, total);
+    var pos: usize = 0;
+    for (inline_globals) |ig| {
+        if (ig.is_off) continue;
+        @memcpy(buf[pos..pos + ig.name.len], ig.name);
+        pos += ig.name.len;
+        buf[pos] = 0;
+        pos += 1;
+    }
+    if (config) |cfg| if (cfg.language_options) |lo| if (lo.* == .object) {
+        if (lo.object.get("globals")) |gv| if (gv == .object) {
+            var it = gv.object.iterator();
+            while (it.next()) |kv| {
+                const v = kv.value_ptr.*;
+                if (v == .string and std.mem.eql(u8, v.string, "off")) continue;
+                const k = kv.key_ptr.*;
+                @memcpy(buf[pos..pos + k.len], k);
+                pos += k.len;
+                buf[pos] = 0;
+                pos += 1;
+            }
+        };
+    };
+    return buf;
+}
+
 fn lintImpl(
     buf_ptr: [*]u8,
     buf_len: u32,
@@ -1375,8 +1432,19 @@ fn lintImpl(
     defer _ = arena_impl.reset(.retain_capacity);
     const arena = arena_impl.allocator();
 
+    // Build a null-separated globals buffer so the semantic analyzer can
+    // pre-declare ES builtins (Object, isNaN, ...) AND any names listed
+    // in inline `/* global X */` directives as implicit_global symbols.
+    // Without this every ref to Object / declared-global is unresolved and
+    // rules like no-undef fire false positives.
+    const inline_globals = @import("../linter/lint_context.zig").scanInlineGlobals(arena, source) catch &[_]@import("../linter/lint_context.zig").InlineGlobalEntry{};
+    const globals_bytes = buildGlobalsBytes(arena, inline_globals, config) catch &[_]u8{};
+
     var sem_result = if (linter_mod.needsSemantic(config))
-        try semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{ .build_parents = true })
+        try semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{
+            .build_parents = true,
+            .globals = globals_bytes,
+        })
     else
         semantic_mod.SemanticResult.initEmpty(arena);
     const raw_diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config, language);
