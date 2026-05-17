@@ -94,7 +94,6 @@ const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
 // const no_octal = @import("suspicious/no_octal.zig");  // hand-written — disabled per IR-only constraint
 // const no_redeclare = @import("suspicious/no_redeclare.zig");  // hand-written — disabled per IR-only constraint
 // const no_regex_spaces = @import("suspicious/no_regex_spaces.zig");  // hand-written — disabled per IR-only constraint
-// const no_restricted_globals = @import("suspicious/no_restricted_globals.zig");  // hand-written — disabled per IR-only constraint
 // const no_shadow_restricted_names = @import("suspicious/no_shadow_restricted_names.zig");  // hand-written — disabled per IR-only constraint
 const no_unsafe_finally = @import("correctness/no_unsafe_finally.zig");  // IR-generated via node-is-inside-finally-before-sentinel
 // const no_unused_labels = @import("suspicious/no_unused_labels.zig");  // hand-written — disabled per IR-only constraint
@@ -380,7 +379,6 @@ pub const all_rules = .{
     // no_octal, // hand-written — disabled
     // no_redeclare, // runner >> native (runner 67, native 28, gap 39); fall back to JS runner
     // no_regex_spaces, // hand-written — disabled
-    // no_restricted_globals, // runner >> native (46%); fall back to JS runner
     // no_shadow_restricted_names, // hand-written — disabled
     no_unsafe_finally,
     // no_unused_labels, // hand-written — disabled

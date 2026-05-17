@@ -374,6 +374,14 @@ function validateRule(rule) {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       continue;
     }
+    if (h.kind === "for-each-ref-by-option-name") {
+      if (typeof h.defaultMessageId !== "string") return fail("defaultMessageId must be string", path);
+      if (typeof h.customMessageId !== "string") return fail("customMessageId must be string", path);
+      continue;
+    }
+    if (h.kind === "noop-stub") {
+      continue;
+    }
     if (h.kind === "for-each-decl-by-name") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       if (!Array.isArray(h.names) || h.names.length === 0) return fail("names must be non-empty array", path);

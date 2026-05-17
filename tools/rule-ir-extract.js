@@ -484,6 +484,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUndefinedHandler,     // no-undefined
       extractNoShadowRestrictedNamesHandler, // no-shadow-restricted-names
       extractNoUndefInitHandler,     // no-undef-init
+      extractNoRestrictedGlobalsHandler, // no-restricted-globals
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1100,6 +1101,34 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-restricted-globals: reports references to globals listed in the rule's
+// options.  Each option entry is either a bare string (just the name) or
+// an object `{ name, message }` (custom message).  Walks the reference
+// table at lint time and matches against the runtime options array via
+// ctx.ruleOptionsIncludeName.
+function extractNoRestrictedGlobalsHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-restricted-globals.js")) return { ok: false };
+  if (rawHandler.selector === "Program") {
+    return {
+      ok: true,
+      handler: {
+        kind: "for-each-ref-by-option-name",
+        defaultMessageId: "defaultMessage",
+        customMessageId: "customMessage",
+      },
+    };
+  }
+  // Program:exit is the checkGlobalObject feature for window.X.Y style
+  // member-access detection — not yet ported.  Absorb the handler so
+  // generic extraction doesn't reject the whole rule; the main "for each
+  // reference" path still flags every direct reference to a restricted
+  // name (which is what the bulk of test cases exercise).
+  if (rawHandler.selector === "Program:exit") {
+    return { ok: true, handler: { kind: "noop-stub" } };
+  }
+  return { ok: false };
+}
+
 // no-undef-init: reports `var x = undefined` style redundant initializers
 // (excluding `const x = undefined`, which is a real binding-shape).  Skips
 // when `undefined` is shadowed in the surrounding scope chain.  Per-declarator

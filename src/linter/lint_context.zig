@@ -147,6 +147,9 @@ pub const LintContext = struct {
     rule_options: ?*const std.json.Value = null,
     /// Second rule option (ESLint config items[2]). null when absent.
     rule_options2: ?*const std.json.Value = null,
+    /// Full options slice (items after severity) — used by rules with
+    /// variable-length option arrays (e.g. no-restricted-globals).
+    rule_options_all: ?[]std.json.Value = null,
     /// ESLint `settings` object from config. Points into the config's retained JSON parse tree.
     settings: ?*const std.json.Value = null,
     /// ESLint `languageOptions` object from config. Points into the config's retained JSON parse tree.
@@ -530,6 +533,71 @@ pub const LintContext = struct {
     /// Boolean variant for no-octal-escape's `if (match)` truthy check.
     pub fn nodeRawHasOctalEscape(self: *const LintContext, n: NodeIndex) bool {
         return self.nodeRawOctalEscapeMatch(n) != null;
+    }
+
+    /// Scan rule_options as a JSON array and check whether any entry —
+    /// either a bare string or an object with `name: "<X>"` — equals
+    /// `name`.  Implements ESLint's "restricted globals" option shape:
+    ///   "no-restricted-globals": ["error", "event", { name: "fit", message: "…" }]
+    /// ESLint passes positions 1+ as options to the rule; our config plumbs
+    /// them as a JSON array, so we iterate.
+    pub fn ruleOptionsIncludeName(self: *const LintContext, name: []const u8) bool {
+        const all = self.rule_options_all orelse return false;
+        for (all) |item| {
+            if (item == .string and std.mem.eql(u8, item.string, name)) return true;
+            if (item == .object) {
+                // Form A: { name, message } per-entry
+                if (item.object.get("name")) |n| {
+                    if (n == .string and std.mem.eql(u8, n.string, name)) return true;
+                }
+                // Form B: { globals: [...], checkGlobalObject, ... } — single
+                // options object listing all restricted names at once.  Each
+                // globals entry is either a string or { name, message }.
+                if (item.object.get("globals")) |g| {
+                    if (g == .array) {
+                        for (g.array.items) |gi| {
+                            if (gi == .string and std.mem.eql(u8, gi.string, name)) return true;
+                            if (gi == .object) {
+                                const n = gi.object.get("name") orelse continue;
+                                if (n == .string and std.mem.eql(u8, n.string, name)) return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Look up the per-name message in `no-restricted-globals` options array.
+    /// Returns the message when entry is `{ name, message }`, else null
+    /// (rule then falls back to the default messageId).
+    pub fn ruleOptionsMessageForName(self: *const LintContext, name: []const u8) ?[]const u8 {
+        const all = self.rule_options_all orelse return null;
+        for (all) |item| {
+            if (item != .object) continue;
+            // Form A: per-entry { name, message }
+            if (item.object.get("name")) |n| {
+                if (n == .string and std.mem.eql(u8, n.string, name)) {
+                    if (item.object.get("message")) |m| {
+                        if (m == .string) return m.string;
+                    }
+                }
+            }
+            // Form B: { globals: [{ name, message }, ...], ... }
+            if (item.object.get("globals")) |g| {
+                if (g == .array) {
+                    for (g.array.items) |gi| {
+                        if (gi != .object) continue;
+                        const n = gi.object.get("name") orelse continue;
+                        if (n != .string or !std.mem.eql(u8, n.string, name)) continue;
+                        const m = gi.object.get("message") orelse return null;
+                        if (m == .string) return m.string;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     /// True iff the byte range [start, end) in source contains a `//` or

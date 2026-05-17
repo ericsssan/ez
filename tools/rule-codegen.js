@@ -234,10 +234,11 @@ function emit(rule) {
   const hasForEachRefByName = rule.handlers.some(h => h.kind === "for-each-ref-by-name");
   const hasForEachDeclByName = rule.handlers.some(h => h.kind === "for-each-decl-by-name");
   const hasNoUndefInitCheck = rule.handlers.some(h => h.kind === "no-undef-init-check");
+  const hasForEachRefByOptionName = rule.handlers.some(h => h.kind === "for-each-ref-by-option-name");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -247,7 +248,7 @@ function emit(rule) {
 
   // For-each-node handlers supply their own relevant_tags from their selector.
   let relevantTags;
-  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasForEachRefByOptionName) {
     relevantTags = [];
   } else if (hasNoUndefInitCheck) {
     relevantTags = ["declarator"];
@@ -272,7 +273,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -295,6 +296,9 @@ function emit(rule) {
   }
   if (hasForEachDeclByName) {
     out.push(`const symbol_mod = @import("../../../parser/symbol.zig");`);
+  }
+  if (hasForEachRefByOptionName) {
+    out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
   }
   out.push(``);
   out.push(`pub const meta = RuleMeta{`);
@@ -323,7 +327,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -456,6 +460,37 @@ function emit(rule) {
       const ct = h.considerTypeof ? "true" : "false";
       out.push(`    ctx.reportAllUnresolvedRefs("${zigStr(h.messageId)}", ${ct});`);
     }
+    out.push(`}`);
+  } else if (hasForEachRefByOptionName) {
+    const h = rule.handlers.find(x => x.kind === "for-each-ref-by-option-name");
+    out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
+    out.push(``);
+    out.push(`pub fn runOnSymbols(ctx: *const LintContext) void {`);
+    out.push(`    const refs = ctx.references();`);
+    out.push(`    const count = refs.count();`);
+    out.push(`    var r: u32 = 0;`);
+    out.push(`    while (r < count) : (r += 1) {`);
+    out.push(`        const ref_id = ref_mod.ReferenceId.fromInt(r);`);
+    out.push(`        const ref_kind = refs.getKind(ref_id);`);
+    out.push(`        if (ref_kind == .write_init) continue;`);
+    out.push(`        // Skip TS type-context refs (let x: NS) — rule's`);
+    out.push(`        // isInTypeContext filter.`);
+    out.push(`        if (ref_kind.isTypeRef()) continue;`);
+    out.push(`        const id_node = refs.getNode(ref_id);`);
+    out.push(`        if (id_node == .none) continue;`);
+    out.push(`        const name = ctx.tokenText(ctx.nodeMainToken(id_node));`);
+    out.push(`        if (!ctx.ruleOptionsIncludeName(name)) continue;`);
+    out.push(`        if (ctx.ruleOptionsMessageForName(name)) |custom| {`);
+    out.push(`            ctx.reportWithMessageIdAndData(id_node, "${zigStr(h.customMessageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`                .{ .key = "name", .val = name },`);
+    out.push(`                .{ .key = "customMessage", .val = custom },`);
+    out.push(`            });`);
+    out.push(`        } else {`);
+    out.push(`            ctx.reportWithMessageIdAndData(id_node, "${zigStr(h.defaultMessageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`                .{ .key = "name", .val = name },`);
+    out.push(`            });`);
+    out.push(`        }`);
+    out.push(`    }`);
     out.push(`}`);
   } else if (hasNoUndefInitCheck) {
     // Per-declarator dispatch.  Body checks: init is Identifier "undefined",

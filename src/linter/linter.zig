@@ -304,6 +304,7 @@ pub fn lint(
                 ctx.current_rule_index = @intCast(rule_idx);
                 ctx.rule_options = if (config) |cfg| cfg.rule_options[rule_idx] else null;
                 ctx.rule_options2 = if (config) |cfg| cfg.rule_options2[rule_idx] else null;
+                ctx.rule_options_all = if (config) |cfg| cfg.rule_options_all[rule_idx] else null;
                 run_fns[rule_idx](idx, &ctx);
             }
         }
@@ -325,11 +326,13 @@ pub fn lint(
             ctx.severity_override = sev.toSeverity();
             ctx.current_rule_index = @intCast(rule_idx);
             ctx.rule_options = if (config) |cfg| cfg.rule_options[rule_idx] else null;
+            ctx.rule_options_all = if (config) |cfg| cfg.rule_options_all[rule_idx] else null;
             fn_ptr(&ctx);
         }
     }
     ctx.severity_override = null;
     ctx.rule_options = null;
+    ctx.rule_options_all = null;
 
     return diagnostics.toOwnedSlice(allocator);
 }

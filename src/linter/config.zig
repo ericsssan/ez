@@ -66,6 +66,9 @@ pub const Config = struct {
     rule_options: [rule_count]?*const std.json.Value = [_]?*const std.json.Value{null} ** rule_count,
     /// Second rule option (items[2] when config has 3+ elements). null if absent.
     rule_options2: [rule_count]?*const std.json.Value = [_]?*const std.json.Value{null} ** rule_count,
+    /// Slice of all options (items[1..]) for rules like no-restricted-globals
+    /// that take a variable-length list.  Lifetime tied to the config arena.
+    rule_options_all: [rule_count]?[]std.json.Value = [_]?[]std.json.Value{null} ** rule_count,
     /// Synthetic JSON array values allocated for rules with 2+ options.
     /// (reserved for future use — currently unused)
     synthetic_options: std.ArrayListUnmanaged(*std.json.Value) = .empty,
@@ -264,6 +267,7 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
                                 if (items.len > 2) {
                                     config.rule_options2[ri] = &items[2];
                                 }
+                                config.rule_options_all[ri] = items[1..];
                                 break;
                             }
                         }
