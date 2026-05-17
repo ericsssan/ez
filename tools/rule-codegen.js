@@ -231,10 +231,11 @@ function emit(rule) {
 
   const hasSymbolHandler = rule.handlers.some(h => h.kind === "for-each-unresolved-global-ref");
   const hasReportAllUnresolvedRefs = rule.handlers.some(h => h.kind === "report-all-unresolved-refs");
+  const hasForEachRefByName = rule.handlers.some(h => h.kind === "for-each-ref-by-name");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -244,7 +245,7 @@ function emit(rule) {
 
   // For-each-node handlers supply their own relevant_tags from their selector.
   let relevantTags;
-  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName) {
     relevantTags = [];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
@@ -267,6 +268,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
+    || hasForEachRefByName
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -282,6 +284,10 @@ function emit(rule) {
   if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler) {
     out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
     out.push(`const ReferenceId = ref_mod.ReferenceId;`);
+  }
+  if (hasForEachRefByName) {
+    out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
+    out.push(`const symbol_mod = @import("../../../parser/symbol.zig");`);
   }
   out.push(``);
   out.push(`pub const meta = RuleMeta{`);
@@ -309,7 +315,8 @@ function emit(rule) {
       || irUsesOp(rule, "node-is-inside-finally-before-sentinel")
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
-      || hasReportAllUnresolvedRefs) {
+      || hasReportAllUnresolvedRefs
+      || hasForEachRefByName) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -442,6 +449,51 @@ function emit(rule) {
       const ct = h.considerTypeof ? "true" : "false";
       out.push(`    ctx.reportAllUnresolvedRefs("${zigStr(h.messageId)}", ${ct});`);
     }
+    out.push(`}`);
+  } else if (hasForEachRefByName) {
+    // Walk the reference table reporting every non-init reference whose
+    // identifier text matches any name in the configured set, plus walk
+    // the symbol table for user-declared bindings with a matching name
+    // (covers `var <name> = ...` def-name reports).
+    out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
+    out.push(``);
+    // Hoist names as a top-level constant.
+    const h = rule.handlers.find(x => x.kind === "for-each-ref-by-name");
+    const namesLit = h.names.map(n => `"${zigStr(n)}"`).join(", ");
+    const namesConst = `__for_each_ref_names__`;
+    out.push(`const ${namesConst} = [_][]const u8{ ${namesLit} };`);
+    out.push(``);
+    out.push(`pub fn runOnSymbols(ctx: *const LintContext) void {`);
+    out.push(`    const refs = ctx.references();`);
+    out.push(`    const ref_count = refs.count();`);
+    out.push(`    var r: u32 = 0;`);
+    out.push(`    while (r < ref_count) : (r += 1) {`);
+    out.push(`        const ref_id = ref_mod.ReferenceId.fromInt(r);`);
+    out.push(`        if (refs.getKind(ref_id) == .write_init) continue;`);
+    out.push(`        const id_node = refs.getNode(ref_id);`);
+    out.push(`        if (id_node == .none) continue;`);
+    out.push(`        const name = ctx.tokenText(ctx.nodeMainToken(id_node));`);
+    out.push(`        var matches = false;`);
+    out.push(`        for (${namesConst}) |n| { if (std.mem.eql(u8, n, name)) { matches = true; break; } }`);
+    out.push(`        if (!matches) continue;`);
+    out.push(`        ctx.reportWithMessageId(id_node, "${zigStr(h.messageId)}");`);
+    out.push(`    }`);
+    // Symbol-side pass for user-declared bindings (var/let/const/param/etc.
+    // whose name matches).  Builtin globals have decl_node == .none so they
+    // don't double-fire here.
+    out.push(`    const symbols = ctx.symbols();`);
+    out.push(`    const sym_count = symbols.count();`);
+    out.push(`    var s: u32 = 0;`);
+    out.push(`    while (s < sym_count) : (s += 1) {`);
+    out.push(`        const sym_id = symbol_mod.SymbolId.fromInt(s);`);
+    out.push(`        const sname = symbols.getName(sym_id);`);
+    out.push(`        var smatch = false;`);
+    out.push(`        for (${namesConst}) |n| { if (std.mem.eql(u8, n, sname)) { smatch = true; break; } }`);
+    out.push(`        if (!smatch) continue;`);
+    out.push(`        const decl = symbols.getDeclNode(sym_id);`);
+    out.push(`        if (decl == .none) continue;`);
+    out.push(`        ctx.reportWithMessageId(decl, "${zigStr(h.messageId)}");`);
+    out.push(`    }`);
     out.push(`}`);
   } else if (hasSymbolHandler) {
     out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);

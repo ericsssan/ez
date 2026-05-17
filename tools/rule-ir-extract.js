@@ -481,6 +481,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoAwaitInLoopHandler,   // no-await-in-loop
       extractPreferRestParamsHandler, // prefer-rest-params
       extractNoUndefHandler,         // no-undef
+      extractNoUndefinedHandler,     // no-undefined
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1097,6 +1098,27 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-undefined: walks the scope tree finding `undefined` variables and
+// reports their non-init references + def names.  In our model every
+// reference to `undefined` (resolved to builtin or user-shadowed) has its
+// identifier text == "undefined", so the equivalent is:
+//   - Walk references, skip init writes, report every ref whose identifier
+//     text is "undefined" (this covers reads + non-init writes).
+//   - Walk symbols whose name is "undefined" with a real decl node, report
+//     that decl (covers `var undefined`, `let undefined` etc.).
+function extractNoUndefinedHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-undefined.js")) return { ok: false };
+  if (rawHandler.selector !== "Program:exit") return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      kind: "for-each-ref-by-name",
+      names: ["undefined"],
+      messageId: "unexpectedUndefined",
+    },
+  };
+}
+
 function extractNoUndefHandler(rawHandler, stmts, { sourceFile } = {}) {
   if (!sourceFile || !sourceFile.endsWith("/no-undef.js")) return { ok: false };
   if (rawHandler.selector !== "Program:exit") return { ok: false };
