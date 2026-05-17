@@ -494,6 +494,9 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoExtraLabelHandler,    // no-extra-label
       extractNoEmptyHandler,         // no-empty
       extractNoSparseArraysHandler,  // no-sparse-arrays
+      extractForDirectionHandler,    // for-direction
+      extractValidTypeofHandler,     // valid-typeof
+      extractNoImportAssignHandler,  // no-import-assign
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1110,6 +1113,46 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-import-assign: flags writes to imported bindings.  Reuses the
+// existing for-each-write-ref-of-binding handler with import_binding
+// kind.  Skips the readonlyMember check (namespace member writes) for
+// now — that needs additional reference-walk logic.
+function extractNoImportAssignHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-import-assign.js")) return { ok: false };
+  if (rawHandler.selector === "ImportDeclaration") {
+    return {
+      ok: true,
+      handler: {
+        selector: rawHandler.selector,
+        kind: "for-each-write-ref-of-binding",
+        bindingKinds: ["import_binding"],
+        messageId: "readonly",
+        hasNameData: true,
+      },
+    };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+// valid-typeof: flags `typeof X === "foo"` where "foo" isn't a valid type.
+function extractValidTypeofHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/valid-typeof.js")) return { ok: false };
+  if (rawHandler.selector === "UnaryExpression") {
+    return { ok: true, handler: { kind: "valid-typeof-check", messageId: "invalidValue" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+// for-direction: flags `for(i=0; i<10; i--)` and similar wrong-direction
+// loops.  Inspects the test comparison and update direction.
+function extractForDirectionHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/for-direction.js")) return { ok: false };
+  if (rawHandler.selector === "ForStatement") {
+    return { ok: true, handler: { kind: "for-direction-check", messageId: "incorrectDirection" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 // no-sparse-arrays: flags array literals with holes (`[,]`, `[1,,2]`).
 // Walks each array_literal's elements and reports at the comma after each
 // hole, except the trailing hole when the last real element is non-null.

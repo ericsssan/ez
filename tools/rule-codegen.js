@@ -244,10 +244,12 @@ function emit(rule) {
   const hasNoExtraLabelCheck = rule.handlers.some(h => h.kind === "no-extra-label-check");
   const hasNoEmptyCheck = rule.handlers.some(h => h.kind === "no-empty-check");
   const hasNoSparseArraysCheck = rule.handlers.some(h => h.kind === "no-sparse-arrays-check");
+  const hasForDirectionCheck = rule.handlers.some(h => h.kind === "for-direction-check");
+  const hasValidTypeofCheck = rule.handlers.some(h => h.kind === "valid-typeof-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -275,6 +277,10 @@ function emit(rule) {
     relevantTags = ["block_stmt", "switch_stmt", "static_block"];
   } else if (hasNoSparseArraysCheck) {
     relevantTags = ["array_literal"];
+  } else if (hasForDirectionCheck) {
+    relevantTags = ["for_stmt"];
+  } else if (hasValidTypeofCheck) {
+    relevantTags = ["typeof_expr"];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
   } else {
@@ -296,7 +302,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -353,7 +359,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -678,6 +684,22 @@ function emit(rule) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    if (ctx.nodeTag(node) != .array_literal) return;`);
     out.push(`    ctx.checkNoSparseArrays(node, "${zigStr(h.messageId)}");`);
+    out.push(`}`);
+  } else if (hasForDirectionCheck) {
+    const h = rule.handlers.find(x => x.kind === "for-direction-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    if (ctx.nodeTag(node) != .for_stmt) return;`);
+    out.push(`    if (ctx.forStmtHasWrongDirection(node)) {`);
+    out.push(`        ctx.reportWithMessageId(node, "${zigStr(h.messageId)}");`);
+    out.push(`    }`);
+    out.push(`}`);
+  } else if (hasValidTypeofCheck) {
+    const h = rule.handlers.find(x => x.kind === "valid-typeof-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    if (ctx.nodeTag(node) != .typeof_expr) return;`);
+    out.push(`    const sibling = ctx.validTypeofInvalidSibling(node);`);
+    out.push(`    if (sibling == .none) return;`);
+    out.push(`    ctx.reportWithMessageId(sibling, "${zigStr(h.messageId)}");`);
     out.push(`}`);
   } else if (hasNoEmptyCheck) {
     const messageId = rule.handlers.find(x => x.kind === "no-empty-check").messageId;

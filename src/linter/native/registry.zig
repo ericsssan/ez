@@ -11,12 +11,12 @@ const no_sparse_arrays = @import("correctness/no_sparse_arrays.zig");  // IR-gen
 // const no_unreachable = @import("correctness/no_unreachable.zig");  // hand-written — disabled per IR-only constraint
 const no_unsafe_negation = @import("correctness/no_unsafe_negation.zig");  // IR-generated via isParenthesised + operator-marker re-lift
 // const use_isnan = @import("correctness/use_isnan.zig");  // hand-written — disabled per IR-only constraint
-// const valid_typeof = @import("correctness/valid_typeof.zig");  // hand-written — disabled per IR-only constraint
+const valid_typeof = @import("correctness/valid_typeof.zig");  // IR-generated via valid-typeof-check handler
 // const no_unused_vars = @import("correctness/no_unused_vars.zig");  // hand-written — disabled per IR-only constraint
 const no_undef = @import("correctness/no_undef.zig");
 // const no_constant_condition = @import("correctness/no_constant_condition.zig");  // hand-written — disabled per IR-only constraint
 const no_func_assign = @import("correctness/no_func_assign.zig");
-// const no_import_assign = @import("correctness/no_import_assign.zig");  // hand-written — disabled per IR-only constraint
+const no_import_assign = @import("correctness/no_import_assign.zig");  // IR-generated via for-each-write-ref-of-binding
 const no_self_assign = @import("correctness/no_self_assign.zig");  // IR-generated via no-self-assign-check handler
 const no_self_compare = @import("suspicious/no_self_compare.zig");
 // const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");  // hand-written — disabled per IR-only constraint
@@ -27,7 +27,7 @@ const no_eq_null = @import("style/no_eq_null.zig");
 const no_octal = @import("style/no_octal.zig");
 const no_multi_assign = @import("style/no_multi_assign.zig");
 // v0.4 correctness rules
-// const for_direction = @import("correctness/for_direction.zig");  // hand-written — disabled per IR-only constraint
+const for_direction = @import("correctness/for_direction.zig");  // IR-generated via for-direction-check handler
 // const getter_return = @import("correctness/getter_return.zig");  // hand-written — disabled per IR-only constraint
 const no_async_promise_executor = @import("correctness/no_async_promise_executor.zig");
 const no_compare_neg_zero = @import("correctness/no_compare_neg_zero.zig");
@@ -287,13 +287,13 @@ pub const all_rules = .{
     // no_unreachable, // runner >> native (runner 57/67, native 42/67, 19 more FN); fall back to runner
     no_unsafe_negation,
     // use_isnan, // runner >> native (runner 214, native 176, gap 38); fall back to JS runner
-    // valid_typeof, // hand-written — disabled
+    valid_typeof,
     // no_unused_vars, // runner >> native (runner 436, native 297, gap 139, 51 FP); fall back to JS runner
     no_undef,
     // no_constant_condition, // hand-written, 91 FP vs ESLint; fall back to JS runner
 
     no_func_assign,
-    // no_import_assign, // runner >> native (runner 110, native 85, 31 FN); fall back
+    // no_import_assign, // native 57/116 vs runner 116 — endColumn + 34 FP; needs report-at-write-expr fix
     no_self_assign,
     // no_self_compare, // hand-written — disabled
     // no_unsafe_optional_chaining, // runner >> native (runner 187, native 155, gap 32); fall back to JS runner
@@ -316,7 +316,7 @@ pub const all_rules = .{
     no_empty_static_block,
     no_duplicate_case,
     no_async_promise_executor,
-    // for_direction, // runner >> native (runner 72, native 47, gap 25, 6 FP); fall back to JS runner
+    // for_direction, // native 49/72 vs runner 72 — needs more shape coverage; disabled
     // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
     // no_async_promise_executor, // hand-written — disabled
     no_compare_neg_zero,

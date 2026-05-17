@@ -720,6 +720,112 @@ pub const LintContext = struct {
         };
     }
 
+    /// valid-typeof: when a typeof_expr is compared against a string
+    /// literal, return the static-string sibling node iff its value
+    /// isn't a valid type string.  Returns .none when the shape doesn't
+    /// match or the value is valid.
+    pub fn validTypeofInvalidSibling(self: *const LintContext, typeof_node: NodeIndex) NodeIndex {
+        if (self.ast.nodeTag(typeof_node) != .typeof_expr) return .none;
+        const parent = self.parentOf(typeof_node);
+        if (parent == .none) return .none;
+        const pt = self.ast.nodeTag(parent);
+        if (pt != .equal and pt != .not_equal and pt != .strict_equal and pt != .strict_not_equal) return .none;
+        const pd = self.ast.nodeData(parent);
+        const sibling = if (pd.lhs == typeof_node) pd.rhs else pd.lhs;
+        const sname = self.nodeStaticStringValue(sibling) orelse return .none;
+        const valid = [_][]const u8{
+            "symbol", "undefined", "object", "boolean", "number",
+            "string", "function", "bigint",
+        };
+        for (valid) |v| if (std.mem.eql(u8, sname, v)) return .none;
+        return sibling;
+    }
+
+    /// for-direction: check whether a for-statement's update goes in the
+    /// wrong direction relative to its test comparison.  Returns true when
+    /// the loop's update is direction-mismatched (e.g. `for(i=0; i<10; i--)`).
+    pub fn forStmtHasWrongDirection(self: *const LintContext, n: NodeIndex) bool {
+        if (self.ast.nodeTag(n) != .for_stmt) return false;
+        // for_stmt data: lhs = ForExtra index, rhs = body
+        const d = self.ast.nodeData(n);
+        if (d.lhs == .none) return false;
+        const fx = self.extraData(ast_mod.ForData, @intFromEnum(d.lhs));
+        const test_node = fx.condition;
+        const update_node = fx.update;
+        if (test_node == .none or update_node == .none) return false;
+        // Test must be a binary comparison
+        const test_tag = self.ast.nodeTag(test_node);
+        const op_lt = test_tag == .less_than;
+        const op_le = test_tag == .less_equal;
+        const op_gt = test_tag == .greater_than;
+        const op_ge = test_tag == .greater_equal;
+        if (!(op_lt or op_le or op_gt or op_ge)) return false;
+        const td = self.ast.nodeData(test_node);
+        // Determine counter name from either side that's an Identifier.
+        const left_is_id = self.ast.nodeTag(td.lhs) == .identifier;
+        const right_is_id = self.ast.nodeTag(td.rhs) == .identifier;
+        if (!left_is_id and !right_is_id) return false;
+        // For each position-Identifier side, compute "wrong direction" and check update.
+        // wrong = -1 means "++ is wrong"; wrong = +1 means "-- is wrong".
+        var positions: [2]struct { id: NodeIndex, wrong: i32 } = .{
+            .{ .id = .none, .wrong = 0 },
+            .{ .id = .none, .wrong = 0 },
+        };
+        var pos_count: usize = 0;
+        if (left_is_id) {
+            const wrong: i32 = if (op_lt or op_le) -1 else 1; // <, <= left → wrong is -1 (decrement)
+            positions[pos_count] = .{ .id = td.lhs, .wrong = wrong };
+            pos_count += 1;
+        }
+        if (right_is_id) {
+            const wrong: i32 = if (op_lt or op_le) 1 else -1; // <, <= right → wrong is +1
+            positions[pos_count] = .{ .id = td.rhs, .wrong = wrong };
+            pos_count += 1;
+        }
+        const update_tag = self.ast.nodeTag(update_node);
+        const ud = self.ast.nodeData(update_node);
+        var k: usize = 0;
+        while (k < pos_count) : (k += 1) {
+            const counter_name = self.ast.tokenText(self.ast.nodeMainToken(positions[k].id));
+            const wrong = positions[k].wrong;
+            // UpdateExpression: ++ / --
+            if (update_tag == .prefix_inc or update_tag == .postfix_inc
+                or update_tag == .prefix_dec or update_tag == .postfix_dec) {
+                const arg = ud.lhs;
+                if (self.ast.nodeTag(arg) != .identifier) continue;
+                if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(arg)), counter_name)) continue;
+                const dir: i32 = if (update_tag == .prefix_inc or update_tag == .postfix_inc) 1 else -1;
+                if (dir == wrong) return true;
+            }
+            // AssignmentExpression: += / -=
+            if (update_tag == .add_assign or update_tag == .sub_assign) {
+                const lhs = ud.lhs;
+                if (self.ast.nodeTag(lhs) != .identifier) continue;
+                if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(lhs)), counter_name)) continue;
+                // Right-side: try to determine sign of the constant.
+                // Simple: if rhs is a positive number_literal, dir = op sign;
+                // if negative-unary, flip.
+                const rhs = ud.rhs;
+                var pos_sign: i32 = 1;
+                var inner = rhs;
+                if (self.ast.nodeTag(inner) == .unary_minus) {
+                    pos_sign = -1;
+                    inner = self.ast.nodeData(inner).lhs;
+                } else if (self.ast.nodeTag(inner) == .unary_plus) {
+                    inner = self.ast.nodeData(inner).lhs;
+                }
+                if (self.ast.nodeTag(inner) != .number_literal) continue;
+                const num_text = self.ast.tokenText(self.ast.nodeMainToken(inner));
+                const v = parseNumericLiteral(num_text) orelse continue;
+                if (v == 0) continue; // no direction change
+                const op_sign: i32 = if (update_tag == .add_assign) 1 else -1;
+                const dir: i32 = op_sign * pos_sign;
+                if (dir == wrong) return true;
+            }
+        }
+        return false;
+    }
+
     /// no-sparse-arrays: walk an array_literal's elements and emit a diag
     /// for each hole, except the trailing hole when the last real element
     /// is non-null.  Locates the comma after the hole and reports at its
