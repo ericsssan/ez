@@ -88,10 +88,11 @@ const no_implied_eval = @import("suspicious/no_implied_eval.zig");
 const no_label_var = @import("correctness/no_label_var.zig");  // IR-generated via identifier-shadows-binding op
 // const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // hand-written — disabled per IR-only constraint
 // const no_misleading_character_class = @import("correctness/no_misleading_character_class.zig");
-//   IR-generated subset covers literal-codepoint surrogatePair only.
-//   ESLint's positions for `\\uHIGH\\uLOW` escape pairs come from the regexpp
-//   AST (per regex-character ranges), not raw source offsets — a faithful
-//   port needs a real regex parser.  Keep disabled until that lands.
+//   IR-generated subset (surrogatePair + surrogatePairWithoutUFlag) backed by
+//   regex_parser.  Disabled because the bulk of the rule (combiningClass /
+//   zwj / emojiModifier / regionalIndicatorSymbol) needs Unicode property
+//   tables we don't ship yet; enabling causes a >100-case hybrid regression
+//   on the eslint-recommended corpus.  Re-enable once those tables land.
 // const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");  // hand-written — disabled per IR-only constraint
 const no_multi_str = @import("suspicious/no_multi_str.zig");
 const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");

@@ -4334,120 +4334,213 @@ pub const LintContext = struct {
     }
 
     // ── no-misleading-character-class ──────────────────────────
-    // Subset port: detects `surrogatePairWithoutUFlag` only — codepoints
-    // above U+FFFF (encoded as 4-byte UTF-8 or `\uHIGH\uLOW` escape pairs)
-    // inside `[...]` without the u or v flag.  Other messageIds
-    // (combiningClass, zwj, emojiModifier, regionalIndicatorSymbol,
-    // surrogatePair) need Unicode property tables and full regex parsing
-    // — out of scope.
+    // Surrogate-pair subset: walks the regex AST's character classes and
+    // reports either `surrogatePairWithoutUFlag` (no u/v flag, the
+    // canonical "you probably wanted u-flag" case) or `surrogatePair`
+    // (u/v flag set, the "explicit cp ≥ 0x10000" case).  The other
+    // messageIds (combiningClass / zwj / emojiModifier /
+    // regionalIndicatorSymbol) need Unicode property tables and are
+    // deliberately out of scope.
     pub fn checkMisleadingCharClassRegex(self: *const LintContext, node: NodeIndex) void {
-        const pat = self.regexPatternSlice(node) orelse return;
-        const text = pat.text;
-        if (self.regexFlagsHaveUOrV(node)) return;
-        self.scanMisleadingCharClass(text, pat.start, node);
+        const pat_slice = self.regexPatternSlice(node) orelse return;
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const flags = self.regexFlagString(node);
+        const flag_set = regex_parser.Flags.fromString(flags);
+        const allow_escape = self.noMisleadingAllowEscape();
+        const pat = regex_parser.parse(arena, pat_slice.text, .{ .flags = flag_set }) catch return;
+        self.walkMisleadingCharClass(pat.alternatives, pat_slice.start, flag_set, pat_slice.text, allow_escape);
+    }
+
+    fn noMisleadingAllowEscape(self: *const LintContext) bool {
+        if (self.rule_options) |opts| {
+            if (opts.* == .object) {
+                if (opts.object.get("allowEscape")) |v| if (v == .bool) return v.bool;
+            }
+        }
+        return false;
     }
 
     pub fn checkMisleadingCharClassCall(self: *const LintContext, node: NodeIndex) void {
-        // ESLint's RegExp-call detection parses the runtime string value
-        // through regexpp, which canonicalises surrogate pairs differently
-        // from regex-literal scanning — a faithful port needs the real
-        // parser.  For now we only handle regex literals; the call form
-        // falls back to the JS runner.
+        // Call form intentionally noop'd: ESLint's RegExp-call path uses
+        // ReferenceTracker + languageOptions.globals to decide whether
+        // `RegExp` is the global, and bails for non-literal flag args.
+        // We don't have access to ESLint's config-level globals from
+        // here, so any heuristic risks the FPs we saw before.  Leave the
+        // call form to the JS runner.
         _ = self;
         _ = node;
     }
 
-    fn scanMisleadingCharClass(self: *const LintContext, text: []const u8, pat_start: u32, node: NodeIndex) void {
-        _ = node;
-        var i: usize = 0;
-        var class_depth: i32 = 0;
-        while (i < text.len) {
-            const b = text[i];
-            if (b == '\\' and i + 1 < text.len) {
-                // Treat `\\` (string escape doubling) as literal `\`.
-                if (text[i + 1] == '\\' and i + 2 < text.len) {
-                    // Look at the regex-level escape that follows.
-                    const k = text[i + 2];
-                    if (k == 'u' and i + 3 < text.len and class_depth > 0) {
-                        // `\\u...` form in a string-literal source.
-                        if (text[i + 3] == '{') {
-                            // \u{H...} — only meaningful under u/v; we already
-                            // returned for u/v above, so this is literal here.
-                            // Walk past `}`.
-                            var j = i + 4;
-                            while (j < text.len and text[j] != '}') j += 1;
-                            if (j < text.len) { i = j + 1; continue; }
-                        } else if (i + 7 <= text.len) {
-                            if (parseHex(text[i + 3 .. i + 7])) |cp| {
-                                if (cp >= 0xD800 and cp <= 0xDBFF) {
-                                    // Look ahead for `\\uXXXX` low surrogate.
-                                    const j = i + 7;
-                                    if (j + 6 <= text.len and text[j] == '\\' and text[j + 1] == '\\'
-                                        and text[j + 2] == 'u' and j + 7 <= text.len)
-                                    {
-                                        if (parseHex(text[j + 3 .. j + 7])) |cp2| {
-                                            if (cp2 >= 0xDC00 and cp2 <= 0xDFFF) {
-                                                const abs_start: u32 = pat_start + @as(u32, @intCast(i));
-                                                const abs_end: u32 = pat_start + @as(u32, @intCast(j + 7));
-                                                self.reportSpanWithMessageId(.{ .start = abs_start, .end = abs_end }, "surrogatePairWithoutUFlag");
-                                                i = j + 7;
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            i += 7;
-                            continue;
-                        }
-                    }
-                    i += 3;
-                    continue;
+    fn walkMisleadingCharClass(self: *const LintContext, alts: []regex_parser.Alternative, pat_start: u32, flags: regex_parser.Flags, pat_text: []const u8, allow_escape: bool) void {
+        for (alts) |alt| {
+            for (alt.terms) |t| {
+                switch (t.atom) {
+                    .char_class => |cc| self.visitCharClass(cc, pat_start, flags, pat_text, allow_escape),
+                    .group => |g| self.walkMisleadingCharClass(g.alternatives, pat_start, flags, pat_text, allow_escape),
+                    else => {},
                 }
-                // Direct regex escape (not string-escaped).
-                if (text[i + 1] == 'u' and class_depth > 0) {
-                    if (i + 2 < text.len and text[i + 2] == '{') {
-                        var j = i + 3;
-                        while (j < text.len and text[j] != '}') j += 1;
-                        if (j < text.len) { i = j + 1; continue; }
-                    } else if (i + 6 <= text.len) {
-                        if (parseHex(text[i + 2 .. i + 6])) |cp| {
-                            if (cp >= 0xD800 and cp <= 0xDBFF) {
-                                const j = i + 6;
-                                if (j + 6 <= text.len and text[j] == '\\' and text[j + 1] == 'u') {
-                                    if (parseHex(text[j + 2 .. j + 6])) |cp2| {
-                                        if (cp2 >= 0xDC00 and cp2 <= 0xDFFF) {
-                                            const abs_start: u32 = pat_start + @as(u32, @intCast(i));
-                                            const abs_end: u32 = pat_start + @as(u32, @intCast(j + 6));
-                                            self.reportSpanWithMessageId(.{ .start = abs_start, .end = abs_end }, "surrogatePairWithoutUFlag");
-                                            i = j + 6;
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        i += 6;
+            }
+        }
+    }
+
+    fn visitCharClass(self: *const LintContext, cc: *regex_parser.CharacterClass, pat_start: u32, flags: regex_parser.Flags, pat_text: []const u8, allow_escape: bool) void {
+        // Build sequences of consecutive Character elements; Range / CharSet
+        // boundaries break the sequence.  Then per sequence, look for
+        // surrogate-pair patterns.
+        var seq_start: usize = 0;
+        var seq_len: usize = 0;
+        // Stack-allocated sliding window — sequences rarely exceed dozens.
+        var buf: [256]regex_parser.Character = undefined;
+        var i: usize = 0;
+        const elems = cc.elements;
+        while (i <= elems.len) : (i += 1) {
+            const is_char = i < elems.len and elems[i] == .character;
+            if (is_char) {
+                if (seq_len == 0) seq_start = i;
+                if (seq_len < buf.len) {
+                    buf[seq_len] = elems[i].character;
+                    seq_len += 1;
+                }
+                continue;
+            }
+            if (seq_len > 0) self.reportSurrogateSeq(buf[0..seq_len], pat_start, flags, pat_text, allow_escape);
+            seq_start = 0;
+            seq_len = 0;
+        }
+    }
+
+    fn reportSurrogateSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, flags: regex_parser.Flags, pat_text: []const u8, allow_escape: bool) void {
+        const has_uv = flags.unicode or flags.unicode_sets;
+        if (!has_uv) {
+            // Without u/v: regexpp parses `👍` (literal 4-byte UTF-8) as
+            // TWO surrogate atoms, and `\uHIGH\uLOW` as two atoms.  Both
+            // are flagged via the same "consecutive surrogate pair" check.
+            // My AST keeps the literal emoji as a single Character — count
+            // it as a surrogate pair by itself.
+            var i: usize = 0;
+            while (i + 1 < seq.len) : (i += 1) {
+                const c1 = seq[i];
+                const c2 = seq[i + 1];
+                if (c1.codepoint >= 0xD800 and c1.codepoint <= 0xDBFF
+                    and c2.codepoint >= 0xDC00 and c2.codepoint <= 0xDFFF)
+                {
+                    if (allow_escape and charIsEscapeForm(c1, pat_text) and charIsEscapeForm(c2, pat_text)) {
+                        i += 1;
                         continue;
                     }
+                    self.reportSpanWithMessageId(.{
+                        .start = pat_start + c1.start,
+                        .end = pat_start + c2.end,
+                    }, "surrogatePairWithoutUFlag");
+                    i += 1;
                 }
-                i += 2;
-                continue;
             }
-            if (b == '[') { class_depth += 1; i += 1; continue; }
-            if (b == ']') { if (class_depth > 0) class_depth -= 1; i += 1; continue; }
-            // 4-byte UTF-8 lead (0xF0-0xF7) inside a class → codepoint > U+FFFF.
-            // ESLint reports literal surrogate-pair codepoints as
-            // `surrogatePair` (the rule's own messageId; surrogatePairWithoutUFlag
-            // is reserved for `\uHIGH\uLOW` escape pairs).
-            if (class_depth > 0 and b >= 0xF0 and b <= 0xF7 and i + 4 <= text.len) {
-                const abs_start: u32 = pat_start + @as(u32, @intCast(i));
-                const abs_end: u32 = pat_start + @as(u32, @intCast(i + 4));
-                self.reportSpanWithMessageId(.{ .start = abs_start, .end = abs_end }, "surrogatePair");
-                i += 4;
-                continue;
+            for (seq) |c| {
+                if (c.codepoint > 0xFFFF and c.end > c.start and (c.end - c.start) == 4) {
+                    self.reportSpanWithMessageId(.{
+                        .start = pat_start + c.start,
+                        .end = pat_start + c.end,
+                    }, "surrogatePairWithoutUFlag");
+                }
             }
-            i += 1;
+        } else {
+            // Under u/v: only consecutive `\u{...}` codepoint-escape pairs
+            // that combine into a surrogate pair are flagged.  Literal
+            // emoji (single Character under u/v) is NOT a misleading
+            // class — it's the documented intent.
+            var i: usize = 0;
+            while (i + 1 < seq.len) : (i += 1) {
+                const c1 = seq[i];
+                const c2 = seq[i + 1];
+                const is_pair = c1.codepoint >= 0xD800 and c1.codepoint <= 0xDBFF
+                    and c2.codepoint >= 0xDC00 and c2.codepoint <= 0xDFFF;
+                if (!is_pair) continue;
+                const either_curly = charSourceIsCurlyU(c1, pat_text) or charSourceIsCurlyU(c2, pat_text);
+                if (either_curly) {
+                    self.reportSpanWithMessageId(.{
+                        .start = pat_start + c1.start,
+                        .end = pat_start + c2.end,
+                    }, "surrogatePair");
+                    i += 1;
+                }
+            }
+        }
+    }
+
+
+    const MisleadingKind = enum { surrogate_pair_without_u_flag, surrogate_pair };
+
+    fn misleadingKindMsgId(k: MisleadingKind) []const u8 {
+        return switch (k) {
+            .surrogate_pair_without_u_flag => "surrogatePairWithoutUFlag",
+            .surrogate_pair => "surrogatePair",
+        };
+    }
+
+    fn collectMisleadingCharClass(
+        self: *const LintContext,
+        arena: std.mem.Allocator,
+        alts: []regex_parser.Alternative,
+        pat_start: u32,
+        flags: regex_parser.Flags,
+    ) ![]MisleadingKind {
+        _ = pat_start;
+        var out: std.ArrayList(MisleadingKind) = .empty;
+        try self.collectMisleadingInner(arena, &out, alts, flags);
+        return out.toOwnedSlice(arena);
+    }
+
+    fn collectMisleadingInner(
+        self: *const LintContext,
+        arena: std.mem.Allocator,
+        out: *std.ArrayList(MisleadingKind),
+        alts: []regex_parser.Alternative,
+        flags: regex_parser.Flags,
+    ) std.mem.Allocator.Error!void {
+        for (alts) |alt| {
+            for (alt.terms) |t| {
+                switch (t.atom) {
+                    .char_class => |cc| try self.collectFromClass(arena, out, cc, flags),
+                    .group => |g| try self.collectMisleadingInner(arena, out, g.alternatives, flags),
+                    else => {},
+                }
+            }
+        }
+    }
+
+    fn collectFromClass(
+        self: *const LintContext,
+        arena: std.mem.Allocator,
+        out: *std.ArrayList(MisleadingKind),
+        cc: *regex_parser.CharacterClass,
+        flags: regex_parser.Flags,
+    ) std.mem.Allocator.Error!void {
+        _ = self;
+        const has_uv = flags.unicode or flags.unicode_sets;
+        // Walk consecutive Character elements; emit pair-detection results.
+        var prev_was_char = false;
+        var prev_cp: u32 = 0;
+        for (cc.elements) |e| {
+            if (e == .character) {
+                const c = e.character;
+                if (!has_uv) {
+                    if (prev_was_char and prev_cp >= 0xD800 and prev_cp <= 0xDBFF
+                        and c.codepoint >= 0xDC00 and c.codepoint <= 0xDFFF) {
+                        try out.append(arena, .surrogate_pair_without_u_flag);
+                    } else if (c.codepoint > 0xFFFF and (c.end - c.start) == 4) {
+                        try out.append(arena, .surrogate_pair_without_u_flag);
+                    }
+                } else if (c.codepoint >= 0x10000) {
+                    try out.append(arena, .surrogate_pair);
+                }
+                prev_was_char = true;
+                prev_cp = c.codepoint;
+            } else {
+                prev_was_char = false;
+                prev_cp = 0;
+            }
         }
     }
 
@@ -5415,6 +5508,21 @@ fn appendCodepoint(arena: std.mem.Allocator, out: *std.ArrayList(u8), cp: u32) !
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(@truncate(cp), &buf) catch return;
     try out.appendSlice(arena, buf[0..len]);
+}
+
+/// True when the character's source (taken from a pattern slice) starts
+/// with `\u{` — mirrors regexpp's `isUnicodeCodePointEscape` predicate
+/// used by no-misleading-character-class.
+fn charSourceIsCurlyU(c: regex_parser.Character, pat_text: []const u8) bool {
+    if (c.start + 3 > pat_text.len) return false;
+    return pat_text[c.start] == '\\' and pat_text[c.start + 1] == 'u' and pat_text[c.start + 2] == '{';
+}
+
+/// True when the character was written in escape form (`\u…`, `\x…`, `\0`).
+/// Used for the no-misleading-character-class `allowEscape` option.
+fn charIsEscapeForm(c: regex_parser.Character, pat_text: []const u8) bool {
+    if (c.start >= pat_text.len) return false;
+    return pat_text[c.start] == '\\';
 }
 
 /// Quick scan for a `{` in the regex pattern that doesn't introduce a
