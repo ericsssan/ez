@@ -98,6 +98,7 @@ const EXPR_OPS = new Set([
   "node-has-static-string-value",
   "node-static-string-starts-with",
   "node-static-string-starts-with-i",
+  "node-raw-has-octal-escape",
   "option-equals-string",
   "node-operator-in-set",
   "node-literal-value-equals",
@@ -614,6 +615,9 @@ function validateExpr(e, path) {
   }
   if (e.op === "node-static-string-starts-with" || e.op === "node-static-string-starts-with-i") {
     if (typeof e.prefix !== "string") return fail(`${e.op}.prefix must be string`, path);
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-raw-has-octal-escape") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "option-equals-string") {

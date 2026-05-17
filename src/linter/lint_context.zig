@@ -490,6 +490,48 @@ pub const LintContext = struct {
         return null;
     }
 
+    /// Scan a string-literal/template-literal node's raw text for the first
+    /// octal escape sequence (per no-octal-escape's regex
+    /// `\\([0-3][0-7]{1,2}|[4-7][0-7]|0(?=[89])|[1-7])`).  Returns the
+    /// matched digits (without the leading backslash) or null if the node
+    /// has no static string value or contains no octal escape.
+    pub fn nodeRawOctalEscapeMatch(self: *const LintContext, n: NodeIndex) ?[]const u8 {
+        const raw = self.nodeStaticStringValue(n) orelse return null;
+        var i: usize = 0;
+        while (i < raw.len) {
+            if (raw[i] != '\\') { i += 1; continue; }
+            if (i + 1 >= raw.len) return null;
+            const c = raw[i + 1];
+            // \0 followed by [89] (decimal-digit continuation) → "0"
+            if (c == '0' and i + 2 < raw.len and (raw[i + 2] == '8' or raw[i + 2] == '9')) {
+                return raw[i + 1 .. i + 2];
+            }
+            // \[4-7][0-7] — two octal digits, leading 4-7
+            if (c >= '4' and c <= '7' and i + 2 < raw.len and raw[i + 2] >= '0' and raw[i + 2] <= '7') {
+                return raw[i + 1 .. i + 3];
+            }
+            // \[0-3][0-7]{1,2} — leading 0-3 with 1-2 more octal digits
+            if (c >= '0' and c <= '3' and i + 2 < raw.len and raw[i + 2] >= '0' and raw[i + 2] <= '7') {
+                if (i + 3 < raw.len and raw[i + 3] >= '0' and raw[i + 3] <= '7') {
+                    return raw[i + 1 .. i + 4];
+                }
+                return raw[i + 1 .. i + 3];
+            }
+            // \[1-7] — single octal digit (no following octal)
+            if (c >= '1' and c <= '7') {
+                return raw[i + 1 .. i + 2];
+            }
+            // Not octal — consume backslash + escaped char and continue
+            i += 2;
+        }
+        return null;
+    }
+
+    /// Boolean variant for no-octal-escape's `if (match)` truthy check.
+    pub fn nodeRawHasOctalEscape(self: *const LintContext, n: NodeIndex) bool {
+        return self.nodeRawOctalEscapeMatch(n) != null;
+    }
+
     /// True iff nodeStaticStringValue(n) is non-null and starts with `prefix`.
     /// When `ignore_case` is true, compares using ASCII case folding (the
     /// only case behaviour we need for `javascript:`-style URL checks).

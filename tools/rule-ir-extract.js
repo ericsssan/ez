@@ -4258,6 +4258,11 @@ function extractStatement(stmt, scope) {
 
     const cond = extractExpr(stmt.test, scope);
     if (!cond.ok) return cond;
+    // Lift markers in boolean context (rules use `const match = ...; if (match)`
+    // where `match` resolves to a marker that needs a dedicated bool IR op).
+    if (cond.expr.op === "__octal_escape_match_marker__") {
+      cond.expr = { op: "node-raw-has-octal-escape", node: cond.expr.node };
+    }
     const thenStmts = [];
     for (const s of flattenBlock(stmt.consequent)) {
       const r = extractStatement(s, scope);
@@ -6568,7 +6573,22 @@ function extractExpr(expr, scope) {
           && callee.property?.type === "Identifier" && callee.property.name === "match"
           && expr.arguments.length === 1
           && expr.arguments[0].type === "Literal" && expr.arguments[0].regex) {
-        const strs = expandRegexToSet(expr.arguments[0].regex.pattern);
+        const pat = expr.arguments[0].regex.pattern;
+        // no-octal-escape's specific octal-detection regex — recognise by
+        // pattern string and emit a dedicated marker so the surrounding
+        // `if (match)` lifts to the boolean op.  The capture group is
+        // returned by the Zig helper if data needs it later.
+        if (pat === "^(?:[^\\\\]|\\\\.)*?\\\\([0-3][0-7]{1,2}|[4-7][0-7]|0(?=[89])|[1-7])"
+            && callee.object?.type === "MemberExpression"
+            && !callee.object.computed
+            && callee.object.property?.type === "Identifier"
+            && callee.object.property.name === "raw") {
+          const target = extractExpr(callee.object.object, scope);
+          if (target.ok) {
+            return { ok: true, expr: { op: "__octal_escape_match_marker__", node: target.expr } };
+          }
+        }
+        const strs = expandRegexToSet(pat);
         if (strs) {
           const val = extractExpr(callee.object, scope);
           if (val.ok) {

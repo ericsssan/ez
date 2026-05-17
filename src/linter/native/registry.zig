@@ -148,7 +148,7 @@ const no_new_func = @import("style/no_new_func.zig");
 // const no_new_object = @import("style/no_new_object.zig");  // hand-written — disabled per IR-only constraint
 const no_new_require = @import("style/no_new_require.zig");
 const no_process_env = @import("style/no_process_env.zig");
-// const no_octal_escape = @import("style/no_octal_escape.zig");  // hand-written — disabled per IR-only constraint
+const no_octal_escape = @import("suspicious/no_octal_escape.zig");  // IR-generated via node-raw-has-octal-escape
 // const no_param_reassign = @import("style/no_param_reassign.zig");  // hand-written — disabled per IR-only constraint
 // const no_plusplus = @import("style/no_plusplus.zig");  // hand-written — disabled per IR-only constraint
 const no_proto = @import("style/no_proto.zig");
@@ -430,7 +430,7 @@ pub const all_rules = .{
     // no_new_object, // hand-written — disabled
     no_new_require,
     no_process_env,
-    // no_octal_escape, // hand-written — disabled
+    no_octal_escape,
     // no_param_reassign, // runner >> native (runner 76, native 57, gap 21); fall back to JS runner
     // no_plusplus, // hand-written — disabled
     no_proto,

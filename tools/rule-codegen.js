@@ -1543,6 +1543,8 @@ function emitExpr(e, ctx) {
       return `ctx.nodeStaticStringStartsWith(${emitExpr(e.node, ctx)}, "${zigStr(e.prefix)}", false)`;
     case "node-static-string-starts-with-i":
       return `ctx.nodeStaticStringStartsWith(${emitExpr(e.node, ctx)}, "${zigStr(e.prefix.toLowerCase())}", true)`;
+    case "node-raw-has-octal-escape":
+      return `ctx.nodeRawHasOctalEscape(${emitExpr(e.node, ctx)})`;
     case "option-equals-string":
       return `ctx.optionEqualsString("${zigStr(e.needle)}")`;
     case "node-literal-value-equals":
