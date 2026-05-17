@@ -487,6 +487,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoRestrictedGlobalsHandler, // no-restricted-globals
       extractNoRedeclareHandler,     // no-redeclare
       extractNoSelfAssignHandler,    // no-self-assign
+      extractNoDupeArgsHandler,      // no-dupe-args
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1103,6 +1104,20 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-dupe-args: reports function parameters that share a name with another
+// param in the same function.  Walks the SymbolTable for parameter-kind
+// symbols and finds duplicates within each function scope.
+function extractNoDupeArgsHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-dupe-args.js")) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      kind: "no-dupe-args-check",
+      messageId: "unexpected",
+    },
+  };
+}
+
 // no-self-assign: flags `x = x` and `obj.prop = obj.prop` (and the logical
 // assign variants &&=/||=/??=).  We implement the two most common shapes
 // covering ~70% of test cases: identifier-identifier (with same name) and

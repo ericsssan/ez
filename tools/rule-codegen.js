@@ -237,10 +237,11 @@ function emit(rule) {
   const hasForEachRefByOptionName = rule.handlers.some(h => h.kind === "for-each-ref-by-option-name");
   const hasNoRedeclareCheck = rule.handlers.some(h => h.kind === "no-redeclare-check");
   const hasNoSelfAssignCheck = rule.handlers.some(h => h.kind === "no-self-assign-check");
+  const hasNoDupeArgsCheck = rule.handlers.some(h => h.kind === "no-dupe-args-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -250,7 +251,7 @@ function emit(rule) {
 
   // For-each-node handlers supply their own relevant_tags from their selector.
   let relevantTags;
-  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasForEachRefByOptionName || hasNoRedeclareCheck) {
+  if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoDupeArgsCheck) {
     relevantTags = [];
   } else if (hasNoUndefInitCheck) {
     relevantTags = ["declarator"];
@@ -277,7 +278,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -304,7 +305,7 @@ function emit(rule) {
   if (hasForEachRefByOptionName) {
     out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
   }
-  if (hasNoRedeclareCheck) {
+  if (hasNoRedeclareCheck || hasNoDupeArgsCheck) {
     out.push(`const symbol_mod = @import("../../../parser/symbol.zig");`);
   }
   out.push(``);
@@ -334,7 +335,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -467,6 +468,41 @@ function emit(rule) {
       const ct = h.considerTypeof ? "true" : "false";
       out.push(`    ctx.reportAllUnresolvedRefs("${zigStr(h.messageId)}", ${ct});`);
     }
+    out.push(`}`);
+  } else if (hasNoDupeArgsCheck) {
+    const h = rule.handlers.find(x => x.kind === "no-dupe-args-check");
+    out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);
+    out.push(``);
+    out.push(`pub fn runOnSymbols(ctx: *const LintContext) void {`);
+    out.push(`    const symbols = ctx.symbols();`);
+    out.push(`    const count = symbols.count();`);
+    out.push(`    var i: u32 = 0;`);
+    out.push(`    while (i < count) : (i += 1) {`);
+    out.push(`        const sym_i = symbol_mod.SymbolId.fromInt(i);`);
+    out.push(`        if (symbols.getBindingKind(sym_i) != .parameter) continue;`);
+    out.push(`        const name_i = symbols.getName(sym_i);`);
+    out.push(`        const scope_i = symbols.getScope(sym_i);`);
+    // ESLint reports once per (scope, name) group regardless of dup count.
+    // Count earlier params with the same (scope, name); only report when this
+    // IS the second occurrence (one earlier dup).  Later occurrences skip.
+    out.push(`        var j: u32 = 0;`);
+    out.push(`        var dup_count: u32 = 0;`);
+    out.push(`        while (j < i) : (j += 1) {`);
+    out.push(`            const sym_j = symbol_mod.SymbolId.fromInt(j);`);
+    out.push(`            if (symbols.getBindingKind(sym_j) != .parameter) continue;`);
+    out.push(`            if (symbols.getScope(sym_j).toInt() != scope_i.toInt()) continue;`);
+    out.push(`            if (!std.mem.eql(u8, symbols.getName(sym_j), name_i)) continue;`);
+    out.push(`            dup_count += 1;`);
+    out.push(`        }`);
+    out.push(`        if (dup_count != 1) continue;`);
+    // Report at the function's param-list span `(a, b, c)` — matches
+    // ESLint's `loc: { start: openParen.start, end: tokenBefore(body).end }`.
+    out.push(`        const fn_node = ctx.scopes().nodeId(scope_i);`);
+    out.push(`        const span = ctx.nodeFunctionParamsSpan(fn_node);`);
+    out.push(`        ctx.reportSpanWithMessageIdAndData(span, "${zigStr(h.messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`            .{ .key = "name", .val = name_i },`);
+    out.push(`        });`);
+    out.push(`    }`);
     out.push(`}`);
   } else if (hasNoRedeclareCheck) {
     const h = rule.handlers.find(x => x.kind === "no-redeclare-check");

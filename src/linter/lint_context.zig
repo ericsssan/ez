@@ -665,6 +665,36 @@ pub const LintContext = struct {
         }
     }
 
+    /// Span covering a function's parameter list including the parentheses
+    /// `(a, a)` — used by no-dupe-args to report at ESLint's location.
+    /// Walks from main_token to the matching `(` and pairs to its `)`.
+    pub fn nodeFunctionParamsSpan(self: *const LintContext, n: NodeIndex) Span {
+        const main = self.ast.nodeMainToken(n);
+        const open_paren = self.tokenAfterMatchingPunct(main, "(");
+        if (open_paren == main) {
+            // No `(` found — fall back to main-token span.
+            return .{ .start = self.ast.tokenStart(main), .end = self.tokenEnd(main) };
+        }
+        // Find matching `)` by walking forward counting balance.
+        const tok_count: u32 = @intCast(self.ast.tokens.items(.start).len);
+        var depth: i32 = 1;
+        var t: u32 = open_paren + 1;
+        while (t < tok_count) : (t += 1) {
+            const txt = self.ast.tokenText(t);
+            if (txt.len == 1 and txt[0] == '(') depth += 1
+            else if (txt.len == 1 and txt[0] == ')') {
+                depth -= 1;
+                if (depth == 0) {
+                    return .{
+                        .start = self.ast.tokenStart(open_paren),
+                        .end = self.tokenEnd(t),
+                    };
+                }
+            }
+        }
+        return .{ .start = self.ast.tokenStart(open_paren), .end = self.tokenEnd(open_paren) };
+    }
+
     /// Resolve the static key name of an object-literal/pattern property
     /// entry.  Returns null for computed properties with non-literal keys
     /// (e.g. `[a]: …`) — those can't be statically matched.
