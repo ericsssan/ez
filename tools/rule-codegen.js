@@ -977,16 +977,21 @@ function emitFixOrPlainReport(fix, node, msgId, indent, ctx, data) {
   }
   const fixNode = emitExpr(fix.node, ctx);
   // Fix span: replace-text/remove → full node span; insert-before → zero-length
-  // at start; insert-after → zero-length at end.
+  // at start; insert-after → zero-length at end.  Detect token-typed fix.node
+  // (token-of-node / token-before / token-after) and use tokenStart/tokenEnd
+  // helpers instead of nodeSpan which expects a NodeIndex.
+  const fixNodeIsToken = TOKEN_EXPR_OPS.has(fix.node?.op);
+  const fixStartExpr = fixNodeIsToken ? `ctx.ast.tokenStart(${fixNode})` : `ctx.nodeSpan(${fixNode}).start`;
+  const fixEndExpr   = fixNodeIsToken ? `ctx.tokenEnd(${fixNode})`        : `ctx.nodeSpan(${fixNode}).end`;
   switch (fix.kind) {
     case "insert-before":
-      fixSpan = `(.{ .start = ctx.nodeSpan(${fixNode}).start, .end = ctx.nodeSpan(${fixNode}).start })`;
+      fixSpan = `(.{ .start = ${fixStartExpr}, .end = ${fixStartExpr} })`;
       break;
     case "insert-after":
-      fixSpan = `(.{ .start = ctx.nodeSpan(${fixNode}).end,   .end = ctx.nodeSpan(${fixNode}).end })`;
+      fixSpan = `(.{ .start = ${fixEndExpr},   .end = ${fixEndExpr} })`;
       break;
     default:
-      fixSpan = `ctx.nodeSpan(${fixNode})`;
+      fixSpan = `(.{ .start = ${fixStartExpr}, .end = ${fixEndExpr} })`;
   }
   // Static text path: literal string OR fixer.remove (text = "").
   if (fix.textExpr === undefined) {
@@ -1538,6 +1543,8 @@ function emitExpr(e, ctx) {
       return `ctx.nodeStaticStringStartsWith(${emitExpr(e.node, ctx)}, "${zigStr(e.prefix)}", false)`;
     case "node-static-string-starts-with-i":
       return `ctx.nodeStaticStringStartsWith(${emitExpr(e.node, ctx)}, "${zigStr(e.prefix.toLowerCase())}", true)`;
+    case "option-equals-string":
+      return `ctx.optionEqualsString("${zigStr(e.needle)}")`;
     case "node-literal-value-equals":
       return `ctx.nodeNumericValueEquals(${emitExpr(e.node, ctx)}, ${e.value})`;
     case "node-string-value-equals":

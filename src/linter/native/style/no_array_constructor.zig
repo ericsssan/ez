@@ -88,11 +88,11 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
                     if ((ctx.isStartOfExpressionStatement(ctx.parentOfSkipGrouping(__ref_identifier__)) and ctx.needsPrecedingSemicolon(ctx.parentOfSkipGrouping(__ref_identifier__)))) {
                         const __fix_text = std.fmt.allocPrint(ctx.allocator, ";[{s}]", .{ ctx.argsTextBetweenParens(ctx.parentOfSkipGrouping(__ref_identifier__)) }) catch return;
                         defer ctx.allocator.free(__fix_text);
-                        ctx.reportWithFixAndMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)), __fix_text, "preferLiteral");
+                        ctx.reportWithFixAndMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), (.{ .start = ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)).start, .end = ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)).end }), __fix_text, "preferLiteral");
                     } else {
                         const __fix_text = std.fmt.allocPrint(ctx.allocator, "[{s}]", .{ ctx.argsTextBetweenParens(ctx.parentOfSkipGrouping(__ref_identifier__)) }) catch return;
                         defer ctx.allocator.free(__fix_text);
-                        ctx.reportWithFixAndMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)), __fix_text, "preferLiteral");
+                        ctx.reportWithFixAndMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), (.{ .start = ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)).start, .end = ctx.nodeSpan(ctx.parentOfSkipGrouping(__ref_identifier__)).end }), __fix_text, "preferLiteral");
                     }
                 }
             }

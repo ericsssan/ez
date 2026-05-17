@@ -32,7 +32,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             {
                 const __fix_text = std.fmt.allocPrint(ctx.allocator, "({s})", .{ ctx.sourceText(node) }) catch return;
                 defer ctx.allocator.free(__fix_text);
-                ctx.reportWithFixAndMessageId(node, ctx.nodeSpan(node), __fix_text, "requireParens");
+                ctx.reportWithFixAndMessageId(node, (.{ .start = ctx.nodeSpan(node).start, .end = ctx.nodeSpan(node).end }), __fix_text, "requireParens");
             }
         }
     }

@@ -308,7 +308,25 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
         if (c) {
           if (c.kind === "regex") regexConsts[decl.id.name] = c;
           else constants[decl.id.name] = c;
+          continue;
         }
+        // Bind options-derived locals defined in the create() body:
+        //   const never = context.options[0] !== "always"
+        //   const opt = context.options[0] === "always"
+        // The BinaryExpression lifts to `option-equals-string` in
+        // extractExpr; expose the result as a get-option-style local so
+        // handlers can reference it.  Use a synthetic scope with no other
+        // bindings — we only want the option lift, not any handler-local.
+        try {
+          const probeScope = {
+            ctxName, nodeParamName: null, locals: new Map(), helpers: {}, constants, regexConsts, boolPreds: {}, moduleImports: moduleImports || {},
+          };
+          const r = extractExpr(decl.init, probeScope);
+          if (r.ok && (r.expr.op === "option-equals-string"
+              || (r.expr.op === "unary" && r.expr.operator === "!" && r.expr.operand?.op === "option-equals-string"))) {
+            optionLocals.set(decl.id.name, { kind: "expr", expr: r.expr });
+          }
+        } catch (_) { /* extraction failure is non-fatal */ }
       }
     }
   }
@@ -5777,6 +5795,30 @@ function extractExpr(expr, scope) {
           return { ok: true, expr: { op: "literal", value: expr.property.name } };
         }
       }
+      // <token-expr>.loc.start / .loc.end → token-start / token-end u32 offsets
+      if (!expr.computed && expr.property?.type === "Identifier"
+          && (expr.property.name === "start" || expr.property.name === "end")
+          && expr.object?.type === "MemberExpression" && !expr.object.computed
+          && expr.object.property?.type === "Identifier" && expr.object.property.name === "loc") {
+        const inner = extractExpr(expr.object.object, scope);
+        if (inner.ok && isTokenExpr(inner.expr)) {
+          const op = expr.property.name === "start" ? "token-start" : "token-end";
+          return { ok: true, expr: { op, token: inner.expr } };
+        }
+        // For node-typed expressions, .loc.start/.loc.end → node-span-start/end
+        if (inner.ok) {
+          const op = expr.property.name === "start" ? "node-span-start" : "node-span-end";
+          return { ok: true, expr: { op, node: inner.expr } };
+        }
+      }
+      // context.options[N] → __option_index_marker__ (consumed by enclosing
+      // comparison; lifts to option-equals-string for the bare-string-option
+      // schema shape).
+      if (expr.computed && expr.property?.type === "Literal"
+          && typeof expr.property.value === "number"
+          && isContextOptions(expr.object, scope.ctxName)) {
+        return { ok: true, expr: { op: "__option_index_marker__", index: expr.property.value } };
+      }
       // <nodeExpr>.arguments[N] → node-arg-at(nodeExpr, N)
       if (expr.computed && expr.property?.type === "Literal" && typeof expr.property.value === "number") {
         if (expr.object.type === "MemberExpression" && !expr.object.computed
@@ -5860,7 +5902,7 @@ function extractExpr(expr, scope) {
         if (prop === "computed") {
           return { ok: true, expr: { op: "node-is-computed", node: obj.expr } };
         }
-        if (prop === "property" || prop === "right") {
+        if (prop === "property" || prop === "right" || prop === "quasi") {
           return { ok: true, expr: { op: "node-secondary-child", node: obj.expr } };
         }
         if (prop === "alternate" || prop === "consequent") {
@@ -5963,7 +6005,7 @@ function extractExpr(expr, scope) {
           return { ok: true, expr: { op: "node-is-computed", node: obj.expr } };
         }
         // `.property` on a MemberExpression, `.right` on binary — the secondary child (rhs).
-        if (prop === "property" || prop === "right") {
+        if (prop === "property" || prop === "right" || prop === "quasi") {
           return { ok: true, expr: { op: "node-secondary-child", node: obj.expr } };
         }
         // `.optional` on Call/Member — encoded in our parser as a separate
@@ -6197,6 +6239,20 @@ function extractExpr(expr, scope) {
         const eq = nodeOperatorEquals(R.expr.node, L.expr.value, scope);
         if (op === "===" || op === "==") return { ok: true, expr: eq };
         return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
+      }
+      // context.options[N] === "literal" → option-equals-string (when N=0
+      // and rule is a bare-string option, which is the canonical
+      // schema: [{ enum: ["always","never"] }] shape).
+      if ((op === "===" || op === "==" || op === "!==" || op === "!=")) {
+        const optSide = (a, b) =>
+          (a?.op === "__option_index_marker__" && a.index === 0
+           && b?.op === "literal" && typeof b.value === "string") ? { needle: b.value } : null;
+        const m = optSide(L.expr, R.expr) || optSide(R.expr, L.expr);
+        if (m) {
+          const eq = { op: "option-equals-string", needle: m.needle };
+          if (op === "===" || op === "==") return { ok: true, expr: eq };
+          return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
+        }
       }
       // typeof getStaticStringValue(X) === "string" → node-has-static-string-value
       if ((op === "===" || op === "==" || op === "!==" || op === "!=")
