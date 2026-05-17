@@ -532,6 +532,21 @@ pub const LintContext = struct {
         return self.nodeRawOctalEscapeMatch(n) != null;
     }
 
+    /// True iff the byte range [start, end) in source contains a `//` or
+    /// `/*` comment introducer.  Approximates ESLint's
+    /// sourceCode.commentsExistBetween for fix-eligibility checks
+    /// (used by no-undef-init to avoid stripping a comment-protected init).
+    pub fn rangeContainsComment(self: *const LintContext, start: u32, end: u32) bool {
+        const src = self.ast.source;
+        if (start >= end or end > src.len) return false;
+        var i: usize = start;
+        const lim: usize = if (end > 0) @as(usize, end) - 1 else 0;
+        while (i < lim) : (i += 1) {
+            if (src[i] == '/' and (src[i + 1] == '/' or src[i + 1] == '*')) return true;
+        }
+        return false;
+    }
+
     /// no-shadow-restricted-names' "safelyShadowsUndefined" predicate:
     /// the symbol is named "undefined" AND has no write references AND
     /// every declaration is a VariableDeclarator with no init.  This is

@@ -233,10 +233,11 @@ function emit(rule) {
   const hasReportAllUnresolvedRefs = rule.handlers.some(h => h.kind === "report-all-unresolved-refs");
   const hasForEachRefByName = rule.handlers.some(h => h.kind === "for-each-ref-by-name");
   const hasForEachDeclByName = rule.handlers.some(h => h.kind === "for-each-decl-by-name");
+  const hasNoUndefInitCheck = rule.handlers.some(h => h.kind === "no-undef-init-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -248,6 +249,8 @@ function emit(rule) {
   let relevantTags;
   if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName) {
     relevantTags = [];
+  } else if (hasNoUndefInitCheck) {
+    relevantTags = ["declarator"];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
   } else {
@@ -269,7 +272,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -320,7 +323,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -453,6 +456,39 @@ function emit(rule) {
       const ct = h.considerTypeof ? "true" : "false";
       out.push(`    ctx.reportAllUnresolvedRefs("${zigStr(h.messageId)}", ${ct});`);
     }
+    out.push(`}`);
+  } else if (hasNoUndefInitCheck) {
+    // Per-declarator dispatch.  Body checks: init is Identifier "undefined",
+    // parent is not const_decl, and "undefined" has no user binding in scope.
+    const h = rule.handlers.find(x => x.kind === "no-undef-init-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    const init_node = ctx.nodeData(node).rhs;`);
+    out.push(`    if (init_node == .none) return;`);
+    out.push(`    if (ctx.nodeTag(init_node) != .identifier) return;`);
+    out.push(`    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(init_node)), "undefined")) return;`);
+    out.push(`    const parent = ctx.parentOf(node);`);
+    out.push(`    if (parent == .none) return;`);
+    out.push(`    const parent_tag = ctx.nodeTag(parent);`);
+    out.push(`    if (parent_tag == .const_decl) return;`);
+    out.push(`    if (!ctx.nameHasNoUserBinding(init_node, "undefined")) return;`);
+    out.push(`    const id_node = ctx.nodeData(node).lhs;`);
+    // Fix is applicable only when:
+    //   parent is let_decl (not var_decl) AND
+    //   id is plain Identifier (not Array/Object pattern) AND
+    //   no comments between id and the declarator's last token.
+    // Span: [end-of-id, end-of-declarator] replaced with empty text.
+    out.push(`    const id_tag = ctx.nodeTag(id_node);`);
+    out.push(`    const can_fix = (parent_tag == .let_decl) and (id_tag == .identifier);`);
+    out.push(`    const data = [_]@import("../../lint_context.zig").MessageDataEntry{ .{ .key = "name", .val = ctx.sourceText(id_node) } };`);
+    out.push(`    if (can_fix) {`);
+    out.push(`        const id_span = ctx.nodeSpan(id_node);`);
+    out.push(`        const decl_span = ctx.nodeSpan(node);`);
+    out.push(`        if (!ctx.rangeContainsComment(id_span.end, decl_span.end)) {`);
+    out.push(`            ctx.reportSpanWithFixAndMessageId(decl_span, .{ .start = id_span.end, .end = decl_span.end }, "", "${zigStr(h.messageId)}");`);
+    out.push(`            return;`);
+    out.push(`        }`);
+    out.push(`    }`);
+    out.push(`    ctx.reportWithMessageIdAndData(node, "${zigStr(h.messageId)}", &data);`);
     out.push(`}`);
   } else if (hasForEachDeclByName) {
     out.push(`pub fn run(_: NodeIndex, _: *const LintContext) void {}`);

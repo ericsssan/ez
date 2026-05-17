@@ -483,6 +483,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUndefHandler,         // no-undef
       extractNoUndefinedHandler,     // no-undefined
       extractNoShadowRestrictedNamesHandler, // no-shadow-restricted-names
+      extractNoUndefInitHandler,     // no-undef-init
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1099,6 +1100,22 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-undef-init: reports `var x = undefined` style redundant initializers
+// (excluding `const x = undefined`, which is a real binding-shape).  Skips
+// when `undefined` is shadowed in the surrounding scope chain.  Per-declarator
+// dispatch with a custom Zig run body — no IR body extraction needed.
+function extractNoUndefInitHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-undef-init.js")) return { ok: false };
+  if (rawHandler.selector !== "VariableDeclarator") return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      kind: "no-undef-init-check",
+      messageId: "unnecessaryUndefinedInit",
+    },
+  };
+}
+
 // no-shadow-restricted-names: reports user-declared bindings whose name
 // shadows a restricted ECMAScript identifier (undefined / NaN / Infinity /
 // arguments / eval, plus optional globalThis).  Walks SymbolTable filtering

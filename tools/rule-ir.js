@@ -370,6 +370,10 @@ function validateRule(rule) {
       for (const n of h.names) if (typeof n !== "string") return fail("names must be strings", path);
       continue;
     }
+    if (h.kind === "no-undef-init-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
     if (h.kind === "for-each-decl-by-name") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       if (!Array.isArray(h.names) || h.names.length === 0) return fail("names must be non-empty array", path);
