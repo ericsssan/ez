@@ -5973,6 +5973,33 @@ function extractExpr(expr, scope) {
           return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
         }
       }
+      // <token>.type === "<TokenKind>" → check the tag of the node that
+      // owns the token.  Today we only need the regex case (wrap-regex
+      // checks `sourceCode.getFirstToken(node).type === "RegularExpression"`).
+      // The token-of-node IR wraps a node-valued IR; the token's "type" is
+      // determined by the node's tag, so this lowers cleanly.
+      const TOKEN_TYPE_TO_PSEUDO_TAG = {
+        "RegularExpression": "__RegexLiteral__",
+        "String": "__StringLiteral__",
+        "Numeric": "__NumericLiteral__",
+        "Null": "__NullLiteral__",
+        "Boolean": "__BooleanLiteral__",
+      };
+      const tokTypeSide = (a, b) =>
+        (a?.op === "member" && a.property === "type"
+         && a.object?.op === "token-of-node"
+         && b?.op === "literal" && typeof b.value === "string"
+         && TOKEN_TYPE_TO_PSEUDO_TAG[b.value])
+          ? { node: a.object.node, pseudo: TOKEN_TYPE_TO_PSEUDO_TAG[b.value] }
+          : null;
+      if (op === "===" || op === "==" || op === "!==" || op === "!=") {
+        const tt = tokTypeSide(L.expr, R.expr) || tokTypeSide(R.expr, L.expr);
+        if (tt) {
+          const eq = { op: "node-tag-equals", node: tt.node, estreeType: tt.pseudo };
+          if (op === "===" || op === "==") return { ok: true, expr: eq };
+          return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
+        }
+      }
       // parent.type === "X" / !== "X" → node-tag-equals (optionally negated)
       if ((op === "===" || op === "==" || op === "!==" || op === "!=")
           && L.expr.op === "__parent_type_marker__"

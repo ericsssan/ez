@@ -238,7 +238,9 @@ function emit(rule) {
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
-    || irUsesOp(rule, "is-call-or-new-expression") || irUsesOp(rule, "is-node-matches");
+    || irUsesOp(rule, "is-call-or-new-expression") || irUsesOp(rule, "is-node-matches")
+    || irUsesOp(rule, "template-string")
+    || irUsesOp(rule, "source-text-of");
   if (needsStd) out.push(`const std = @import("std");`);
   out.push(`const ast = @import("../../../parser/ast.zig");`);
   out.push(`const NodeIndex = ast.NodeIndex;`);
@@ -1184,6 +1186,12 @@ function emitAsBool(e, ctx) {
   if (NODE_INDEX_OPS.has(e.op)) return `(${emitExpr(e, ctx)} != .none)`;
   // member.name returns []const u8 — truthy in JS means non-empty
   if (e.op === "member" && e.property === "name") return `(${emitExpr(e, ctx)}.len > 0)`;
+  // Token-typed exprs in boolean context — JS rules use `tok && tok.value === X`
+  // as a null-guard for getTokenBefore/After at file edges.  In our model
+  // token indices are u32 (token-1 / token+1).  Treat as always-truthy; the
+  // downstream `.value === X` text check returns false naturally when the
+  // bogus token's text mismatches.
+  if (TOKEN_EXPR_OPS.has(e.op)) return `true`;
   return emitExpr(e, ctx);
 }
 
@@ -1279,6 +1287,12 @@ function emitExpr(e, ctx) {
       // Identifier is a local binding introduced by iterate-children etc. — emit as-is.
       return zigIdent(e.name);
     case "member": {
+      // `.value` / `.type` on a token-typed object — read the token's text /
+      // kind directly.  We detect token-ness syntactically: the object IR is
+      // one of the token-* ops (TOKEN_EXPR_OPS).
+      if (TOKEN_EXPR_OPS.has(e.object?.op) && e.property === "value") {
+        return `ctx.tokenText(${emitExpr(e.object, ctx)})`;
+      }
       const objZ = emitExpr(e.object, ctx);
       if (e.property === "name" || e.property === "raw") {
         // `.name` on identifier-like / `.raw` on literal — both read main-token text.
@@ -1323,8 +1337,11 @@ function emitExpr(e, ctx) {
         }
         throw new Error(`collection.length comparison: unsupported operator '${actualOp}' with value ${litE.value}`);
       }
-      // String comparison: member(*, "name"/"raw") with literal or another string member
-      const isStrProp = (e) => e.op === "member" && (e.property === "name" || e.property === "raw");
+      // String comparison: member(*, "name"/"raw") with literal or another string member.
+      // Also covers <token-expr>.value — token text is a []const u8.
+      const isStrProp = (e) => e.op === "member"
+        && (e.property === "name" || e.property === "raw"
+            || (e.property === "value" && TOKEN_EXPR_OPS.has(e.object?.op)));
       const lhsIsStr = isStrProp(e.lhs);
       const rhsIsStr = isStrProp(e.rhs);
       const lhsIsLitStr = e.lhs.op === "literal" && typeof e.lhs.value === "string";
