@@ -434,6 +434,15 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
   for (const h of rawHandlers) {
     const parts = parseComplexSelector(h.selector);
     if (!parts) {
+      // TS-prefixed selectors with attribute filters (e.g.
+      // `TSModuleDeclaration[declare=true]`) target nodes that our
+      // JS-focused parser doesn't produce; treat them as no-op handlers
+      // so the rest of the rule can extract.
+      const tsBase = h.selector.match(/^(TS[A-Za-z]+)(?:\[.*\])?(?::exit)?$/);
+      if (tsBase) {
+        expandedHandlers.push({ ...h, selector: tsBase[1], syntheticConds: [] });
+        continue;
+      }
       return { handlers: [], unsupported: `unsupported compound selector: ${h.selector}` };
     }
     for (const { base, conds } of parts) {
@@ -506,6 +515,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoInvalidRegexpHandler,  // no-invalid-regexp
       extractNoMisleadingCharClassHandler, // no-misleading-character-class
       extractNoUselessBackrefHandler, // no-useless-backreference
+      extractNoUnassignedVarsHandler, // no-unassigned-vars
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1238,6 +1248,14 @@ function extractNoUselessBackrefHandler(rawHandler, _stmts, { sourceFile } = {})
   }
   if (rawHandler.selector === "Program" || rawHandler.selector === "Program:exit") {
     return { ok: true, handler: { kind: "no-useless-backref-call-check" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractNoUnassignedVarsHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-unassigned-vars.js")) return { ok: false };
+  if (rawHandler.selector === "VariableDeclarator") {
+    return { ok: true, handler: { kind: "no-unassigned-vars-check" } };
   }
   return { ok: true, handler: { kind: "noop-stub" } };
 }

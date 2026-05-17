@@ -4334,6 +4334,125 @@ pub const LintContext = struct {
         return node_text[flags_off..];
     }
 
+    // ── no-unassigned-vars ─────────────────────────────────────
+    // Flags `let x;` / `var x;` whose binding is read at least once but
+    // never written.  ESLint's per-VariableDeclarator visitor lowered
+    // to a Zig helper that walks the symbol table looking for the
+    // declarator's binding identifier.
+    pub fn checkNoUnassignedVarsDeclarator(self: *const LintContext, node: NodeIndex) void {
+        if (self.ast.nodeTag(node) != .declarator) return;
+        const data = self.ast.nodeData(node);
+        // Skip when initialized.
+        if (data.rhs != .none) return;
+        const id = data.lhs;
+        // Only bare-identifier bindings — destructuring patterns
+        // (`let { x } = ...`) get caught by other rules.
+        if (self.ast.nodeTag(id) != .identifier) return;
+        const parent = self.parentOf(node);
+        if (parent == .none) return;
+        // Skip const (impossible without init, but defensive) and
+        // ambient `declare var`-style bindings (TypeScript) — those
+        // never get assigned at runtime by design.
+        const ptag = self.ast.nodeTag(parent);
+        if (ptag != .let_decl and ptag != .var_decl) return;
+        // Skip TypeScript ambient `declare let/var x;` — those never get
+        // assigned at runtime by design (matches ESLint rule).  Detect
+        // by scanning back from the declaration keyword's position for
+        // the `declare` keyword.
+        if (self.declarationIsAmbientDeclare(parent)) return;
+        // Also skip when wrapped in a `declare module` / `declare
+        // namespace` — every binding inside is ambient.  Walk parents
+        // until we hit either an ambient module/namespace or the root.
+        var anc: NodeIndex = parent;
+        while (anc != .none) {
+            const atag = self.ast.nodeTag(anc);
+            if (atag == .ts_module_decl or atag == .ts_namespace_decl) {
+                if (self.declarationIsAmbientDeclare(anc)) return;
+            }
+            anc = self.parentOf(anc);
+        }
+        const sym_id = self.findSymbolByDeclNode(id) orelse return;
+        const syms = &self.semantic.symbols;
+        const refs = &self.semantic.references;
+        const range = syms.getRefRange(sym_id);
+        var has_read = false;
+        var r = range.start;
+        while (r < range.end) : (r += 1) {
+            const rid = reference_mod.ReferenceId.fromInt(r);
+            const k = refs.getKind(rid);
+            if (k.isWrite()) return;
+            if (k.isRead()) has_read = true;
+        }
+        if (!has_read) return;
+        const name = self.ast.tokenText(self.ast.nodeMainToken(id));
+        const entries = [_]MessageDataEntry{ .{ .key = "name", .val = name } };
+        // ESLint reports at the whole VariableDeclarator including any
+        // TS type annotation; our declarator's nodeSpan stops at the
+        // binding identifier.  Extend forward through the annotation to
+        // the next comma / semicolon / equals / close-paren / newline.
+        const span = self.declaratorReportSpan(node);
+        self.reportSpanWithMessageIdAndData(span, "unassigned", &entries);
+    }
+
+    fn declaratorReportSpan(self: *const LintContext, node: NodeIndex) Span {
+        var sp = self.nodeSpan(node);
+        const src = self.ast.source;
+        var p: usize = sp.end;
+        while (p < src.len) : (p += 1) {
+            const c = src[p];
+            if (c == ',' or c == ';' or c == '=' or c == ')' or c == '\n') break;
+        }
+        sp.end = @intCast(p);
+        return sp;
+    }
+
+    /// True when the given declaration is annotated with the TypeScript
+    /// `declare` keyword.  Two cases are handled:
+    ///   * the node's nodeSpan already starts at `declare` (the
+    ///     ts_module_decl / ts_namespace_decl path extends backward for
+    ///     us — see nodeSpan handling);
+    ///   * the keyword sits in whitespace immediately before the span
+    ///     start (var/let/const declarations).
+    fn declarationIsAmbientDeclare(self: *const LintContext, decl_node: NodeIndex) bool {
+        const src = self.ast.source;
+        const span = self.nodeSpan(decl_node);
+        if (span.start + 7 <= src.len and std.mem.eql(u8, src[span.start .. span.start + 7], "declare")) {
+            // Word-boundary on the right: char after `declare` must be
+            // whitespace (the standard `declare let|var|module …`).
+            const next = if (span.start + 7 < src.len) src[span.start + 7] else 0;
+            if (next == ' ' or next == '\t' or next == '\n') return true;
+        }
+        var p: isize = @as(isize, @intCast(span.start)) - 1;
+        while (p >= 0 and (src[@intCast(p)] == ' ' or src[@intCast(p)] == '\t')) p -= 1;
+        if (p < 6) return false;
+        if (!std.mem.eql(u8, src[@intCast(p - 6) .. @intCast(p + 1)], "declare")) return false;
+        if (p - 6 == 0) return true;
+        const before = src[@intCast(p - 7)];
+        return !isIdentChar(before);
+    }
+
+    /// Linear scan of the symbol table for a binding whose declaration
+    /// node equals `id_node`.  Used by rules that visit declarators and
+    /// need to inspect the resulting symbol's references.  Skips
+    /// implicit-global symbols (those don't model real user bindings) and
+    /// prefers symbols that have a non-empty ref range — useful when a
+    /// hoisted alias and the canonical entry share the same decl node.
+    fn findSymbolByDeclNode(self: *const LintContext, id_node: NodeIndex) ?symbol_mod.SymbolId {
+        const syms = &self.semantic.symbols;
+        const total: u32 = @intCast(syms.scope_ids.items.len);
+        var fallback: ?symbol_mod.SymbolId = null;
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const s = symbol_mod.SymbolId.fromInt(i);
+            if (syms.getDeclNode(s) != id_node) continue;
+            if (syms.isImplicitGlobal(s)) continue;
+            const rr = syms.getRefRange(s);
+            if (rr.end > rr.start) return s;
+            if (fallback == null) fallback = s;
+        }
+        return fallback;
+    }
+
     // ── no-misleading-character-class ──────────────────────────
     // Surrogate-pair subset: walks the regex AST's character classes and
     // reports either `surrogatePairWithoutUFlag` (no u/v flag, the

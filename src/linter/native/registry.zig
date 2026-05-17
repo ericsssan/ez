@@ -98,6 +98,7 @@ const no_regex_spaces = @import("suspicious/no_regex_spaces.zig");  // IR-genera
 // const no_shadow_restricted_names = @import("suspicious/no_shadow_restricted_names.zig");  // hand-written — disabled per IR-only constraint
 const no_unsafe_finally = @import("correctness/no_unsafe_finally.zig");  // IR-generated via node-is-inside-finally-before-sentinel
 const no_unused_labels = @import("suspicious/no_unused_labels.zig");  // IR-generated via no-unused-labels-check handler
+const no_unassigned_vars = @import("correctness/no_unassigned_vars.zig");  // IR-generated via no-unassigned-vars-check handler
 // const no_useless_escape = @import("suspicious/no_useless_escape.zig");  // hand-written — disabled per IR-only constraint
 const no_void = @import("suspicious/no_void.zig");
 const no_with = @import("suspicious/no_with.zig");
@@ -388,6 +389,7 @@ pub const all_rules = .{
     // no_shadow_restricted_names, // hand-written — disabled
     no_unsafe_finally,
     no_unused_labels,
+    no_unassigned_vars,
     // no_useless_escape, // runner >> native (runner 288, native 215, gap 73, 5 FP); fall back to JS runner
     no_void,
     no_with,
