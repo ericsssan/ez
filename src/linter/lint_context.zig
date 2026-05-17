@@ -665,6 +665,147 @@ pub const LintContext = struct {
         }
     }
 
+    /// Parse a JS numeric literal text (handles 0x/0o/0b prefixes, decimal,
+    /// leading-zero legacy octal, scientific notation, and `_` separators)
+    /// into an f64.  Returns null on parse failure.
+    fn parseNumericLiteral(text: []const u8) ?f64 {
+        if (text.len == 0) return null;
+        // Strip BigInt suffix and `_` separators.
+        var buf: [128]u8 = undefined;
+        var len: usize = 0;
+        for (text) |c| {
+            if (c == '_' or c == 'n') continue;
+            if (len >= buf.len) return null;
+            buf[len] = c;
+            len += 1;
+        }
+        const s = buf[0..len];
+        if (s.len >= 2 and s[0] == '0' and (s[1] == 'x' or s[1] == 'X')) {
+            return @floatFromInt(std.fmt.parseUnsigned(u64, s[2..], 16) catch return null);
+        }
+        if (s.len >= 2 and s[0] == '0' and (s[1] == 'o' or s[1] == 'O')) {
+            return @floatFromInt(std.fmt.parseUnsigned(u64, s[2..], 8) catch return null);
+        }
+        if (s.len >= 2 and s[0] == '0' and (s[1] == 'b' or s[1] == 'B')) {
+            return @floatFromInt(std.fmt.parseUnsigned(u64, s[2..], 2) catch return null);
+        }
+        // Legacy octal: leading 0 followed by all-octal digits.
+        if (s.len >= 2 and s[0] == '0' and isAllOctal(s[1..])) {
+            return @floatFromInt(std.fmt.parseUnsigned(u64, s[1..], 8) catch return null);
+        }
+        return std.fmt.parseFloat(f64, s) catch null;
+    }
+
+    fn isAllOctal(s: []const u8) bool {
+        if (s.len == 0) return false;
+        for (s) |c| if (c < '0' or c > '7') return false;
+        return true;
+    }
+
+    /// no-dupe-keys: walk an object_literal's properties and emit a diag
+    /// for each duplicate static key.  Accounts for getter/setter pairs
+    /// (those don't collide with each other but collide with init forms).
+    /// Skips proto setters (`{ ['__proto__']: x }`) which ESLint allows.
+    pub fn checkNoDupeKeys(self: *const LintContext, obj: NodeIndex, message_id: []const u8) void {
+        if (obj == .none) return;
+        if (self.ast.nodeTag(obj) != .object_literal) return;
+        const d = self.ast.nodeData(obj);
+        const props = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+        var i: usize = 0;
+        while (i < props.len) : (i += 1) {
+            const pi_raw = props[i];
+            if (pi_raw == 0) continue;
+            const pi: NodeIndex = @enumFromInt(pi_raw);
+            if (self.isProtoSetterProperty(pi)) continue;
+            const ni = self.propertyEntryStaticName(pi) orelse continue;
+            const ki = self.propertyEntryKind(pi);
+            // Search earlier properties for collision; report each non-first occurrence once.
+            var j: usize = 0;
+            var collision = false;
+            while (j < i) : (j += 1) {
+                const pj_raw = props[j];
+                if (pj_raw == 0) continue;
+                const pj: NodeIndex = @enumFromInt(pj_raw);
+                if (self.isProtoSetterProperty(pj)) continue;
+                if (!self.propertyKeysEqual(pi, pj)) continue;
+                const kj = self.propertyEntryKind(pj);
+                // Collision rules: init collides with anything; get only with init/get; set only with init/set.
+                if (ki == .init or kj == .init or ki == kj) {
+                    collision = true;
+                    break;
+                }
+            }
+            if (!collision) continue;
+            // Report at the property's key node (matches ESLint location).
+            const key_node = self.propertyEntryKeyNode(pi);
+            self.reportWithMessageIdAndData(key_node, message_id, &[_]MessageDataEntry{
+                .{ .key = "name", .val = ni },
+            });
+        }
+    }
+
+    /// Return the key node of a property entry (for shorthand_property, the
+    /// property IS the key).  Used by no-dupe-keys to report at the key
+    /// position matching ESLint's `node.key.loc`.
+    pub fn propertyEntryKeyNode(self: *const LintContext, prop: NodeIndex) NodeIndex {
+        const tag = self.ast.nodeTag(prop);
+        if (tag == .shorthand_property) return prop;
+        switch (tag) {
+            .property, .computed_property,
+            .method_def, .computed_method_def,
+            .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def => {
+                const k = self.ast.nodeData(prop).lhs;
+                return if (k == .none) prop else k;
+            },
+            else => return prop,
+        }
+    }
+
+    /// Compare two property keys for effective equivalence — handles:
+    ///   - identifier vs string vs template literal with same text
+    ///   - numeric literals with same value (`0x1` ≡ `1` ≡ `1.0`)
+    ///   - `'' ≡ \`\` (empty string ≡ empty template)
+    fn propertyKeysEqual(self: *const LintContext, pa: NodeIndex, pb: NodeIndex) bool {
+        const na = self.propertyEntryStaticName(pa) orelse return false;
+        const nb = self.propertyEntryStaticName(pb) orelse return false;
+        if (std.mem.eql(u8, na, nb)) return true;
+        // Try numeric equivalence when both keys originated from a number_literal.
+        const ka = self.propertyEntryKeyNode(pa);
+        const kb = self.propertyEntryKeyNode(pb);
+        if (self.ast.nodeTag(ka) == .number_literal and self.ast.nodeTag(kb) == .number_literal) {
+            const va = parseNumericLiteral(na) orelse return false;
+            const vb = parseNumericLiteral(nb) orelse return false;
+            return va == vb;
+        }
+        return false;
+    }
+
+    /// True iff `prop` is a non-computed `__proto__: …` proto setter
+    /// (a special syntax that doesn't create a regular property — excluded
+    /// from no-dupe-keys collision tracking).
+    fn isProtoSetterProperty(self: *const LintContext, prop: NodeIndex) bool {
+        const tag = self.ast.nodeTag(prop);
+        if (tag != .property and tag != .shorthand_property) return false;
+        if (self.propertyEntryKind(prop) != .init) return false;
+        const name = self.propertyEntryStaticName(prop) orelse return false;
+        return std.mem.eql(u8, name, "__proto__");
+    }
+
+    pub const PropertyKind = enum { init, get, set };
+
+    /// Classify a property entry's kind.  Object literal getters/setters
+    /// have their own AST tags (getter_def/setter_def + computed variants);
+    /// regular methods and properties default to .init.
+    pub fn propertyEntryKind(self: *const LintContext, prop: NodeIndex) PropertyKind {
+        const tag = self.ast.nodeTag(prop);
+        return switch (tag) {
+            .getter_def, .computed_getter_def => .get,
+            .setter_def, .computed_setter_def => .set,
+            else => .init,
+        };
+    }
+
     /// Span covering a function's parameter list including the parentheses
     /// `(a, a)` — used by no-dupe-args to report at ESLint's location.
     /// Walks from main_token to the matching `(` and pairs to its `)`.
@@ -703,6 +844,34 @@ pub const LintContext = struct {
         if (tag == .shorthand_property) {
             return self.ast.tokenText(self.ast.nodeMainToken(prop));
         }
+        // Methods, getters, setters — key is in data.lhs (same layout as property).
+        if (tag == .method_def or tag == .getter_def or tag == .setter_def) {
+            const key = self.ast.nodeData(prop).lhs;
+            if (key == .none) return null;
+            const ktag = self.ast.nodeTag(key);
+            if (ktag == .identifier) return self.ast.tokenText(self.ast.nodeMainToken(key));
+            if (ktag == .string_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2) return raw[1 .. raw.len - 1];
+            }
+            if (ktag == .number_literal) return self.ast.tokenText(self.ast.nodeMainToken(key));
+        }
+        if (tag == .computed_method_def or tag == .computed_getter_def or tag == .computed_setter_def) {
+            const key = self.ast.nodeData(prop).lhs;
+            if (key == .none) return null;
+            const ktag = self.ast.nodeTag(key);
+            if (ktag == .string_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2) return raw[1 .. raw.len - 1];
+            }
+            if (ktag == .template_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2 and raw[0] == '`' and raw[raw.len - 1] == '`') {
+                    return raw[1 .. raw.len - 1];
+                }
+            }
+            if (ktag == .number_literal) return self.ast.tokenText(self.ast.nodeMainToken(key));
+        }
         if (tag == .property) {
             const key = self.ast.nodeData(prop).lhs;
             if (key == .none) return null;
@@ -721,9 +890,23 @@ pub const LintContext = struct {
         if (tag == .computed_property) {
             const key = self.ast.nodeData(prop).lhs;
             if (key == .none) return null;
-            if (self.ast.nodeTag(key) == .string_literal) {
+            const ktag = self.ast.nodeTag(key);
+            if (ktag == .string_literal) {
                 const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
                 if (raw.len >= 2) return raw[1 .. raw.len - 1];
+            }
+            // Template literal with no expressions — same shape as a string
+            // for static-key purposes.
+            if (ktag == .template_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2 and raw[0] == '`' and raw[raw.len - 1] == '`') {
+                    return raw[1 .. raw.len - 1];
+                }
+            }
+            // Numeric literal — emit raw text; numeric equivalence happens
+            // separately in checkNoDupeKeys (`0x1` vs `1` both → 1).
+            if (ktag == .number_literal) {
+                return self.ast.tokenText(self.ast.nodeMainToken(key));
             }
         }
         return null;

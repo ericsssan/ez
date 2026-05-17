@@ -488,6 +488,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoRedeclareHandler,     // no-redeclare
       extractNoSelfAssignHandler,    // no-self-assign
       extractNoDupeArgsHandler,      // no-dupe-args
+      extractNoDupeKeysHandler,      // no-dupe-keys
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1104,6 +1105,21 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-dupe-keys: reports duplicate static keys in an object literal.  Get/set
+// pairs allowed; init+any collides.  Walks each object_literal node; the
+// helper detects collisions and reports per-occurrence.
+function extractNoDupeKeysHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-dupe-keys.js")) return { ok: false };
+  // Absorb all handlers in the rule (ObjectExpression, ObjectExpression:exit,
+  // Property).  The check runs in one pass on ObjectExpression nodes — the
+  // others are bookkeeping for ESLint's stack-based state machine, which
+  // our static walk doesn't need.
+  if (rawHandler.selector === "ObjectExpression") {
+    return { ok: true, handler: { kind: "no-dupe-keys-check", messageId: "unexpected" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 // no-dupe-args: reports function parameters that share a name with another
 // param in the same function.  Walks the SymbolTable for parameter-kind
 // symbols and finds duplicates within each function scope.
