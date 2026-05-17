@@ -574,7 +574,13 @@ function emitUnresolvedGlobalRefHandler(handler, ctx) {
   lines.push(`    var r: u32 = 0;`);
   lines.push(`    while (r < count) : (r += 1) {`);
   lines.push(`        const ref_id = ReferenceId.fromInt(r);`);
-  lines.push(`        if (refs.isResolved(ref_id)) continue;`);
+  // Tolerate resolution to implicit-global symbols (pre-declared ES
+  // builtins).  Skip only when the ref resolved to a USER binding —
+  // those are properly shadowed and shouldn't fire.
+  lines.push(`        if (refs.isResolved(ref_id)) {`);
+  lines.push(`            const __sym = refs.getSymbol(ref_id);`);
+  lines.push(`            if (__sym != .none and !ctx.symbols().isImplicitGlobal(__sym)) continue;`);
+  lines.push(`        }`);
   lines.push(`        const __ref_identifier__ = refs.getNode(ref_id);`);
   lines.push(`        const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));`);
   lines.push(`        var __matches = false;`);

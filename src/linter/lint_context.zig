@@ -1768,16 +1768,29 @@ pub const LintContext = struct {
         const syms = &self.semantic.symbols;
         var cur = scope_id;
         while (cur != .none) {
-            const start = scopes_t.getBindingsStart(cur);
-            const count = scopes_t.getBindingsCount(cur);
-            var i: u32 = 0;
-            while (i < count) : (i += 1) {
-                const sym = symbol_mod.SymbolId.fromInt(start + i);
-                if (std.mem.eql(u8, syms.getName(sym), name) and !syms.isImplicitGlobal(sym)) return true;
-            }
+            if (self.scopeHasUserBindingNamed(cur, name)) return true;
             const parent = scopes_t.parent(cur);
             if (parent == cur) break;
             cur = parent;
+        }
+        _ = syms;
+        return false;
+    }
+
+    /// True when scope `sid` contains a non-implicit-global symbol with
+    /// the given name.  Filters by symbol.getScope() because the binding
+    /// range stored on the scope itself isn't sorted by scope_id when
+    /// symbols are added in declaration order (implicit-global builtins
+    /// appended after user symbols).
+    fn scopeHasUserBindingNamed(self: *const LintContext, sid: scope_mod.ScopeId, name: []const u8) bool {
+        const syms = &self.semantic.symbols;
+        const total: u32 = @intCast(syms.scope_ids.items.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const sym = symbol_mod.SymbolId.fromInt(i);
+            if (syms.getScope(sym) != sid) continue;
+            if (syms.isImplicitGlobal(sym)) continue;
+            if (std.mem.eql(u8, syms.getName(sym), name)) return true;
         }
         return false;
     }
@@ -1810,15 +1823,8 @@ pub const LintContext = struct {
         if (ref_id == .none) return true;
         var scope_id = self.semantic.references.getScope(ref_id);
         const scopes_t = &self.semantic.scopes;
-        const syms = &self.semantic.symbols;
         while (scope_id != .none) {
-            const start = scopes_t.getBindingsStart(scope_id);
-            const count = scopes_t.getBindingsCount(scope_id);
-            var i: u32 = 0;
-            while (i < count) : (i += 1) {
-                const sym = symbol_mod.SymbolId.fromInt(start + i);
-                if (std.mem.eql(u8, syms.getName(sym), name) and !syms.isImplicitGlobal(sym)) return false;
-            }
+            if (self.scopeHasUserBindingNamed(scope_id, name)) return false;
             const parent = scopes_t.parent(scope_id);
             if (parent == scope_id) break;
             scope_id = parent;
@@ -2306,8 +2312,13 @@ pub const LintContext = struct {
             if (id_node == .none) continue;
             const name = self.tokenText(self.ast.nodeMainToken(id_node));
             // Skip `typeof X` shapes when default option is in effect.
+            // Walk up through grouping_expr wrappers so `typeof (a)` still
+            // hits the typeof_expr.
             if (!consider_typeof) {
-                const parent = self.parentOf(id_node);
+                var parent = self.parentOf(id_node);
+                while (parent != .none and self.ast.nodeTag(parent) == .grouping_expr) {
+                    parent = self.parentOf(parent);
+                }
                 if (parent != .none and self.ast.nodeTag(parent) == .typeof_expr) continue;
             }
             self.reportWithMessageIdAndData(id_node, message_id, &[_]MessageDataEntry{

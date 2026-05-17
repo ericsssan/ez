@@ -1348,16 +1348,14 @@ fn buildGlobalsBytes(
     inline_globals: []const linter_root.lint_context.InlineGlobalEntry,
     config: ?*const linter_root.config.Config,
 ) ![]u8 {
-    // Only pass through what's explicitly configured: (a) inline
-    // `/* global X */` directives + (b) config.languageOptions.globals.
-    // We deliberately DON'T pre-declare ES builtins here — multiple
-    // existing native rules (no-array-constructor, no-new-symbol, etc.)
-    // rely on builtin names like Array / Object appearing as unresolved
-    // refs.  Pre-declaring them silently makes those rules stop firing.
-    // no-undef's "global must be declared" check therefore needs its own
-    // builtin-aware filter (already partly handled via the builtin global
-    // check in the helper).
+    // Pre-declare: (a) ES builtin readonly globals (Object, Array, ...),
+    // (b) inline `/* global X */` directives, (c) config-supplied
+    // `languageOptions.globals` keys.  Symbol-phase rules tolerate
+    // resolution to implicit_global symbols (codegen handles via
+    // isImplicitGlobal check) so pre-declaring doesn't make existing
+    // rules silently stop firing.
     var total: usize = 0;
+    for (linter_root.lint_context.BUILTIN_READONLY_GLOBALS) |g| total += g.len + 1;
     for (inline_globals) |ig| {
         if (!ig.is_off) total += ig.name.len + 1;
     }
@@ -1373,6 +1371,12 @@ fn buildGlobalsBytes(
     };
     const buf = try arena.alloc(u8, total);
     var pos: usize = 0;
+    for (linter_root.lint_context.BUILTIN_READONLY_GLOBALS) |g| {
+        @memcpy(buf[pos..pos + g.len], g);
+        pos += g.len;
+        buf[pos] = 0;
+        pos += 1;
+    }
     for (inline_globals) |ig| {
         if (ig.is_off) continue;
         @memcpy(buf[pos..pos + ig.name.len], ig.name);

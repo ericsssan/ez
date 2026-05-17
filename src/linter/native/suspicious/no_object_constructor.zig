@@ -50,7 +50,10 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
     var r: u32 = 0;
     while (r < count) : (r += 1) {
         const ref_id = ReferenceId.fromInt(r);
-        if (refs.isResolved(ref_id)) continue;
+        if (refs.isResolved(ref_id)) {
+            const __sym = refs.getSymbol(ref_id);
+            if (__sym != .none and !ctx.symbols().isImplicitGlobal(__sym)) continue;
+        }
         const __ref_identifier__ = refs.getNode(ref_id);
         const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));
         var __matches = false;
