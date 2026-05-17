@@ -3578,7 +3578,20 @@ function parseComplexSelector(sel) {
   rawParts.push(cur.trim());
 
   const result = [];
+  // Map esquery pseudo-classes to our pseudo-tag names in
+  // SELECTOR_TO_TAG_MULTI.  `:function` matches any function shape;
+  // `:statement` matches any statement.  Mapping lives here so the
+  // recognizer parses these selectors without exploding the regex.
+  const PSEUDO_CLASS_TO_PSEUDO_TAG = {
+    "function": "__AnyFunction__",
+  };
   for (const part of rawParts) {
+    // Pseudo-class shortcut: ":function" / ":statement" — lift to a pseudo-tag.
+    if (part.startsWith(":")) {
+      const pseudo = part.slice(1).replace(/:exit$/, "");
+      const tag = PSEUDO_CLASS_TO_PSEUDO_TAG[pseudo];
+      if (tag) { result.push({ base: tag, conds: [] }); continue; }
+    }
     // Simple: "NodeType" or "NodeType:exit"
     const simpleM = part.match(/^([A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)?)$/);
     if (simpleM) { result.push({ base: simpleM[1], conds: [] }); continue; }
