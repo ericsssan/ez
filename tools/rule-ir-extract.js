@@ -491,6 +491,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoDupeKeysHandler,      // no-dupe-keys
       extractNoDupeClassMembersHandler, // no-dupe-class-members
       extractNoUnusedLabelsHandler,  // no-unused-labels
+      extractNoExtraLabelHandler,    // no-extra-label
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1107,6 +1108,17 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-extra-label: flags `break LBL` / `continue LBL` when LBL is the nearest
+// enclosing labeled breakable — i.e. the label is redundant because the
+// unlabeled break/continue would target the same statement.
+function extractNoExtraLabelHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-extra-label.js")) return { ok: false };
+  if (rawHandler.selector === "BreakStatement" || rawHandler.selector === "ContinueStatement") {
+    return { ok: true, handler: { kind: "no-extra-label-check", messageId: "unexpected" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 // no-unused-labels: flags labeled statements whose label isn't referenced
 // by any inner break/continue.  Per-LabeledStatement walk that scans the
 // body subtree for a matching break_label/continue_label.

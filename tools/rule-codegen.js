@@ -241,10 +241,11 @@ function emit(rule) {
   const hasNoDupeKeysCheck = rule.handlers.some(h => h.kind === "no-dupe-keys-check");
   const hasNoDupeClassMembersCheck = rule.handlers.some(h => h.kind === "no-dupe-class-members-check");
   const hasNoUnusedLabelsCheck = rule.handlers.some(h => h.kind === "no-unused-labels-check");
+  const hasNoExtraLabelCheck = rule.handlers.some(h => h.kind === "no-extra-label-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -266,6 +267,8 @@ function emit(rule) {
     relevantTags = ["class_body"];
   } else if (hasNoUnusedLabelsCheck) {
     relevantTags = ["labeled_stmt"];
+  } else if (hasNoExtraLabelCheck) {
+    relevantTags = ["break_label", "continue_label"];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
   } else {
@@ -287,7 +290,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -344,7 +347,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -663,6 +666,29 @@ function emit(rule) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    if (ctx.nodeTag(node) != .class_body) return;`);
     out.push(`    ctx.checkNoDupeClassMembers(node, "${zigStr(h.messageId)}");`);
+    out.push(`}`);
+  } else if (hasNoExtraLabelCheck) {
+    const h = rule.handlers.find(x => x.kind === "no-extra-label-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    const t = ctx.nodeTag(node);`);
+    out.push(`    if (t != .break_label and t != .continue_label) return;`);
+    out.push(`    const lbl = ctx.nodeData(node).lhs;`);
+    out.push(`    if (lbl == .none) return;`);
+    out.push(`    const name = ctx.tokenText(ctx.nodeMainToken(lbl));`);
+    out.push(`    if (!ctx.labelIsRedundant(node, name)) return;`);
+    // Fix: remove the label suffix (` LBL`) from after the break/continue keyword.
+    // Span: [tokenEnd(mainToken), nodeSpan(lbl).end].  Skip if a comment
+    // lives between the keyword and the label.
+    out.push(`    const kw_tok = ctx.nodeMainToken(node);`);
+    out.push(`    const kw_end = ctx.tokenEnd(kw_tok);`);
+    out.push(`    const lbl_span = ctx.nodeSpan(lbl);`);
+    out.push(`    if (!ctx.rangeContainsComment(kw_end, lbl_span.end)) {`);
+    out.push(`        ctx.reportSpanWithFixAndMessageId(ctx.nodeSpan(lbl), .{ .start = kw_end, .end = lbl_span.end }, "", "${zigStr(h.messageId)}");`);
+    out.push(`        return;`);
+    out.push(`    }`);
+    out.push(`    ctx.reportWithMessageIdAndData(lbl, "${zigStr(h.messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`        .{ .key = "name", .val = name },`);
+    out.push(`    });`);
     out.push(`}`);
   } else if (hasNoUnusedLabelsCheck) {
     const h = rule.handlers.find(x => x.kind === "no-unused-labels-check");

@@ -188,7 +188,7 @@ const prefer_rest_params = @import("correctness/prefer_rest_params.zig");  // IR
 // const max_statements = @import("style/max_statements.zig");  // hand-written — disabled per IR-only constraint
 // const dot_notation = @import("style/dot_notation.zig");  // hand-written — disabled per IR-only constraint
 // const no_confusing_arrow = @import("style/no_confusing_arrow.zig");  // hand-written — disabled per IR-only constraint
-// const no_extra_label = @import("style/no_extra_label.zig");  // hand-written — disabled per IR-only constraint
+const no_extra_label = @import("style/no_extra_label.zig");  // IR-generated via no-extra-label-check handler
 // const vars_on_top = @import("style/no_implicit_globals_style.zig");  // hand-written — disabled per IR-only constraint
 // const prefer_destructuring = @import("style/prefer_destructuring.zig");  // hand-written — disabled per IR-only constraint
 // v0.7 style rules
@@ -474,7 +474,7 @@ pub const all_rules = .{
     // max_statements, // runner >> native (runner 42, native 20, gap 22); fall back to JS runner
     // dot_notation, // runner >> native (runner 69, native 50, gap 19, 5 FP); fall back to JS runner
     // no_confusing_arrow, // native has 6 FP making hybrid 24 vs runner 30; fall back to JS runner
-    // no_extra_label, // hand-written — disabled
+    no_extra_label,
     // vars_on_top, // hand-written — disabled
     // prefer_destructuring, // runner >> native (runner 103, native 80, gap 23, 5 FP); fall back to JS runner
     // Style v0.7 (12)

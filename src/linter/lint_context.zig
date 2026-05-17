@@ -720,6 +720,48 @@ pub const LintContext = struct {
         };
     }
 
+    /// no-extra-label: true iff `break/continue LBL` has LBL pointing at
+    /// the nearest enclosing labeled breakable — i.e. the label is
+    /// redundant.  Walks up from `n` looking for either a labeled_stmt
+    /// with matching name or any breakable (loop/switch); reports
+    /// redundancy when the first ancestor breakable is itself the body
+    /// of a labeled_stmt with matching name.
+    pub fn labelIsRedundant(self: *const LintContext, n: NodeIndex, name: []const u8) bool {
+        var cur = self.parentOf(n);
+        while (cur != .none) {
+            const tag = self.ast.nodeTag(cur);
+            // Function boundary — labels don't cross.
+            if (self.nodeIsFunction(cur)) return false;
+            if (isBreakableTag(tag)) {
+                // Is the enclosing breakable labeled with our name?
+                const par = self.parentOf(cur);
+                if (par != .none and self.ast.nodeTag(par) == .labeled_stmt) {
+                    const lname = self.ast.tokenText(self.ast.nodeMainToken(par));
+                    if (std.mem.eql(u8, lname, name)) return true;
+                }
+                return false;
+            }
+            if (tag == .labeled_stmt) {
+                const lname = self.ast.tokenText(self.ast.nodeMainToken(cur));
+                if (std.mem.eql(u8, lname, name)) {
+                    // Reached our label but it's not on a breakable — needed.
+                    return false;
+                }
+            }
+            cur = self.parentOf(cur);
+        }
+        return false;
+    }
+
+    fn isBreakableTag(tag: ast_mod.Node.Tag) bool {
+        return switch (tag) {
+            .while_stmt, .do_while_stmt, .for_stmt,
+            .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
+            .switch_stmt => true,
+            else => false,
+        };
+    }
+
     /// no-unused-labels: scan a labeled_stmt's body subtree for a
     /// break_label or continue_label whose target identifier matches
     /// `name`.  Returns true on first match.  Used to decide whether
