@@ -4567,6 +4567,7 @@ function extractReportCall(call, scope) {
   let messageId = null;
   let fix = null;
   let data = null;
+  let loc = null;
   for (const p of arg.properties) {
     if (p.type !== "Property") return { ok: false, reason: "report arg has non-Property entry" };
     const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
@@ -4588,7 +4589,9 @@ function extractReportCall(call, scope) {
       const r = extractMessageData(p.value, scope);
       if (r.ok) data = r.data;
     } else if (k === "loc") {
-      return { ok: false, reason: `report.loc not supported in v2` };
+      const r = tryExtractLoc(p.value, scope);
+      if (!r.ok) return { ok: false, reason: `report.loc: ${r.reason}` };
+      loc = { start: r.start, end: r.end };
     } else if (k === "fix") {
       // Try to extract a fix; gracefully degrade (no fix in IR) on unsupported shapes.
       fix = tryExtractFixFn(p.value, scope) ?? null;
@@ -4604,7 +4607,48 @@ function extractReportCall(call, scope) {
   const reportStmt = { op: "report", node: nodeExpr, messageId };
   if (fix) reportStmt.fix = fix;
   if (data) reportStmt.data = data;
+  if (loc) reportStmt.loc = loc;
   return { ok: true, stmts: [reportStmt] };
+}
+
+// Lower `loc:` arg of context.report() into IR { start, end } u32 exprs.
+// Supports the common shapes seen across ESLint core rules:
+//   loc: <X>.loc       — span of X.  If X extracts to a token-typed IR,
+//                        use token-start/end; otherwise node-span-start/end.
+//   loc: { start, end } — object literal whose start/end are either
+//                        node-typed expressions, token-typed expressions, or
+//                        already u32 offsets (range[0]/range[1]/.loc).  We
+//                        accept them as-is once each side resolves.
+function tryExtractLoc(expr, scope) {
+  if (!expr) return { ok: false, reason: "null loc" };
+  // <X>.loc  → span of X
+  if (expr.type === "MemberExpression" && !expr.computed
+      && expr.property?.type === "Identifier" && expr.property.name === "loc") {
+    const r = extractExpr(expr.object, scope);
+    if (!r.ok) return { ok: false, reason: `loc target: ${r.reason}` };
+    if (isTokenExpr(r.expr)) {
+      return { ok: true, start: { op: "token-start", token: r.expr }, end: { op: "token-end", token: r.expr } };
+    }
+    return { ok: true, start: { op: "node-span-start", node: r.expr }, end: { op: "node-span-end", node: r.expr } };
+  }
+  // { start: ..., end: ... } object literal — extract each side as a u32 expr.
+  if (expr.type === "ObjectExpression") {
+    let startProp = null, endProp = null;
+    for (const p of expr.properties) {
+      if (p.type !== "Property") return { ok: false, reason: "non-Property entry" };
+      const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
+      if (k === "start") startProp = p.value;
+      else if (k === "end") endProp = p.value;
+      else return { ok: false, reason: `unknown loc field: ${k}` };
+    }
+    if (!startProp || !endProp) return { ok: false, reason: "loc missing start/end" };
+    const sR = extractExpr(startProp, scope);
+    if (!sR.ok) return { ok: false, reason: `loc.start: ${sR.reason}` };
+    const eR = extractExpr(endProp, scope);
+    if (!eR.ok) return { ok: false, reason: `loc.end: ${eR.reason}` };
+    return { ok: true, start: sR.expr, end: eR.expr };
+  }
+  return { ok: false, reason: `unsupported loc shape: ${expr.type}` };
 }
 
 // Extract a `data: { K: V, ... }` object literal into IR entries.  Each

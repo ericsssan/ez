@@ -422,6 +422,13 @@ function validateStatement(s, path) {
         if (!v.ok) return v;
       }
     }
+    if (s.loc) {
+      if (typeof s.loc !== "object") return fail("report.loc must be object", path);
+      const ls = validateExpr(s.loc.start, `${path}.loc.start`);
+      if (!ls.ok) return ls;
+      const le = validateExpr(s.loc.end, `${path}.loc.end`);
+      if (!le.ok) return le;
+    }
     return validateExpr(s.node, `${path}.node`);
   }
   if (s.op === "if") {
