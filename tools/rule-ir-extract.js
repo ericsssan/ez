@@ -505,6 +505,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoControlRegexHandler,   // no-control-regex
       extractNoInvalidRegexpHandler,  // no-invalid-regexp
       extractNoMisleadingCharClassHandler, // no-misleading-character-class
+      extractNoUselessBackrefHandler, // no-useless-backreference
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1226,6 +1227,17 @@ function extractNoMisleadingCharClassHandler(rawHandler, _stmts, { sourceFile } 
   if (rawHandler.selector === "Program" || rawHandler.selector === "Program:exit") {
     // ReferenceTracker on Program — gives us the RegExp call sites.
     return { ok: true, handler: { kind: "no-misleading-char-class-call-check" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractNoUselessBackrefHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-useless-backreference.js")) return { ok: false };
+  if (rawHandler.selector === "Literal[regex]" || rawHandler.selector === "Literal") {
+    return { ok: true, handler: { kind: "no-useless-backref-check" } };
+  }
+  if (rawHandler.selector === "Program" || rawHandler.selector === "Program:exit") {
+    return { ok: true, handler: { kind: "no-useless-backref-call-check" } };
   }
   return { ok: true, handler: { kind: "noop-stub" } };
 }

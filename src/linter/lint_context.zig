@@ -7,6 +7,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const TokenIndex = ast_mod.TokenIndex;
 const ExtraIndex = ast_mod.ExtraIndex;
 const SubRange = ast_mod.SubRange;
+const regex_parser = @import("regex_parser.zig");
 const Span = parser.span.Span;
 const Location = parser.span.Location;
 const Severity = parser.diagnostic.Severity;
@@ -4224,6 +4225,114 @@ pub const LintContext = struct {
         }
     }
 
+    // ── no-useless-backreference ───────────────────────────────
+    pub fn checkUselessBackrefRegex(self: *const LintContext, node: NodeIndex) void {
+        const pat_slice = self.regexPatternSlice(node) orelse return;
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const flags = self.regexFlagString(node);
+        if (regexPatternHasSyntaxError(pat_slice.text, true, flags)) return;
+        const flag_set = regex_parser.Flags.fromString(flags);
+        const pat = regex_parser.parse(arena, pat_slice.text, .{
+            .flags = flag_set,
+        }) catch return;
+        if (flag_set.unicode or flag_set.unicode_sets) {
+            for (pat.backrefs) |br| if (br.resolved == null) return;
+        }
+        const problems = regex_parser.analyzeUselessBackrefs(arena, &pat) catch return;
+        for (problems) |prob| {
+            const msg_id: []const u8 = switch (prob.kind) {
+                .nested => "nested",
+                .forward => "forward",
+                .backward => "backward",
+                .disjunctive => "disjunctive",
+                .into_negative_lookaround => "intoNegativeLookaround",
+            };
+            self.reportWithMessageId(node, msg_id);
+        }
+    }
+
+    pub fn checkUselessBackrefCall(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag != .call_expr and tag != .new_expr) return;
+        const data = self.ast.nodeData(node);
+        const callee = data.lhs;
+        if (self.ast.nodeTag(callee) != .identifier) return;
+        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
+        if (!self.isGlobalReference(callee)) return;
+        if (data.rhs == .none) return;
+        const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(range);
+        if (args.len == 0) return;
+        const first_arg: NodeIndex = @enumFromInt(args[0]);
+        if (self.ast.nodeTag(first_arg) != .string_literal) return;
+        // Flags handling — assume no flags when the second arg isn't a
+        // string literal (ESLint's behaviour when flags can't be
+        // statically determined: try without u/v).
+        var flags: []const u8 = "";
+        if (args.len >= 2) {
+            const flags_arg: NodeIndex = @enumFromInt(args[1]);
+            if (self.ast.nodeTag(flags_arg) == .string_literal) {
+                const fr = self.sourceText(flags_arg);
+                if (fr.len >= 2) flags = fr[1 .. fr.len - 1];
+            }
+        }
+        const raw = self.sourceText(first_arg);
+        if (raw.len < 2) return;
+        const body = raw[1 .. raw.len - 1];
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        // Decode JS string escapes so the regex parser sees the real
+        // pattern (e.g. source `'\\1'` decodes to `\1` which IS a backref;
+        // `'\1'` decodes to `\x01` which isn't).
+        const decoded = decodeJsStringLiteral(arena, body) catch return;
+        // If the pattern has obvious syntax errors that regexpp would
+        // reject, ESLint silently bails — we match.
+        if (regexPatternHasSyntaxError(decoded, true, flags)) return;
+        const pat = regex_parser.parse(arena, decoded, .{
+            .flags = regex_parser.Flags.fromString(flags),
+        }) catch return;
+        // Under u/v flag, unresolved backrefs are a syntax error (the
+        // pattern wouldn't compile at runtime), so ESLint bails — match.
+        const flag_set = regex_parser.Flags.fromString(flags);
+        if (flag_set.unicode or flag_set.unicode_sets) {
+            for (pat.backrefs) |br| if (br.resolved == null) return;
+            // Under u/v, a bare `{` (one not opening a valid quantifier)
+            // is a syntax error.  Detect any `{` that doesn't immediately
+            // begin a digit-only quantifier and bail.
+            if (decodedHasBareBrace(decoded)) return;
+        }
+        // Named backrefs that don't bind to a group are a syntax error
+        // even without u-flag (ESLint's regexpp uses strict parse mode).
+        for (pat.backrefs) |br| switch (br.target) {
+            .name => if (br.resolved == null) return,
+            else => {},
+        };
+        const problems = regex_parser.analyzeUselessBackrefs(arena, &pat) catch return;
+        for (problems) |prob| {
+            const msg_id: []const u8 = switch (prob.kind) {
+                .nested => "nested",
+                .forward => "forward",
+                .backward => "backward",
+                .disjunctive => "disjunctive",
+                .into_negative_lookaround => "intoNegativeLookaround",
+            };
+            self.reportWithMessageId(node, msg_id);
+        }
+    }
+
+    /// Slice of the regex_literal's flag chars (between the closing `/`
+    /// and end of the literal).  Returns "" for empty.
+    fn regexFlagString(self: *const LintContext, node: NodeIndex) []const u8 {
+        const node_text = self.sourceText(node);
+        const pat = self.regexPatternSlice(node) orelse return "";
+        const flags_off = pat.text.len + 2;
+        if (flags_off >= node_text.len) return "";
+        return node_text[flags_off..];
+    }
+
     // ── no-misleading-character-class ──────────────────────────
     // Subset port: detects `surrogatePairWithoutUFlag` only — codepoints
     // above U+FFFF (encoded as 4-byte UTF-8 or `\uHIGH\uLOW` escape pairs)
@@ -5226,6 +5335,114 @@ fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: [
     }
     if (paren_depth != 0) return true;
     if (class_depth != 0) return true;
+    return false;
+}
+
+/// Decode JavaScript string-literal escape sequences in `body` (between
+/// the surrounding quotes — caller already stripped those).  Returns a
+/// freshly-allocated slice in `arena`.  Handles `\n`, `\t`, `\\`, `\xHH`,
+/// `\uHHHH`, `\u{H..}`, single-digit `\<1-9>` (deprecated octal, mapped
+/// to the corresponding control char), and passes other escapes through
+/// as the second character (matching JS semantics: `\a` → `a`).
+fn decodeJsStringLiteral(arena: std.mem.Allocator, body: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c != '\\' or i + 1 >= body.len) {
+            try out.append(arena, c);
+            i += 1;
+            continue;
+        }
+        const n = body[i + 1];
+        switch (n) {
+            'n' => { try out.append(arena, '\n'); i += 2; },
+            't' => { try out.append(arena, '\t'); i += 2; },
+            'r' => { try out.append(arena, '\r'); i += 2; },
+            '\\' => { try out.append(arena, '\\'); i += 2; },
+            '\'' => { try out.append(arena, '\''); i += 2; },
+            '"' => { try out.append(arena, '"'); i += 2; },
+            '`' => { try out.append(arena, '`'); i += 2; },
+            '0' => { try out.append(arena, 0); i += 2; },
+            'x' => {
+                if (i + 4 <= body.len) {
+                    if (parseHex(body[i + 2 .. i + 4])) |cp| {
+                        try appendCodepoint(arena, &out, cp);
+                    }
+                    i += 4;
+                } else { i = body.len; }
+            },
+            'u' => {
+                if (i + 2 < body.len and body[i + 2] == '{') {
+                    var j = i + 3;
+                    while (j < body.len and body[j] != '}') j += 1;
+                    if (j < body.len) {
+                        if (parseHex(body[i + 3 .. j])) |cp| {
+                            try appendCodepoint(arena, &out, cp);
+                        }
+                        i = j + 1;
+                        continue;
+                    }
+                    i = body.len;
+                } else if (i + 6 <= body.len) {
+                    if (parseHex(body[i + 2 .. i + 6])) |cp| {
+                        try appendCodepoint(arena, &out, cp);
+                    }
+                    i += 6;
+                } else { i = body.len; }
+            },
+            '1', '2', '3', '4', '5', '6', '7' => {
+                // Deprecated octal escape (`\1`..`\7`).  Decode greedily up to
+                // 3 octal digits — for our purposes the exact value matters
+                // less than the fact that it's a single-byte char.
+                var val: u32 = n - '0';
+                i += 2;
+                var k: u8 = 0;
+                while (k < 2 and i < body.len and body[i] >= '0' and body[i] <= '7') : (k += 1) {
+                    val = (val << 3) | (body[i] - '0');
+                    i += 1;
+                }
+                try appendCodepoint(arena, &out, val);
+            },
+            else => { try out.append(arena, n); i += 2; },
+        }
+    }
+    return out.toOwnedSlice(arena);
+}
+
+fn appendCodepoint(arena: std.mem.Allocator, out: *std.ArrayList(u8), cp: u32) !void {
+    if (cp < 0x80) { try out.append(arena, @intCast(cp)); return; }
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(@truncate(cp), &buf) catch return;
+    try out.appendSlice(arena, buf[0..len]);
+}
+
+/// Quick scan for a `{` in the regex pattern that doesn't introduce a
+/// well-formed `{N}` / `{N,}` / `{N,M}` quantifier.  ESLint's regexpp
+/// rejects such patterns under u/v as a syntax error.
+fn decodedHasBareBrace(pat: []const u8) bool {
+    var i: usize = 0;
+    while (i < pat.len) {
+        const c = pat[i];
+        if (c == '\\') { i += 2; continue; }
+        if (c == '{') {
+            // Lookahead for `N` (1+ digits) then `}` or `,N}`/`,}`.
+            var j = i + 1;
+            const dstart = j;
+            while (j < pat.len and pat[j] >= '0' and pat[j] <= '9') j += 1;
+            if (j == dstart) return true; // no digits — bare `{`
+            if (j < pat.len and pat[j] == '}') { i = j + 1; continue; }
+            if (j < pat.len and pat[j] == ',') {
+                j += 1;
+                const d2start = j;
+                while (j < pat.len and pat[j] >= '0' and pat[j] <= '9') j += 1;
+                _ = d2start;
+                if (j < pat.len and pat[j] == '}') { i = j + 1; continue; }
+            }
+            return true;
+        }
+        i += 1;
+    }
     return false;
 }
 

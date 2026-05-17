@@ -67,7 +67,7 @@ const no_div_regex = @import("style/no_div_regex.zig");
 const no_this_assignment = @import("style/no_this_assignment.zig");
 const no_negation_in_equality_check = @import("style/no_negation_in_equality_check.zig");
 // const array_callback_return = @import("correctness/array_callback_return.zig");  // hand-written — disabled per IR-only constraint
-// const no_useless_backreference = @import("correctness/no_useless_backreference.zig");  // hand-written — disabled per IR-only constraint
+const no_useless_backreference = @import("correctness/no_useless_backreference.zig");  // IR-generated, backed by regex_parser
 const no_new_native_nonconstructor = @import("correctness/no_new_native_nonconstructor.zig");
 const no_buffer_constructor = @import("correctness/no_buffer_constructor.zig");
 const guard_for_in = @import("style/guard_for_in.zig");
@@ -362,7 +362,7 @@ pub const all_rules = .{
     // no_constant_binary_expression, // runner >> native (21% correct); fall back to JS runner
     // no_div_regex, // hand-written — disabled
     // array_callback_return, // runner >> native (39% correct); fall back to JS runner
-    // no_useless_backreference, // runner >> native (49%, has FP); fall back to JS runner
+    no_useless_backreference,
     no_new_native_nonconstructor,
     no_buffer_constructor,
     // Correctness v0.8 (2)
