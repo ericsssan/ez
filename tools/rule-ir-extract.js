@@ -5733,7 +5733,7 @@ function extractExpr(expr, scope) {
       // call-site substitution the markers are replaced with the real node IR.
       const isNodeRefBinding = obj.expr.op === "identifier"
         && (obj.expr.name === "__ref_identifier__" || /^__inline_arg_\d+__$/.test(obj.expr.name));
-      const NODE_VALUED_OPS = new Set(["node-ref", "parent-node", "node-main-child", "node-secondary-child", "conditional-consequent", "conditional-alternate", "conditional-test", "node-arg-at", "node-first-arg", "node-callee", "node-main-child-skip-grouping", "parent-node-skip-grouping", "node-body-stmt-at", "node-body"]);
+      const NODE_VALUED_OPS = new Set(["node-ref", "parent-node", "node-main-child", "node-secondary-child", "conditional-consequent", "conditional-alternate", "conditional-test", "node-arg-at", "node-first-arg", "node-callee", "node-main-child-skip-grouping", "parent-node-skip-grouping", "node-skip-grouping", "node-body-stmt-at", "node-body"]);
       const isNodeValued = isNodeRefBinding || NODE_VALUED_OPS.has(obj.expr.op);
       if (isNodeValued) {
         const prop = expr.property.name;
@@ -6063,6 +6063,18 @@ function extractExpr(expr, scope) {
         const eq = { op: "node-prop-name-equals", node: R.expr.node, name: L.expr.value };
         if (op === "===" || op === "==") return { ok: true, expr: eq };
         return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
+      }
+      // getStaticPropertyName(X) !== null / === null — has-static-prop-name guard.
+      // Common shape: `if (propName !== null && SET.has(propName))`.
+      if ((op === "===" || op === "==" || op === "!==" || op === "!=")
+          && (L.expr.op === "__static_prop_name_marker__" || R.expr.op === "__static_prop_name_marker__")) {
+        const marker = L.expr.op === "__static_prop_name_marker__" ? L.expr : R.expr;
+        const other = L.expr.op === "__static_prop_name_marker__" ? R.expr : L.expr;
+        if (other.op === "literal" && other.value === null) {
+          const has = { op: "node-has-static-prop-name", node: marker.node };
+          if (op === "!==" || op === "!=") return { ok: true, expr: has };
+          return { ok: true, expr: { op: "unary", operator: "!", operand: has } };
+        }
       }
       // Two-node identity comparison (node-main-child(...) === idNode).
       const isNodeValued = (e) => e.op === "node-main-child" || e.op === "parent-node"
@@ -6456,23 +6468,37 @@ function extractExpr(expr, scope) {
           if (val.expr.op === "__node_operator_marker__") {
             return { ok: true, expr: { op: "node-operator-in-set", node: val.expr.node, setName } };
           }
+          // SET.has(getStaticPropertyName(X)) — lift to a dedicated op so
+          // codegen can use ctx.nodePropNameInSet(X, set) without trying to
+          // materialize the marker as a Zig string.  Handles both direct
+          // calls and the common `const propName = getStaticPropertyName(X);
+          // SET.has(propName)` shape (the marker rides through scope.locals).
+          if (val.expr.op === "__static_prop_name_marker__") {
+            return { ok: true, expr: { op: "node-prop-name-in-set", node: val.expr.node, setName } };
+          }
           return { ok: true, expr: { op: "set-contains", setName, value: val.expr } };
         }
       }
-      // astUtils.skipChainExpression(X) — unwrap an ESTree ChainExpression
-      // wrapper to its inner call/member.  Our parser does not emit a
-      // ChainExpression wrapper at all (optional calls are direct
-      // optional_call_expr / optional_member_expr nodes), so the call is an
-      // identity for our purposes — just substitute the argument.
+      // astUtils.skipChainExpression(X) — in ESTree this peels a
+      // ChainExpression wrapper.  Our parser has no ChainExpression node, but
+      // it DOES emit `grouping_expr` for parenthesised callees (e.g.
+      // `(foo?.bar)()`).  ESLint's ChainExpression conceptually spans the
+      // parens here, so the IR equivalent is "skip groupings around X".  Use
+      // node-skip-grouping so downstream `.type` / `.property` / `.callee`
+      // walks land on the real optional_member_expr/optional_call_expr.
       if (callee.type === "MemberExpression" && !callee.computed
           && callee.property?.type === "Identifier" && callee.property.name === "skipChainExpression"
           && expr.arguments.length === 1) {
-        return extractExpr(expr.arguments[0], scope);
+        const r = extractExpr(expr.arguments[0], scope);
+        if (!r.ok) return r;
+        return { ok: true, expr: { op: "node-skip-grouping", node: r.expr } };
       }
       // Bare `skipChainExpression(X)` (when destructured from ast-utils).
       if (callee.type === "Identifier" && callee.name === "skipChainExpression"
           && expr.arguments.length === 1) {
-        return extractExpr(expr.arguments[0], scope);
+        const r = extractExpr(expr.arguments[0], scope);
+        if (!r.ok) return r;
+        return { ok: true, expr: { op: "node-skip-grouping", node: r.expr } };
       }
       // astUtils.isFunction(X) — true if node is any function kind
       if (callee.type === "MemberExpression" && !callee.computed

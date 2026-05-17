@@ -42,7 +42,7 @@ const no_global_assign = @import("style/no_global_assign.zig");
 // const no_irregular_whitespace = @import("correctness/no_irregular_whitespace.zig");  // hand-written — disabled per IR-only constraint
 const no_new_symbol = @import("correctness/no_new_symbol.zig");
 const no_obj_calls = @import("correctness/no_obj_calls.zig");
-// const no_prototype_builtins = @import("correctness/no_prototype_builtins.zig");  // hand-written — disabled per IR-only constraint
+const no_prototype_builtins = @import("correctness/no_prototype_builtins.zig");  // IR-generated via node-prop-name-in-set op
 // const no_setter_return = @import("correctness/no_setter_return.zig");  // hand-written — disabled per IR-only constraint
 const no_template_curly_in_string = @import("correctness/no_template_curly_in_string.zig");
 // const no_this_before_super = @import("correctness/no_this_before_super.zig");  // hand-written — disabled per IR-only constraint
@@ -326,7 +326,7 @@ pub const all_rules = .{
     // no_irregular_whitespace, // runner >> native (runner 280, native 275, 5 FN 2 FP); fall back
     no_new_symbol,
     // no_obj_calls, // runner >> native (runner 107, native 84, 23 FN); fall back
-    // no_prototype_builtins, // hand-written — disabled
+    no_prototype_builtins,
     // no_setter_return, // runner >> native (runner 164, native 135, gap 29); fall back to JS runner
     no_template_curly_in_string,
     // no_this_before_super, // runner >> native (runner 58, native 44, 19 FN); fall back

@@ -425,6 +425,46 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// Extract the static property name of a member expression as a []const u8
+    /// view into the source.  Returns null when no static name can be computed
+    /// (computed access with a non-literal key, or a non-member node).
+    pub fn staticPropertyName(self: *const LintContext, n: NodeIndex) ?[]const u8 {
+        if (n == .none) return null;
+        const tag = self.ast.nodeTag(n);
+        const rhs = self.ast.nodeData(n).rhs;
+        if (tag == .member_expr or tag == .optional_member_expr) {
+            return self.ast.tokenText(self.ast.nodeMainToken(rhs));
+        }
+        if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+            if (self.ast.nodeTag(rhs) == .string_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(rhs));
+                if (raw.len >= 2) return raw[1 .. raw.len - 1];
+            }
+            if (self.ast.nodeTag(rhs) == .template_literal) {
+                const tok = self.ast.nodeMainToken(rhs);
+                const raw = self.ast.tokenText(tok);
+                if (raw.len >= 2) return raw[1 .. raw.len - 1];
+            }
+        }
+        return null;
+    }
+
+    /// True when `n` is a member expression whose static property name appears
+    /// in `names`.  Lifts `SET.has(getStaticPropertyName(X))` from JS rules.
+    pub fn nodePropNameInSet(self: *const LintContext, n: NodeIndex, names: []const []const u8) bool {
+        const name = self.staticPropertyName(n) orelse return false;
+        for (names) |s| {
+            if (std.mem.eql(u8, s, name)) return true;
+        }
+        return false;
+    }
+
+    /// True when `n` has a computable static property name (the `propName !== null`
+    /// guard used in ESLint rules that consume getStaticPropertyName's result).
+    pub fn nodeHasStaticPropName(self: *const LintContext, n: NodeIndex) bool {
+        return self.staticPropertyName(n) != null;
+    }
+
     /// Returns true if `n` is a numeric literal whose parsed value equals `val`.
     pub fn nodeNumericValueEquals(self: *const LintContext, n: NodeIndex, val: f64) bool {
         if (n == .none) return false;

@@ -93,6 +93,8 @@ const EXPR_OPS = new Set([
   // arrow, not the outer grouping).
   "node-skip-grouping",
   "node-prop-name-equals",
+  "node-prop-name-in-set",
+  "node-has-static-prop-name",
   "node-operator-in-set",
   "node-literal-value-equals",
   "node-raw-starts-with",
@@ -594,6 +596,13 @@ function validateExpr(e, path) {
   }
   if (e.op === "node-prop-name-equals") {
     if (typeof e.name !== "string") return fail("node-prop-name-equals.name must be string", path);
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-prop-name-in-set") {
+    if (typeof e.setName !== "string") return fail("node-prop-name-in-set.setName must be string", path);
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-has-static-prop-name") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "node-operator-in-set") {

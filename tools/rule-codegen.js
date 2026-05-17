@@ -1467,6 +1467,10 @@ function emitExpr(e, ctx) {
       return `ctx.nodeElementsHasNull(${emitExpr(e.node, ctx)})`;
     case "node-prop-name-equals":
       return `ctx.nodePropNameEquals(${emitExpr(e.node, ctx)}, "${zigStr(e.name)}")`;
+    case "node-prop-name-in-set":
+      return `ctx.nodePropNameInSet(${emitExpr(e.node, ctx)}, ${zigIdent(e.setName)}[0..])`;
+    case "node-has-static-prop-name":
+      return `ctx.nodeHasStaticPropName(${emitExpr(e.node, ctx)})`;
     case "node-literal-value-equals":
       return `ctx.nodeNumericValueEquals(${emitExpr(e.node, ctx)}, ${e.value})`;
     case "node-string-value-equals":
