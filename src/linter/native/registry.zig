@@ -284,8 +284,7 @@ pub const all_rules = .{
     // use_isnan, // runner >> native (runner 214, native 176, gap 38); fall back to JS runner
     // valid_typeof, // hand-written — disabled
     // no_unused_vars, // runner >> native (runner 436, native 297, gap 139, 51 FP); fall back to JS runner
-    // no_undef, // 10 FP from missing browser/commonjs globals; -9 hybrid.
-    // Re-enable after extending pre-declared globals by env (browser/node/commonjs).
+    no_undef,
     // no_constant_condition, // hand-written, 91 FP vs ESLint; fall back to JS runner
 
     no_func_assign,

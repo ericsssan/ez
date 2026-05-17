@@ -1349,13 +1349,32 @@ fn buildGlobalsBytes(
     config: ?*const linter_root.config.Config,
 ) ![]u8 {
     // Pre-declare: (a) ES builtin readonly globals (Object, Array, ...),
-    // (b) inline `/* global X */` directives, (c) config-supplied
+    // (b) CommonJS globals (require/module/exports) when sourceType is
+    // commonjs, (c) inline `/* global X */` directives, (d) config-supplied
     // `languageOptions.globals` keys.  Symbol-phase rules tolerate
     // resolution to implicit_global symbols (codegen handles via
     // isImplicitGlobal check) so pre-declaring doesn't make existing
     // rules silently stop firing.
+    const is_commonjs = blk: {
+        if (config) |cfg| if (cfg.language_options) |lo| if (lo.* == .object) {
+            // sourceType lives in either languageOptions.sourceType OR
+            // languageOptions.parserOptions.sourceType — check both.
+            if (lo.object.get("sourceType")) |st| if (st == .string) {
+                if (std.mem.eql(u8, st.string, "commonjs")) break :blk true;
+            };
+            if (lo.object.get("parserOptions")) |po| if (po == .object) {
+                if (po.object.get("sourceType")) |st| if (st == .string) {
+                    if (std.mem.eql(u8, st.string, "commonjs")) break :blk true;
+                };
+            };
+        };
+        break :blk false;
+    };
     var total: usize = 0;
     for (linter_root.lint_context.BUILTIN_READONLY_GLOBALS) |g| total += g.len + 1;
+    if (is_commonjs) {
+        for (linter_root.lint_context.COMMONJS_READONLY_GLOBALS) |g| total += g.len + 1;
+    }
     for (inline_globals) |ig| {
         if (!ig.is_off) total += ig.name.len + 1;
     }
@@ -1376,6 +1395,14 @@ fn buildGlobalsBytes(
         pos += g.len;
         buf[pos] = 0;
         pos += 1;
+    }
+    if (is_commonjs) {
+        for (linter_root.lint_context.COMMONJS_READONLY_GLOBALS) |g| {
+            @memcpy(buf[pos..pos + g.len], g);
+            pos += g.len;
+            buf[pos] = 0;
+            pos += 1;
+        }
     }
     for (inline_globals) |ig| {
         if (ig.is_off) continue;

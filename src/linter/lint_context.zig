@@ -112,6 +112,14 @@ pub const BUILTIN_READONLY_GLOBALS = [_][]const u8{
     "Reflect",       "Proxy",          "ArrayBuffer",      "SharedArrayBuffer",
     "DataView",      "Atomics",        "FinalizationRegistry", "WeakRef",
     "Intl",          "console",
+    // ES2024+ globals
+    "Float16Array",  "Iterator",       "AsyncIterator",
+    "AsyncDisposableStack", "DisposableStack", "SuppressedError",
+    // Object.prototype methods commonly used as bare globals in scripts
+    // (`toString()`, `hasOwnProperty()`) — ESLint's "builtin" env exposes
+    // these via the globalThis prototype chain.
+    "toString",      "hasOwnProperty", "valueOf",        "isPrototypeOf",
+    "propertyIsEnumerable", "toLocaleString",
 };
 
 /// CommonJS readonly globals — only treated as readonly when `sourceType: "commonjs"`.
@@ -2301,7 +2309,10 @@ pub const LintContext = struct {
     /// no-undef.  When `consider_typeof` is false, skip references that
     /// are operands of a `typeof` operator (the default `typeof X` shape
     /// where X is undeclared is allowed — `typeof X === "undefined"` etc).
-    pub fn reportAllUnresolvedRefs(self: *const LintContext, message_id: []const u8, consider_typeof: bool) void {
+    pub fn reportAllUnresolvedRefs(self: *const LintContext, message_id: []const u8, consider_typeof_default: bool) void {
+        // Honor the rule's `typeof: true` option at runtime — when set,
+        // typeof's operand also gets flagged.
+        const consider_typeof = self.getOptionBool("typeof", consider_typeof_default);
         const refs = self.semantic.references;
         var r: u32 = 0;
         const count = refs.count();

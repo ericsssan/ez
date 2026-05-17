@@ -1261,7 +1261,16 @@ fn resolveFullImpl(
             pub fn eql(_: @This(), a: u64, b: u64) bool { return a == b; }
         };
         var global_lookup = std.HashMapUnmanaged(u64, symbol_mod.SymbolId, NameHashCtx2, 80){};
-        try global_lookup.ensureTotalCapacity(sa, 512);
+        // Capacity must cover ES builtins + user-configured globals
+        // (browser env alone is ~1100 entries).  Grow up-front so
+        // putAssumeCapacity inside the loop doesn't silently truncate.
+        const approx_globals: u32 = blk: {
+            var n: u32 = 64; // baseline for builtins
+            var counter = std.mem.splitScalar(u8, opts.globals, 0);
+            while (counter.next()) |s| { if (s.len > 0) n += 1; }
+            break :blk n;
+        };
+        try global_lookup.ensureTotalCapacity(sa, @max(512, approx_globals * 2));
 
         var git = std.mem.splitScalar(u8, opts.globals, 0);
         while (git.next()) |name| {

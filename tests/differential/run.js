@@ -1097,7 +1097,18 @@ if (fs.existsSync(ESLINT_ROOT)) {
 
       // Native comparison (in-process NAPI call).
       const _nt0 = Date.now();
-      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options, _nativeRuleName, _isTsCase, tc.languageOptions || null);
+      // Merge tc.globals (per-case env list) into languageOptions.globals
+      // so native sees the same global set as the runner — needed for
+      // no-undef and any rule that filters by ESLint env (browser/node).
+      // Symbol-phase rules tolerate implicit-global resolution after the
+      // sweep, so this no longer breaks no-array-constructor etc.
+      let _nativeLangOpts = tc.languageOptions || null;
+      if (tc.globals && Object.keys(tc.globals).length > 0) {
+        const baseLO = tc.languageOptions || {};
+        const baseG = (baseLO.globals && Object.keys(baseLO.globals).length > 0) ? baseLO.globals : {};
+        _nativeLangOpts = { ...baseLO, globals: { ...baseG, ...tc.globals } };
+      }
+      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options, _nativeRuleName, _isTsCase, _nativeLangOpts);
       const _ntDelta = Date.now() - _nt0;
       nativeOnlyMs += _ntDelta;
       _ruleNativeMs += _ntDelta;
