@@ -16,6 +16,7 @@ const valid_typeof = @import("correctness/valid_typeof.zig");  // IR-generated v
 const no_undef = @import("correctness/no_undef.zig");
 // const no_constant_condition = @import("correctness/no_constant_condition.zig");  // hand-written — disabled per IR-only constraint
 const no_func_assign = @import("correctness/no_func_assign.zig");
+const no_invalid_regexp = @import("correctness/no_invalid_regexp.zig");  // IR-generated via no-invalid-regexp-check handler
 const no_import_assign = @import("correctness/no_import_assign.zig");  // IR-generated via for-each-write-ref-of-binding
 const no_self_assign = @import("correctness/no_self_assign.zig");  // IR-generated via no-self-assign-check handler
 const no_self_compare = @import("suspicious/no_self_compare.zig");
@@ -296,6 +297,7 @@ pub const all_rules = .{
     // no_constant_condition, // hand-written, 91 FP vs ESLint; fall back to JS runner
 
     no_func_assign,
+    no_invalid_regexp,
     // no_import_assign, // native 57/116 vs runner 116 — endColumn + 34 FP; needs report-at-write-expr fix
     no_self_assign,
     // no_self_compare, // hand-written — disabled

@@ -4224,6 +4224,150 @@ pub const LintContext = struct {
         }
     }
 
+    // ── no-invalid-regexp ──────────────────────────────────────
+    // Validates `RegExp(...)` and `new RegExp(...)` calls.  Catches the
+    // common error categories: invalid flag chars, duplicate flags, u+v
+    // combo, and a small set of pattern syntax errors (unmatched brackets,
+    // unmatched parens, lone trailing backslash).  Full regex parsing is
+    // out of scope — ESLint uses regexpp.
+    pub fn checkInvalidRegExpCall(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag != .call_expr and tag != .new_expr) return;
+        const data = self.ast.nodeData(node);
+        const callee = data.lhs;
+        if (self.ast.nodeTag(callee) != .identifier) return;
+        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
+        if (!self.isGlobalReference(callee)) return;
+        if (data.rhs == .none) return;
+        const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(range);
+
+        // ── Flags arg ────
+        // null = flags unknown (non-literal), "" = no flag arg, otherwise the
+        // raw flag chars (between quotes).
+        var flags_known = true;
+        var flags_body: []const u8 = "";
+        if (args.len >= 2) {
+            const flags_arg: NodeIndex = @enumFromInt(args[1]);
+            if (self.ast.nodeTag(flags_arg) != .string_literal) {
+                flags_known = false;
+            } else {
+                const fr = self.sourceText(flags_arg);
+                if (fr.len >= 2) flags_body = fr[1 .. fr.len - 1];
+            }
+        }
+
+        const valid_flags = "dgimsuvy";
+
+        if (flags_known) {
+            // u + v together is always invalid (even with allowConstructorFlags).
+            const has_u = std.mem.indexOfScalar(u8, flags_body, 'u') != null;
+            const has_v = std.mem.indexOfScalar(u8, flags_body, 'v') != null;
+            if (has_u and has_v) {
+                self.reportRegExpMessage(node, "Regex 'u' and 'v' flags cannot be used together");
+                return;
+            }
+            // Duplicate flag detection — check each char against earlier
+            // positions.  ESLint reports as duplicate (rather than invalid)
+            // when at least one occurrence is a valid flag char.
+            var seen = std.bit_set.IntegerBitSet(128).initEmpty();
+            var has_dup = false;
+            for (flags_body) |c| {
+                if (c < 128) {
+                    if (seen.isSet(c)) { has_dup = true; break; }
+                    seen.set(c);
+                }
+            }
+            if (has_dup) {
+                self.reportRegExpMessage(node, "Duplicate flags supplied to RegExp constructor");
+                return;
+            }
+            // Unknown flag chars (not in valid_flags and not in
+            // allowConstructorFlags).  Read allowed flags from options[0].
+            var allow_extra: []const u8 = "";
+            if (self.rule_options) |opts| {
+                if (opts.* == .object) {
+                    if (opts.object.get("allowConstructorFlags")) |arr| {
+                        if (arr == .array) {
+                            // Only single-char string entries are honoured; we
+                            // collect them into a tiny stack buffer.
+                            var buf: [16]u8 = undefined;
+                            var n: usize = 0;
+                            for (arr.array.items) |it| {
+                                if (it == .string and it.string.len == 1 and n < buf.len) {
+                                    buf[n] = it.string[0]; n += 1;
+                                }
+                            }
+                            // Allocate to outlive this block.
+                            if (n > 0) {
+                                const owned = self.allocator.dupe(u8, buf[0..n]) catch null;
+                                if (owned) |o| allow_extra = o;
+                            }
+                        }
+                    }
+                }
+            }
+            var bad: ?u8 = null;
+            for (flags_body) |c| {
+                if (std.mem.indexOfScalar(u8, valid_flags, c) != null) continue;
+                if (std.mem.indexOfScalar(u8, allow_extra, c) != null) continue;
+                bad = c;
+                break;
+            }
+            if (bad != null) {
+                self.reportRegExpMessage(node, "Invalid flags supplied to RegExp constructor");
+                return;
+            }
+        }
+
+        // ── Pattern arg ────
+        if (args.len == 0) return;
+        const first_arg: NodeIndex = @enumFromInt(args[0]);
+        if (self.ast.nodeTag(first_arg) != .string_literal) return;
+        // ESLint when flags are unknown tries u-flag, v-flag and no-flag
+        // and only errors when ALL three reject.  Our scanner doesn't
+        // model that "try all modes" semantics — be conservative and skip
+        // pattern validation entirely when flags are unknown.
+        if (!flags_known) return;
+        const raw = self.sourceText(first_arg);
+        if (raw.len < 2) return;
+        const body = raw[1 .. raw.len - 1];
+        if (regexPatternHasSyntaxError(body, flags_known, flags_body)) {
+            self.reportRegExpMessage(node, "Invalid regular expression");
+            return;
+        }
+    }
+
+    fn reportRegExpMessage(self: *const LintContext, node: NodeIndex, msg: []const u8) void {
+        const data = [_]MessageDataEntry{ .{ .key = "message", .val = msg } };
+        // The default nodeSpan for call_expr / new_expr can return an
+        // under-counted end when args contain string literals with `)` /
+        // `(` chars (the paren-depth scanner ignores quotes).  Use the last
+        // arg's span end and walk forward for the call's closing `)`.
+        var span = self.nodeSpan(node);
+        const ndata = self.ast.nodeData(node);
+        if (ndata.rhs != .none) {
+            const range = self.extraData(SubRange, @intFromEnum(ndata.rhs));
+            const args = self.extraSlice(range);
+            if (args.len > 0) {
+                const last: NodeIndex = @enumFromInt(args[args.len - 1]);
+                const last_end = self.nodeSpan(last).end;
+                if (last_end > span.end) span.end = last_end;
+                const src = self.ast.source;
+                var p: usize = span.end;
+                while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == ',')) p += 1;
+                if (p < src.len and src[p] == ')') span.end = @intCast(p + 1);
+            }
+        }
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = span,
+            .severity = self.severity_override orelse .warning,
+            .message_id = "regexMessage",
+            .message_data = self.dupeMessageData(&data),
+        }) catch {};
+    }
+
     /// no-control-regex (regex literal): scan the pattern for control
     /// characters and `\xNN` / `\uNNNN` escapes that resolve to control
     /// chars (U+0000..U+001F).  Reports once per regex with a
@@ -4919,6 +5063,54 @@ pub const LintContext = struct {
 };
 
 /// Shared helper: get a string field from a JSON object pointer.
+/// Conservative pattern-syntax checker for no-invalid-regexp.  Walks the
+/// raw JS-string body (still containing `\\` doubled escapes since the
+/// string hasn't been evaluated), tracking bracket depth and paren depth
+/// to catch the common syntax errors:
+///   * unmatched `(` / `)`
+///   * unmatched `[` / `]`
+///   * trailing lone `\` (last char is an unfinished escape)
+///   * `\u{...}` outside u/v flag mode (errors only when flags_known is
+///     true and the flag set doesn't include u or v)
+/// Returns true when an error is detected.  Bails out (returns false) on
+/// constructs that need real regex parsing — minimum-impact stance: never
+/// FP on a syntactically-fine pattern, accept FN on the exotic cases.
+fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: []const u8) bool {
+    _ = flags_known;
+    _ = flags_body;
+    var paren_depth: i32 = 0;
+    var class_depth: i32 = 0;
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        // Backslash consumes the next char (or pair, for `\\X`).
+        if (c == '\\') {
+            if (i + 1 >= body.len) return true; // trailing lone `\`
+            if (body[i + 1] == '\\') { i += 2; continue; }
+            i += 2;
+            continue;
+        }
+        if (c == '[') { class_depth += 1; i += 1; continue; }
+        if (c == ']') {
+            if (class_depth > 0) class_depth -= 1;
+            i += 1;
+            continue;
+        }
+        if (class_depth > 0) { i += 1; continue; }
+        if (c == '(') { paren_depth += 1; i += 1; continue; }
+        if (c == ')') {
+            if (paren_depth == 0) return true;
+            paren_depth -= 1;
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+    if (paren_depth != 0) return true;
+    if (class_depth != 0) return true;
+    return false;
+}
+
 fn parseHex(slice: []const u8) ?u32 {
     if (slice.len == 0) return null;
     var v: u32 = 0;

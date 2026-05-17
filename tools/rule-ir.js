@@ -435,6 +435,7 @@ function validateRule(rule) {
     if (h.kind === "no-empty-char-class-call-check") continue;
     if (h.kind === "no-control-regex-check") continue;
     if (h.kind === "no-control-regex-call-check") continue;
+    if (h.kind === "no-invalid-regexp-check") continue;
     if (h.kind === "no-empty-check") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       if (typeof h.selector !== "string") return fail("selector must be string", path);

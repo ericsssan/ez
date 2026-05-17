@@ -260,10 +260,11 @@ function emit(rule) {
   const hasNoControlRegexCheck = rule.handlers.some(h => h.kind === "no-control-regex-check");
   const hasNoControlRegexCallCheck = rule.handlers.some(h => h.kind === "no-control-regex-call-check");
   const hasAnyNoControlRegex = hasNoControlRegexCheck || hasNoControlRegexCallCheck;
+  const hasNoInvalidRegexpCheck = rule.handlers.some(h => h.kind === "no-invalid-regexp-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -308,6 +309,8 @@ function emit(rule) {
   } else if (hasAnyNoControlRegex) {
     relevantTags = [];
     if (hasNoControlRegexCheck) relevantTags.push("regex_literal", "string_literal");
+  } else if (hasNoInvalidRegexpCheck) {
+    relevantTags = ["call_expr", "new_expr"];
   } else if (hasAnyUseIsnan) {
     relevantTags = [];
     if (hasUseIsnanBinaryCheck) relevantTags.push(
@@ -336,7 +339,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -393,7 +396,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -777,6 +780,10 @@ function emit(rule) {
     out.push(`        .regex_literal, .string_literal => ctx.checkRegexNoControl(node),`);
     out.push(`        else => {},`);
     out.push(`    }`);
+    out.push(`}`);
+  } else if (hasNoInvalidRegexpCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkInvalidRegExpCall(node);`);
     out.push(`}`);
   } else if (hasAnyUseIsnan) {
     // use-isnan: tag-switch dispatches to the per-check helpers.  The

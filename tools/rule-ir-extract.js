@@ -503,6 +503,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoRegexSpacesHandler,   // no-regex-spaces
       extractNoEmptyCharClassHandler, // no-empty-character-class
       extractNoControlRegexHandler,   // no-control-regex
+      extractNoInvalidRegexpHandler,  // no-invalid-regexp
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1198,6 +1199,17 @@ function extractNoControlRegexHandler(rawHandler, _stmts, { sourceFile } = {}) {
   }
   if (rawHandler.selector === "CallExpression" || rawHandler.selector === "NewExpression") {
     return { ok: true, handler: { kind: "no-control-regex-call-check" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractNoInvalidRegexpHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-invalid-regexp.js")) return { ok: false };
+  // ESLint registers a single comma-selector ("CallExpression, NewExpression").
+  if (rawHandler.selector === "CallExpression, NewExpression"
+      || rawHandler.selector === "CallExpression"
+      || rawHandler.selector === "NewExpression") {
+    return { ok: true, handler: { kind: "no-invalid-regexp-check" } };
   }
   return { ok: true, handler: { kind: "noop-stub" } };
 }
