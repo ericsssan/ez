@@ -60,6 +60,7 @@ const SELECTOR_TO_TAG = {
   AssignmentPattern: "assignment_pattern",
   TemplateLiteral: "template_literal",
   TemplateElement: "template_element",
+  TaggedTemplateExpression: "tagged_template",
   ObjectPattern: "object_pattern",
   ArrayPattern: "array_pattern",
   TSNonNullExpression: "ts_non_null_expr",
@@ -1528,6 +1529,12 @@ function emitExpr(e, ctx) {
       return `ctx.nodePropNameInSet(${emitExpr(e.node, ctx)}, ${zigIdent(e.setName)}[0..])`;
     case "node-has-static-prop-name":
       return `ctx.nodeHasStaticPropName(${emitExpr(e.node, ctx)})`;
+    case "node-has-static-string-value":
+      return `(ctx.nodeStaticStringValue(${emitExpr(e.node, ctx)}) != null)`;
+    case "node-static-string-starts-with":
+      return `ctx.nodeStaticStringStartsWith(${emitExpr(e.node, ctx)}, "${zigStr(e.prefix)}", false)`;
+    case "node-static-string-starts-with-i":
+      return `ctx.nodeStaticStringStartsWith(${emitExpr(e.node, ctx)}, "${zigStr(e.prefix.toLowerCase())}", true)`;
     case "node-literal-value-equals":
       return `ctx.nodeNumericValueEquals(${emitExpr(e.node, ctx)}, ${e.value})`;
     case "node-string-value-equals":

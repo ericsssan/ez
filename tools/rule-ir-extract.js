@@ -6110,8 +6110,22 @@ function extractExpr(expr, scope) {
       // explicit `> 0` check the codegen needs.  Without this `body.body.length`
       // would emit a usize where Zig expects a bool.
       if (op === "&&" || op === "||") {
-        const liftBool = (e) => e.op === "node-body-stmt-count"
-          ? { op: "binary", operator: ">", lhs: e, rhs: { op: "literal", value: 0 } } : e;
+        const liftBool = (e) => {
+          if (e.op === "node-body-stmt-count") {
+            return { op: "binary", operator: ">", lhs: e, rhs: { op: "literal", value: 0 } };
+          }
+          // `<X>.value` in boolean context — common in `if (node.value && typeof
+          // node.value === "string")` filters on Literal handlers.  The
+          // accompanying typeof check narrows the tag; treat .value truthy
+          // as `true` so the AND collapses to the tag check.  Edge case:
+          // empty string literal becomes a false-positive candidate (still
+          // gets through the gate), but downstream string checks (prefix
+          // match, indexOf, etc.) reject it naturally.
+          if (e.op === "member" && e.property === "value") {
+            return { op: "literal", value: true };
+          }
+          return e;
+        };
         L.expr = liftBool(L.expr);
         R.expr = liftBool(R.expr);
       }
@@ -6184,6 +6198,15 @@ function extractExpr(expr, scope) {
         if (op === "===" || op === "==") return { ok: true, expr: eq };
         return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
       }
+      // typeof getStaticStringValue(X) === "string" → node-has-static-string-value
+      if ((op === "===" || op === "==" || op === "!==" || op === "!=")
+          && L.expr.op === "__typeof_marker__"
+          && L.expr.inner?.op === "__static_string_value_marker__"
+          && R.expr.op === "literal" && R.expr.value === "string") {
+        const eq = { op: "node-has-static-string-value", node: L.expr.inner.node };
+        if (op === "===" || op === "==") return { ok: true, expr: eq };
+        return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
+      }
       // typeof node.value === "type-string" → node-tag-in-set / node-tag-equals
       if ((op === "===" || op === "==" || op === "!==" || op === "!=")
           && L.expr.op === "__typeof_marker__"
@@ -6242,6 +6265,31 @@ function extractExpr(expr, scope) {
           && R.expr.op === "__static_prop_name_marker__"
           && L.expr.op === "literal" && typeof L.expr.value === "string") {
         const eq = { op: "node-prop-name-equals", node: R.expr.node, name: L.expr.value };
+        if (op === "===" || op === "==") return { ok: true, expr: eq };
+        return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
+      }
+      // <static-string-indexof-marker> === 0 / !== 0 → node-static-string-starts-with[ignore-case]
+      if ((op === "===" || op === "==" || op === "!==" || op === "!=")) {
+        const idxSide = (a, b) =>
+          (a?.op === "__static_string_indexof_marker__" && b?.op === "literal" && b.value === 0)
+            ? a : null;
+        const m = idxSide(L.expr, R.expr) || idxSide(R.expr, L.expr);
+        if (m) {
+          const eq = {
+            op: m.ignoreCase ? "node-static-string-starts-with-i" : "node-static-string-starts-with",
+            node: m.node, prefix: m.prefix,
+          };
+          if (op === "===" || op === "==") return { ok: true, expr: eq };
+          return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
+        }
+      }
+      // typeof getStaticStringValue(X) === "string" → node-has-static-string-value
+      // (the typeof marker rides through extractExpr to here)
+      if ((op === "===" || op === "==" || op === "!==" || op === "!=")
+          && L.expr.op === "__typeof_marker__"
+          && L.expr.inner?.op === "__static_string_value_marker__"
+          && R.expr.op === "literal" && R.expr.value === "string") {
+        const eq = { op: "node-has-static-string-value", node: L.expr.inner.node };
         if (op === "===" || op === "==") return { ok: true, expr: eq };
         return { ok: true, expr: { op: "unary", operator: "!", operand: eq } };
       }
@@ -6783,6 +6831,39 @@ function extractExpr(expr, scope) {
             rhs: { op: "node-prop-name-equals", node: skipped, name: propArg.value } };
         }
         return { ok: true, expr: cond };
+      }
+      // astUtils.getStaticStringValue(X) — emit a marker consumed by the
+      // enclosing typeof/method-chain check.  Lifts to dedicated IR ops at
+      // the comparison site (typeof, .toLowerCase().indexOf(prefix) === 0).
+      if (((callee.type === "Identifier" && callee.name === "getStaticStringValue")
+          || (callee.type === "MemberExpression" && !callee.computed
+              && callee.property?.type === "Identifier" && callee.property.name === "getStaticStringValue"))
+          && expr.arguments.length === 1) {
+        const argR = extractExpr(expr.arguments[0], scope);
+        if (!argR.ok) return argR;
+        return { ok: true, expr: { op: "__static_string_value_marker__", node: argR.expr } };
+      }
+      // <marker>.toLowerCase() — keep the marker, mark the chain as
+      // case-insensitive for downstream indexOf-prefix lifts.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "toLowerCase"
+          && expr.arguments.length === 0) {
+        const objR = extractExpr(callee.object, scope);
+        if (objR.ok && objR.expr.op === "__static_string_value_marker__") {
+          return { ok: true, expr: { ...objR.expr, ignoreCase: true } };
+        }
+      }
+      // <marker[.toLowerCase()]>.indexOf("prefix") — lifts only when the
+      // outer comparison resolves it (=== 0 / !== 0).  Carry the prefix.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "indexOf"
+          && expr.arguments.length === 1
+          && expr.arguments[0].type === "Literal" && typeof expr.arguments[0].value === "string") {
+        const objR = extractExpr(callee.object, scope);
+        if (objR.ok && objR.expr.op === "__static_string_value_marker__") {
+          return { ok: true, expr: { op: "__static_string_indexof_marker__",
+            node: objR.expr.node, prefix: expr.arguments[0].value, ignoreCase: !!objR.expr.ignoreCase } };
+        }
       }
       // getStaticPropertyName(X) / astUtils.getStaticPropertyName(X) — emit
       // marker consumed by the enclosing === comparison.

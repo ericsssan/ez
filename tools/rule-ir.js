@@ -95,6 +95,9 @@ const EXPR_OPS = new Set([
   "node-prop-name-equals",
   "node-prop-name-in-set",
   "node-has-static-prop-name",
+  "node-has-static-string-value",
+  "node-static-string-starts-with",
+  "node-static-string-starts-with-i",
   "node-operator-in-set",
   "node-literal-value-equals",
   "node-raw-starts-with",
@@ -603,6 +606,13 @@ function validateExpr(e, path) {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "node-has-static-prop-name") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-has-static-string-value") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "node-static-string-starts-with" || e.op === "node-static-string-starts-with-i") {
+    if (typeof e.prefix !== "string") return fail(`${e.op}.prefix must be string`, path);
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "node-operator-in-set") {

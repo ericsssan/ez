@@ -465,6 +465,51 @@ pub const LintContext = struct {
         return self.staticPropertyName(n) != null;
     }
 
+    /// Compute the static string value of `n` (string_literal stripped of
+    /// quotes; template_literal with no expressions stripped of backticks).
+    /// Returns null for non-string literals, computed values, etc.  Matches
+    /// the subset of ESLint's astUtils.getStaticStringValue we need today.
+    pub fn nodeStaticStringValue(self: *const LintContext, n: NodeIndex) ?[]const u8 {
+        if (n == .none) return null;
+        const tag = self.ast.nodeTag(n);
+        if (tag == .string_literal) {
+            const raw = self.ast.tokenText(self.ast.nodeMainToken(n));
+            if (raw.len < 2) return null;
+            return raw[1 .. raw.len - 1];
+        }
+        if (tag == .template_literal) {
+            // No-expression template: `text` — single token of length ≥2.
+            const raw = self.ast.tokenText(self.ast.nodeMainToken(n));
+            if (raw.len < 2) return null;
+            // Template raw uses backticks; reject if there are any ${ expressions
+            // (those split the template into multiple tokens).  Single-token
+            // template literals always start with ` and end with `.
+            if (raw[0] != '`' or raw[raw.len - 1] != '`') return null;
+            return raw[1 .. raw.len - 1];
+        }
+        return null;
+    }
+
+    /// True iff nodeStaticStringValue(n) is non-null and starts with `prefix`.
+    /// When `ignore_case` is true, compares using ASCII case folding (the
+    /// only case behaviour we need for `javascript:`-style URL checks).
+    pub fn nodeStaticStringStartsWith(
+        self: *const LintContext,
+        n: NodeIndex,
+        prefix: []const u8,
+        ignore_case: bool,
+    ) bool {
+        const v = self.nodeStaticStringValue(n) orelse return false;
+        if (v.len < prefix.len) return false;
+        const head = v[0..prefix.len];
+        if (!ignore_case) return std.mem.eql(u8, head, prefix);
+        for (head, prefix) |a, b| {
+            const la: u8 = if (a >= 'A' and a <= 'Z') a + 32 else a;
+            if (la != b) return false;
+        }
+        return true;
+    }
+
     /// Returns true if `n` is a numeric literal whose parsed value equals `val`.
     pub fn nodeNumericValueEquals(self: *const LintContext, n: NodeIndex, val: f64) bool {
         if (n == .none) return false;
