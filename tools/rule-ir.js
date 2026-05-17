@@ -370,6 +370,19 @@ function validateRule(rule) {
       for (const n of h.names) if (typeof n !== "string") return fail("names must be strings", path);
       continue;
     }
+    if (h.kind === "for-each-decl-by-name") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      if (!Array.isArray(h.names) || h.names.length === 0) return fail("names must be non-empty array", path);
+      for (const n of h.names) if (typeof n !== "string") return fail("names must be strings", path);
+      if (h.optionalNames != null) {
+        if (!Array.isArray(h.optionalNames)) return fail("optionalNames must be array", path);
+        for (const o of h.optionalNames) {
+          if (typeof o?.optionKey !== "string" || typeof o?.name !== "string")
+            return fail("optionalNames[*] must have string optionKey and name", path);
+        }
+      }
+      continue;
+    }
     if (typeof h.selector !== "string") return fail("selector must be string", path);
     // Optional handler kind — e.g. "for-each-unresolved-global-ref" — triggers
     // a symbol-phase emit instead of the default AST-walk dispatch.

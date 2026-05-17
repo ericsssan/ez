@@ -532,6 +532,38 @@ pub const LintContext = struct {
         return self.nodeRawOctalEscapeMatch(n) != null;
     }
 
+    /// no-shadow-restricted-names' "safelyShadowsUndefined" predicate:
+    /// the symbol is named "undefined" AND has no write references AND
+    /// every declaration is a VariableDeclarator with no init.  This is
+    /// the legacy `var undefined;` pattern that protects against the
+    /// (pre-ES5) writable `undefined` global without changing its value.
+    pub fn symbolSafelyShadowsUndefined(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
+        const syms = &self.semantic.symbols;
+        if (!std.mem.eql(u8, syms.getName(sym_id), "undefined")) return false;
+        const range = syms.getRefRange(sym_id);
+        const refs = &self.semantic.references;
+        var r = range.start;
+        while (r < range.end) : (r += 1) {
+            const rid = reference_mod.ReferenceId.fromInt(r);
+            if (refs.getKind(rid).isWrite()) return false;
+        }
+        // The primary decl must be a `var undefined;` / `let undefined;`
+        // style declarator (declarator with no init).  Our decl_node points
+        // at the binding identifier; its parent is the declarator whose rhs
+        // (init) must be .none.
+        const decl = syms.getDeclNode(sym_id);
+        if (decl == .none) return false;
+        return self.isNoInitDeclarator(decl);
+    }
+
+    fn isNoInitDeclarator(self: *const LintContext, id_node: NodeIndex) bool {
+        const parent = self.parentOf(id_node);
+        if (parent == .none) return false;
+        if (self.ast.nodeTag(parent) != .declarator) return false;
+        // declarator data: lhs = id, rhs = init.  No-init means rhs == .none.
+        return self.ast.nodeData(parent).rhs == .none;
+    }
+
     /// True iff nodeStaticStringValue(n) is non-null and starts with `prefix`.
     /// When `ignore_case` is true, compares using ASCII case folding (the
     /// only case behaviour we need for `javascript:`-style URL checks).

@@ -482,6 +482,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractPreferRestParamsHandler, // prefer-rest-params
       extractNoUndefHandler,         // no-undef
       extractNoUndefinedHandler,     // no-undefined
+      extractNoShadowRestrictedNamesHandler, // no-shadow-restricted-names
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1098,6 +1099,27 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-shadow-restricted-names: reports user-declared bindings whose name
+// shadows a restricted ECMAScript identifier (undefined / NaN / Infinity /
+// arguments / eval, plus optional globalThis).  Walks SymbolTable filtering
+// by name and (for "undefined") applying the safelyShadowsUndefined guard.
+function extractNoShadowRestrictedNamesHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-shadow-restricted-names.js")) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      kind: "for-each-decl-by-name",
+      names: ["undefined", "NaN", "Infinity", "arguments", "eval"],
+      // Names gated on option booleans — at runtime, each option-derived name
+      // is included only when ctx.getOptionBool(optKey, false) is true.
+      optionalNames: [{ optionKey: "reportGlobalThis", name: "globalThis" }],
+      messageId: "shadowingRestrictedName",
+      includeNameData: true,
+      safelyShadowsUndefinedSkip: true,
+    },
+  };
+}
+
 // no-undefined: walks the scope tree finding `undefined` variables and
 // reports their non-init references + def names.  In our model every
 // reference to `undefined` (resolved to builtin or user-shadowed) has its
