@@ -2888,6 +2888,46 @@ function substituteIdentRef(expr, name, replacement) {
     if (Array.isArray(v)) out[k] = v.map(x => substituteIdentRef(x, name, replacement));
     else if (v && typeof v === "object" && "op" in v) out[k] = substituteIdentRef(v, name, replacement);
   }
+  return reliftMarkers(out);
+}
+
+// Walk a freshly substituted IR fragment and lift any marker ops the
+// substitution exposed.  Helper-body extraction can leave shapes like
+// `__node_operator_marker__ === "in"` once the inline arg is replaced with
+// the real call-site arg; codegen / validator have no handlers for the raw
+// marker so we lift them here instead.  Recursive over child IR nodes.
+function reliftMarkers(expr) {
+  if (!expr || typeof expr !== "object") return expr;
+  if (expr.op === "binary"
+      && (expr.operator === "===" || expr.operator === "==" || expr.operator === "!==" || expr.operator === "!=")) {
+    const isLit = (e) => e?.op === "literal" && typeof e.value === "string";
+    const tryLift = (markerSide, litSide) => {
+      if (markerSide?.op === "__node_operator_marker__" && isLit(litSide)) {
+        const eq = { op: "node-operator-equals", node: markerSide.node, operator: litSide.value };
+        return (expr.operator === "===" || expr.operator === "==") ? eq
+          : { op: "unary", operator: "!", operand: eq };
+      }
+      if (markerSide?.op === "__parent_type_marker__" && isLit(litSide)) {
+        const eq = { op: "node-tag-equals", node: markerSide.parent, estreeType: litSide.value };
+        return (expr.operator === "===" || expr.operator === "==") ? eq
+          : { op: "unary", operator: "!", operand: eq };
+      }
+      if (markerSide?.op === "__static_prop_name_marker__" && isLit(litSide)) {
+        const eq = { op: "node-prop-name-equals", node: markerSide.node, name: litSide.value };
+        return (expr.operator === "===" || expr.operator === "==") ? eq
+          : { op: "unary", operator: "!", operand: eq };
+      }
+      return null;
+    };
+    const lifted = tryLift(expr.lhs, expr.rhs) || tryLift(expr.rhs, expr.lhs);
+    if (lifted) return lifted;
+  }
+  const out = { ...expr };
+  for (const k of Object.keys(out)) {
+    const v = out[k];
+    if (Array.isArray(v)) out[k] = v.map(reliftMarkers);
+    else if (v && typeof v === "object" && "op" in v) out[k] = reliftMarkers(v);
+  }
   return out;
 }
 
@@ -2900,7 +2940,7 @@ function substituteNodeRef(expr, replacement) {
     if (Array.isArray(v)) out[k] = v.map(x => substituteNodeRef(x, replacement));
     else if (v && typeof v === "object" && "op" in v) out[k] = substituteNodeRef(v, replacement);
   }
-  return out;
+  return reliftMarkers(out);
 }
 
 // Recognize the single-name Program:exit scope-lookup pattern:
@@ -6668,6 +6708,21 @@ function extractExpr(expr, scope) {
           op: "binary", operator: "&&",
           lhs: { op: "node-tag-equals", node: parentExpr, estreeType: "CallExpression" },
           rhs: { op: "nodes-equal", a: { op: "node-main-child", node: parentExpr }, b: argR.expr },
+        } };
+      }
+      // astUtils.isParenthesised(sourceCode, X) — true iff X is wrapped in
+      // parens.  In our parser this is exactly: X's parent is a grouping_expr
+      // (the AST tag we emit for `(expr)` nodes).
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "isParenthesised"
+          && expr.arguments.length === 2
+          && isSourceCodeReceiver(expr.arguments[0], scope)) {
+        const argR = extractExpr(expr.arguments[1], scope);
+        if (!argR.ok) return argR;
+        return { ok: true, expr: {
+          op: "node-tag-equals",
+          node: { op: "parent-node", node: argR.expr },
+          estreeType: "__ParenthesizedExpression__",
         } };
       }
       // astUtils.isSpecificId(X, "name") — synthesize: X.type === "Identifier"

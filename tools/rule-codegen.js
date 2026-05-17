@@ -84,6 +84,10 @@ const SELECTOR_TO_TAG_MULTI = {
   __NullLiteral__: ["null_literal"],
   __BooleanLiteral__: ["boolean_literal"],
   __RegexLiteral__: ["regex_literal"],
+  // Our parser wraps `(expr)` as a grouping_expr; ESTree uses the inline
+  // form without a wrapper.  This pseudo-tag is used by extractor recognizers
+  // that lift `astUtils.isParenthesised(...)` to a parent-tag check.
+  __ParenthesizedExpression__: ["grouping_expr"],
   // Any async-flavored function expression / declaration / arrow.
   // Stand-in for the attribute `arguments.N.async = true` filter
   // (esquery) used by rules like no-async-promise-executor.
