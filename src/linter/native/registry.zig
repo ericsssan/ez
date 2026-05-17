@@ -7,7 +7,7 @@ const no_empty = @import("correctness/no_empty.zig");  // IR-generated via no-em
 // const no_extra_semi = @import("correctness/no_extra_semi.zig");  // hand-written — disabled per IR-only constraint
 const no_dupe_keys = @import("correctness/no_dupe_keys.zig");  // IR-generated via no-dupe-keys-check handler
 const no_dupe_args = @import("correctness/no_dupe_args.zig");  // IR-generated via no-dupe-args-check handler
-// const no_sparse_arrays = @import("correctness/no_sparse_arrays.zig");  // hand-written — disabled per IR-only constraint
+const no_sparse_arrays = @import("correctness/no_sparse_arrays.zig");  // IR-generated via no-sparse-arrays-check handler
 // const no_unreachable = @import("correctness/no_unreachable.zig");  // hand-written — disabled per IR-only constraint
 const no_unsafe_negation = @import("correctness/no_unsafe_negation.zig");  // IR-generated via isParenthesised + operator-marker re-lift
 // const use_isnan = @import("correctness/use_isnan.zig");  // hand-written — disabled per IR-only constraint
@@ -283,7 +283,7 @@ pub const all_rules = .{
     // no_extra_semi, // hand-written — disabled
     no_dupe_keys,
     no_dupe_args,
-    // no_sparse_arrays, // hand-written — disabled
+    no_sparse_arrays,
     // no_unreachable, // runner >> native (runner 57/67, native 42/67, 19 more FN); fall back to runner
     no_unsafe_negation,
     // use_isnan, // runner >> native (runner 214, native 176, gap 38); fall back to JS runner

@@ -493,6 +493,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUnusedLabelsHandler,  // no-unused-labels
       extractNoExtraLabelHandler,    // no-extra-label
       extractNoEmptyHandler,         // no-empty
+      extractNoSparseArraysHandler,  // no-sparse-arrays
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1109,6 +1110,17 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-sparse-arrays: flags array literals with holes (`[,]`, `[1,,2]`).
+// Walks each array_literal's elements and reports at the comma after each
+// hole, except the trailing hole when the last real element is non-null.
+function extractNoSparseArraysHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-sparse-arrays.js")) return { ok: false };
+  if (rawHandler.selector === "ArrayExpression") {
+    return { ok: true, handler: { kind: "no-sparse-arrays-check", messageId: "unexpectedSparseArray" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 // no-empty: flags empty block statements / switch statements / static
 // blocks, except those that are function bodies, comment-bearing, or
 // catch clauses when allowEmptyCatch is set.

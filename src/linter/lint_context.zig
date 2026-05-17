@@ -720,6 +720,59 @@ pub const LintContext = struct {
         };
     }
 
+    /// no-sparse-arrays: walk an array_literal's elements and emit a diag
+    /// for each hole, except the trailing hole when the last real element
+    /// is non-null.  Locates the comma after the hole and reports at its
+    /// position to match ESLint's per-comma loc.
+    pub fn checkNoSparseArrays(self: *const LintContext, n: NodeIndex, message_id: []const u8) void {
+        if (self.ast.nodeTag(n) != .array_literal) return;
+        const d = self.ast.nodeData(n);
+        const elems = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+        if (elems.len == 0) return;
+        const hole_marker: u32 = @intFromEnum(NodeIndex.none);
+        var has_hole = false;
+        for (elems) |e| if (e == hole_marker) { has_hole = true; break; };
+        if (!has_hole) return;
+        // Walk holes; skip the last-position hole when there are non-hole
+        // elements after it (impossible — last is last).  ESLint's
+        // `i === last - 1 && element` early-return: when the LAST element
+        // is non-null, the iteration returns without processing the last
+        // index.  Equivalent for us: iterate all indices except the last,
+        // EXCEPT report the last too when it's a hole.
+        const node_span = self.nodeSpan(n);
+        const src = self.ast.source;
+        var cursor: u32 = node_span.start + 1; // skip the opening `[`
+        var i: usize = 0;
+        while (i < elems.len) : (i += 1) {
+            const e = elems[i];
+            // Find the next comma starting from cursor (after any non-hole element).
+            // For non-hole elements, advance cursor past them first.
+            if (e != hole_marker) {
+                const en: NodeIndex = @enumFromInt(e);
+                const esp = self.nodeSpan(en);
+                cursor = esp.end;
+            }
+            // Advance cursor past whitespace/comments looking for `,`.
+            var comma_pos: u32 = cursor;
+            while (comma_pos < node_span.end - 1 and src[comma_pos] != ',') comma_pos += 1;
+            if (e == hole_marker) {
+                // For trailing hole: when this is the last element AND prior was non-null,
+                // the trailing comma is benign (`[1,]`).  When the only element is a hole
+                // (`[,]`), still report.  ESLint's early-return only triggers when last is non-null.
+                if (i == elems.len - 1) {
+                    // Check if previous was non-null — if so, this hole IS the trailing.
+                    // Even ESLint's spec: `[1,,]` → reports the second hole, but `[1,]`
+                    // has no hole at last.  Our elements list already accounts for trailing
+                    // commas (parser doesn't include trailing-comma as a hole entry).
+                    // So if i is last AND it's a hole, ESLint reports.
+                }
+                self.reportSpanWithMessageId(.{ .start = comma_pos, .end = comma_pos + 1 }, message_id);
+            }
+            // Advance cursor past the comma for the next iteration.
+            cursor = comma_pos + 1;
+        }
+    }
+
     /// no-extra-label: true iff `break/continue LBL` has LBL pointing at
     /// the nearest enclosing labeled breakable — i.e. the label is
     /// redundant.  Walks up from `n` looking for either a labeled_stmt

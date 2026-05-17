@@ -407,6 +407,10 @@ function validateRule(rule) {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       continue;
     }
+    if (h.kind === "no-sparse-arrays-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
     if (h.kind === "no-empty-check") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       if (typeof h.selector !== "string") return fail("selector must be string", path);
