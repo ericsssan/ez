@@ -6556,6 +6556,65 @@ function extractExpr(expr, scope) {
           rhs: { op: "nodes-equal", a: { op: "node-main-child", node: parentExpr }, b: argR.expr },
         } };
       }
+      // astUtils.isSpecificId(X, "name") — synthesize: X.type === "Identifier"
+      // && X.name === "name".  Only the string-literal form is handled; the
+      // regex form would need pattern matching support.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "isSpecificId"
+          && expr.arguments.length === 2
+          && expr.arguments[1].type === "Literal" && typeof expr.arguments[1].value === "string") {
+        const argR = extractExpr(expr.arguments[0], scope);
+        if (!argR.ok) return argR;
+        const nameLit = expr.arguments[1].value;
+        return { ok: true, expr: {
+          op: "binary", operator: "&&",
+          lhs: { op: "node-tag-equals", node: argR.expr, estreeType: "Identifier" },
+          rhs: { op: "binary", operator: "===",
+            lhs: { op: "node-main-token-text", node: argR.expr },
+            rhs: { op: "literal", value: nameLit },
+          },
+        } };
+      }
+      // astUtils.isSpecificMemberAccess(X, "obj", "prop") — synthesize the
+      // MemberExpression(.optional included)-with-name shape.  Null args (or
+      // missing arg) skip that side of the check.  Only string-literal names
+      // here; regex variants are too rare to justify pattern infra.
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.property?.type === "Identifier" && callee.property.name === "isSpecificMemberAccess"
+          && expr.arguments.length >= 2) {
+        const argR = extractExpr(expr.arguments[0], scope);
+        if (!argR.ok) return argR;
+        const objArg = expr.arguments[1];
+        const propArg = expr.arguments[2] || { type: "Literal", value: null };
+        const isStrOrNull = (a) =>
+          (a.type === "Literal" && (typeof a.value === "string" || a.value === null))
+          || (a.type === "Identifier" && a.name === "undefined");
+        if (!isStrOrNull(objArg) || !isStrOrNull(propArg)) {
+          return { ok: false, reason: "isSpecificMemberAccess: only string/null args supported" };
+        }
+        const skipped = { op: "node-skip-grouping", node: argR.expr };
+        let cond = {
+          op: "binary", operator: "||",
+          lhs: { op: "node-tag-equals", node: skipped, estreeType: "MemberExpression" },
+          rhs: { op: "node-tag-equals", node: skipped, estreeType: "__OptionalMemberExpression__" },
+        };
+        if (objArg.type === "Literal" && typeof objArg.value === "string") {
+          const objNode = { op: "node-main-child", node: skipped };
+          cond = { op: "binary", operator: "&&", lhs: cond, rhs: {
+            op: "binary", operator: "&&",
+            lhs: { op: "node-tag-equals", node: objNode, estreeType: "Identifier" },
+            rhs: { op: "binary", operator: "===",
+              lhs: { op: "node-main-token-text", node: objNode },
+              rhs: { op: "literal", value: objArg.value },
+            },
+          } };
+        }
+        if (propArg.type === "Literal" && typeof propArg.value === "string") {
+          cond = { op: "binary", operator: "&&", lhs: cond,
+            rhs: { op: "node-prop-name-equals", node: skipped, name: propArg.value } };
+        }
+        return { ok: true, expr: cond };
+      }
       // getStaticPropertyName(X) / astUtils.getStaticPropertyName(X) — emit
       // marker consumed by the enclosing === comparison.
       if (((callee.type === "Identifier" && callee.name === "getStaticPropertyName")

@@ -1339,9 +1339,11 @@ function emitExpr(e, ctx) {
       }
       // String comparison: member(*, "name"/"raw") with literal or another string member.
       // Also covers <token-expr>.value — token text is a []const u8.
-      const isStrProp = (e) => e.op === "member"
+      // Also node-main-token-text — direct string-valued op.
+      const isStrProp = (e) => (e.op === "member"
         && (e.property === "name" || e.property === "raw"
-            || (e.property === "value" && TOKEN_EXPR_OPS.has(e.object?.op)));
+            || (e.property === "value" && TOKEN_EXPR_OPS.has(e.object?.op))))
+        || e.op === "node-main-token-text";
       const lhsIsStr = isStrProp(e.lhs);
       const rhsIsStr = isStrProp(e.rhs);
       const lhsIsLitStr = e.lhs.op === "literal" && typeof e.lhs.value === "string";
