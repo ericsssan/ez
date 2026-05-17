@@ -489,6 +489,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoSelfAssignHandler,    // no-self-assign
       extractNoDupeArgsHandler,      // no-dupe-args
       extractNoDupeKeysHandler,      // no-dupe-keys
+      extractNoDupeClassMembersHandler, // no-dupe-class-members
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1105,6 +1106,18 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-dupe-class-members: reports duplicate class member names.  Walks
+// each class_body, applying the same get/set/init collision rules as
+// no-dupe-keys but with separate static and instance groups.  Skips
+// constructors (which have their own structural constraint).
+function extractNoDupeClassMembersHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-dupe-class-members.js")) return { ok: false };
+  if (rawHandler.selector === "ClassBody") {
+    return { ok: true, handler: { kind: "no-dupe-class-members-check", messageId: "unexpected" } };
+  }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
 // no-dupe-keys: reports duplicate static keys in an object literal.  Get/set
 // pairs allowed; init+any collides.  Walks each object_literal node; the
 // helper detects collisions and reports per-occurrence.

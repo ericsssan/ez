@@ -239,10 +239,11 @@ function emit(rule) {
   const hasNoSelfAssignCheck = rule.handlers.some(h => h.kind === "no-self-assign-check");
   const hasNoDupeArgsCheck = rule.handlers.some(h => h.kind === "no-dupe-args-check");
   const hasNoDupeKeysCheck = rule.handlers.some(h => h.kind === "no-dupe-keys-check");
+  const hasNoDupeClassMembersCheck = rule.handlers.some(h => h.kind === "no-dupe-class-members-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -260,6 +261,8 @@ function emit(rule) {
     relevantTags = ["assign", "logical_and_assign", "logical_or_assign", "nullish_assign"];
   } else if (hasNoDupeKeysCheck) {
     relevantTags = ["object_literal"];
+  } else if (hasNoDupeClassMembersCheck) {
+    relevantTags = ["class_body"];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
   } else {
@@ -281,7 +284,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -338,7 +341,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -651,6 +654,12 @@ function emit(rule) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    if (ctx.nodeTag(node) != .object_literal) return;`);
     out.push(`    ctx.checkNoDupeKeys(node, "${zigStr(h.messageId)}");`);
+    out.push(`}`);
+  } else if (hasNoDupeClassMembersCheck) {
+    const h = rule.handlers.find(x => x.kind === "no-dupe-class-members-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    if (ctx.nodeTag(node) != .class_body) return;`);
+    out.push(`    ctx.checkNoDupeClassMembers(node, "${zigStr(h.messageId)}");`);
     out.push(`}`);
   } else if (hasNoSelfAssignCheck) {
     const h = rule.handlers.find(x => x.kind === "no-self-assign-check");

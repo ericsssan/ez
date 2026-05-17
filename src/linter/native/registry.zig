@@ -31,7 +31,7 @@ const no_multi_assign = @import("style/no_multi_assign.zig");
 // const getter_return = @import("correctness/getter_return.zig");  // hand-written — disabled per IR-only constraint
 const no_async_promise_executor = @import("correctness/no_async_promise_executor.zig");
 const no_compare_neg_zero = @import("correctness/no_compare_neg_zero.zig");
-// const no_dupe_class_members = @import("correctness/no_dupe_class_members.zig");  // hand-written — disabled per IR-only constraint
+const no_dupe_class_members = @import("correctness/no_dupe_class_members.zig");  // IR-generated via no-dupe-class-members-check handler
 // const no_dupe_else_if = @import("correctness/no_dupe_else_if.zig");  // hand-written — disabled per IR-only constraint
 const no_duplicate_case = @import("correctness/no_duplicate_case.zig");
 // const no_empty_pattern = @import("correctness/no_empty_pattern.zig");  // hand-written — disabled per IR-only constraint
@@ -320,7 +320,7 @@ pub const all_rules = .{
     // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
     // no_async_promise_executor, // hand-written — disabled
     no_compare_neg_zero,
-    // no_dupe_class_members, // native has FP making hybrid worse (runner 78, native 72); fall back to JS runner
+    no_dupe_class_members,
     // no_dupe_else_if, // hand-written, 59 FP vs ESLint; fall back to JS runner
     // no_duplicate_case, // hand-written — disabled
     // no_empty_pattern, // runner >> native (runner 31, native 25, 6 FP!!); fall back

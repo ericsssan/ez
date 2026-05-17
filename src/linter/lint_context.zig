@@ -702,6 +702,104 @@ pub const LintContext = struct {
         return true;
     }
 
+    /// True iff a class method member has no function body — i.e. a TS
+    /// overload signature like `foo(a: string): string;`.  Detected by
+    /// MethodData.body == .none.  Property fields (no MethodData) return false.
+    pub fn isMethodWithoutBody(self: *const LintContext, n: NodeIndex) bool {
+        const tag = self.ast.nodeTag(n);
+        switch (tag) {
+            .method_def, .computed_method_def,
+            .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def => {
+                const d = self.ast.nodeData(n);
+                if (d.rhs == .none) return false;
+                const md = self.extraData(ast_mod.MethodData, @intFromEnum(d.rhs));
+                return md.body == .none;
+            },
+            else => return false,
+        }
+    }
+
+    /// True iff a class member node carries the `static` modifier.  We
+    /// detect by walking the tokens preceding the key's main_token; method
+    /// shapes also embed a modifier bit in MethodData (mutually consistent).
+    /// `static {}` blocks are .static_block — separate tag, handled elsewhere.
+    pub fn classMemberIsStatic(self: *const LintContext, n: NodeIndex) bool {
+        const tag = self.ast.nodeTag(n);
+        switch (tag) {
+            .method_def, .computed_method_def,
+            .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def => {
+                const d = self.ast.nodeData(n);
+                if (d.rhs == .none) return false;
+                const md = self.extraData(ast_mod.MethodData, @intFromEnum(d.rhs));
+                return (md.modifiers & ast_mod.ModifierBit.@"static") != 0;
+            },
+            .property_def, .computed_property_def => {
+                // No static bit in PropertyData — walk back from main_token
+                // looking for `static` keyword among prefix tokens.
+                const main = self.ast.nodeMainToken(n);
+                var t: u32 = main;
+                while (t > 0) {
+                    t -= 1;
+                    const txt = self.ast.tokenText(t);
+                    if (std.mem.eql(u8, txt, "static")) return true;
+                    // Other class-member modifiers we might cross over.
+                    if (std.mem.eql(u8, txt, "public") or std.mem.eql(u8, txt, "private")
+                        or std.mem.eql(u8, txt, "protected") or std.mem.eql(u8, txt, "readonly")
+                        or std.mem.eql(u8, txt, "abstract") or std.mem.eql(u8, txt, "override")
+                        or std.mem.eql(u8, txt, "declare") or std.mem.eql(u8, txt, "accessor")
+                        or std.mem.eql(u8, txt, "*") or std.mem.eql(u8, txt, "async")) continue;
+                    break;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    /// no-dupe-class-members: walk a class_body's members and emit a diag
+    /// for each duplicate (name, static, kind) collision.  Same rules as
+    /// no-dupe-keys (init/get/set collisions) but with separate static
+    /// and instance groups.  Constructors are skipped per ESLint.
+    pub fn checkNoDupeClassMembers(self: *const LintContext, body: NodeIndex, message_id: []const u8) void {
+        if (body == .none) return;
+        if (self.ast.nodeTag(body) != .class_body) return;
+        const d = self.ast.nodeData(body);
+        const members = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+        var i: usize = 0;
+        while (i < members.len) : (i += 1) {
+            const mi_raw = members[i];
+            if (mi_raw == 0) continue;
+            const mi: NodeIndex = @enumFromInt(mi_raw);
+            // Constructor is special only as an INSTANCE method; `static
+            // constructor()` is a regular static method.
+            if (self.isConstructorMethod(mi) and !self.classMemberIsStatic(mi)) continue;
+            if (self.isMethodWithoutBody(mi)) continue;  // TS overload signatures
+            const ni = self.propertyEntryStaticName(mi) orelse continue;
+            const ki = self.propertyEntryKind(mi);
+            const si = self.classMemberIsStatic(mi);
+            var j: usize = 0;
+            var collision = false;
+            while (j < i) : (j += 1) {
+                const mj_raw = members[j];
+                if (mj_raw == 0) continue;
+                const mj: NodeIndex = @enumFromInt(mj_raw);
+                if (self.isConstructorMethod(mj) and !self.classMemberIsStatic(mj)) continue;
+                if (self.isMethodWithoutBody(mj)) continue;
+                if (self.classMemberIsStatic(mj) != si) continue;
+                if (!self.propertyKeysEqual(mi, mj)) continue;
+                const kj = self.propertyEntryKind(mj);
+                if (ki == .init or kj == .init or ki == kj) { collision = true; break; }
+            }
+            if (!collision) continue;
+            const key_node = self.propertyEntryKeyNode(mi);
+            self.reportWithMessageIdAndData(key_node, message_id, &[_]MessageDataEntry{
+                .{ .key = "name", .val = ni },
+            });
+        }
+    }
+
     /// no-dupe-keys: walk an object_literal's properties and emit a diag
     /// for each duplicate static key.  Accounts for getter/setter pairs
     /// (those don't collide with each other but collide with init forms).
@@ -769,16 +867,35 @@ pub const LintContext = struct {
     fn propertyKeysEqual(self: *const LintContext, pa: NodeIndex, pb: NodeIndex) bool {
         const na = self.propertyEntryStaticName(pa) orelse return false;
         const nb = self.propertyEntryStaticName(pb) orelse return false;
-        if (std.mem.eql(u8, na, nb)) return true;
-        // Try numeric equivalence when both keys originated from a number_literal.
         const ka = self.propertyEntryKeyNode(pa);
         const kb = self.propertyEntryKeyNode(pb);
-        if (self.ast.nodeTag(ka) == .number_literal and self.ast.nodeTag(kb) == .number_literal) {
+        const ka_num = self.ast.nodeTag(ka) == .number_literal;
+        const kb_num = self.ast.nodeTag(kb) == .number_literal;
+        // Numeric ↔ numeric: compare values (0x1 ≡ 1 ≡ 1.0).
+        if (ka_num and kb_num) {
             const va = parseNumericLiteral(na) orelse return false;
             const vb = parseNumericLiteral(nb) orelse return false;
             return va == vb;
         }
-        return false;
+        // Mixed: numeric on one side, string/template on the other.  In JS
+        // a numeric key like `1.0` becomes property name `"1"`; so compare
+        // the canonical string form of the numeric key to the other key's
+        // raw text content.
+        if (ka_num and !kb_num) {
+            const va = parseNumericLiteral(na) orelse return false;
+            return numericMatchesString(va, nb);
+        }
+        if (kb_num and !ka_num) {
+            const vb = parseNumericLiteral(nb) orelse return false;
+            return numericMatchesString(vb, na);
+        }
+        return std.mem.eql(u8, na, nb);
+    }
+
+    fn numericMatchesString(value: f64, str: []const u8) bool {
+        var buf: [64]u8 = undefined;
+        const formatted = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return false;
+        return std.mem.eql(u8, formatted, str);
     }
 
     /// True iff `prop` is a non-computed `__proto__: …` proto setter
@@ -2352,12 +2469,23 @@ pub const LintContext = struct {
     pub fn isConstructorMethod(self: *const LintContext, n: NodeIndex) bool {
         if (n == .none) return false;
         const tag = self.ast.nodeTag(n);
+        // Computed-key methods are never constructors (per ES spec), even
+        // if the key happens to evaluate to "constructor".
         if (tag != .method_def and tag != .constructor_def) return false;
         if (tag == .constructor_def) return true;
         const key = self.ast.nodeData(n).lhs;
         if (key == .none) return false;
-        if (self.ast.nodeTag(key) != .identifier) return false;
-        return std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(key)), "constructor");
+        const ktag = self.ast.nodeTag(key);
+        if (ktag == .identifier) {
+            return std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(key)), "constructor");
+        }
+        // String-literal key with content "constructor" also designates the
+        // constructor: `'constructor'() {}` is structurally the constructor.
+        if (ktag == .string_literal) {
+            const raw = self.tokenText(self.ast.nodeMainToken(key));
+            if (raw.len >= 2) return std.mem.eql(u8, raw[1 .. raw.len - 1], "constructor");
+        }
+        return false;
     }
 
     /// Nearest ancestor of `n` whose tag is a function-like node
