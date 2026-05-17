@@ -17,7 +17,7 @@ const no_undef = @import("correctness/no_undef.zig");
 // const no_constant_condition = @import("correctness/no_constant_condition.zig");  // hand-written — disabled per IR-only constraint
 const no_func_assign = @import("correctness/no_func_assign.zig");
 // const no_import_assign = @import("correctness/no_import_assign.zig");  // hand-written — disabled per IR-only constraint
-// const no_self_assign = @import("correctness/no_self_assign.zig");  // hand-written — disabled per IR-only constraint
+const no_self_assign = @import("correctness/no_self_assign.zig");  // IR-generated via no-self-assign-check handler
 const no_self_compare = @import("suspicious/no_self_compare.zig");
 // const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");  // hand-written — disabled per IR-only constraint
 // const no_loss_of_precision = @import("correctness/no_loss_of_precision.zig");  // hand-written — disabled per IR-only constraint
@@ -294,7 +294,7 @@ pub const all_rules = .{
 
     no_func_assign,
     // no_import_assign, // runner >> native (runner 110, native 85, 31 FN); fall back
-    // no_self_assign, // native has 7 FP making hybrid worse (runner 85, native 74); fall back to JS runner
+    no_self_assign,
     // no_self_compare, // hand-written — disabled
     // no_unsafe_optional_chaining, // runner >> native (runner 187, native 155, gap 32); fall back to JS runner
     // no_loss_of_precision, // runner >> native (runner 125, native 114, 6 FN 5 FP); fall back

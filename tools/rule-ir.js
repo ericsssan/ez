@@ -383,6 +383,10 @@ function validateRule(rule) {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       continue;
     }
+    if (h.kind === "no-self-assign-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
     if (h.kind === "noop-stub") {
       continue;
     }

@@ -236,10 +236,11 @@ function emit(rule) {
   const hasNoUndefInitCheck = rule.handlers.some(h => h.kind === "no-undef-init-check");
   const hasForEachRefByOptionName = rule.handlers.some(h => h.kind === "for-each-ref-by-option-name");
   const hasNoRedeclareCheck = rule.handlers.some(h => h.kind === "no-redeclare-check");
+  const hasNoSelfAssignCheck = rule.handlers.some(h => h.kind === "no-self-assign-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -253,6 +254,8 @@ function emit(rule) {
     relevantTags = [];
   } else if (hasNoUndefInitCheck) {
     relevantTags = ["declarator"];
+  } else if (hasNoSelfAssignCheck) {
+    relevantTags = ["assign", "logical_and_assign", "logical_or_assign", "nullish_assign"];
   } else if (hasNodeHandler) {
     relevantTags = collectTagsFromNodeHandlers(rule.handlers);
   } else {
@@ -274,7 +277,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -331,7 +334,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -602,6 +605,52 @@ function emit(rule) {
     out.push(`                .{ .key = "name", .val = prop_name },`);
     out.push(`            });`);
     out.push(`        }`);
+    out.push(`    }`);
+    out.push(`}`);
+  } else if (hasNoSelfAssignCheck) {
+    const h = rule.handlers.find(x => x.kind === "no-self-assign-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    // Only consider plain/logical-assign forms — compound math`);
+    out.push(`    // assignments (+=, *=, etc.) aren't "self" assignments.`);
+    out.push(`    switch (ctx.nodeTag(node)) {`);
+    out.push(`        .assign, .logical_and_assign, .logical_or_assign, .nullish_assign => {},`);
+    out.push(`        else => return,`);
+    out.push(`    }`);
+    out.push(`    const left = ctx.nodeSkipGrouping(ctx.nodeData(node).lhs);`);
+    out.push(`    const right = ctx.nodeSkipGrouping(ctx.nodeData(node).rhs);`);
+    out.push(`    if (left == .none or right == .none) return;`);
+    out.push(`    const lt = ctx.nodeTag(left);`);
+    out.push(`    const rt = ctx.nodeTag(right);`);
+    out.push(`    if (lt == .identifier and rt == .identifier) {`);
+    out.push(`        const ln = ctx.tokenText(ctx.nodeMainToken(left));`);
+    out.push(`        const rn = ctx.tokenText(ctx.nodeMainToken(right));`);
+    out.push(`        if (std.mem.eql(u8, ln, rn)) {`);
+    out.push(`            ctx.reportWithMessageIdAndData(right, "${zigStr(h.messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`                .{ .key = "name", .val = rn },`);
+    out.push(`            });`);
+    out.push(`        }`);
+    out.push(`        return;`);
+    out.push(`    }`);
+    out.push(`    if (!ctx.getOptionBool("props", true)) return;`);
+    out.push(`    const lm = lt == .member_expr or lt == .optional_member_expr`);
+    out.push(`        or lt == .computed_member_expr or lt == .optional_computed_member_expr;`);
+    out.push(`    const rm = rt == .member_expr or rt == .optional_member_expr`);
+    out.push(`        or rt == .computed_member_expr or rt == .optional_computed_member_expr;`);
+    out.push(`    if (lm and rm and ctx.nodeTokensEqual(left, right)) {`);
+    // Skip non-simple chains (calls, expression-keyed computed members).
+    // ESLint's isSameReference treats those as potentially side-effectful.
+    out.push(`        if (!ctx.isSimpleMemberChain(left) or !ctx.isSimpleMemberChain(right)) return;`);
+    out.push(`        ctx.reportWithMessageIdAndData(right, "${zigStr(h.messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    out.push(`            .{ .key = "name", .val = ctx.sourceText(right) },`);
+    out.push(`        });`);
+    out.push(`        return;`);
+    out.push(`    }`);
+    // Recursive destructuring: ArrayPattern/ObjectPattern paired with
+    // matching ArrayExpression/ObjectExpression — recursive pair walker
+    // handles nested patterns, rest/spread, and object key matching.
+    out.push(`    if ((lt == .array_pattern and rt == .array_literal)`);
+    out.push(`        or (lt == .object_pattern and rt == .object_literal)) {`);
+    out.push(`        ctx.checkSelfAssignArrayPattern(left, right, "${zigStr(h.messageId)}");`);
     out.push(`    }`);
     out.push(`}`);
   } else if (hasNoUndefInitCheck) {

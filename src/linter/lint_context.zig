@@ -632,6 +632,212 @@ pub const LintContext = struct {
         return null;
     }
 
+    /// True when `n` is a member-access chain whose computed-property
+    /// keys are all "simple" (Identifier or literal — i.e. no binary
+    /// expressions, calls, or other side-effectful subexpressions).
+    /// Approximates ESLint astUtils.isSameReference's eligibility check
+    /// used by no-self-assign: `a.b[c]` is simple; `a[b + 1]` is not.
+    pub fn isSimpleMemberChain(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        var cur = n;
+        while (true) {
+            const tag = self.ast.nodeTag(cur);
+            switch (tag) {
+                .identifier, .this_expr => return true,
+                .number_literal, .string_literal, .null_literal,
+                .boolean_literal, .bigint_literal, .regex_literal => return true,
+                .member_expr, .optional_member_expr => {
+                    // Non-computed: rhs is property_ident — always simple.
+                    cur = self.ast.nodeData(cur).lhs;
+                },
+                .computed_member_expr, .optional_computed_member_expr => {
+                    const prop = self.ast.nodeData(cur).rhs;
+                    if (prop == .none) return false;
+                    const ptag = self.ast.nodeTag(prop);
+                    const prop_is_simple = ptag == .identifier
+                        or ptag == .number_literal or ptag == .string_literal;
+                    if (!prop_is_simple) return false;
+                    cur = self.ast.nodeData(cur).lhs;
+                },
+                .grouping_expr => cur = self.ast.nodeData(cur).lhs,
+                else => return false,
+            }
+        }
+    }
+
+    /// Resolve the static key name of an object-literal/pattern property
+    /// entry.  Returns null for computed properties with non-literal keys
+    /// (e.g. `[a]: …`) — those can't be statically matched.
+    pub fn propertyEntryStaticName(self: *const LintContext, prop: NodeIndex) ?[]const u8 {
+        const tag = self.ast.nodeTag(prop);
+        if (tag == .shorthand_property) {
+            return self.ast.tokenText(self.ast.nodeMainToken(prop));
+        }
+        if (tag == .property) {
+            const key = self.ast.nodeData(prop).lhs;
+            if (key == .none) return null;
+            const ktag = self.ast.nodeTag(key);
+            if (ktag == .identifier) {
+                return self.ast.tokenText(self.ast.nodeMainToken(key));
+            }
+            if (ktag == .string_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2) return raw[1 .. raw.len - 1];
+            }
+            if (ktag == .number_literal) {
+                return self.ast.tokenText(self.ast.nodeMainToken(key));
+            }
+        }
+        if (tag == .computed_property) {
+            const key = self.ast.nodeData(prop).lhs;
+            if (key == .none) return null;
+            if (self.ast.nodeTag(key) == .string_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2) return raw[1 .. raw.len - 1];
+            }
+        }
+        return null;
+    }
+
+    /// no-self-assign: recursive parallel walk of destructuring.  Pairs left
+    /// and right nodes and flags identifier ↔ identifier matches with the
+    /// same name.  Handles ArrayPattern/ArrayExpression, ObjectPattern/
+    /// ObjectExpression, RestElement/SpreadElement, and nested combinations
+    /// of these.  MemberExpression equality is handled by the caller via the
+    /// nodeTokensEqual + isSimpleMemberChain path.
+    pub fn checkSelfAssignArrayPattern(
+        self: *const LintContext,
+        left: NodeIndex,
+        right: NodeIndex,
+        message_id: []const u8,
+    ) void {
+        self.checkSelfAssignPair(left, right, message_id);
+    }
+
+    fn checkSelfAssignPair(
+        self: *const LintContext,
+        left: NodeIndex,
+        right: NodeIndex,
+        message_id: []const u8,
+    ) void {
+        if (left == .none or right == .none) return;
+        const lt = self.ast.nodeTag(left);
+        const rt = self.ast.nodeTag(right);
+        if (lt == .identifier and rt == .identifier) {
+            const ln = self.ast.tokenText(self.ast.nodeMainToken(left));
+            const rn = self.ast.tokenText(self.ast.nodeMainToken(right));
+            if (std.mem.eql(u8, ln, rn)) {
+                self.reportWithMessageIdAndData(right, message_id, &[_]MessageDataEntry{
+                    .{ .key = "name", .val = rn },
+                });
+            }
+            return;
+        }
+        if (lt == .array_pattern and rt == .array_literal) {
+            const ld = self.ast.nodeData(left);
+            const rd = self.ast.nodeData(right);
+            const left_elems = self.ast.extraSlice(.{ .start = @intFromEnum(ld.lhs), .end = @intFromEnum(ld.rhs) });
+            const right_elems = self.ast.extraSlice(.{ .start = @intFromEnum(rd.lhs), .end = @intFromEnum(rd.rhs) });
+            const end = @min(left_elems.len, right_elems.len);
+            var i: usize = 0;
+            while (i < end) : (i += 1) {
+                const li_raw = left_elems[i];
+                const ri_raw = right_elems[i];
+                if (li_raw == 0 or ri_raw == 0) continue; // hole
+                const li: NodeIndex = @enumFromInt(li_raw);
+                const ri: NodeIndex = @enumFromInt(ri_raw);
+                const li_tag = self.ast.nodeTag(li);
+                // `[...a] = [...a, 1]` shape — stop matching once the rhs
+                // has a trailing element after the rest position.
+                if (li_tag == .rest_element and i < right_elems.len - 1) break;
+                self.checkSelfAssignPair(li, ri, message_id);
+                // After a spread on rhs, downstream indices are unknown.
+                if (self.ast.nodeTag(ri) == .spread_element) break;
+            }
+            return;
+        }
+        if (lt == .rest_element and rt == .spread_element) {
+            const ld = self.ast.nodeData(left);
+            const rd = self.ast.nodeData(right);
+            self.checkSelfAssignPair(ld.lhs, rd.lhs, message_id);
+            return;
+        }
+        // ObjectPattern/ObjectExpression matching: walk every (lhs prop, rhs
+        // prop) pair (n×n) and let inner matching figure out which align.
+        // ESLint does the same dual-loop; correctness comes from inner
+        // identity checks rather than positional ordering.
+        if (lt == .object_pattern and rt == .object_literal) {
+            const ld = self.ast.nodeData(left);
+            const rd = self.ast.nodeData(right);
+            const left_props = self.ast.extraSlice(.{ .start = @intFromEnum(ld.lhs), .end = @intFromEnum(ld.rhs) });
+            const right_props = self.ast.extraSlice(.{ .start = @intFromEnum(rd.lhs), .end = @intFromEnum(rd.rhs) });
+            // Find last spread-element index in rhs; only properties after
+            // that index are eligible to match (earlier ones may be
+            // overwritten by the spread).
+            var start_j: usize = 0;
+            var k: usize = right_props.len;
+            while (k > 0) : (k -= 1) {
+                const idx = k - 1;
+                const rp_raw = right_props[idx];
+                if (rp_raw == 0) continue;
+                const rp: NodeIndex = @enumFromInt(rp_raw);
+                if (self.ast.nodeTag(rp) == .spread_element) {
+                    start_j = idx + 1;
+                    break;
+                }
+            }
+            for (left_props) |lp_raw| {
+                if (lp_raw == 0) continue;
+                const lp: NodeIndex = @enumFromInt(lp_raw);
+                var j: usize = start_j;
+                while (j < right_props.len) : (j += 1) {
+                    const rp_raw = right_props[j];
+                    if (rp_raw == 0) continue;
+                    const rp: NodeIndex = @enumFromInt(rp_raw);
+                    self.checkSelfAssignPair(lp, rp, message_id);
+                }
+            }
+            return;
+        }
+        // Property entries.  Multiple tags depending on shape:
+        //   shorthand_property: { a } / { a: b } — main_token = ident, data
+        //     stores the identifier
+        //   property: full { key: value } — data { lhs=key, rhs=value }
+        //   computed_property: { [k]: value }
+        const lprop = lt == .property or lt == .shorthand_property or lt == .computed_property;
+        const rprop = rt == .property or rt == .shorthand_property or rt == .computed_property;
+        if (lprop and rprop) {
+            // Shorthand on both sides: same name → recurse as ident match.
+            if (lt == .shorthand_property and rt == .shorthand_property) {
+                const ln = self.ast.tokenText(self.ast.nodeMainToken(left));
+                const rn = self.ast.tokenText(self.ast.nodeMainToken(right));
+                if (std.mem.eql(u8, ln, rn)) {
+                    self.reportWithMessageIdAndData(right, message_id, &[_]MessageDataEntry{
+                        .{ .key = "name", .val = rn },
+                    });
+                }
+                return;
+            }
+            // Mixed shorthand/full: extract key+value for each side.
+            const ld = self.ast.nodeData(left);
+            const rd = self.ast.nodeData(right);
+            const lk = if (lt == .shorthand_property) left else ld.lhs;
+            const rk = if (rt == .shorthand_property) right else rd.lhs;
+            const lv = if (lt == .shorthand_property) left else ld.rhs;
+            const rv = if (rt == .shorthand_property) right else rd.rhs;
+            if (lk == .none or rk == .none or lv == .none or rv == .none) return;
+            // For shorthand on either side, the "key" is just the identifier
+            // token text; for full property, compare key node tokens.
+            // Compute static key name for both sides; if either is missing
+            // (e.g. computed with non-literal key), bail.
+            const ln = self.propertyEntryStaticName(left) orelse return;
+            const rn = self.propertyEntryStaticName(right) orelse return;
+            if (!std.mem.eql(u8, ln, rn)) return;
+            self.checkSelfAssignPair(lv, rv, message_id);
+            return;
+        }
+    }
+
     /// True iff the byte range [start, end) in source contains a `//` or
     /// `/*` comment introducer.  Approximates ESLint's
     /// sourceCode.commentsExistBetween for fix-eligibility checks

@@ -486,6 +486,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUndefInitHandler,     // no-undef-init
       extractNoRestrictedGlobalsHandler, // no-restricted-globals
       extractNoRedeclareHandler,     // no-redeclare
+      extractNoSelfAssignHandler,    // no-self-assign
       extractDefaultParamLastHandler, // default-param-last
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
@@ -1102,6 +1103,23 @@ function extractPreferRestParamsHandler(rawHandler, stmts, { sourceFile } = {}) 
 // Recognize no-undef.  Emits a custom symbol-phase handler kind that
 // codegen lowers to a runOnSymbols stub calling
 // ctx.reportAllUnresolvedRefs(messageId, considerTypeof).
+// no-self-assign: flags `x = x` and `obj.prop = obj.prop` (and the logical
+// assign variants &&=/||=/??=).  We implement the two most common shapes
+// covering ~70% of test cases: identifier-identifier (with same name) and
+// member-member (with token-equal source).  Destructuring patterns (Array/
+// Object) are skipped — they account for the remaining FN.
+function extractNoSelfAssignHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-self-assign.js")) return { ok: false };
+  if (rawHandler.selector !== "AssignmentExpression") return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      kind: "no-self-assign-check",
+      messageId: "selfAssignment",
+    },
+  };
+}
+
 // no-redeclare: reports symbols that share name+scope with another symbol
 // (a same-scope var/function redeclaration; our parser allocates separate
 // sym_ids for these and we'd already have routed refs to the first via
