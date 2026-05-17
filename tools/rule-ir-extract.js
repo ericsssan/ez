@@ -199,6 +199,16 @@ function mapTypeToCategory(t) {
 
 // ── Extract handlers from the `create` function ──
 
+// Returns true if `node` is `context.options` directly, OR an Identifier
+// that was bound to `context.options` via `const options = context.options`.
+// Scope-aware via the `aliasedOptions` set on the scope.
+function isContextOptionsLoose(node, scope) {
+  if (!node) return false;
+  if (isContextOptions(node, scope.ctxName)) return true;
+  if (node.type === "Identifier" && scope.optionsAliases?.has(node.name)) return true;
+  return false;
+}
+
 // Returns true if `node` is `context.options` (a MemberExpression).
 function isContextOptions(node, ctxName) {
   return node?.type === "MemberExpression" &&
@@ -226,6 +236,9 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
   const boolPreds = { ...(moduleBoolPreds || {}) };
   // Maps local variable name → { op: "get-option-bool"|"get-option-string", name, default }
   const optionLocals = new Map();
+  // Local-name aliases for `const options = context.options` so downstream
+  // recognizers can treat `options[0]` the same as `context.options[0]`.
+  const optionsAliases = new Set();
 
   // ── Pass 1: register specialized helper recognizers ─────────────
   // (Generic inline helpers are deferred to pass 2 so they can call
@@ -304,6 +317,12 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
           continue;
         }
         if (decl.id.type !== "Identifier" || !decl.init) continue;
+        // `const options = context.options` — register as an alias so later
+        // `options[0]` extracts via the same recognizers as context.options[0].
+        if (isContextOptions(decl.init, ctxName)) {
+          optionsAliases.add(decl.id.name);
+          continue;
+        }
         const c = extractConstantInit(decl.init);
         if (c) {
           if (c.kind === "regex") regexConsts[decl.id.name] = c;
@@ -319,7 +338,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
         // bindings — we only want the option lift, not any handler-local.
         try {
           const probeScope = {
-            ctxName, nodeParamName: null, locals: new Map(), helpers: {}, constants, regexConsts, boolPreds: {}, moduleImports: moduleImports || {},
+            ctxName, nodeParamName: null, locals: new Map(), helpers: {}, constants, regexConsts, boolPreds: {}, moduleImports: moduleImports || {}, optionsAliases,
           };
           const r = extractExpr(decl.init, probeScope);
           if (r.ok && (r.expr.op === "option-equals-string"
@@ -449,7 +468,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
 
     // Seed locals with option bindings from the create() outer scope.
     const initLocals = new Map(optionLocals);
-    const scope = { ctxName, nodeParamName: h.nodeParam, locals: initLocals, helpers, constants, regexConsts, boolPreds, handlerSelector: h.selector, moduleImports: moduleImports || {} };
+    const scope = { ctxName, nodeParamName: h.nodeParam, locals: initLocals, helpers, constants, regexConsts, boolPreds, handlerSelector: h.selector, moduleImports: moduleImports || {}, optionsAliases };
     const body = [];
     for (const stmt of stmts) {
       const r = extractStatement(stmt, scope);
@@ -5813,10 +5832,11 @@ function extractExpr(expr, scope) {
       }
       // context.options[N] → __option_index_marker__ (consumed by enclosing
       // comparison; lifts to option-equals-string for the bare-string-option
-      // schema shape).
+      // schema shape).  Supports both `context.options[N]` and an alias
+      // `options[N]` where the local was bound to context.options upstream.
       if (expr.computed && expr.property?.type === "Literal"
           && typeof expr.property.value === "number"
-          && isContextOptions(expr.object, scope.ctxName)) {
+          && isContextOptionsLoose(expr.object, scope)) {
         return { ok: true, expr: { op: "__option_index_marker__", index: expr.property.value } };
       }
       // <nodeExpr>.arguments[N] → node-arg-at(nodeExpr, N)
