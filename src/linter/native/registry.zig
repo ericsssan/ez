@@ -103,22 +103,18 @@ const no_unused_private_class_members = @import("correctness/no_unused_private_c
 const no_unexpected_multiline = @import("correctness/no_unexpected_multiline.zig");  // IR-generated; covers function / property / taggedTemplate (division case TBD)
 const preserve_caught_error = @import("correctness/preserve_caught_error.zig");  // IR-generated; missingCause / incorrectCause / missingCatchErrorParam / partiallyLostError
 // const constructor_super = @import("correctness/constructor_super.zig");
-//   badSuper + missingAll + AST-walk duplicate fallback.  Tried using
-//   the existing code-path event stream for missingSome / multi-segment
-//   duplicate but seg_start events emit at parent-expression nodes
-//   rather than branch-body starts (ternary's true-fork seg_start fires
-//   with node=condition; ConditionalAlternate emits seg_start with
-//   node=consequent), so source-position-keyed lookup can't reliably
-//   tell which branch a sub-expression lives in.  Two cleaner
-//   alternatives, in order of plumbing depth:
-//     a) Have makeConsequent / makeConditionalAlternate / makeLogical*
-//        emit seg_start with the BRANCH-BODY node once it's known.
-//        Requires deferring the seg_start until the body has been parsed.
-//     b) During event_resolver's main loop, populate a
-//        node→segment map alongside `references.seg_ids`.
-//   Disabled until one of those lands; the helpers in lint_context.zig
-//   (findCodePathForFunction / segmentAtNode / segmentReachableFrom /
-//   pathPassesThroughSuper / allPathsThroughSuper) are reusable.
+//   badSuper + missingAll + AST-walk duplicate + event-stream-derived
+//   missingSome via `buildNodeSegMap` + `allPathsThroughSuper`.
+//   `buildNodeSegMap` records map[node] = segment-just-finished at
+//   each seg_start.phase=.exit event — correct for ternary consequent
+//   (`{cond, ?, X, :, Y}` → map[X] = branch1, map[Y] = branch2), but
+//   wrong for nodes whose parent's recorded segment is from an
+//   earlier flow point (e.g. `super()` AFTER an if — body's recorded
+//   seg is pre-if, not the after-if segment).  Parent-walk fallback
+//   picks the wrong segment in those cases.  Native 54/82 vs runner 78
+//   (12 FP, 27 FN).  Truly correct solution needs cpb-inline-with-parse
+//   so addNode can capture currentSegId — out of scope for this
+//   session.  Disabled to preserve hybrid; helpers remain reusable.
 // const no_useless_escape = @import("suspicious/no_useless_escape.zig");  // hand-written — disabled per IR-only constraint
 const no_void = @import("suspicious/no_void.zig");
 const no_with = @import("suspicious/no_with.zig");

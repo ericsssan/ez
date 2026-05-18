@@ -4395,19 +4395,108 @@ pub const LintContext = struct {
             self.reportWithMessageId(node, "missingAll");
             return;
         }
-        // AST-walk duplicate fallback — segment-based flow analysis
-        // via `segmentAtNode` produced too many FPs because seg_start
-        // events don't always align with branch starts in source order
-        // (e.g. ternary/logical events emit seg_start with the parent
-        // expression's node).  Fixing it cleanly needs a node→segment
-        // map written during the AST walk that emits CFG events.
-        if (body != .none and self.ast.nodeTag(body) == .block_stmt) {
-            self.checkConstructorSuperBodyStraightLine(body, super_calls);
+        // Flow analysis via code-path events.  Build a node→segment map
+        // by walking the event stream once: every event whose `node` we
+        // can attribute to a specific branch body gets recorded with the
+        // segment that was current BEFORE the branch-end transition.
+        // For each super_call, we then walk parents and pick up the
+        // nearest recorded segment.
+        const cpr_opt = self.semantic.code_path_result;
+        if (cpr_opt == null) return;
+        const cpr = cpr_opt.?;
+        const cp_id = self.findCodePathForFunction(node) orelse return;
+        var node_to_seg = std.AutoHashMapUnmanaged(NodeIndex, u32).empty;
+        defer node_to_seg.deinit(self.allocator);
+        self.buildNodeSegMap(cpr, cp_id, &node_to_seg, body) catch return;
+        var super_segs_buf: [32]u32 = undefined;
+        var super_segs_len: usize = 0;
+        for (super_calls) |sc| {
+            const seg = self.lookupNodeSeg(&node_to_seg, sc, cpr, cp_id);
+            super_segs_buf[super_segs_len] = seg;
+            super_segs_len += 1;
         }
-        // missingSome would need a per-segment "called-in-every-path"
-        // propagation that distinguishes parallel branches from
-        // sequential flow; the simple backward-BFS gave too many false
-        // positives.  Punt for now — leaves ~10 FN versus the runner.
+        const super_segs = super_segs_buf[0..super_segs_len];
+        // duplicate: two super_calls in the same segment.
+        for (super_segs, 0..) |seg_a, ai| {
+            for (super_segs[ai + 1 ..], ai + 1..) |seg_b, bi| {
+                if (seg_b == seg_a) {
+                    self.reportWithMessageId(super_calls[bi], "duplicate");
+                    return;
+                }
+            }
+        }
+        // missingSome: some returned-segment paths reach the function
+        // exit without crossing super, others do.
+        const cp = cpr.codepaths[cp_id];
+        const returned = cpr.cp_returned_pool[cp.returned_start..cp.returned_end];
+        if (returned.len > 0) {
+            var any_misses = false;
+            var any_hits = false;
+            for (returned) |fin| {
+                if (cpr.seg_reachable[fin] == 0) continue;
+                if (self.allPathsThroughSuper(cpr, cp.initial_segment, fin, super_segs)) {
+                    any_hits = true;
+                } else {
+                    any_misses = true;
+                }
+            }
+            if (any_hits and any_misses) self.reportWithMessageId(node, "missingSome");
+        }
+    }
+
+    /// Walks events for the constructor's CodePath, recording per-node
+    /// segments at the branch-end transitions where the AST node is
+    /// known but `seg_start` has already moved on.  Specifically:
+    ///   * cond_alt — current_seg before this event IS the consequent's
+    ///     segment (the true-fork side).  Record consequent → seg.
+    ///   * cond_close — current_seg before pop IS the alternate's
+    ///     segment.  Record alternate → seg.
+    ///   * logical_close — similarly for RHS of `&&` / `||` / `??`.
+    ///   * branch_else / branch_close — if-statement branches.
+    fn buildNodeSegMap(self: *const LintContext, cpr: anytype, cp_id: u32, map: *std.AutoHashMapUnmanaged(NodeIndex, u32), body: NodeIndex) !void {
+        _ = body;
+        // Key insight: seg_start events with phase=.exit fire AT the
+        // exit of `node` and transition us to `data1`.  That means
+        // `node`'s content was processed in the PREVIOUS segment — so
+        // record map[node] = previous_seg.  seg_start with phase=.enter
+        // (body entry) records map[node] = new_seg (data1).
+        var current_seg: u32 = std.math.maxInt(u32);
+        for (cpr.events) |ev| {
+            if (ev.type != .seg_start) continue;
+            if (cpr.seg_codepath[ev.data1] != cp_id) {
+                // Different CodePath — refresh current_seg to NONE so
+                // subsequent within-CP events don't see leftover state.
+                continue;
+            }
+            switch (ev.phase) {
+                .enter => {
+                    current_seg = ev.data1;
+                    try map.put(self.allocator, ev.node, ev.data1);
+                },
+                .exit, .after_enter => {
+                    // The previous current_seg owned ev.node's content.
+                    if (current_seg != std.math.maxInt(u32)) {
+                        try map.put(self.allocator, ev.node, current_seg);
+                    }
+                    current_seg = ev.data1;
+                },
+                .post => {
+                    current_seg = ev.data1;
+                    try map.put(self.allocator, ev.node, ev.data1);
+                },
+            }
+        }
+    }
+
+    /// Walk parents of `n` collecting node→segment hits.  Returns the
+    /// first ancestor's segment (or the CP's initial segment as the
+    /// fallback when nothing else is known).
+    fn lookupNodeSeg(self: *const LintContext, map: *const std.AutoHashMapUnmanaged(NodeIndex, u32), n: NodeIndex, cpr: anytype, cp_id: u32) u32 {
+        var cur = n;
+        while (cur != .none) : (cur = self.parentOf(cur)) {
+            if (map.get(cur)) |s| return s;
+        }
+        return cpr.codepaths[cp_id].initial_segment;
     }
 
     /// Conservative AST-only fallback: detect duplicate when the body
