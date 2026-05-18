@@ -6249,10 +6249,18 @@ pub const LintContext = struct {
         // model that "try all modes" semantics — be conservative and skip
         // pattern validation entirely when flags are unknown.
         if (!flags_known) return;
+        // Run the static checker on the JS-decoded body (the value RegExp
+        // actually sees at runtime), not the raw source.  This catches
+        // patterns like '\\u{0}*' that decode to `\u{0}*` and are invalid
+        // without u/v flag.
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
         const raw = self.sourceText(first_arg);
         if (raw.len < 2) return;
-        const body = raw[1 .. raw.len - 1];
-        if (regexPatternHasSyntaxError(body, flags_known, flags_body)) {
+        const raw_body = raw[1 .. raw.len - 1];
+        const decoded_pattern = (decodeJsStringLiteralMapped(arena, raw_body) catch return).bytes;
+        if (regexPatternHasSyntaxError(decoded_pattern, flags_known, flags_body)) {
             self.reportRegExpMessage(node, "Invalid regular expression");
             return;
         }
@@ -6997,20 +7005,30 @@ fn regexBodyHasEmptyClassV(body: []const u8) bool {
 }
 
 fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: []const u8) bool {
-    _ = flags_known;
-    _ = flags_body;
+    const has_u = flags_known and std.mem.indexOfScalar(u8, flags_body, 'u') != null;
+    const has_v = flags_known and std.mem.indexOfScalar(u8, flags_body, 'v') != null;
+    const has_uv = has_u or has_v;
     var paren_depth: i32 = 0;
     var class_depth: i32 = 0;
+    var in_group_name = false;
     var i: usize = 0;
     while (i < body.len) {
         const c = body[i];
         // Backslash consumes the next char (or pair, for `\\X`).
         if (c == '\\') {
             if (i + 1 >= body.len) return true; // trailing lone `\`
-            if (body[i + 1] == '\\') { i += 2; continue; }
+            const nx = body[i + 1];
+            // `\u{H..}` requires u or v flag.  Without either, ESLint flags
+            // — except inside a `(?<name>` group, where the name parser
+            // accepts Unicode codepoint escapes regardless of flags.
+            if (nx == 'u' and i + 2 < body.len and body[i + 2] == '{' and !has_uv and flags_known and !in_group_name) {
+                return true;
+            }
+            if (nx == '\\') { i += 2; continue; }
             i += 2;
             continue;
         }
+        if (c == '>' and in_group_name) { in_group_name = false; i += 1; continue; }
         if (c == '[') { class_depth += 1; i += 1; continue; }
         if (c == ']') {
             if (class_depth > 0) class_depth -= 1;
@@ -7018,7 +7036,17 @@ fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: [
             continue;
         }
         if (class_depth > 0) { i += 1; continue; }
-        if (c == '(') { paren_depth += 1; i += 1; continue; }
+        if (c == '(') {
+            paren_depth += 1;
+            // `(?<X` where X is neither `=` nor `!` opens a named group;
+            // remember to skip `\u{...}` flag validation until we see `>`.
+            if (i + 3 < body.len and body[i + 1] == '?' and body[i + 2] == '<'
+                and body[i + 3] != '=' and body[i + 3] != '!') {
+                in_group_name = true;
+            }
+            i += 1;
+            continue;
+        }
         if (c == ')') {
             if (paren_depth == 0) return true;
             paren_depth -= 1;
