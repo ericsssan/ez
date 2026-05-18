@@ -4887,6 +4887,19 @@ pub const LintContext = struct {
             self.reportWithMessageId(cause_value, "incorrectCause");
             return;
         }
+        // Name matches — verify the binding visible at the throw resolves to
+        // the catch param, not an inner shadowing declaration of the same name.
+        const scopes_t = &self.semantic.scopes;
+        var sid = self.smallestEnclosingScope(node);
+        while (sid != .none) {
+            if (self.scopeHasUserBindingNamed(sid, caught_name)) break;
+            const parent_sid = scopes_t.parent(sid);
+            if (parent_sid == sid) { sid = .none; break; }
+            sid = parent_sid;
+        }
+        if (sid != .none and scopes_t.nodeId(sid) != catch_node) {
+            self.reportWithMessageId(node, "caughtErrorShadowed");
+        }
     }
 
     fn isFunctionTag(self: *const LintContext, t: ast_mod.Node.Tag) bool {
