@@ -26,6 +26,16 @@ const { parseSync: oxcParseSync } = require("oxc-parser");
 
 const WARMUP = 20;
 const ITERATIONS = 200;
+// Total wall time scales linearly with bytes × ITERATIONS.  At 200 iters and
+// ~13 MB/s wall throughput per parser, the big TS fixtures take ~15s each
+// (×2 parsers ×2 sections = ~60s per section).  Cap iterations on large
+// inputs so the whole bench fits in ~60s and per-row progress shows up
+// before any harness timeout (or a watching human gives up).
+function iterCountForBytes(bytes) {
+  if (bytes > 4 * 1024 * 1024) return 30;   // >4 MB (typescript.js, checker.ts)
+  if (bytes > 1 * 1024 * 1024) return 80;   // 1-4 MB
+  return ITERATIONS;
+}
 
 const fixtures = [
   { path: "bench/fixtures/jquery.js" },
@@ -41,17 +51,28 @@ const fixtures = [
   { path: "bench/fixtures/typescript.js" },
 ];
 
-/** Returns p50 ms over ITERATIONS runs. */
-function bench(fn) {
+/** Returns p50 ms over `iters` runs. */
+function bench(fn, iters = ITERATIONS) {
   for (let i = 0; i < WARMUP; i++) fn();
-  const times = new Float64Array(ITERATIONS);
-  for (let i = 0; i < ITERATIONS; i++) {
+  const times = new Float64Array(iters);
+  for (let i = 0; i < iters; i++) {
     const t0 = performance.now();
     fn();
     times[i] = performance.now() - t0;
   }
   times.sort();
-  return times[Math.floor(ITERATIONS / 2)];
+  return times[Math.floor(iters / 2)];
+}
+
+/** Per-fixture progress on stderr (unbuffered) so output appears during long
+ *  runs.  Uses ANSI overwrite only on a TTY — otherwise emits a plain line so
+ *  it stays readable when piped (`2>&1 | tail`) or captured. */
+const STDERR_TTY = process.stderr.isTTY;
+function progressBegin(msg) {
+  process.stderr.write(STDERR_TTY ? `  ${msg}…` : `[bench] ${msg}\n`);
+}
+function progressEnd() {
+  if (STDERR_TTY) process.stderr.write("\r\x1b[K");
 }
 
 function mbPerSec(bytes, ms) {
@@ -89,8 +110,11 @@ console.log("    ez: lex+parse, no semantic, no AstView | oxc: lex+parse + JS ob
     const bytes = Buffer.byteLength(src, "utf8");
     const name = path.basename(fx.path);
 
-    const ezMs  = bench(() => { ezParseLean(src, { filename: name }); reset(); });
-    const oxcMs = bench(() => { oxcParseSync(name, src); });
+    const iters = iterCountForBytes(bytes);
+    progressBegin(`${name} (${(bytes/1024).toFixed(0)}KB, ${iters} iters)`);
+    const ezMs  = bench(() => { ezParseLean(src, { filename: name }); reset(); }, iters);
+    const oxcMs = bench(() => { oxcParseSync(name, src); }, iters);
+    progressEnd();
 
     const ezMBs  = mbPerSec(bytes, ezMs);
     const oxcMBs = mbPerSec(bytes, oxcMs);
@@ -156,8 +180,11 @@ console.log("    NOTE: ez does scope analysis here; oxc does NOT — ez provides
     const bytes = Buffer.byteLength(src, "utf8");
     const name = path.basename(fx.path);
 
-    const ezMs  = bench(() => { ezParse(src, { filename: name }); reset(); });
-    const oxcMs = bench(() => { oxcParseSync(name, src); });
+    const iters = iterCountForBytes(bytes);
+    progressBegin(`${name} (${(bytes/1024).toFixed(0)}KB, ${iters} iters)`);
+    const ezMs  = bench(() => { ezParse(src, { filename: name }); reset(); }, iters);
+    const oxcMs = bench(() => { oxcParseSync(name, src); }, iters);
+    progressEnd();
 
     const ezMBs  = mbPerSec(bytes, ezMs);
     const oxcMBs = mbPerSec(bytes, oxcMs);
