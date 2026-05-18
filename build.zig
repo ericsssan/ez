@@ -25,6 +25,28 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run ez");
     run_step.dependOn(&run_cmd.step);
 
+    // ── ez-borrow-check (Layer 1 annotation linter) ──────────
+    const borrow_check_mod = b.createModule(.{
+        .root_source_file = b.path("tools/ez-borrow-check/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const borrow_check_exe = b.addExecutable(.{
+        .name = "ez-borrow-check",
+        .root_module = borrow_check_mod,
+    });
+    b.installArtifact(borrow_check_exe);
+
+    const borrow_check_run = b.addRunArtifact(borrow_check_exe);
+    if (b.args) |args| borrow_check_run.addArgs(args);
+    const borrow_check_step = b.step("borrow-check", "Run Layer-1 annotation-hygiene checks");
+    borrow_check_step.dependOn(&borrow_check_run.step);
+
+    const borrow_check_tests = b.addTest(.{ .root_module = borrow_check_mod });
+    const run_borrow_check_tests = b.addRunArtifact(borrow_check_tests);
+    const borrow_check_test_step = b.step("test-borrow-check", "Test the borrow-check rules");
+    borrow_check_test_step.dependOn(&run_borrow_check_tests.step);
+
     // ── Unit tests ───────────────────────────────────────────
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
