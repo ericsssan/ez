@@ -774,6 +774,20 @@ pub const LintContext = struct {
         {
             return sibling;
         }
+        const sib_tag = self.ast.nodeTag(sibling);
+        // Under requireStringLiterals, the rule rejects ANY sibling that
+        // isn't a literal string — including identifier refs (Object) and
+        // interpolated/multi-quasi template literals.  Otherwise we only
+        // care about literal-but-bogus values like "objet" / "boolean!".
+        const require_strings = self.validTypeofRequireStringLiterals();
+        if (require_strings) {
+            const is_static_string = sib_tag == .string_literal
+                or (sib_tag == .template_literal and self.nodeStaticStringValue(sibling) != null);
+            // `typeof X === typeof Y` is always legitimate, even under
+            // requireStringLiterals — sibling is another typeof_expr.
+            if (sib_tag == .typeof_expr) return .none;
+            if (!is_static_string) return sibling;
+        }
         const sname = self.nodeStaticStringValue(sibling) orelse return .none;
         const valid = [_][]const u8{
             "symbol", "undefined", "object", "boolean", "number",
