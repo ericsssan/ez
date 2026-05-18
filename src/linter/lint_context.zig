@@ -4277,13 +4277,8 @@ pub const LintContext = struct {
     }
 
     pub fn checkUselessBackrefCall(self: *const LintContext, node: NodeIndex) void {
-        const tag = self.ast.nodeTag(node);
-        if (tag != .call_expr and tag != .new_expr) return;
+        if (!self.isGlobalRegExpCall(node)) return;
         const data = self.ast.nodeData(node);
-        const callee = data.lhs;
-        if (self.ast.nodeTag(callee) != .identifier) return;
-        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
-        if (!self.isGlobalReference(callee)) return;
         if (data.rhs == .none) return;
         const range = self.extraData(SubRange, @intFromEnum(data.rhs));
         const args = self.extraSlice(range);
@@ -5506,28 +5501,36 @@ pub const LintContext = struct {
         return false;
     }
 
-    pub fn checkMisleadingCharClassCall(self: *const LintContext, node: NodeIndex) void {
+    /// True iff `node` is a call/new expression whose callee resolves to the
+    /// global `RegExp` constructor — either `RegExp` directly or
+    /// `globalThis.RegExp` / `window.RegExp` / `self.RegExp`.  Honours
+    /// parenthesised callees and respects explicit globals-off opt-outs.
+    pub fn isGlobalRegExpCall(self: *const LintContext, node: NodeIndex) bool {
         const tag = self.ast.nodeTag(node);
-        if (tag != .call_expr and tag != .new_expr) return;
-        const data = self.ast.nodeData(node);
-        // Accept `RegExp(...)` or `globalThis.RegExp(...)` / `window.RegExp(...)`
-        // / `self.RegExp(...)`.  Callee may itself be parenthesised.
-        const callee = self.nodeSkipGrouping(data.lhs);
+        if (tag != .call_expr and tag != .new_expr) return false;
+        const callee = self.nodeSkipGrouping(self.ast.nodeData(node).lhs);
         const ctag = self.ast.nodeTag(callee);
         if (ctag == .identifier) {
-            if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
-            if (!self.isGlobalReference(callee)) return;
-            if (self.globalIsExplicitlyDisabled("RegExp")) return;
-        } else if (ctag == .member_expr or ctag == .computed_member_expr) {
-            const prop = self.staticPropertyName(callee) orelse return;
-            if (!std.mem.eql(u8, prop, "RegExp")) return;
+            if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return false;
+            if (!self.isGlobalReference(callee)) return false;
+            return !self.globalIsExplicitlyDisabled("RegExp");
+        }
+        if (ctag == .member_expr or ctag == .computed_member_expr) {
+            const prop = self.staticPropertyName(callee) orelse return false;
+            if (!std.mem.eql(u8, prop, "RegExp")) return false;
             const base = self.nodeSkipGrouping(self.ast.nodeData(callee).lhs);
-            if (self.ast.nodeTag(base) != .identifier) return;
+            if (self.ast.nodeTag(base) != .identifier) return false;
             const bname = self.ast.tokenText(self.ast.nodeMainToken(base));
-            if (!std.mem.eql(u8, bname, "globalThis") and !std.mem.eql(u8, bname, "window") and !std.mem.eql(u8, bname, "self")) return;
-            if (!self.isGlobalReference(base)) return;
-            if (self.globalIsExplicitlyDisabled(bname)) return;
-        } else return;
+            if (!std.mem.eql(u8, bname, "globalThis") and !std.mem.eql(u8, bname, "window") and !std.mem.eql(u8, bname, "self")) return false;
+            if (!self.isGlobalReference(base)) return false;
+            return !self.globalIsExplicitlyDisabled(bname);
+        }
+        return false;
+    }
+
+    pub fn checkMisleadingCharClassCall(self: *const LintContext, node: NodeIndex) void {
+        if (!self.isGlobalRegExpCall(node)) return;
+        const data = self.ast.nodeData(node);
         if (data.rhs == .none) return;
         const range = self.extraData(SubRange, @intFromEnum(data.rhs));
         const args = self.extraSlice(range);
@@ -6130,13 +6133,8 @@ pub const LintContext = struct {
     // unmatched parens, lone trailing backslash).  Full regex parsing is
     // out of scope — ESLint uses regexpp.
     pub fn checkInvalidRegExpCall(self: *const LintContext, node: NodeIndex) void {
-        const tag = self.ast.nodeTag(node);
-        if (tag != .call_expr and tag != .new_expr) return;
+        if (!self.isGlobalRegExpCall(node)) return;
         const data = self.ast.nodeData(node);
-        const callee = data.lhs;
-        if (self.ast.nodeTag(callee) != .identifier) return;
-        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
-        if (!self.isGlobalReference(callee)) return;
         if (data.rhs == .none) return;
         const range = self.extraData(SubRange, @intFromEnum(data.rhs));
         const args = self.extraSlice(range);
@@ -6369,13 +6367,8 @@ pub const LintContext = struct {
     }
 
     pub fn checkRegexNoControlCall(self: *const LintContext, node: NodeIndex) void {
-        const tag = self.ast.nodeTag(node);
-        if (tag != .call_expr and tag != .new_expr) return;
+        if (!self.isGlobalRegExpCall(node)) return;
         const data = self.ast.nodeData(node);
-        const callee = data.lhs;
-        if (self.ast.nodeTag(callee) != .identifier) return;
-        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
-        if (!self.isGlobalReference(callee)) return;
         if (data.rhs == .none) return;
         const range = self.extraData(SubRange, @intFromEnum(data.rhs));
         const args = self.extraSlice(range);
@@ -6534,13 +6527,8 @@ pub const LintContext = struct {
 
     /// no-empty-character-class for `new RegExp("pat")` / `RegExp("pat")`.
     pub fn checkRegexNoEmptyCharClassCall(self: *const LintContext, node: NodeIndex) void {
-        const tag = self.ast.nodeTag(node);
-        if (tag != .call_expr and tag != .new_expr) return;
+        if (!self.isGlobalRegExpCall(node)) return;
         const data = self.ast.nodeData(node);
-        const callee = data.lhs;
-        if (self.ast.nodeTag(callee) != .identifier) return;
-        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
-        if (!self.isGlobalReference(callee)) return;
         if (data.rhs == .none) return;
         const range = self.extraData(SubRange, @intFromEnum(data.rhs));
         const args = self.extraSlice(range);
