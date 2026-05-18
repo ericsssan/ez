@@ -5538,8 +5538,9 @@ pub const LintContext = struct {
         const first_arg_raw: NodeIndex = @enumFromInt(args[0]);
         const first_arg = self.nodeSkipGrouping(first_arg_raw);
         const first_tag = self.ast.nodeTag(first_arg);
-        if (first_tag != .string_literal and first_tag != .template_literal) return;
+        if (first_tag != .string_literal and first_tag != .template_literal and first_tag != .regex_literal) return;
         var flags: []const u8 = "";
+        var flags_explicit = false;
         if (args.len >= 2) {
             const flags_arg_raw: NodeIndex = @enumFromInt(args[1]);
             const flags_arg = self.nodeSkipGrouping(flags_arg_raw);
@@ -5547,12 +5548,34 @@ pub const LintContext = struct {
             if (ftag != .string_literal and ftag != .template_literal) return; // bail on non-static flags
             const fs = self.nodeStaticStringValue(flags_arg) orelse return;
             flags = fs;
+            flags_explicit = true;
         }
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const body = self.nodeStaticStringValue(first_arg) orelse return;
-        const decoded = decodeJsStringLiteralMapped(arena, body) catch return;
+        // For regex-literal first arg, the pattern is the regex body itself
+        // (no JS string-escape decoding).  When the call provides an explicit
+        // flags arg, it OVERRIDES the regex's own flags (matches ESLint /
+        // RegExp(regex, flags) runtime semantics).
+        var body: []const u8 = undefined;
+        if (first_tag == .regex_literal) {
+            const pat = self.regexPatternSlice(first_arg) orelse return;
+            if (!flags_explicit) {
+                const node_text = self.sourceText(first_arg);
+                const flags_off = pat.text.len + 2;
+                if (flags_off < node_text.len) flags = node_text[flags_off..];
+            }
+            body = pat.text;
+        } else {
+            body = self.nodeStaticStringValue(first_arg) orelse return;
+        }
+        const decoded = if (first_tag == .regex_literal)
+            DecodedString{
+                .bytes = arena.dupe(u8, body) catch return,
+                .source_offsets = identitySourceMap(arena, body.len) catch return,
+            }
+        else
+            decodeJsStringLiteralMapped(arena, body) catch return;
         if (regexPatternHasSyntaxError(decoded.bytes, true, flags)) return;
         const flag_set = regex_parser.Flags.fromString(flags);
         const allow_escape = self.noMisleadingAllowEscape();
@@ -7031,6 +7054,16 @@ const DecodedString = struct {
     /// from.  Always has the same length as `bytes`.
     source_offsets: []u32,
 };
+
+/// Source-offset map for inputs that need no decoding (e.g. the body of a
+/// regex literal passed directly to RegExp(/pat/, flags)).  Entry i maps to
+/// source offset i.
+fn identitySourceMap(arena: std.mem.Allocator, n: usize) ![]u32 {
+    const out = try arena.alloc(u32, n);
+    var i: usize = 0;
+    while (i < n) : (i += 1) out[i] = @intCast(i);
+    return out;
+}
 
 fn decodeJsStringLiteralMapped(arena: std.mem.Allocator, body: []const u8) !DecodedString {
     var out: std.ArrayList(u8) = .empty;
