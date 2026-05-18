@@ -6498,31 +6498,12 @@ pub const LintContext = struct {
     /// linear scan that bails on the v-flag (nested classes).
     pub fn checkRegexNoEmptyCharClass(self: *const LintContext, node: NodeIndex) void {
         const pat = self.regexPatternSlice(node) orelse return;
-        const text = pat.text;
         const node_text = self.sourceText(node);
-        // v-flag flips nested-class semantics — bail.
-        if (std.mem.indexOfScalar(u8, node_text[@min(pat.text.len + 2, node_text.len)..], 'v') != null) return;
-        var i: usize = 0;
-        while (i < text.len) {
-            const c = text[i];
-            if (c == '\\') { i += 2; continue; }
-            if (c == '[' and i + 1 < text.len and text[i + 1] == ']') {
-                self.reportWithMessageId(node, "unexpected");
-                return;
-            }
-            // Skip over class to avoid `[abc]]` from matching at the inner `]`.
-            if (c == '[') {
-                var j = i + 1;
-                while (j < text.len) {
-                    if (text[j] == '\\') { j += 2; continue; }
-                    if (text[j] == ']') break;
-                    j += 1;
-                }
-                i = j + 1;
-                continue;
-            }
-            i += 1;
-        }
+        // v-flag enables nested character classes ([[a][]]) and set operators
+        // ([a--b], [a&&b]).  Both shapes still surface an empty `[]` we should
+        // flag — switch to a depth-aware scan when the flag is present.
+        const v_mode = std.mem.indexOfScalar(u8, node_text[@min(pat.text.len + 2, node_text.len)..], 'v') != null;
+        if (regexBodyHasEmptyClass(pat.text, v_mode)) self.reportWithMessageId(node, "unexpected");
     }
 
     /// no-empty-character-class for `new RegExp("pat")` / `RegExp("pat")`.
@@ -6535,46 +6516,19 @@ pub const LintContext = struct {
         if (args.len == 0) return;
         const first_arg: NodeIndex = @enumFromInt(args[0]);
         if (self.ast.nodeTag(first_arg) != .string_literal) return;
+        var v_mode = false;
         if (args.len >= 2) {
             const flags_arg: NodeIndex = @enumFromInt(args[1]);
             if (self.ast.nodeTag(flags_arg) != .string_literal) return;
             const flags_raw = self.sourceText(flags_arg);
             if (flags_raw.len >= 2) {
-                if (std.mem.indexOfAny(u8, flags_raw[1 .. flags_raw.len - 1], "v") != null) return;
+                v_mode = std.mem.indexOfScalar(u8, flags_raw[1 .. flags_raw.len - 1], 'v') != null;
             }
         }
         const raw = self.sourceText(first_arg);
         if (raw.len < 2) return;
         const body = raw[1 .. raw.len - 1];
-        var i: usize = 0;
-        while (i < body.len) {
-            const c = body[i];
-            if (c == '\\') {
-                // `\[` in string = `[` in pattern; consume both and continue
-                // — but only as the bracket itself, not as a class opener.
-                if (i + 1 < body.len and (body[i + 1] == '[' or body[i + 1] == ']')) {
-                    i += 2;
-                    continue;
-                }
-                i += 2;
-                continue;
-            }
-            if (c == '[' and i + 1 < body.len and body[i + 1] == ']') {
-                self.reportWithMessageId(node, "unexpected");
-                return;
-            }
-            if (c == '[') {
-                var j = i + 1;
-                while (j < body.len) {
-                    if (body[j] == '\\') { j += 2; continue; }
-                    if (body[j] == ']') break;
-                    j += 1;
-                }
-                i = j + 1;
-                continue;
-            }
-            i += 1;
-        }
+        if (regexBodyHasEmptyClass(body, v_mode)) self.reportWithMessageId(node, "unexpected");
     }
 
     pub fn checkRegexNoSpaces(self: *const LintContext, node: NodeIndex) void {
@@ -6962,6 +6916,63 @@ pub const LintContext = struct {
 /// Returns true when an error is detected.  Bails out (returns false) on
 /// constructs that need real regex parsing — minimum-impact stance: never
 /// FP on a syntactically-fine pattern, accept FN on the exotic cases.
+/// True when `body` (a regex pattern body, sans delimiters) contains an empty
+/// character class `[]`.  When `v_mode` is set, character classes may nest
+/// and contain set operators (--, &&), so a recursive depth-aware scan finds
+/// `[]` even when buried inside an outer class like `[a--[]]`.  Backslash
+/// escapes consume the following byte.
+fn regexBodyHasEmptyClass(body: []const u8, v_mode: bool) bool {
+    if (v_mode) return regexBodyHasEmptyClassV(body);
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '\\') { i += 2; continue; }
+        if (c == '[' and i + 1 < body.len and body[i + 1] == ']') return true;
+        if (c == '[') {
+            var j = i + 1;
+            while (j < body.len) : (j += 1) {
+                if (body[j] == '\\') { j += 1; continue; }
+                if (body[j] == ']') break;
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn regexBodyHasEmptyClassV(body: []const u8) bool {
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '\\') { i += 2; continue; }
+        if (c != '[') { i += 1; continue; }
+        // Found a top-level class open; walk it recursively.
+        if (i + 1 < body.len and body[i + 1] == ']') return true;
+        var depth: u32 = 1;
+        var j: usize = i + 1;
+        while (j < body.len and depth > 0) {
+            const cc = body[j];
+            if (cc == '\\') { j += 2; continue; }
+            if (cc == '[') {
+                if (j + 1 < body.len and body[j + 1] == ']') return true;
+                depth += 1;
+                j += 1;
+                continue;
+            }
+            if (cc == ']') {
+                depth -= 1;
+                j += 1;
+                continue;
+            }
+            j += 1;
+        }
+        i = j;
+    }
+    return false;
+}
+
 fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: []const u8) bool {
     _ = flags_known;
     _ = flags_body;
