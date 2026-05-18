@@ -1,6 +1,5 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: no-obj-calls
-// Source rule: tests/conformance/eslint/lib/rules/no-obj-calls.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
@@ -38,21 +37,16 @@ fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
 
 pub fn run(_: NodeIndex, _: *const LintContext) void {}
 
-fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
-    if (n == .none) return false;
-    const d = c.nodeData(n);
-    if (d.rhs == .none) return true;
-    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
-    return c.extraSlice(sr).len == 0;
-}
-
 pub fn runOnSymbols(ctx: *const LintContext) void {
     const refs = ctx.references();
     const count = refs.count();
     var r: u32 = 0;
     while (r < count) : (r += 1) {
         const ref_id = ReferenceId.fromInt(r);
-        if (refs.isResolved(ref_id)) continue;
+        if (refs.isResolved(ref_id)) {
+            const __sym = refs.getSymbol(ref_id);
+            if (__sym != .none and !ctx.symbols().isImplicitGlobal(__sym)) continue;
+        }
         const __ref_identifier__ = refs.getNode(ref_id);
         const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));
         var __matches = false;
@@ -67,7 +61,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
             continue;
         }
         if (((blk: { const __t = ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)); break :blk (__t == .call_expr or __t == .optional_call_expr); } or (ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)) == .new_expr)) and (ctx.calleeOf(ctx.parentOfSkipGrouping(__ref_identifier__)) == __ref_identifier__))) {
-            ctx.report(ctx.parentOfSkipGrouping(__ref_identifier__));
+            ctx.reportWithMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), "unexpected");
         }
     }
 }
