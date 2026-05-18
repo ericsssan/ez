@@ -7014,6 +7014,57 @@ fn regexBodyHasEmptyClassV(body: []const u8) bool {
     return false;
 }
 
+/// True when `c` follows a backslash in u/v-mode and isn't a recognised
+/// escape — under u/v, identity escapes only cover regex syntax chars; any
+/// other letter is a syntax error.
+fn isInvalidUFlagIdentityEscape(c: u8) bool {
+    return switch (c) {
+        // Recognised regex escape letters.
+        'd', 'D', 'w', 'W', 's', 'S', 'b', 'B', 'f', 'n', 'r', 't', 'v',
+        '0', 'x', 'u', 'c', 'k', 'p', 'P', 'q' => false,
+        // Decimal backreference start.
+        '1'...'9' => false,
+        // Syntax char identity escapes allowed under u/v.
+        '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/', '-' => false,
+        else => switch (c) {
+            'a'...'z', 'A'...'Z' => true,
+            else => false,
+        },
+    };
+}
+
+/// Validate the body of a modifier group starting at `body[off..]`.
+/// Returns true when the group conforms to `(?[ims]+|[ims]*-[ims]+:expr)`
+/// with no duplicate flag chars within or across the optional `-`.
+fn isValidModifierGroup(body: []const u8, off: usize) bool {
+    var i: usize = off;
+    var seen = [_]bool{false} ** 128;
+    var pre_count: usize = 0;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        if (c == '-' or c == ':') break;
+        if (c != 'i' and c != 'm' and c != 's') return false;
+        if (seen[c]) return false;
+        seen[c] = true;
+        pre_count += 1;
+    }
+    var post_count: usize = 0;
+    if (i < body.len and body[i] == '-') {
+        i += 1;
+        while (i < body.len) : (i += 1) {
+            const c = body[i];
+            if (c == ':') break;
+            if (c != 'i' and c != 'm' and c != 's') return false;
+            if (seen[c]) return false;
+            seen[c] = true;
+            post_count += 1;
+        }
+    }
+    if (i >= body.len or body[i] != ':') return false;
+    // At least one flag must appear somewhere (either pre or post -).
+    return pre_count + post_count > 0;
+}
+
 fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: []const u8) bool {
     const has_u = flags_known and std.mem.indexOfScalar(u8, flags_body, 'u') != null;
     const has_v = flags_known and std.mem.indexOfScalar(u8, flags_body, 'v') != null;
@@ -7032,6 +7083,13 @@ fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: [
             // — except inside a `(?<name>` group, where the name parser
             // accepts Unicode codepoint escapes regardless of flags.
             if (nx == 'u' and i + 2 < body.len and body[i + 2] == '{' and !has_uv and flags_known and !in_group_name) {
+                return true;
+            }
+            // Under u/v flag, the only valid identity escapes are syntax
+            // chars; arbitrary `\X` like `\a` is a syntax error.  Skip when
+            // inside a group name (different escape rules apply) or a
+            // character class (additional escapes like `\b` mean backspace).
+            if (has_uv and !in_group_name and class_depth == 0 and isInvalidUFlagIdentityEscape(nx)) {
                 return true;
             }
             if (nx == '\\') { i += 2; continue; }
@@ -7053,6 +7111,14 @@ fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: [
             if (i + 3 < body.len and body[i + 1] == '?' and body[i + 2] == '<'
                 and body[i + 3] != '=' and body[i + 3] != '!') {
                 in_group_name = true;
+            }
+            // `(?X` where X is not one of `:`, `=`, `!`, `<` is either a
+            // modifier group (`(?[ims]+[-[ims]+]?:expr)`) or invalid.
+            if (i + 2 < body.len and body[i + 1] == '?') {
+                const after = body[i + 2];
+                if (after != ':' and after != '=' and after != '!' and after != '<') {
+                    if (!isValidModifierGroup(body, i + 2)) return true;
+                }
             }
             i += 1;
             continue;
