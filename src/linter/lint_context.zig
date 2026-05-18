@@ -6565,52 +6565,62 @@ pub const LintContext = struct {
     pub fn checkRegexNoSpaces(self: *const LintContext, node: NodeIndex) void {
         const pat = self.regexPatternSlice(node) orelse return;
         const text = pat.text;
-        // v-flag enables nested character classes, which our flat bracket
-        // counter doesn't model correctly; bail rather than risk FPs.
         const node_text = self.sourceText(node);
-        if (std.mem.indexOfScalar(u8, node_text[@min(pat.text.len + 2, node_text.len)..], 'v') != null) return;
+        const v_mode = std.mem.indexOfScalar(u8, node_text[@min(pat.text.len + 2, node_text.len)..], 'v') != null;
+        // Walk the pattern tracking character-class nesting (depth-aware so
+        // v-mode's [[ ]] doesn't fool us).  Backslashes still consume their
+        // own char so `\[` doesn't open a class, but they do NOT consume the
+        // following byte — ESLint counts every literal space in source,
+        // even when preceded by `\`, when it's part of a >=2 run.
         var i: usize = 0;
         var class_depth: i32 = 0;
         while (i < text.len) {
             const c = text[i];
-            if (c == '\\') { i += 2; continue; }
-            if (c == '[') { class_depth += 1; i += 1; continue; }
-            if (c == ']') { if (class_depth > 0) class_depth -= 1; i += 1; continue; }
-            if (class_depth == 0 and c == ' ') {
-                var j = i + 1;
-                while (j < text.len and text[j] == ' ') j += 1;
-                var run_len = j - i;
-                if (j < text.len) {
-                    const nx = text[j];
-                    if (nx == '*' or nx == '+' or nx == '?' or nx == '{') {
-                        run_len -= 1;
-                    }
+            if (c == '\\') {
+                // Skip just the backslash; the next char is examined normally.
+                // For escapes like `\d`, the `d` isn't a space so nothing
+                // happens; for `\\`, the second `\` reruns this branch.
+                if (i + 1 >= text.len) break;
+                if (text[i + 1] == '[' or text[i + 1] == ']' or text[i + 1] == '\\') {
+                    i += 2;
+                    continue;
                 }
-                if (run_len >= 2) {
-                    const abs_start: u32 = pat.start + @as(u32, @intCast(i));
-                    const abs_end: u32 = pat.start + @as(u32, @intCast(i + run_len));
-                    const replacement = std.fmt.allocPrint(self.allocator, " {{{d}}}", .{run_len}) catch return;
-                    const length_str = std.fmt.allocPrint(self.allocator, "{d}", .{run_len}) catch return;
-                    const data = [_]MessageDataEntry{
-                        .{ .key = "length", .val = length_str },
-                    };
-                    self.diagnostics.append(self.allocator, .{
-                        .rule_index = self.current_rule_index,
-                        .span = self.nodeSpan(node),
-                        .severity = self.severity_override orelse .warning,
-                        .message_id = "multipleSpaces",
-                        .message_data = self.dupeMessageData(&data),
-                        .fix = .{
-                            .span = .{ .start = abs_start, .end = abs_end },
-                            .text = replacement,
-                        },
-                    }) catch {};
-                    return;
-                }
-                i = j;
+                i += 1;
                 continue;
             }
-            i += 1;
+            if (c == '[') { class_depth += 1; i += 1; continue; }
+            if (c == ']') { if (class_depth > 0) class_depth -= 1; i += 1; continue; }
+            if (!v_mode and class_depth > 0) { i += 1; continue; }
+            if (v_mode and class_depth > 0) { i += 1; continue; }
+            if (c != ' ') { i += 1; continue; }
+            // Bare space at top level.  Count consecutive bare spaces.
+            var j = i + 1;
+            while (j < text.len and text[j] == ' ') j += 1;
+            var run = j - i;
+            if (run < 2) { i = j; continue; }
+            // Trailing quantifier eats the last atom — drop it from the run.
+            if (j < text.len) {
+                const nx = text[j];
+                if (nx == '*' or nx == '+' or nx == '?' or nx == '{') run -= 1;
+            }
+            if (run < 2) { i = j; continue; }
+            const abs_start: u32 = pat.start + @as(u32, @intCast(i));
+            const abs_end: u32 = pat.start + @as(u32, @intCast(i + run));
+            const replacement = std.fmt.allocPrint(self.allocator, " {{{d}}}", .{run}) catch return;
+            const length_str = std.fmt.allocPrint(self.allocator, "{d}", .{run}) catch return;
+            const data = [_]MessageDataEntry{ .{ .key = "length", .val = length_str } };
+            self.diagnostics.append(self.allocator, .{
+                .rule_index = self.current_rule_index,
+                .span = self.nodeSpan(node),
+                .severity = self.severity_override orelse .warning,
+                .message_id = "multipleSpaces",
+                .message_data = self.dupeMessageData(&data),
+                .fix = .{
+                    .span = .{ .start = abs_start, .end = abs_end },
+                    .text = replacement,
+                },
+            }) catch {};
+            return;
         }
     }
 
