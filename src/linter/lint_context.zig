@@ -3866,6 +3866,28 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// True when `name` is turned OFF via languageOptions.globals or inline
+    /// `/* globals name:off */`.  Lets rules that special-case globals (e.g.
+    /// no-misleading-character-class' RegExp lookup) honour user opt-outs the
+    /// way ESLint's ReferenceTracker does.
+    pub fn globalIsExplicitlyDisabled(self: *const LintContext, name: []const u8) bool {
+        if (self.language_options) |lo| {
+            if (lo.* == .object) {
+                if (lo.object.get("globals")) |g| {
+                    if (g == .object) {
+                        if (g.object.get(name)) |v| {
+                            if (v == .string and std.mem.eql(u8, v.string, "off")) return true;
+                        }
+                    }
+                }
+            }
+        }
+        for (self.inline_globals) |entry| {
+            if (entry.is_off and std.mem.eql(u8, entry.name, name)) return true;
+        }
+        return false;
+    }
+
     /// Returns true when `languageOptions.globals` is an explicit object (even if empty),
     /// meaning the caller has explicitly enumerated which globals are available.
     /// When false, globals are unspecified and default environment rules apply.
@@ -5488,29 +5510,45 @@ pub const LintContext = struct {
         const tag = self.ast.nodeTag(node);
         if (tag != .call_expr and tag != .new_expr) return;
         const data = self.ast.nodeData(node);
-        const callee = data.lhs;
-        if (self.ast.nodeTag(callee) != .identifier) return;
-        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
-        if (!self.isGlobalReference(callee)) return;
+        // Accept `RegExp(...)` or `globalThis.RegExp(...)` / `window.RegExp(...)`
+        // / `self.RegExp(...)`.  Callee may itself be parenthesised.
+        const callee = self.nodeSkipGrouping(data.lhs);
+        const ctag = self.ast.nodeTag(callee);
+        if (ctag == .identifier) {
+            if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return;
+            if (!self.isGlobalReference(callee)) return;
+            if (self.globalIsExplicitlyDisabled("RegExp")) return;
+        } else if (ctag == .member_expr or ctag == .computed_member_expr) {
+            const prop = self.staticPropertyName(callee) orelse return;
+            if (!std.mem.eql(u8, prop, "RegExp")) return;
+            const base = self.nodeSkipGrouping(self.ast.nodeData(callee).lhs);
+            if (self.ast.nodeTag(base) != .identifier) return;
+            const bname = self.ast.tokenText(self.ast.nodeMainToken(base));
+            if (!std.mem.eql(u8, bname, "globalThis") and !std.mem.eql(u8, bname, "window") and !std.mem.eql(u8, bname, "self")) return;
+            if (!self.isGlobalReference(base)) return;
+            if (self.globalIsExplicitlyDisabled(bname)) return;
+        } else return;
         if (data.rhs == .none) return;
         const range = self.extraData(SubRange, @intFromEnum(data.rhs));
         const args = self.extraSlice(range);
         if (args.len == 0) return;
-        const first_arg: NodeIndex = @enumFromInt(args[0]);
-        if (self.ast.nodeTag(first_arg) != .string_literal) return;
+        const first_arg_raw: NodeIndex = @enumFromInt(args[0]);
+        const first_arg = self.nodeSkipGrouping(first_arg_raw);
+        const first_tag = self.ast.nodeTag(first_arg);
+        if (first_tag != .string_literal and first_tag != .template_literal) return;
         var flags: []const u8 = "";
         if (args.len >= 2) {
-            const flags_arg: NodeIndex = @enumFromInt(args[1]);
-            if (self.ast.nodeTag(flags_arg) != .string_literal) return; // bail on non-static flags
-            const fr = self.sourceText(flags_arg);
-            if (fr.len >= 2) flags = fr[1 .. fr.len - 1];
+            const flags_arg_raw: NodeIndex = @enumFromInt(args[1]);
+            const flags_arg = self.nodeSkipGrouping(flags_arg_raw);
+            const ftag = self.ast.nodeTag(flags_arg);
+            if (ftag != .string_literal and ftag != .template_literal) return; // bail on non-static flags
+            const fs = self.nodeStaticStringValue(flags_arg) orelse return;
+            flags = fs;
         }
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const raw = self.sourceText(first_arg);
-        if (raw.len < 2) return;
-        const body = raw[1 .. raw.len - 1];
+        const body = self.nodeStaticStringValue(first_arg) orelse return;
         const decoded = decodeJsStringLiteralMapped(arena, body) catch return;
         if (regexPatternHasSyntaxError(decoded.bytes, true, flags)) return;
         const flag_set = regex_parser.Flags.fromString(flags);
