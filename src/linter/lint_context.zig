@@ -4417,10 +4417,14 @@ pub const LintContext = struct {
         const parent = self.parentOf(member);
         if (parent == .none) return false;
         const ptag = self.ast.nodeTag(parent);
-        // ForIn/ForOf: left side is a write.
+        // ForIn/ForOf: left side is a write.  for_*_stmt's data.lhs is
+        // an EXTRA index to ForInOfData (binding, expr, body), so we
+        // can't compare to `member` directly.
         if (ptag == .for_in_stmt or ptag == .for_of_stmt or ptag == .for_await_of_stmt) {
             const pd = self.ast.nodeData(parent);
-            return pd.lhs == member;
+            if (pd.lhs == .none) return false;
+            const fd = self.extraData(ast_mod.ForInOfData, @intFromEnum(pd.lhs));
+            return fd.binding == member;
         }
         if (ptag == .assignment_pattern) {
             const pd = self.ast.nodeData(parent);
@@ -4442,8 +4446,18 @@ pub const LintContext = struct {
         // until we hit the assignment target tells us if we're on a
         // write-only path.
         if (ptag == .array_pattern or ptag == .object_pattern or ptag == .rest_element) {
-            // The member_expr is a destructuring target.
             return true;
+        }
+        // Member is the VALUE of a property inside an object pattern:
+        // `({ a: this.#x } = obj)`.  Only fires for the value side
+        // (rhs); a computed key (`{ [this.#x]: a }`) is a READ and we
+        // must not flag it.
+        if (ptag == .property or ptag == .shorthand_property or ptag == .computed_property) {
+            const grand = self.parentOf(parent);
+            if (grand != .none and self.ast.nodeTag(grand) == .object_pattern) {
+                const pd = self.ast.nodeData(parent);
+                if (pd.rhs == member) return true;
+            }
         }
         // AssignmentExpression family.
         const is_simple_assign = ptag == .assign;
