@@ -1,6 +1,5 @@
 // GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
 // Rule: symbol-description
-// Source rule: tests/conformance/eslint/lib/rules/symbol-description.js
 
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
