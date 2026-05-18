@@ -271,10 +271,11 @@ function emit(rule) {
   const hasNoUnusedPrivateMembersCheck = rule.handlers.some(h => h.kind === "no-unused-private-class-members-check");
   const hasNoUnexpectedMultilineCheck = rule.handlers.some(h => h.kind === "no-unexpected-multiline-check");
   const hasPreserveCaughtErrorCheck = rule.handlers.some(h => h.kind === "preserve-caught-error-check");
+  const hasConstructorSuperCheck = rule.handlers.some(h => h.kind === "constructor-super-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -337,6 +338,8 @@ function emit(rule) {
     relevantTags = ["call_expr", "computed_member_expr", "tagged_template"];
   } else if (hasPreserveCaughtErrorCheck) {
     relevantTags = ["throw_stmt"];
+  } else if (hasConstructorSuperCheck) {
+    relevantTags = ["method_def"];
   } else if (hasAnyUseIsnan) {
     relevantTags = [];
     if (hasUseIsnanBinaryCheck) relevantTags.push(
@@ -365,7 +368,7 @@ function emit(rule) {
   );
   const needsStd = Object.keys(_filteredConstantsForStd).length > 0
     || hasSymbolHandler
-    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck
+    || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck
     || irUsesStringMember(rule)
     || irUsesOp(rule, "is-method-call") || irUsesOp(rule, "is-member-expression")
     || irUsesOp(rule, "is-new-expression") || irUsesOp(rule, "is-call-expression")
@@ -422,7 +425,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -842,6 +845,10 @@ function emit(rule) {
   } else if (hasPreserveCaughtErrorCheck) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    ctx.checkPreserveCaughtError(node);`);
+    out.push(`}`);
+  } else if (hasConstructorSuperCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkConstructorSuper(node);`);
     out.push(`}`);
   } else if (hasAnyUseIsnan) {
     // use-isnan: tag-switch dispatches to the per-check helpers.  The

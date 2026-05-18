@@ -102,6 +102,13 @@ const no_unassigned_vars = @import("correctness/no_unassigned_vars.zig");  // IR
 const no_unused_private_class_members = @import("correctness/no_unused_private_class_members.zig");  // IR-generated, full messageId set
 const no_unexpected_multiline = @import("correctness/no_unexpected_multiline.zig");  // IR-generated; covers function / property / taggedTemplate (division case TBD)
 const preserve_caught_error = @import("correctness/preserve_caught_error.zig");  // IR-generated; missingCause / incorrectCause / missingCatchErrorParam / partiallyLostError
+// const constructor_super = @import("correctness/constructor_super.zig");
+//   IR-generated subset (badSuper + missingAll) backed by a recursive
+//   class-body walk and an isPossibleConstructor helper covering all
+//   compound-assignment / logical / literal shapes ESLint checks.
+//   Disabled: native 53/82 vs runner 78 — the 25-case hybrid gap is
+//   `duplicate` and `missingSome`, both of which need code-path /
+//   reachability analysis we don't have yet.  Re-enable once that lands.
 // const no_useless_escape = @import("suspicious/no_useless_escape.zig");  // hand-written — disabled per IR-only constraint
 const no_void = @import("suspicious/no_void.zig");
 const no_with = @import("suspicious/no_with.zig");
@@ -396,6 +403,7 @@ pub const all_rules = .{
     no_unused_private_class_members,
     no_unexpected_multiline,
     preserve_caught_error,
+    // constructor_super,  // see import comment above
     // no_useless_escape, // runner >> native (runner 288, native 215, gap 73, 5 FP); fall back to JS runner
     no_void,
     no_with,

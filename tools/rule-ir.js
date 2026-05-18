@@ -444,6 +444,7 @@ function validateRule(rule) {
     if (h.kind === "no-unused-private-class-members-check") continue;
     if (h.kind === "no-unexpected-multiline-check") continue;
     if (h.kind === "preserve-caught-error-check") continue;
+    if (h.kind === "constructor-super-check") continue;
     if (h.kind === "no-empty-check") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       if (typeof h.selector !== "string") return fail("selector must be string", path);

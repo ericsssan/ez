@@ -4334,6 +4334,142 @@ pub const LintContext = struct {
         return node_text[flags_off..];
     }
 
+    // ── constructor-super ──────────────────────────────────────
+    // Partial port: handles `badSuper` (super() in a class with no
+    // extends) and `missingAll` (no super() in a derived constructor).
+    // Skips `missingSome` and `duplicate` which need flow analysis.
+    pub fn checkConstructorSuper(self: *const LintContext, node: NodeIndex) void {
+        if (self.ast.nodeTag(node) != .method_def) return;
+        const data = self.ast.nodeData(node);
+        const key = data.lhs;
+        if (key == .none or self.ast.nodeTag(key) != .identifier) return;
+        const key_name = self.ast.tokenText(self.ast.nodeMainToken(key));
+        if (!std.mem.eql(u8, key_name, "constructor")) return;
+
+        // Walk up to the enclosing class.
+        var cur = self.parentOf(node);
+        while (cur != .none) : (cur = self.parentOf(cur)) {
+            const t = self.ast.nodeTag(cur);
+            if (t == .class_decl or t == .class_expr) break;
+        }
+        if (cur == .none) return;
+        const class_data = self.ast.nodeData(cur);
+        const cd = self.extraData(ast_mod.ClassData, @intFromEnum(class_data.lhs));
+        const has_extends = cd.super_class != .none and self.extendsIsPossibleConstructor(cd.super_class);
+
+        // Method's body lives in MethodData (an extra payload), so
+        // nodeSpan(method_def) doesn't extend past the parameter list.
+        // Pull the body node out of the extra so we can scan it.
+        const method_data = self.extraData(ast_mod.MethodData, @intFromEnum(data.rhs));
+        const body = method_data.body;
+        if (body == .none) return;
+        const method_span = self.nodeSpan(body);
+        const total: u32 = @intCast(self.ast.nodes.len);
+        var super_calls_buf: [32]NodeIndex = undefined;
+        var super_calls_len: usize = 0;
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            if (self.ast.nodeTag(ni) != .call_expr) continue;
+            const cd2 = self.ast.nodeData(ni);
+            if (cd2.lhs == .none or self.ast.nodeTag(cd2.lhs) != .super_expr) continue;
+            const sp = self.nodeSpan(ni);
+            if (sp.start < method_span.start or sp.end > method_span.end) continue;
+            // Skip super() calls inside nested functions / classes —
+            // they don't belong to this constructor.
+            if (self.callInsideNestedFunctionOrClass(ni, node)) continue;
+            if (super_calls_len >= super_calls_buf.len) break;
+            super_calls_buf[super_calls_len] = ni;
+            super_calls_len += 1;
+        }
+        const super_calls = super_calls_buf[0..super_calls_len];
+
+        if (!has_extends) {
+            for (super_calls) |sc| {
+                self.reportWithMessageId(sc, "badSuper");
+            }
+            return;
+        }
+        if (super_calls.len == 0) {
+            // ESLint reports at the constructor function head.
+            self.reportWithMessageId(node, "missingAll");
+            return;
+        }
+        // missingSome / duplicate need flow analysis — deferred.
+    }
+
+    /// Mirrors ESLint's `isPossibleConstructor`: bails on literals,
+    /// `undefined`, and mathematical-assignment shapes that can't
+    /// evaluate to a constructor.  Returns true conservatively for
+    /// shapes we don't recognise.
+    fn extendsIsPossibleConstructor(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        var cur = node;
+        // Walk through grouping_expr wrappers.
+        while (self.ast.nodeTag(cur) == .grouping_expr) {
+            const d = self.ast.nodeData(cur);
+            if (d.lhs == .none) return true;
+            cur = d.lhs;
+        }
+        const tag = self.ast.nodeTag(cur);
+        switch (tag) {
+            .null_literal, .number_literal, .string_literal, .regex_literal,
+            .bigint_literal, .boolean_literal => return false,
+            .identifier => {
+                const name = self.ast.tokenText(self.ast.nodeMainToken(cur));
+                if (std.mem.eql(u8, name, "undefined")) return false;
+                return true;
+            },
+            .assign => {
+                // `=` returns the right-hand value.
+                const d = self.ast.nodeData(cur);
+                return self.extendsIsPossibleConstructor(d.rhs);
+            },
+            .logical_and_assign => {
+                // `&&=` evaluates the right side when left is truthy.
+                const d = self.ast.nodeData(cur);
+                return self.extendsIsPossibleConstructor(d.rhs);
+            },
+            .logical_or_assign, .nullish_assign => {
+                // `||=`/`??=` may return either side.
+                const d = self.ast.nodeData(cur);
+                return self.extendsIsPossibleConstructor(d.lhs)
+                    or self.extendsIsPossibleConstructor(d.rhs);
+            },
+            // All other assignment operators (+=, -=, *=, /=, etc.) are
+            // mathematical / bitwise — never produce a constructor.
+            .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign,
+            .exp_assign, .shl_assign, .shr_assign, .ushr_assign,
+            .and_assign, .or_assign, .xor_assign => return false,
+            .logical_and => {
+                const d = self.ast.nodeData(cur);
+                return self.extendsIsPossibleConstructor(d.rhs);
+            },
+            .logical_or, .nullish_coalesce => {
+                const d = self.ast.nodeData(cur);
+                return self.extendsIsPossibleConstructor(d.lhs)
+                    or self.extendsIsPossibleConstructor(d.rhs);
+            },
+            .conditional => {
+                // ESLint inspects both branches; conservative — return true.
+                return true;
+            },
+            else => return true,
+        }
+    }
+
+    /// True when the call_expr `call` is inside a nested function or
+    /// class declared between itself and `top` (exclusive).
+    fn callInsideNestedFunctionOrClass(self: *const LintContext, call: NodeIndex, top: NodeIndex) bool {
+        var cur = self.parentOf(call);
+        while (cur != .none and cur != top) : (cur = self.parentOf(cur)) {
+            const t = self.ast.nodeTag(cur);
+            if (self.isFunctionTag(t)) return true;
+            if (t == .class_decl or t == .class_expr) return true;
+        }
+        return false;
+    }
+
     // ── preserve-caught-error ──────────────────────────────────
     // Flags `catch (e) { throw new Error(...) }` patterns where the
     // caught error isn't preserved via the `cause` option.  Covers

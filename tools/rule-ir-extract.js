@@ -519,6 +519,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUnusedPrivateMembersHandler, // no-unused-private-class-members
       extractNoUnexpectedMultilineHandler, // no-unexpected-multiline
       extractPreserveCaughtErrorHandler, // preserve-caught-error
+      extractConstructorSuperHandler, // constructor-super
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1288,6 +1289,14 @@ function extractPreserveCaughtErrorHandler(rawHandler, _stmts, { sourceFile } = 
     return { ok: true, handler: { kind: "preserve-caught-error-check" } };
   }
   return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractConstructorSuperHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/constructor-super.js")) return { ok: false };
+  // ESLint uses code-path lifecycle hooks (onCodePathStart, etc.) and
+  // doesn't register a plain selector.  Map every handler to the check
+  // — codegen collapses to a single MethodDefinition-driven run().
+  return { ok: true, handler: { kind: "constructor-super-check" } };
 }
 
 function extractUseIsnanHandler(rawHandler, _stmts, { sourceFile } = {}) {
