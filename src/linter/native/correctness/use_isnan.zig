@@ -18,6 +18,8 @@ pub const meta = RuleMeta{
 
 pub const relevant_tags = [_]Node.Tag{.equal, .not_equal, .strict_equal, .strict_not_equal, .less_than, .greater_than, .less_equal, .greater_equal, .switch_stmt, .call_expr, .optional_call_expr};
 
+pub const needs_semantic = true;
+
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
     comparisonWithNaN,

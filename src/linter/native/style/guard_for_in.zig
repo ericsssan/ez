@@ -51,10 +51,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         return;
     }
     if ((((ctx.nodeTag(ctx.nodeBodyBlock(node)) == .block_stmt) and (ctx.nodeBodyStmtCount(ctx.nodeBodyBlock(node)) >= 1)) and blk: { const __t = ctx.nodeTag(ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0)); break :blk (__t == .if_stmt or __t == .if_else_stmt); })) {
-        if (blk: { const __t = ctx.nodeTag(conditionalChild(ctx, ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0), .consequent)); break :blk (__t == .continue_stmt or __t == .continue_label); }) {
+        if (blk: { const __t = ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0), .consequent))); break :blk (__t == .continue_stmt or __t == .continue_label); }) {
             return;
         }
-        if ((((ctx.nodeTag(conditionalChild(ctx, ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0), .consequent)) == .block_stmt) and (ctx.nodeBodyStmtCount(conditionalChild(ctx, ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0), .consequent)) == 1)) and blk: { const __t = ctx.nodeTag(ctx.nodeBodyStmtAt(conditionalChild(ctx, ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0), .consequent), 0)); break :blk (__t == .continue_stmt or __t == .continue_label); })) {
+        if ((((ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0), .consequent))) == .block_stmt) and (ctx.nodeBodyStmtCount(ctx.nodeSkipGrouping(conditionalChild(ctx, ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0), .consequent))) == 1)) and blk: { const __t = ctx.nodeTag(ctx.nodeBodyStmtAt(ctx.nodeSkipGrouping(conditionalChild(ctx, ctx.nodeBodyStmtAt(ctx.nodeBodyBlock(node), 0), .consequent)), 0)); break :blk (__t == .continue_stmt or __t == .continue_label); })) {
             return;
         }
     }

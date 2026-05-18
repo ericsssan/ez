@@ -41,10 +41,10 @@ fn conditionalChild(c: *const LintContext, n: NodeIndex, which: enum { consequen
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (((blk: { const __t = ctx.nodeTag(conditionalChild(ctx, node, .alternate)); break :blk (__t == .number_literal or __t == .string_literal or __t == .boolean_literal or __t == .null_literal or __t == .regex_literal or __t == .bigint_literal); } and (ctx.nodeTag(conditionalChild(ctx, node, .alternate)) == .boolean_literal)) and (blk: { const __t = ctx.nodeTag(conditionalChild(ctx, node, .consequent)); break :blk (__t == .number_literal or __t == .string_literal or __t == .boolean_literal or __t == .null_literal or __t == .regex_literal or __t == .bigint_literal); } and (ctx.nodeTag(conditionalChild(ctx, node, .consequent)) == .boolean_literal)))) {
+    if (((blk: { const __t = ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, node, .alternate))); break :blk (__t == .number_literal or __t == .string_literal or __t == .boolean_literal or __t == .null_literal or __t == .regex_literal or __t == .bigint_literal); } and (ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, node, .alternate))) == .boolean_literal)) and (blk: { const __t = ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, node, .consequent))); break :blk (__t == .number_literal or __t == .string_literal or __t == .boolean_literal or __t == .null_literal or __t == .regex_literal or __t == .bigint_literal); } and (ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, node, .consequent))) == .boolean_literal)))) {
         ctx.reportWithMessageId(node, "unnecessaryConditionalExpression");
     } else {
-        if ((!(ctx.getOptionBool("defaultAssignment", true)) and (((ctx.nodeTag(ctx.nodeData(node).lhs) == .identifier) and (ctx.nodeTag(conditionalChild(ctx, node, .consequent)) == .identifier)) and (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(node).lhs)), ctx.tokenText(ctx.nodeMainToken(conditionalChild(ctx, node, .consequent)))))))) {
+        if ((!(ctx.getOptionBool("defaultAssignment", true)) and (((ctx.nodeTag(ctx.nodeSkipGrouping(ctx.nodeData(node).lhs)) == .identifier) and (ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, node, .consequent))) == .identifier)) and (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeSkipGrouping(ctx.nodeData(node).lhs))), ctx.tokenText(ctx.nodeMainToken(ctx.nodeSkipGrouping(conditionalChild(ctx, node, .consequent))))))))) {
             ctx.reportWithMessageId(node, "unnecessaryConditionalAssignment");
         }
     }

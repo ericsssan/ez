@@ -2294,12 +2294,14 @@ function emitExpr(e, ctx) {
     }
     case "conditional-consequent":
       ctx.needConditionalChild = true;
-      return `conditionalChild(ctx, ${emitExpr(e.node, ctx)}, .consequent)`;
+      // ESLint's AST has no ParenthesizedExpression — match that semantics by
+      // stripping any grouping_expr wrappers around the branch.
+      return `ctx.nodeSkipGrouping(conditionalChild(ctx, ${emitExpr(e.node, ctx)}, .consequent))`;
     case "conditional-alternate":
       ctx.needConditionalChild = true;
-      return `conditionalChild(ctx, ${emitExpr(e.node, ctx)}, .alternate)`;
+      return `ctx.nodeSkipGrouping(conditionalChild(ctx, ${emitExpr(e.node, ctx)}, .alternate))`;
     case "conditional-test":
-      return `ctx.nodeData(${emitExpr(e.node, ctx)}).lhs`;
+      return `ctx.nodeSkipGrouping(ctx.nodeData(${emitExpr(e.node, ctx)}).lhs)`;
     case "get-ecma-version":
       return `ctx.getEcmaVersion()`;
     case "global-is-explicitly-enabled":

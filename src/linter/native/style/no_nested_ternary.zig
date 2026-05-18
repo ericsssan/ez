@@ -38,7 +38,7 @@ fn conditionalChild(c: *const LintContext, n: NodeIndex, which: enum { consequen
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (((ctx.nodeTag(conditionalChild(ctx, node, .alternate)) == .conditional) or (ctx.nodeTag(conditionalChild(ctx, node, .consequent)) == .conditional))) {
+    if (((ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, node, .alternate))) == .conditional) or (ctx.nodeTag(ctx.nodeSkipGrouping(conditionalChild(ctx, node, .consequent))) == .conditional))) {
         ctx.reportWithMessageId(node, "noNestedTernary");
     }
 }
