@@ -4395,18 +4395,88 @@ pub const LintContext = struct {
             self.reportWithMessageId(node, "missingAll");
             return;
         }
-        // duplicate / missingSome punted — the code-path event stream
-        // exposes seg_start nodes in AST-visit order rather than source
-        // order, so the simple "last seg_start before source pos" picker
-        // mis-classifies branch operands of ternary / logical exprs.
-        // A faithful port wants a node→segment map built during the
-        // AST walk; this commit lays the helpers (findCodePathForFunction,
-        // segmentAtNode, segmentReachableFrom, pathPassesThroughSuper)
-        // for that follow-up.
+        // AST-walk fallback for duplicate / missingSome — the code-path
+        // helpers exist (segmentAtNode etc.) but `segmentAtNode` lacks a
+        // node→segment map that disambiguates branches whose seg_start
+        // event nodes share a source position with the parent expression
+        // (e.g. ternary / logical exprs).  Until the parser-side AST
+        // walk records segment-per-node, run a conservative AST scan.
+        if (body != .none and self.ast.nodeTag(body) == .block_stmt) {
+            self.checkConstructorSuperBodyStraightLine(body, super_calls);
+        }
         // missingSome would need a per-segment "called-in-every-path"
         // propagation that distinguishes parallel branches from
         // sequential flow; the simple backward-BFS gave too many false
         // positives.  Punt for now — leaves ~10 FN versus the runner.
+    }
+
+    /// Conservative AST-only fallback: detect duplicate when the body
+    /// has TWO or more top-level statements that are `super()` (no
+    /// branches between them).  Misses cases hidden in conditionals
+    /// and won't flag missingSome — those need a real per-node segment
+    /// map (see notes at the call site).
+    fn checkConstructorSuperBodyStraightLine(self: *const LintContext, body: NodeIndex, super_calls: []const NodeIndex) void {
+        const data = self.ast.nodeData(body);
+        const stmts = self.ast.extraSlice(.{
+            .start = @intFromEnum(data.lhs),
+            .end = @intFromEnum(data.rhs),
+        });
+        var top_level_super: ?NodeIndex = null;
+        for (stmts) |raw| {
+            const s: NodeIndex = @enumFromInt(raw);
+            if (self.ast.nodeTag(s) != .expression_stmt) continue;
+            const sdata = self.ast.nodeData(s);
+            const expr = sdata.lhs;
+            // Is `expr` one of our super_calls?
+            var is_super = false;
+            for (super_calls) |sc| if (sc == expr) { is_super = true; break; };
+            if (!is_super) continue;
+            if (top_level_super) |_| {
+                self.reportWithMessageId(expr, "duplicate");
+                return;
+            }
+            top_level_super = expr;
+        }
+    }
+
+    /// True when EVERY path from `start` to `end` crosses at least one
+    /// segment in `super_segs`.  Implemented by BFS from `start` with
+    /// super_segs blocked: if `end` is reachable in the filtered CFG,
+    /// some path bypasses super, so not all paths cross.
+    fn allPathsThroughSuper(self: *const LintContext, cpr: anytype, start: u32, end: u32, super_segs: []const u32) bool {
+        _ = self;
+        if (start == end) {
+            for (super_segs) |s| if (s == end) return true;
+            return false;
+        }
+        for (super_segs) |s| if (s == start) return true;
+        var visited: [4096]u8 = undefined;
+        if (cpr.seg_count > visited.len) return false;
+        @memset(visited[0..cpr.seg_count], 0);
+        var queue: [256]u32 = undefined;
+        var qhead: usize = 0;
+        var qtail: usize = 0;
+        queue[qtail] = start;
+        qtail += 1;
+        visited[start] = 1;
+        while (qhead < qtail) {
+            const cur = queue[qhead];
+            qhead += 1;
+            const next_info = cpr.seg_next[cur];
+            for (cpr.all_next_targets[next_info.all_next_start..next_info.all_next_end]) |n| {
+                if (visited[n] != 0) continue;
+                // Block traversal through super_segs.
+                var is_super = false;
+                for (super_segs) |s| if (s == n) { is_super = true; break; };
+                if (is_super) continue;
+                if (n == end) return false; // reached end without crossing super
+                visited[n] = 1;
+                if (qtail >= queue.len) return false;
+                queue[qtail] = n;
+                qtail += 1;
+            }
+        }
+        return true; // couldn't reach end without crossing super
     }
 
     /// True when there exists a path from `start` to `end` that visits
@@ -4511,17 +4581,27 @@ pub const LintContext = struct {
     /// answer.  Returns null when no segment covers the node (e.g. the
     /// node is in a nested function with a different CP).
     fn segmentAtNode(self: *const LintContext, cpr: anytype, cp_id: u32, node: NodeIndex) ?u32 {
+        // Events fire in AST-visit order, not source order — walk the
+        // ENTIRE stream and pick the seg_start whose node's source
+        // position is the largest one still ≤ the target's start.
+        // Earlier-version code broke out of the loop early when an
+        // event's source pos exceeded the target; that mis-classified
+        // branch operands of expressions whose later branches happen
+        // to be source-earlier than already-seen ones (rare, but real
+        // for nested ternaries).
         const node_pos = self.nodeSpan(node).start;
         var best_seg: ?u32 = null;
         var best_pos: u32 = 0;
+        var found = false;
         for (cpr.events) |ev| {
             if (ev.type != .seg_start) continue;
             if (cpr.seg_codepath[ev.data1] != cp_id) continue;
             const ev_pos = self.nodeSpan(ev.node).start;
-            if (ev_pos > node_pos) break;
-            if (best_seg == null or ev_pos >= best_pos) {
+            if (ev_pos > node_pos) continue;
+            if (!found or ev_pos >= best_pos) {
                 best_seg = ev.data1;
                 best_pos = ev_pos;
+                found = true;
             }
         }
         return best_seg;
