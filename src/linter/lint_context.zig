@@ -4388,8 +4388,82 @@ pub const LintContext = struct {
             const entries = [_]MessageDataEntry{
                 .{ .key = "classMemberName", .val = d.name },
             };
-            self.reportSpanWithMessageIdAndData(self.nodeSpan(d.key), "unusedPrivateClassMember", &entries);
+            // ESLint reports at `loc: declaredNode.key.loc` — the full
+            // `#name` range.  Our parser's key nodeSpan only covers the
+            // `#` token; reconstruct the full span by reading source
+            // forward through the identifier characters.
+            const tok_start = self.ast.tokenStart(self.ast.nodeMainToken(d.key));
+            const src = self.ast.source;
+            var p: usize = tok_start + 1;
+            while (p < src.len and isIdentChar(src[p])) p += 1;
+            self.reportSpanWithMessageIdAndData(.{ .start = tok_start, .end = @intCast(p) }, "unusedPrivateClassMember", &entries);
         }
+    }
+
+    /// Mirrors ESLint's `isWriteOnlyAssignment(privateIdentifierNode)`:
+    /// returns true when the given private-identifier ref (a
+    /// `property_ident` node inside `this.#x`) sits on the left side of
+    /// a plain assignment / for-in / for-of / assignment-pattern, with
+    /// no resulting read.  `+=`-style compound assignments still count
+    /// as reads UNLESS the surrounding statement is an expression
+    /// statement (matching ESLint exactly).
+    fn privateRefIsWriteOnly(self: *const LintContext, ref: NodeIndex) bool {
+        // ref is a property_ident inside a member_expr (this.#x).
+        const member = self.parentOf(ref);
+        if (member == .none) return false;
+        const member_tag = self.ast.nodeTag(member);
+        if (member_tag != .member_expr and member_tag != .optional_member_expr
+            and member_tag != .computed_member_expr and member_tag != .optional_computed_member_expr) return false;
+        const parent = self.parentOf(member);
+        if (parent == .none) return false;
+        const ptag = self.ast.nodeTag(parent);
+        // ForIn/ForOf: left side is a write.
+        if (ptag == .for_in_stmt or ptag == .for_of_stmt or ptag == .for_await_of_stmt) {
+            const pd = self.ast.nodeData(parent);
+            return pd.lhs == member;
+        }
+        if (ptag == .assignment_pattern) {
+            const pd = self.ast.nodeData(parent);
+            return pd.lhs == member;
+        }
+        // UpdateExpression (`this.#x++`).  The read result is consumed
+        // only when the parent isn't an expression statement; mirror
+        // ESLint's expression-stmt-discard rule.
+        if (ptag == .prefix_inc or ptag == .prefix_dec
+            or ptag == .postfix_inc or ptag == .postfix_dec)
+        {
+            const grandparent = self.parentOf(parent);
+            if (grandparent == .none) return false;
+            return self.ast.nodeTag(grandparent) == .expression_stmt;
+        }
+        // Destructuring assignment / rest patterns: the private ref sits
+        // inside an array_pattern / object_pattern / rest_element on the
+        // left of an assignment or as a function parameter.  Walking up
+        // until we hit the assignment target tells us if we're on a
+        // write-only path.
+        if (ptag == .array_pattern or ptag == .object_pattern or ptag == .rest_element) {
+            // The member_expr is a destructuring target.
+            return true;
+        }
+        // AssignmentExpression family.
+        const is_simple_assign = ptag == .assign;
+        const is_compound_assign = ptag == .add_assign or ptag == .sub_assign
+            or ptag == .mul_assign or ptag == .div_assign or ptag == .mod_assign
+            or ptag == .exp_assign or ptag == .shl_assign
+            or ptag == .shr_assign or ptag == .ushr_assign
+            or ptag == .and_assign or ptag == .or_assign
+            or ptag == .xor_assign or ptag == .logical_and_assign
+            or ptag == .logical_or_assign or ptag == .nullish_assign;
+        if (!is_simple_assign and !is_compound_assign) return false;
+        const pd = self.ast.nodeData(parent);
+        if (pd.lhs != member) return false;
+        if (is_simple_assign) return true;
+        // Compound: it's read-only-discarded when the surrounding
+        // statement is an ExpressionStatement (the read result goes
+        // unused).
+        const grandparent = self.parentOf(parent);
+        if (grandparent == .none) return false;
+        return self.ast.nodeTag(grandparent) == .expression_stmt;
     }
 
     fn markUsedPrivateNames(self: *const LintContext, root: NodeIndex, decls: []PrivateDecl) void {
@@ -4399,7 +4473,12 @@ pub const LintContext = struct {
         var n: u32 = 0;
         while (n < total) : (n += 1) {
             const ni: NodeIndex = @enumFromInt(n);
-            if (self.ast.nodeTag(ni) != .identifier) continue;
+            // `property_ident` is the RHS of a member expression
+            // (`this.#x`) — the property side is a distinct tag from
+            // a free-standing identifier reference.  Both can carry a
+            // `#name` so include both.
+            const tag = self.ast.nodeTag(ni);
+            if (tag != .identifier and tag != .property_ident) continue;
             const main_tok = self.ast.nodeMainToken(ni);
             const tok_start = self.ast.tokenStart(main_tok);
             if (tok_start < root_span.start or tok_start >= root_span.end) continue;
@@ -4411,12 +4490,54 @@ pub const LintContext = struct {
             var is_decl = false;
             for (decls) |d| if (d.key == ni) { is_decl = true; break; };
             if (is_decl) continue;
+            // Skip refs that belong to a NESTED class body AND that
+            // class redeclares the same private name — under JS's
+            // lexical private-name binding, an inner redecl shadows the
+            // outer.  When the inner class doesn't redeclare, the ref
+            // resolves to the outer's binding (this) and counts as a use.
+            if (self.refResolvesToInnerClass(ni, root, name)) continue;
+            if (self.privateRefIsWriteOnly(ni)) continue;
             for (decls, 0..) |d, di| {
                 if (std.mem.eql(u8, d.name, name)) {
                     decls[di].used = true;
                 }
             }
         }
+    }
+
+    /// True when `ref`'s nearest enclosing class_body is not `root` AND
+    /// that inner class_body declares its own `#name` (shadowing the
+    /// outer binding).  When the inner class doesn't redeclare `name`,
+    /// the ref still binds lexically to the outer (root) — return false.
+    fn refResolvesToInnerClass(self: *const LintContext, ref: NodeIndex, root: NodeIndex, name: []const u8) bool {
+        var cur = self.parentOf(ref);
+        while (cur != .none) : (cur = self.parentOf(cur)) {
+            if (self.ast.nodeTag(cur) != .class_body) continue;
+            if (cur == root) return false;
+            // Inner class — does it declare a `#name` matching `name`?
+            const d = self.ast.nodeData(cur);
+            const members = self.ast.extraSlice(.{
+                .start = @intFromEnum(d.lhs),
+                .end = @intFromEnum(d.rhs),
+            });
+            const src = self.ast.source;
+            for (members) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                const mtag = self.ast.nodeTag(m);
+                if (mtag != .property_def and mtag != .method_def) continue;
+                const md = self.ast.nodeData(m);
+                if (md.lhs == .none) continue;
+                if (self.ast.nodeTag(md.lhs) != .identifier) continue;
+                const ktok = self.ast.nodeMainToken(md.lhs);
+                const ks = self.ast.tokenStart(ktok);
+                if (ks >= src.len or src[ks] != '#') continue;
+                var p: usize = ks + 1;
+                while (p < src.len and isIdentChar(src[p])) p += 1;
+                if (std.mem.eql(u8, src[ks + 1 .. p], name)) return true;
+            }
+            return false; // inner exists but doesn't redeclare → outer binds
+        }
+        return false;
     }
 
     // ── no-unassigned-vars ─────────────────────────────────────
