@@ -103,12 +103,14 @@ const no_unused_private_class_members = @import("correctness/no_unused_private_c
 const no_unexpected_multiline = @import("correctness/no_unexpected_multiline.zig");  // IR-generated; covers function / property / taggedTemplate (division case TBD)
 const preserve_caught_error = @import("correctness/preserve_caught_error.zig");  // IR-generated; missingCause / incorrectCause / missingCatchErrorParam / partiallyLostError
 // const constructor_super = @import("correctness/constructor_super.zig");
-//   IR-generated subset (badSuper + missingAll) backed by a recursive
-//   class-body walk and an isPossibleConstructor helper covering all
-//   compound-assignment / logical / literal shapes ESLint checks.
-//   Disabled: native 53/82 vs runner 78 — the 25-case hybrid gap is
-//   `duplicate` and `missingSome`, both of which need code-path /
-//   reachability analysis we don't have yet.  Re-enable once that lands.
+//   IR-generated subset (badSuper + missingAll).  Code-path helpers
+//   landed (findCodePathForFunction / segmentAtNode /
+//   segmentReachableFrom / pathPassesThroughSuper) but unused —
+//   segmentAtNode picks wrong segments for ternary/logical branches
+//   because seg_start events fire in AST-visit order, not source order.
+//   A true node→segment map (built during the AST walk that emits CFG
+//   events) is the next step.  Native 53/82 vs runner 78; disabled to
+//   preserve hybrid correctness.
 // const no_useless_escape = @import("suspicious/no_useless_escape.zig");  // hand-written — disabled per IR-only constraint
 const no_void = @import("suspicious/no_void.zig");
 const no_with = @import("suspicious/no_with.zig");

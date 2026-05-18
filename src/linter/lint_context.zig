@@ -4395,7 +4395,136 @@ pub const LintContext = struct {
             self.reportWithMessageId(node, "missingAll");
             return;
         }
-        // missingSome / duplicate need flow analysis — deferred.
+        // duplicate / missingSome punted — the code-path event stream
+        // exposes seg_start nodes in AST-visit order rather than source
+        // order, so the simple "last seg_start before source pos" picker
+        // mis-classifies branch operands of ternary / logical exprs.
+        // A faithful port wants a node→segment map built during the
+        // AST walk; this commit lays the helpers (findCodePathForFunction,
+        // segmentAtNode, segmentReachableFrom, pathPassesThroughSuper)
+        // for that follow-up.
+        // missingSome would need a per-segment "called-in-every-path"
+        // propagation that distinguishes parallel branches from
+        // sequential flow; the simple backward-BFS gave too many false
+        // positives.  Punt for now — leaves ~10 FN versus the runner.
+    }
+
+    /// True when there exists a path from `start` to `end` that visits
+    /// at least one segment in `super_segs`.
+    fn pathPassesThroughSuper(self: *const LintContext, cpr: anytype, start: u32, end: u32, super_segs: []const u32) bool {
+        _ = self;
+        if (start == end) {
+            for (super_segs) |s| if (s == end) return true;
+            return false;
+        }
+        // BFS from end backwards via prev edges, marking visited.  When we
+        // reach start, check whether the visited set includes any super_seg.
+        var visited: [4096]u8 = undefined;
+        if (cpr.seg_count > visited.len) return false;
+        @memset(visited[0..cpr.seg_count], 0);
+        var queue: [256]u32 = undefined;
+        var qhead: usize = 0;
+        var qtail: usize = 0;
+        queue[qtail] = end;
+        qtail += 1;
+        visited[end] = 1;
+        var saw_super = false;
+        for (super_segs) |s| if (s == end) { saw_super = true; break; };
+        while (qhead < qtail) {
+            const cur = queue[qhead];
+            qhead += 1;
+            if (cur == start) {
+                // We've connected end → start.  Check if any visited seg is super.
+                // Since BFS reached start, the path goes through visited.  But
+                // "saw_super along this path" needs a per-path tracker, which
+                // a single visited set can't do precisely.  Approximation:
+                // saw_super is true if ANY visited segment is super_seg AND
+                // visited includes both start and end transitively.
+                if (saw_super) return true;
+                for (visited[0..cpr.seg_count], 0..) |v, i| {
+                    if (v == 0) continue;
+                    for (super_segs) |s| if (s == i) return true;
+                }
+                return false;
+            }
+            const prev_start = cpr.seg_all_prev_start[cur];
+            const prev_end = cpr.seg_all_prev_end[cur];
+            for (cpr.all_prev_targets[prev_start..prev_end]) |p| {
+                if (visited[p] != 0) continue;
+                visited[p] = 1;
+                if (qtail >= queue.len) return saw_super;
+                queue[qtail] = p;
+                qtail += 1;
+                for (super_segs) |s| {
+                    if (s == p) {
+                        saw_super = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return saw_super;
+    }
+
+    /// True when segment `b` is reachable from `a` via forward edges
+    /// without crossing a loop back-edge.
+    fn segmentReachableFrom(self: *const LintContext, cpr: anytype, a: u32, b: u32) bool {
+        _ = self;
+        if (a == b) return false; // same-segment handled separately
+        var visited: [4096]u8 = undefined;
+        if (cpr.seg_count > visited.len) return false;
+        @memset(visited[0..cpr.seg_count], 0);
+        var queue: [256]u32 = undefined;
+        var qhead: usize = 0;
+        var qtail: usize = 0;
+        queue[qtail] = a;
+        qtail += 1;
+        visited[a] = 1;
+        while (qhead < qtail) {
+            const cur = queue[qhead];
+            qhead += 1;
+            const next_info = cpr.seg_next[cur];
+            for (cpr.all_next_targets[next_info.all_next_start..next_info.all_next_end]) |n| {
+                if (n == b) return true;
+                if (visited[n] != 0) continue;
+                visited[n] = 1;
+                if (qtail >= queue.len) return false;
+                queue[qtail] = n;
+                qtail += 1;
+            }
+        }
+        return false;
+    }
+
+    /// Find the CodePath whose codepath_start event points at `func_node`.
+    fn findCodePathForFunction(self: *const LintContext, func_node: NodeIndex) ?u32 {
+        const cpr = self.semantic.code_path_result orelse return null;
+        for (cpr.events) |ev| {
+            if (ev.type == .codepath_start and ev.node == func_node) return ev.data1;
+        }
+        return null;
+    }
+
+    /// Approximate "which segment is `node` in?" by walking events in
+    /// order: the most recent reachable seg_start whose source position
+    /// is <= the node's start (and that belongs to `cp_id`) is the
+    /// answer.  Returns null when no segment covers the node (e.g. the
+    /// node is in a nested function with a different CP).
+    fn segmentAtNode(self: *const LintContext, cpr: anytype, cp_id: u32, node: NodeIndex) ?u32 {
+        const node_pos = self.nodeSpan(node).start;
+        var best_seg: ?u32 = null;
+        var best_pos: u32 = 0;
+        for (cpr.events) |ev| {
+            if (ev.type != .seg_start) continue;
+            if (cpr.seg_codepath[ev.data1] != cp_id) continue;
+            const ev_pos = self.nodeSpan(ev.node).start;
+            if (ev_pos > node_pos) break;
+            if (best_seg == null or ev_pos >= best_pos) {
+                best_seg = ev.data1;
+                best_pos = ev_pos;
+            }
+        }
+        return best_seg;
     }
 
     /// Mirrors ESLint's `isPossibleConstructor`: bails on literals,
