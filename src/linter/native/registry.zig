@@ -101,6 +101,7 @@ const no_unused_labels = @import("suspicious/no_unused_labels.zig");  // IR-gene
 const no_unassigned_vars = @import("correctness/no_unassigned_vars.zig");  // IR-generated via no-unassigned-vars-check handler
 const no_unused_private_class_members = @import("correctness/no_unused_private_class_members.zig");  // IR-generated, full messageId set
 const no_unexpected_multiline = @import("correctness/no_unexpected_multiline.zig");  // IR-generated; covers function / property / taggedTemplate (division case TBD)
+const preserve_caught_error = @import("correctness/preserve_caught_error.zig");  // IR-generated; missingCause / incorrectCause / missingCatchErrorParam / partiallyLostError
 // const no_useless_escape = @import("suspicious/no_useless_escape.zig");  // hand-written — disabled per IR-only constraint
 const no_void = @import("suspicious/no_void.zig");
 const no_with = @import("suspicious/no_with.zig");
@@ -394,6 +395,7 @@ pub const all_rules = .{
     no_unassigned_vars,
     no_unused_private_class_members,
     no_unexpected_multiline,
+    preserve_caught_error,
     // no_useless_escape, // runner >> native (runner 288, native 215, gap 73, 5 FP); fall back to JS runner
     no_void,
     no_with,

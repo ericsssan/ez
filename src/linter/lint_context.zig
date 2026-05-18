@@ -4334,12 +4334,212 @@ pub const LintContext = struct {
         return node_text[flags_off..];
     }
 
+    // ── preserve-caught-error ──────────────────────────────────
+    // Flags `catch (e) { throw new Error(...) }` patterns where the
+    // caught error isn't preserved via the `cause` option.  Covers
+    // four of six messageIds: missingCause, incorrectCause,
+    // missingCatchErrorParam, partiallyLostError.  Skips
+    // caughtErrorShadowed (needs scope re-resolution) and suggestion
+    // fixes.
+    pub fn checkPreserveCaughtError(self: *const LintContext, node: NodeIndex) void {
+        if (self.ast.nodeTag(node) != .throw_stmt) return;
+        const data = self.ast.nodeData(node);
+        const arg = data.lhs;
+        if (arg == .none) return;
+
+        // Walk up looking for the nearest catch_clause.  ESLint stops at
+        // the first function boundary because a throw inside a nested
+        // function isn't re-throwing the outer catch.
+        var cur = self.parentOf(node);
+        var catch_node: NodeIndex = .none;
+        while (cur != .none) : (cur = self.parentOf(cur)) {
+            const t = self.ast.nodeTag(cur);
+            if (t == .catch_clause) { catch_node = cur; break; }
+            if (self.isFunctionTag(t)) return;
+        }
+        if (catch_node == .none) return;
+
+        // Is the throw arg `new X(...)` or `X(...)` with X a built-in
+        // global error type?
+        const arg_tag = self.ast.nodeTag(arg);
+        if (arg_tag != .new_expr and arg_tag != .call_expr) return;
+        const arg_data = self.ast.nodeData(arg);
+        const callee = arg_data.lhs;
+        if (self.ast.nodeTag(callee) != .identifier) return;
+        const callee_name = self.ast.tokenText(self.ast.nodeMainToken(callee));
+        if (!isBuiltinErrorType(callee_name)) return;
+        if (!self.isGlobalReference(callee)) return;
+
+        // Catch param: .lhs of catch_clause.
+        const catch_data = self.ast.nodeData(catch_node);
+        const catch_param = catch_data.lhs;
+        if (catch_param == .none) {
+            // catch { ... } — only flag under requireCatchParameter:true.
+            if (self.preserveCaughtErrorRequiresParam()) {
+                self.reportWithMessageId(node, "missingCatchErrorParam");
+            }
+            return;
+        }
+        if (self.ast.nodeTag(catch_param) != .identifier) {
+            // catch ({ ... }) — destructuring loses the caught error.
+            self.reportWithMessageId(catch_node, "partiallyLostError");
+            return;
+        }
+        const caught_name = self.ast.tokenText(self.ast.nodeMainToken(catch_param));
+
+        // Examine the cause property of the error options object.
+        const opts_index: usize = if (std.mem.eql(u8, callee_name, "AggregateError")) 2 else 1;
+        if (arg_data.rhs == .none) {
+            self.reportWithMessageId(node, "missingCause");
+            return;
+        }
+        const arg_range = self.extraData(SubRange, @intFromEnum(arg_data.rhs));
+        const args = self.extraSlice(arg_range);
+        // Bail when any earlier arg is a SpreadElement — order is fuzzy.
+        var i: usize = 0;
+        while (i <= opts_index and i < args.len) : (i += 1) {
+            const a: NodeIndex = @enumFromInt(args[i]);
+            if (self.ast.nodeTag(a) == .spread_element) return;
+        }
+        if (args.len <= opts_index) {
+            self.reportWithMessageId(node, "missingCause");
+            return;
+        }
+        const opts: NodeIndex = @enumFromInt(args[opts_index]);
+        if (self.ast.nodeTag(opts) != .object_literal) return; // UNKNOWN
+        // Walk object's properties (objects store members as SubRange
+        // in data.lhs..rhs).
+        const ob_data = self.ast.nodeData(opts);
+        const props = self.ast.extraSlice(.{
+            .start = @intFromEnum(ob_data.lhs),
+            .end = @intFromEnum(ob_data.rhs),
+        });
+        var cause_value: NodeIndex = .none;
+        var has_spread = false;
+        for (props) |raw| {
+            const p: NodeIndex = @enumFromInt(raw);
+            const ptag = self.ast.nodeTag(p);
+            if (ptag == .spread_element) { has_spread = true; continue; }
+            // Methods / getters / setters with key "cause" are
+            // technically incorrectCause per ESLint, but the rule
+            // reports at the value's FunctionExpression span while our
+            // AST keeps the function inside an extra payload — span
+            // fidelity drift becomes a strict-key FN+FP.  Skip rather
+            // than mis-report; the rule still catches the simple
+            // `cause: anotherError` case.
+            const is_method = ptag == .method_def or ptag == .computed_method_def
+                or ptag == .getter_def or ptag == .setter_def
+                or ptag == .computed_getter_def or ptag == .computed_setter_def;
+            if (is_method) continue;
+            if (self.propertyKeyEquals(p, "cause")) {
+                cause_value = self.propertyValueOf(p);
+                // Don't break — ESLint takes the LAST matching cause.
+            }
+        }
+        if (has_spread) return;
+        if (cause_value == .none) {
+            self.reportWithMessageId(node, "missingCause");
+            return;
+        }
+        // ESLint reports `incorrectCause` at the cause value node, not
+        // the wrapping throw — span fidelity matters for the strict
+        // differential key.
+        if (self.ast.nodeTag(cause_value) != .identifier) {
+            self.reportWithMessageId(cause_value, "incorrectCause");
+            return;
+        }
+        const val_name = self.ast.tokenText(self.ast.nodeMainToken(cause_value));
+        if (!std.mem.eql(u8, val_name, caught_name)) {
+            self.reportWithMessageId(cause_value, "incorrectCause");
+            return;
+        }
+    }
+
+    fn isFunctionTag(self: *const LintContext, t: ast_mod.Node.Tag) bool {
+        _ = self;
+        return switch (t) {
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .arrow_fn, .async_arrow_fn, .method_def, .computed_method_def,
+            .getter_def, .computed_getter_def, .setter_def, .computed_setter_def,
+            .constructor_def => true,
+            else => false,
+        };
+    }
+
+    fn propertyKeyEquals(self: *const LintContext, prop: NodeIndex, name: []const u8) bool {
+        const tag = self.ast.nodeTag(prop);
+        const data = self.ast.nodeData(prop);
+        const key = data.lhs;
+        if (key == .none) return false;
+        switch (tag) {
+            .property, .shorthand_property, .getter_def, .setter_def, .method_def => {
+                const ktag = self.ast.nodeTag(key);
+                if (ktag == .identifier) {
+                    return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(key)), name);
+                }
+                if (ktag == .string_literal) {
+                    const raw = self.sourceText(key);
+                    if (raw.len < 2) return false;
+                    return std.mem.eql(u8, raw[1 .. raw.len - 1], name);
+                }
+                return false;
+            },
+            .computed_property, .computed_method_def, .computed_getter_def, .computed_setter_def => {
+                const ktag = self.ast.nodeTag(key);
+                if (ktag == .string_literal) {
+                    const raw = self.sourceText(key);
+                    if (raw.len < 2) return false;
+                    return std.mem.eql(u8, raw[1 .. raw.len - 1], name);
+                }
+                // `[`cause`]` — no-substitution template literal.
+                if (ktag == .template_literal) {
+                    const raw = self.sourceText(key);
+                    if (raw.len < 2) return false;
+                    return std.mem.eql(u8, raw[1 .. raw.len - 1], name);
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    fn propertyValueOf(self: *const LintContext, prop: NodeIndex) NodeIndex {
+        const tag = self.ast.nodeTag(prop);
+        const data = self.ast.nodeData(prop);
+        return switch (tag) {
+            .property, .computed_property => data.rhs,
+            .shorthand_property => data.lhs, // value == key
+            else => .none,
+        };
+    }
+
+    fn preserveCaughtErrorRequiresParam(self: *const LintContext) bool {
+        if (self.rule_options) |opts| {
+            if (opts.* == .object) {
+                if (opts.object.get("requireCatchParameter")) |v| {
+                    if (v == .bool) return v.bool;
+                }
+            }
+        }
+        return false;
+    }
+
     // ── no-unexpected-multiline ────────────────────────────────
     // ESLint's algorithm visits CallExpression, MemberExpression (computed,
     // non-optional), TaggedTemplateExpression, and a specific
     // BinaryExpression shape that fakes a regex literal across two
     // divisions.  Each case looks for a newline immediately before the
     // opening delimiter (`(`, `[`, or `` ` ``).
+    fn isBuiltinErrorType(name: []const u8) bool {
+        const builtins = [_][]const u8{
+            "Error", "EvalError", "RangeError", "ReferenceError",
+            "SyntaxError", "TypeError", "URIError", "AggregateError",
+        };
+        for (builtins) |b| if (std.mem.eql(u8, b, name)) return true;
+        return false;
+    }
+
     pub fn checkNoUnexpectedMultiline(self: *const LintContext, node: NodeIndex) void {
         const tag = self.ast.nodeTag(node);
         const src = self.ast.source;

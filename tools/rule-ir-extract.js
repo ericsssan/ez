@@ -518,6 +518,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUnassignedVarsHandler, // no-unassigned-vars
       extractNoUnusedPrivateMembersHandler, // no-unused-private-class-members
       extractNoUnexpectedMultilineHandler, // no-unexpected-multiline
+      extractPreserveCaughtErrorHandler, // preserve-caught-error
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1278,6 +1279,14 @@ function extractNoUnexpectedMultilineHandler(rawHandler, _stmts, { sourceFile } 
   }
   // The BinaryExpression > BinaryExpression.left selector (the division
   // case) is complex; noop it for now.
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractPreserveCaughtErrorHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/preserve-caught-error.js")) return { ok: false };
+  if (rawHandler.selector === "ThrowStatement") {
+    return { ok: true, handler: { kind: "preserve-caught-error-check" } };
+  }
   return { ok: true, handler: { kind: "noop-stub" } };
 }
 
