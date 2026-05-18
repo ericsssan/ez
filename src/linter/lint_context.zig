@@ -4395,12 +4395,12 @@ pub const LintContext = struct {
             self.reportWithMessageId(node, "missingAll");
             return;
         }
-        // AST-walk fallback for duplicate / missingSome — the code-path
-        // helpers exist (segmentAtNode etc.) but `segmentAtNode` lacks a
-        // node→segment map that disambiguates branches whose seg_start
-        // event nodes share a source position with the parent expression
-        // (e.g. ternary / logical exprs).  Until the parser-side AST
-        // walk records segment-per-node, run a conservative AST scan.
+        // AST-walk duplicate fallback — segment-based flow analysis
+        // via `segmentAtNode` produced too many FPs because seg_start
+        // events don't always align with branch starts in source order
+        // (e.g. ternary/logical events emit seg_start with the parent
+        // expression's node).  Fixing it cleanly needs a node→segment
+        // map written during the AST walk that emits CFG events.
         if (body != .none and self.ast.nodeTag(body) == .block_stmt) {
             self.checkConstructorSuperBodyStraightLine(body, super_calls);
         }
@@ -4581,30 +4581,30 @@ pub const LintContext = struct {
     /// answer.  Returns null when no segment covers the node (e.g. the
     /// node is in a nested function with a different CP).
     fn segmentAtNode(self: *const LintContext, cpr: anytype, cp_id: u32, node: NodeIndex) ?u32 {
-        // Events fire in AST-visit order, not source order — walk the
-        // ENTIRE stream and pick the seg_start whose node's source
-        // position is the largest one still ≤ the target's start.
-        // Earlier-version code broke out of the loop early when an
-        // event's source pos exceeded the target; that mis-classified
-        // branch operands of expressions whose later branches happen
-        // to be source-earlier than already-seen ones (rare, but real
-        // for nested ternaries).
+        // Walk events in stream order (= source order, because the parser
+        // emits scope/CFG events left-to-right during parse).  Maintain
+        // `current_seg` from the LAST seg_start whose node belongs to
+        // this CodePath.  When we encounter the FIRST seg_start whose
+        // source position is STRICTLY GREATER than the target, the
+        // segment captured before that transition is the target's
+        // segment.  This correctly distinguishes branches whose
+        // seg_start.node IS the parent expression (ternary etc.) by
+        // relying on source-position ordering of consecutive
+        // seg_starts (e.g. seg_start.node = condition for branch1,
+        // seg_start.node = consequent for branch2 — the consequent's
+        // start is strictly after the condition's start, so a target
+        // INSIDE the consequent passes the branch1 seg_start but
+        // matches the branch2 seg_start only at its own start position).
         const node_pos = self.nodeSpan(node).start;
-        var best_seg: ?u32 = null;
-        var best_pos: u32 = 0;
-        var found = false;
+        var current_seg: ?u32 = null;
         for (cpr.events) |ev| {
             if (ev.type != .seg_start) continue;
             if (cpr.seg_codepath[ev.data1] != cp_id) continue;
             const ev_pos = self.nodeSpan(ev.node).start;
-            if (ev_pos > node_pos) continue;
-            if (!found or ev_pos >= best_pos) {
-                best_seg = ev.data1;
-                best_pos = ev_pos;
-                found = true;
-            }
+            if (ev_pos > node_pos) break;
+            current_seg = ev.data1;
         }
-        return best_seg;
+        return current_seg;
     }
 
     /// Mirrors ESLint's `isPossibleConstructor`: bails on literals,
