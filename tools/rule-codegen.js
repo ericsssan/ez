@@ -425,6 +425,7 @@ function emit(rule) {
       || irUsesOp(rule, "await-is-in-loop")
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
+      || hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler
       || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
