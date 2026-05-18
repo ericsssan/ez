@@ -517,6 +517,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUselessBackrefHandler, // no-useless-backreference
       extractNoUnassignedVarsHandler, // no-unassigned-vars
       extractNoUnusedPrivateMembersHandler, // no-unused-private-class-members
+      extractNoUnexpectedMultilineHandler, // no-unexpected-multiline
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1266,6 +1267,17 @@ function extractNoUnusedPrivateMembersHandler(rawHandler, _stmts, { sourceFile }
   if (rawHandler.selector === "ClassBody") {
     return { ok: true, handler: { kind: "no-unused-private-class-members-check" } };
   }
+  return { ok: true, handler: { kind: "noop-stub" } };
+}
+
+function extractNoUnexpectedMultilineHandler(rawHandler, _stmts, { sourceFile } = {}) {
+  if (!sourceFile || !sourceFile.endsWith("/no-unexpected-multiline.js")) return { ok: false };
+  const sel = rawHandler.selector;
+  if (sel === "CallExpression" || sel === "MemberExpression" || sel === "TaggedTemplateExpression") {
+    return { ok: true, handler: { kind: "no-unexpected-multiline-check" } };
+  }
+  // The BinaryExpression > BinaryExpression.left selector (the division
+  // case) is complex; noop it for now.
   return { ok: true, handler: { kind: "noop-stub" } };
 }
 

@@ -4334,6 +4334,109 @@ pub const LintContext = struct {
         return node_text[flags_off..];
     }
 
+    // ── no-unexpected-multiline ────────────────────────────────
+    // ESLint's algorithm visits CallExpression, MemberExpression (computed,
+    // non-optional), TaggedTemplateExpression, and a specific
+    // BinaryExpression shape that fakes a regex literal across two
+    // divisions.  Each case looks for a newline immediately before the
+    // opening delimiter (`(`, `[`, or `` ` ``).
+    pub fn checkNoUnexpectedMultiline(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        const src = self.ast.source;
+        const data = self.ast.nodeData(node);
+        switch (tag) {
+            .call_expr => {
+                // Skip empty arg lists and optional calls.
+                if (data.rhs == .none) return;
+                const range = self.extraData(SubRange, @intFromEnum(data.rhs));
+                const args = self.extraSlice(range);
+                if (args.len == 0) return;
+                const callee = data.lhs;
+                self.reportMultilineBreak(node, callee, src, '(', "function");
+            },
+            .computed_member_expr => {
+                // ESLint guards `!node.computed || node.optional` then
+                // checks for break.  computed_member_expr is always
+                // computed; the optional variant has a distinct tag.
+                const obj = data.lhs;
+                // ESLint accepts the class-field-after-arrow pattern
+                // `class C { f1 = () => {}\n[f2]; }` — the arrow as
+                // object's source ends with `}` which ASI separates.
+                // Our parser collapses both into one computed_member_expr;
+                // bail when the object is an arrow function.
+                const obj_tag = self.ast.nodeTag(obj);
+                if (obj_tag == .arrow_fn or obj_tag == .async_arrow_fn) return;
+                self.reportMultilineBreak(node, obj, src, '[', "property");
+            },
+            .tagged_template => {
+                // data.lhs = tag, data.rhs = template_literal node.
+                const tag_node = data.lhs;
+                const quasi = data.rhs;
+                if (tag_node == .none or quasi == .none) return;
+                const tag_end = self.nodeSpan(tag_node).end;
+                const quasi_start = self.nodeSpan(quasi).start;
+                if (!self.sourceContainsLineBreak(tag_end, quasi_start)) return;
+                self.reportSpanWithMessageId(.{ .start = quasi_start, .end = quasi_start + 1 }, "taggedTemplate");
+            },
+            else => {},
+        }
+    }
+
+    /// For `node` ending at `inner.end`, scan source forward (skipping
+    /// whitespace + comments + `)`) looking for `open_char` (`(` or `[`).
+    /// When the path contains a line break, report at the opening char.
+    fn reportMultilineBreak(
+        self: *const LintContext,
+        node: NodeIndex,
+        inner: NodeIndex,
+        src: []const u8,
+        open_char: u8,
+        msg_id: []const u8,
+    ) void {
+        _ = node;
+        const start = self.nodeSpan(inner).end;
+        var p: usize = start;
+        var saw_newline = false;
+        while (p < src.len) {
+            const c = src[p];
+            if (c == '\n' or c == '\r') { saw_newline = true; p += 1; continue; }
+            if (c == ' ' or c == '\t') { p += 1; continue; }
+            if (c == ')') { p += 1; continue; }
+            if (c == '/' and p + 1 < src.len) {
+                if (src[p + 1] == '/') {
+                    // Line comment — consume to newline.
+                    while (p < src.len and src[p] != '\n') p += 1;
+                    continue;
+                }
+                if (src[p + 1] == '*') {
+                    // Block comment.
+                    var q = p + 2;
+                    while (q + 1 < src.len and !(src[q] == '*' and src[q + 1] == '/')) {
+                        if (src[q] == '\n') saw_newline = true;
+                        q += 1;
+                    }
+                    p = if (q + 2 <= src.len) q + 2 else src.len;
+                    continue;
+                }
+            }
+            break;
+        }
+        if (!saw_newline) return;
+        if (p >= src.len or src[p] != open_char) return;
+        self.reportSpanWithMessageId(.{ .start = @intCast(p), .end = @intCast(p + 1) }, msg_id);
+    }
+
+    /// True when the source between [from, to) contains an ASCII line break.
+    fn sourceContainsLineBreak(self: *const LintContext, from: u32, to: u32) bool {
+        const src = self.ast.source;
+        const end = if (to > src.len) src.len else to;
+        var i: usize = from;
+        while (i < end) : (i += 1) {
+            if (src[i] == '\n' or src[i] == '\r') return true;
+        }
+        return false;
+    }
+
     // ── no-unused-private-class-members ────────────────────────
     // Conservative port: flag a private member (`#x`) only when zero
     // references to `#x` appear elsewhere in the class body.  The full
