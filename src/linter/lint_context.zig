@@ -4339,7 +4339,16 @@ pub const LintContext = struct {
     // references to `#x` appear elsewhere in the class body.  The full
     // rule downgrades write-only assignments (`this.#x = …`) to "not a
     // use" — we don't model that yet, so we'll under-flag those cases.
-    pub const PrivateDecl = struct { key: NodeIndex, member: NodeIndex, name: []const u8, used: bool };
+    pub const PrivateDecl = struct {
+        key: NodeIndex,
+        member: NodeIndex,
+        name: []const u8,
+        used: bool,
+        /// True when this binding is a getter or setter — for accessors,
+        /// ESLint treats ANY reference as a use (writes too) because the
+        /// get/set body can have side effects.
+        is_accessor: bool,
+    };
 
     pub fn checkNoUnusedPrivateClassMembers(self: *const LintContext, node: NodeIndex) void {
         if (self.ast.nodeTag(node) != .class_body) return;
@@ -4360,7 +4369,9 @@ pub const LintContext = struct {
         for (members) |raw| {
             const m: NodeIndex = @enumFromInt(raw);
             const mtag = self.ast.nodeTag(m);
-            if (mtag != .property_def and mtag != .method_def) continue;
+            const is_member = mtag == .property_def or mtag == .method_def
+                or mtag == .getter_def or mtag == .setter_def;
+            if (!is_member) continue;
             const md = self.ast.nodeData(m);
             const key = md.lhs;
             if (key == .none) continue;
@@ -4374,8 +4385,24 @@ pub const LintContext = struct {
             while (p < src.len and isIdentChar(src[p])) p += 1;
             if (p == tok_start + 1) continue;
             const name = src[tok_start + 1 .. p];
+            // Dedup: if a previous entry already declared this name
+            // (e.g. paired getter+setter), keep the first — both go
+            // unused together (the inner-class shadow logic is the
+            // only place that splits them).
+            var already = false;
+            for (decls_buf[0..decl_count]) |existing| {
+                if (std.mem.eql(u8, existing.name, name)) { already = true; break; }
+            }
+            if (already) continue;
             if (decl_count >= decls_buf.len) break;
-            decls_buf[decl_count] = .{ .key = key, .member = m, .name = name, .used = false };
+            const is_accessor = mtag == .getter_def or mtag == .setter_def;
+            decls_buf[decl_count] = .{
+                .key = key,
+                .member = m,
+                .name = name,
+                .used = false,
+                .is_accessor = is_accessor,
+            };
             decl_count += 1;
         }
         if (decl_count == 0) return;
@@ -4510,12 +4537,17 @@ pub const LintContext = struct {
             // outer.  When the inner class doesn't redeclare, the ref
             // resolves to the outer's binding (this) and counts as a use.
             if (self.refResolvesToInnerClass(ni, root, name)) continue;
-            if (self.privateRefIsWriteOnly(ni)) continue;
-            for (decls, 0..) |d, di| {
-                if (std.mem.eql(u8, d.name, name)) {
-                    decls[di].used = true;
-                }
-            }
+            // Find the matching decl up front so the accessor flag can
+            // decide whether a write-only ref still counts as a use.
+            var match_idx: isize = -1;
+            for (decls, 0..) |d, di| if (std.mem.eql(u8, d.name, name)) {
+                match_idx = @intCast(di);
+                break;
+            };
+            if (match_idx < 0) continue;
+            const matched = decls[@intCast(match_idx)];
+            if (!matched.is_accessor and self.privateRefIsWriteOnly(ni)) continue;
+            decls[@intCast(match_idx)].used = true;
         }
     }
 
