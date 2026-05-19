@@ -1,6 +1,6 @@
 # Ez Escape Analyzer — Design
 
-**Status:** week-1 draft.  Goal: define the architecture concretely enough to start implementing in week 2.
+**Status:** initial draft.  Goal: define the architecture concretely enough to start implementing.
 
 **One-line summary:** a Zig source escape analyzer + region-inference checker for our codebase, hosted in two layers (zlinter custom rules for annotation hygiene, a standalone tool for the dataflow analysis itself).
 
@@ -428,28 +428,31 @@ Unannotated functions are treated conservatively — return `.plain`, take any v
 
 ## Implementation plan
 
-### Phase 1: Layer 1 + annotations (2 weeks)
-- Week 1: write 5 zlinter custom rules, wire into `build.zig`, integration tests
-- Week 2: annotate the ~85 lifetime-bearing helpers in our codebase, fix anything Layer 1 catches
+### Phase 1: Layer 1 + annotations
+- Write 5 zlinter-style custom rules, wire into `build.zig`, integration tests
+- Annotate the ~85 lifetime-bearing helpers in our codebase, fix anything Layer 1 catches
 
-### Phase 2: Layer 2 skeleton (2 weeks)
-- Week 3: `src/borrow_check/cfg.zig` (Zig AST → CFG; reuse ideas from `src/parser/code_path.zig`), `src/borrow_check/abstract_state.zig`
-- Week 4: transfer functions for the common ops, annotations parser
+### Phase 2: Layer 2 skeleton
+- `tools/ez-borrow-check/cfg.zig` (Zig AST → CFG; reuse ideas from `src/parser/code_path.zig`)
+- `tools/ez-borrow-check/abstract_state.zig`
+- Transfer functions for the common ops, annotations parser
 
-### Phase 3: First invariant end-to-end (1 week)
-- Week 5: invariant #2 (slice outlives arena) on `src/linter/lint_context.zig`.  Inject synthetic bug, verify catch.  Run on real codebase.
+### Phase 3: First invariant end-to-end
+- Invariant #2 (slice outlives arena) on `src/linter/lint_context.zig`
+- Inject synthetic bug, verify catch
+- Run on real codebase
 
-### Decision point (week 5)
+### Decision point
 - Real bugs found OR known bug classes pre-empted → continue with #1, #3, #4, #5
 - No findings + checker is precise → architecture wins (good outcome)
 - No findings + checker is over-conservative → tighten or kill
 
-### Phase 4: scale + CI (2 weeks)
-- Implement remaining invariants
+### Phase 4: scale + CI
+- Real if/while/for/switch/try branching
+- Cross-file annotation lookup
+- Remaining invariants
 - Wire to CI
 - Error-mapping polish (source spans with notes)
-
-**Total: ~7 weeks to "finds bugs in CI, complete coverage of 5 invariants."**
 
 ## Alternatives considered
 
