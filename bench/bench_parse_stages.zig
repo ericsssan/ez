@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("\nPipeline stage breakdown (p50 over {d} iters):\n\n", .{ITERS});
     std.debug.print("{s:<24} {s:>6}  {s:>10}  {s:>10}  {s:>8}  {s:>8}  {s:>8}  {s:>8}  {s:>8}  {s:>8}\n",
         .{"fixture", "KB", "lex", "parse(lean)", "parse+ev", "traversal", "semantic", "positions", "utf16+misc", "writeSerData"});
-    std.debug.print("{s}\n", .{"-" ** 130});
+    std.debug.print("{s}\n", .{"-"**130});
 
     for (fixtures) |fx| {
         const source = std.Io.Dir.cwd().readFileAlloc(io, fx.path, gpa, .unlimited) catch continue;

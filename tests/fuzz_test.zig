@@ -13,6 +13,18 @@ const Language = ez.token.Language;
 
 // ── Shared corpora ───────────────────────────────────────────
 
+/// String repeat for comptime corpus building.  Replaces the old
+/// `"x" ** N` syntax that Zig 0.17 removed.
+fn repeatStr(comptime s: []const u8, comptime n: usize) *const [s.len * n]u8 {
+    var out: [s.len * n]u8 = undefined;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        @memcpy(out[i * s.len ..][0..s.len], s);
+    }
+    const final = out;
+    return &final;
+}
+
 const CORPUS_JS = &[_][]const u8{
     // Normal JS
     "var x = 1;",
@@ -42,8 +54,8 @@ const CORPUS_JS = &[_][]const u8{
     "\u{200B}",
     "\u{FEFF}var x = 1;",
     // Long / deeply nested
-    "x + " ** 200 ++ "0",
-    "({" ++ "a:1," ** 100 ++ "})",
+    repeatStr("x + ", 200) ++ "0",
+    "({" ++ repeatStr("a:1,", 100) ++ "})",
     // Linter targets
     "debugger;",
     "eval('code');",
@@ -145,7 +157,7 @@ fn fuzzFullPipeline(allocator: std.mem.Allocator, input: []const u8, lang: Langu
     defer tree.deinit(allocator);
     var sem = SemanticAnalyzer.analyze(allocator, &tree) catch return;
     defer sem.deinit(allocator);
-    const diags = linter.lint(allocator, &tree, &sem, null) catch return;
+    const diags = linter.lint(allocator, &tree, &sem, null, lang) catch return;
     allocator.free(diags);
 }
 

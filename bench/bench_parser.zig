@@ -748,8 +748,8 @@ pub fn main(init: std.process.Init) !void {
         });
 
         // Symbol diff — which (kind) are we missing?  Bucket by binding_kind.
-        var tree_by_kind: [17]u32 = .{0} ** 17;
-        var ev_by_kind: [17]u32 = .{0} ** 17;
+        var tree_by_kind: [17]u32 = .{0}**17;
+        var ev_by_kind: [17]u32 = .{0}**17;
         for (sem_tree.symbols.binding_kinds.items) |bk| {
             const k: u8 = @intFromEnum(bk);
             if (k < tree_by_kind.len) tree_by_kind[k] += 1;

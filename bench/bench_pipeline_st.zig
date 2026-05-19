@@ -165,7 +165,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Full pipeline (lex+parse+sem):\n", .{});
     std.debug.print("{s:<20}  {s:>8}  {s:>9}  {s:>9}  {s:>9}  {s:>9}  {s:>9}\n",
         .{ "fixture", "size KB", "lex ms", "parse ms", "sem ms", "total ms", "MB/s" });
-    std.debug.print("{s}\n", .{"-" ** 85});
+    std.debug.print("{s}\n", .{"-"**85});
 
     var fp_total_bytes: u64 = 0;
     var fp_total_ns: u64 = 0;
@@ -259,7 +259,7 @@ pub fn main(init: std.process.Init) !void {
         });
     }
 
-    std.debug.print("{s}\n", .{"-" ** 85});
+    std.debug.print("{s}\n", .{"-"**85});
     std.debug.print("aggregate: {d:.3} ms total, {d:.0} MB/s\n\n",
         .{ nsToMs(fp_total_ns), mbPerSec(fp_total_bytes, fp_total_ns) });
 }

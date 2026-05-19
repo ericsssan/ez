@@ -56,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
     // Count events by kind so we can see what dominates the stream.
     {
         const EventKind = scope_events.EventKind;
-        var counts = [_]u32{0} ** (@typeInfo(EventKind).@"enum".fields.len);
+        var counts = [_]u32{0}**(@typeInfo(EventKind).@"enum".fields.len);
         for (events) |e| counts[@intFromEnum(e.kind)] += 1;
         std.debug.print("Event breakdown:\n", .{});
         inline for (@typeInfo(EventKind).@"enum".fields) |f| {
