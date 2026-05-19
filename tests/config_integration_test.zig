@@ -32,7 +32,9 @@ fn lintWithInlineDisables(source: []const u8) ![]const LintDiagnostic {
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);
     defer sem.deinit(allocator);
     const raw = try linter.lint(allocator, &tree, &sem, null, .js);
-    defer allocator.free(raw);
+    // filterByInlineDisables now takes ownership of `raw` — frees the
+    // input slice + metadata of suppressed diagnostics.  Caller frees
+    // only the returned slice via freeDiagnostics.
     var disables = InlineDisables.parse(allocator, source) catch InlineDisables.empty();
     defer disables.deinit();
     return linter.filterByInlineDisables(allocator, raw, &disables, _lr.line_starts, source);
@@ -55,7 +57,7 @@ test "config: rule turned off produces no diagnostic" {
     config.buildSeverityTable();
 
     const diags = try lintWithConfig("debugger;", &config);
-    defer allocator.free(diags);
+    defer linter.freeDiagnostics(allocator, diags);
     try testing.expect(!hasRule(diags, "no-debugger"));
 }
 
@@ -67,7 +69,7 @@ test "config: rule set to error still fires" {
     config.buildSeverityTable();
 
     const diags = try lintWithConfig("debugger;", &config);
-    defer allocator.free(diags);
+    defer linter.freeDiagnostics(allocator, diags);
     try testing.expect(hasRule(diags, "no-debugger"));
 }
 
@@ -80,14 +82,14 @@ test "config: multiple rules toggled off" {
     config.buildSeverityTable();
 
     const diags = try lintWithConfig("debugger; eval('x');", &config);
-    defer allocator.free(diags);
+    defer linter.freeDiagnostics(allocator, diags);
     try testing.expect(!hasRule(diags, "no-debugger"));
     try testing.expect(!hasRule(diags, "no-eval"));
 }
 
 test "config: null config enables all rules with defaults" {
     const diags = try lintWithConfig("debugger;", null);
-    defer testing.allocator.free(diags);
+    defer linter.freeDiagnostics(testing.allocator, diags);
     try testing.expect(hasRule(diags, "no-debugger"));
 }
 
@@ -98,7 +100,7 @@ test "inline disable: next-line suppresses diagnostic" {
         \\// ez-disable-next-line no-debugger
         \\debugger;
     );
-    defer testing.allocator.free(diags);
+    defer linter.freeDiagnostics(testing.allocator, diags);
     try testing.expect(!hasRule(diags, "no-debugger"));
 }
 
@@ -107,7 +109,7 @@ test "inline disable: wrong rule name does not suppress" {
         \\// ez-disable-next-line no-eval
         \\debugger;
     );
-    defer testing.allocator.free(diags);
+    defer linter.freeDiagnostics(testing.allocator, diags);
     try testing.expect(hasRule(diags, "no-debugger"));
 }
 
@@ -119,7 +121,7 @@ test "inline disable: block disable/enable range" {
         \\// ez-enable no-debugger
         \\debugger;
     );
-    defer testing.allocator.free(diags);
+    defer linter.freeDiagnostics(testing.allocator, diags);
 
     var count: usize = 0;
     for (diags) |d| {
@@ -134,7 +136,7 @@ test "inline disable: disable all rules" {
         \\debugger;
         \\eval('x');
     );
-    defer testing.allocator.free(diags);
+    defer linter.freeDiagnostics(testing.allocator, diags);
     try testing.expect(!hasRule(diags, "no-debugger"));
     try testing.expect(!hasRule(diags, "no-eval"));
 }
@@ -144,7 +146,7 @@ test "inline disable: in block comment" {
         \\/* ez-disable-next-line no-debugger */
         \\debugger;
     );
-    defer testing.allocator.free(diags);
+    defer linter.freeDiagnostics(testing.allocator, diags);
     try testing.expect(!hasRule(diags, "no-debugger"));
 }
 
@@ -153,7 +155,7 @@ test "inline disable: inside string is not a directive" {
         \\let x = "// ez-disable-next-line no-debugger";
         \\debugger;
     );
-    defer testing.allocator.free(diags);
+    defer linter.freeDiagnostics(testing.allocator, diags);
     try testing.expect(hasRule(diags, "no-debugger"));
 }
 

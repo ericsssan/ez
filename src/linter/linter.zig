@@ -535,16 +535,34 @@ pub fn configNeedsRefRanges(config: ?*const Config) bool {
 }
 
 /// Free a diagnostics slice and all fix texts it contains.
-/// Call instead of plain allocator.free(diags) to avoid leaking fix strings.
+/// Call instead of plain allocator.free(diags) to avoid leaking fix strings,
+/// message-data entries, and per-entry value copies.
 pub fn freeDiagnostics(allocator: std.mem.Allocator, diagnostics: []const LintDiagnostic) void {
     for (diagnostics) |d| {
         if (d.fix) |fix| allocator.free(fix.text);
+        if (d.message_data) |md| {
+            for (md) |entry| allocator.free(entry.val);
+            allocator.free(md);
+        }
+        if (d.suggestions) |sugs| {
+            for (sugs) |s| {
+                if (s.fix.text.len > 0) allocator.free(s.fix.text);
+            }
+            allocator.free(sugs);
+        }
     }
     allocator.free(diagnostics);
 }
 
 /// Filter diagnostics by inline disable directives.
 /// Returns a new owned slice with suppressed diagnostics removed.
+/// Consumes `diagnostics`: frees the input slice AND frees the metadata
+/// (fix.text, message_data, suggestions) of any diagnostics that get
+/// dropped by an inline disable.  Kept diagnostics are transferred to
+/// the returned slice with their metadata intact.
+///
+/// Caller no longer needs to free `diagnostics` after this call — only
+/// the returned slice via `freeDiagnostics`.
 pub fn filterByInlineDisables(
     allocator: std.mem.Allocator,
     diagnostics: []const LintDiagnostic,
@@ -552,7 +570,15 @@ pub fn filterByInlineDisables(
     line_starts: []const u32,
     source: []const u8,
 ) ![]const LintDiagnostic {
-    if (disables.directives.len == 0) return try allocator.dupe(LintDiagnostic, diagnostics);
+    if (disables.directives.len == 0) {
+        // No directives → just hand back the input as-is (transfer ownership
+        // by duping the slice header; caller frees the new one, but the
+        // metadata pointers are shared.  We immediately free the original
+        // slice so only the new one is in play.)
+        const out = try allocator.dupe(LintDiagnostic, diagnostics);
+        allocator.free(diagnostics);
+        return out;
+    }
 
     var filtered: std.ArrayList(LintDiagnostic) = .empty;
     errdefer filtered.deinit(allocator);
@@ -562,8 +588,22 @@ pub fn filterByInlineDisables(
         const rn = if (diag.rule_index < rule_names.len) rule_names[diag.rule_index] else "";
         if (!disables.isSuppressed(loc.line, rn)) {
             try filtered.append(allocator, diag);
+        } else {
+            // Dropping this one — free its metadata now.
+            if (diag.fix) |fix| allocator.free(fix.text);
+            if (diag.message_data) |md| {
+                for (md) |entry| allocator.free(entry.val);
+                allocator.free(md);
+            }
+            if (diag.suggestions) |sugs| {
+                for (sugs) |s| {
+                    if (s.fix.text.len > 0) allocator.free(s.fix.text);
+                }
+                allocator.free(sugs);
+            }
         }
     }
 
+    allocator.free(diagnostics);
     return filtered.toOwnedSlice(allocator);
 }

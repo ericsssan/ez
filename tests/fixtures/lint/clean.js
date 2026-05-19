@@ -4,13 +4,10 @@ const multiply = (x, y) => x * y;
 const result = add(1, 2);
 const product = multiply(3, 4);
 
-if (result > 0 && product > 0) {
-    throw new Error("positive result");
-}
+const positive = result > 0 && product > 0;
 
 const arr = [1, 2, 3];
 const doubled = arr.map((item) => item * 2);
 
-if (doubled.length > 0) {
-    throw new Error("has items");
-}
+const hasItems = doubled.length > 0;
+const both = positive && hasItems;

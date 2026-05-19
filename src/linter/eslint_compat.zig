@@ -349,10 +349,10 @@ test "parseEslintConfig extends recommended" {
     defer config.deinit();
 
     // The "recommended" preset sets correctness rules to error.
-    // no-empty is a correctness rule still active in the native registry.
-    const empty_sev = config.rule_severities.get("no-empty");
-    try std.testing.expect(empty_sev != null);
-    try std.testing.expect(empty_sev.? == .@"error");
+    // no-self-assign is in the .correctness category in the registry.
+    const self_assign_sev = config.rule_severities.get("no-self-assign");
+    try std.testing.expect(self_assign_sev != null);
+    try std.testing.expect(self_assign_sev.? == .@"error");
 
     // But no-debugger was explicitly overridden to off after the preset.
     const debugger_sev = config.rule_severities.get("no-debugger");
