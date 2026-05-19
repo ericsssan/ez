@@ -2,13 +2,12 @@
     .name = .ez,
     .version = "0.0.1",
     .dependencies = .{
-        // zbc is the borrow-check / escape analyzer.  Currently
-        // an in-tree path dependency at `./zbc`; phase 45 will
-        // flip this to a url+hash form once zbc lives in its own
-        // repo.  Updating that one entry is the only ez-side
-        // change needed — build.zig already consumes via
-        // b.dependency("zbc", ...).
-        .zbc = .{ .path = "zbc" },
+        // zbc is the borrow-check / escape analyzer, extracted to
+        // its own git repo in phase 45.  Sibling-directory path
+        // dependency for local dev; flip to `.url + .hash` once
+        // pushed to GitHub:
+        //   zig fetch --save=zbc https://github.com/<org>/zbc/archive/refs/tags/v0.1.0.tar.gz
+        .zbc = .{ .path = "../zbc" },
     },
     .minimum_zig_version = "0.17.0-dev.305+bdfbf432d",
     .fingerprint = 0xe983153fc28c38f3,
