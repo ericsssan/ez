@@ -785,16 +785,19 @@ pub const Ast = struct {
 
     // ── Accessors ──────────────────────────────────────────
 
+    /// @takes node_index_of(self)
     pub inline fn nodeTag(self: *const Ast, index: NodeIndex) Node.Tag {
         if (index == .none) return .root;
         return self.nodes.items(.tag)[index.toInt()];
     }
 
+    /// @takes node_index_of(self)
     pub inline fn nodeMainToken(self: *const Ast, index: NodeIndex) TokenIndex {
         if (index == .none) return 0;
         return self.nodes.items(.main_token)[index.toInt()];
     }
 
+    /// @takes node_index_of(self)
     pub inline fn nodeData(self: *const Ast, index: NodeIndex) Node.Data {
         return self.nodes.items(.data)[index.toInt()];
     }
@@ -943,6 +946,7 @@ pub const Ast = struct {
     /// (Object.assign, Object.defineProperty, Reflect.set, etc.) whose first argument is
     /// a write target.  Used by the semantic analyser to set is_member_written on namespace
     /// import bindings passed as the target.
+    /// @takes node_index_of(self)
     pub fn isMutatingCall(self: *const Ast, callee_node: NodeIndex) bool {
         if (callee_node == .none) return false;
         var node = callee_node;
