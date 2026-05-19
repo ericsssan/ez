@@ -26,21 +26,15 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // ── zbc (Layer 1 annotation linter + Layer 2 escape analyzer) ──
-    // Relocated from tools/ez-borrow-check to zbc/ in phase 44.
-    // Builds the CLI exe directly from the zbc subtree; same as
-    // before, just a different path.  Phase 45 will switch this to
-    // a build.zig.zon path-dependency once zbc lives in its own
-    // repo.
-    const borrow_check_mod = b.createModule(.{
-        .root_source_file = b.path("zbc/main.zig"),
+    // Phase 45: consumed as a build.zig.zon dependency rather than a
+    // direct path reference.  Current entry is `.path = "zbc"` (in-tree);
+    // flip to `.url + .hash` once zbc moves to its own repo — no
+    // build.zig change needed at the consumer.
+    const zbc_dep = b.dependency("zbc", .{
         .target = target,
         .optimize = optimize,
     });
-    const borrow_check_exe = b.addExecutable(.{
-        .name = "ez-borrow-check",
-        .root_module = borrow_check_mod,
-    });
-    b.installArtifact(borrow_check_exe);
+    const borrow_check_exe = zbc_dep.artifact("zbc");
 
     const borrow_check_run = b.addRunArtifact(borrow_check_exe);
     if (b.args) |args| borrow_check_run.addArgs(args);
@@ -51,7 +45,11 @@ pub fn build(b: *std.Build) void {
     // build.zig at 0.16-dev can't enumerate files without an Io handle
     // we don't have at configure time).
 
-    const borrow_check_tests = b.addTest(.{ .root_module = borrow_check_mod });
+    // Run zbc's test suite from ez.  Builds a test artifact over
+    // zbc's public lib module — lib.zig refAllDecls all submodules
+    // so this covers the entire zbc test corpus.
+    const zbc_mod = zbc_dep.module("zbc");
+    const borrow_check_tests = b.addTest(.{ .root_module = zbc_mod });
     const run_borrow_check_tests = b.addRunArtifact(borrow_check_tests);
     const borrow_check_test_step = b.step("test-borrow-check", "Test the borrow-check rules");
     borrow_check_test_step.dependOn(&run_borrow_check_tests.step);
