@@ -931,6 +931,7 @@ pub const Ast = struct {
     /// single-token nodes (identifiers, literals).  For compound nodes the
     /// true end (closing `}`, `)`, `;`) is only available via
     /// `LintContext.nodeSpan`, which uses a precomputed per-node max-token table.
+    /// @takes node_index_of(self)
     pub fn nodeSpan(self: *const Ast, index: NodeIndex) Span {
         const tok = self.nodeMainToken(index);
         const start = self.tokenStart(tok);

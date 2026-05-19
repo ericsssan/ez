@@ -362,6 +362,7 @@ pub const Parser = struct {
 
     /// Main entry point. Creates a Parser, parses all top-level statements,
     /// builds the root node, and returns the completed Ast.
+    /// @returns ast
     pub fn parse(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice) !Ast {
         // Emit scope events into the returned Ast by default so downstream
         // `analyze()` calls automatically take the event-driven fast path.
