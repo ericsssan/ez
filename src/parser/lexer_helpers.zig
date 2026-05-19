@@ -83,7 +83,7 @@ pub fn tokenizeWithOptions(alloc: std.mem.Allocator, source: []const u8, lang: L
 
 /// Comptime lookup: is this byte a "simple" byte (direct token or whitespace/NL)?
 const IS_SIMPLE: [256]bool = blk: {
-    var t = [_]bool{false} ** 256;
+    var t: [256]bool = @splat(false);
     for ([_]u8{ '(', ')', '[', ']', '{', ';', ',', '~', '@', ':', ' ', '\t', '\n', '\r' }) |b| t[b] = true;
     break :blk t;
 };
@@ -492,7 +492,7 @@ pub fn tokenizeWithBuf(
     // (non-comment, non-whitespace) token is emitted.
     var at_line_start: bool = true;
     var tmpl_depth: u32 = 0;
-    var brace_d = [_]u32{0} ** 16;
+    var brace_d: [16]u32 = @splat(0);
 
     var pos: u32 = 0;
 

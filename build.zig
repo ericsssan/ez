@@ -42,6 +42,10 @@ pub fn build(b: *std.Build) void {
     const borrow_check_step = b.step("borrow-check", "Run Layer-1 annotation-hygiene checks");
     borrow_check_step.dependOn(&borrow_check_run.step);
 
+    // borrow-check-ci is wired from the Makefile (uses `find` to glob —
+    // build.zig at 0.16-dev can't enumerate files without an Io handle
+    // we don't have at configure time).
+
     const borrow_check_tests = b.addTest(.{ .root_module = borrow_check_mod });
     const run_borrow_check_tests = b.addRunArtifact(borrow_check_tests);
     const borrow_check_test_step = b.step("test-borrow-check", "Test the borrow-check rules");
@@ -599,3 +603,4 @@ pub fn build(b: *std.Build) void {
     //   * `ez.node` — NAPI binding (src/cli/napi.zig), consumed by ezlint
     //                 via the standard Node N-API ABI
 }
+

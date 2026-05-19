@@ -740,7 +740,7 @@ pub var debug_resolve_depth_sum: u64 = 0;
 
 pub const DEBUG_VISIT_STATS: bool = false;
 pub var debug_visit_nodes: u64 = 0;
-pub var debug_visit_tag_counts: [256]u64 = [_]u64{0} ** 256;
+pub var debug_visit_tag_counts: [256]u64 = @splat(0);
 pub var debug_enter_scope: u64 = 0;
 pub var debug_declare_binding: u64 = 0;
 pub var debug_add_reference: u64 = 0;

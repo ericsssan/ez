@@ -225,7 +225,7 @@ pub fn buildBitmaps(src: []const u8, bm: *Bitmaps) void {
 /// `.eof` sentinel = "needs full dispatch" (chosen because eof never
 /// appears in source, distinct from .invalid which is a real lex result).
 const SINGLE_TAG: [256]Tag = blk: {
-    var t = [_]Tag{.eof} ** 256;
+    var t: [256]Tag = @splat(.eof);
     t['('] = .l_paren;
     t[')'] = .r_paren;
     t['['] = .l_bracket;
@@ -313,7 +313,7 @@ fn scanRangeForNewlines(
 /// Cold helper: load up to 8 bytes from src[p..], zero-padding the rest.
 /// Used only for the last 1–2 bitmap words (word_safe = false).
 fn safeRaw8(src: []const u8, p: u32, n: u32) u64 {
-    var buf = [_]u8{0} ** 8;
+    var buf: [8]u8 = @splat(0);
     const avail = @min(8, n - p);
     @memcpy(buf[0..avail], src[p .. p + avail]);
     return @bitCast(buf);
@@ -415,7 +415,7 @@ inline fn matchKW(comptime tbl: []const KW, v: u64) ?Tag {
 // map to at least one keyword? Bit i = ('a'+i). Keywords always start with
 // lowercase; any other first char → immediate identifier return.
 const KW_FC_MASK: [11]u32 = m: {
-    var m = [_]u32{0} ** 11;
+    var m: [11]u32 = @splat(0);
     const lists = .{
         .{ 2, KW2_JS }, .{ 2, KW2_TS },
         .{ 3, KW3_JS },
@@ -1253,7 +1253,7 @@ pub fn tokenizeWithBufAndBitmaps(
     var at_line_start: bool = true;
 
     var tmpl_depth: u32 = 0;
-    var brace_d = [_]u32{0} ** 16;
+    var brace_d: [16]u32 = @splat(0);
 
     var prev_ident_last_bit: u64 = 0;
     // Cursor: any visit bit at pos < skip_until is dropped. Set after every

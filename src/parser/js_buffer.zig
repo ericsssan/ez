@@ -1474,7 +1474,7 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
     // runs), this reduces ASCII cursor-loop setups from ~98 K to ~1.5 K.
     const MAX_ARRAYS = 16;
     std.debug.assert(arrays.len <= MAX_ARRAYS);
-    var cursors: [MAX_ARRAYS]usize = .{0} ** MAX_ARRAYS;
+    var cursors: [MAX_ARRAYS]usize = @splat(0);
     const n = @min(arrays.len, MAX_ARRAYS);
     const src_len: u32 = @intCast(source.len);
 

@@ -498,7 +498,7 @@ fn resolveFullImpl(
     // HashMap.  512 entries × 12 bytes = 6 KB — stays hot in L1D.
     // Entry is "empty" when hash == 0 (Wyhash(0, name) == 0 is negligibly rare).
     const RefCacheEntry = struct { hash: u64, sym: SymbolId };
-    var ref_cache = [_]RefCacheEntry{.{ .hash = 0, .sym = .none }} ** 512;
+    var ref_cache: [512]RefCacheEntry = @splat(.{ .hash = 0, .sym = .none });
 
     // Per-depth undo stacks: on declare we record (name_hash, sym_id, prev) at
     // target_depth so scope_close can restore the previous binding in scope_map.

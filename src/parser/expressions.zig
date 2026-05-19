@@ -5275,7 +5275,7 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
 //   template_head, template_no_sub.
 // Postfix tokens (.postfix = 17): plus_plus, minus_minus.
 const prec_table: [256]Precedence = blk: {
-    var tbl = [_]Precedence{.none} ** 256;
+    var tbl: [256]Precedence = @splat(.none);
     tbl[@intFromEnum(TokenTag.comma)] = .comma;
     for ([_]TokenTag{
         .equal,           .plus_equal,                   .minus_equal,

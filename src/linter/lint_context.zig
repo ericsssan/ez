@@ -7076,7 +7076,7 @@ fn isInvalidUFlagIdentityEscape(c: u8) bool {
 /// with no duplicate flag chars within or across the optional `-`.
 fn isValidModifierGroup(body: []const u8, off: usize) bool {
     var i: usize = off;
-    var seen = [_]bool{false} ** 128;
+    var seen: [128]bool = @splat(false);
     var pre_count: usize = 0;
     while (i < body.len) : (i += 1) {
         const c = body[i];

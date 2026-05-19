@@ -62,7 +62,7 @@ fn buildDispatch() DispatchTable {
     var d: DispatchTable = undefined;
 
     // First pass: count rules per tag value.
-    var counts: [256]u32 = [_]u32{0} ** 256;
+    var counts: [256]u32 = @splat(0);
     inline for (registry.all_rules) |Rule| {
         if (@hasDecl(Rule, "relevant_tags")) {
             if (Rule.relevant_tags.len > 0) {
@@ -400,7 +400,7 @@ pub fn lintRulesByName(
     @setRuntimeSafety(false);
 
     // Resolve names → rule indices. O(n × m) but n ≤ 64 and m ≤ 250.
-    var enabled = [_]bool{false} ** registry.count;
+    var enabled: [registry.count]bool = @splat(false);
     var any_enabled = false;
     for (rule_names_to_run) |want| {
         inline for (registry.all_rules, 0..) |Rule, i| {

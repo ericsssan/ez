@@ -1,9 +1,21 @@
-ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.3028+a85495ca2/files/zig
+ZIG ?= /Users/ericsan/.local/share/zigup/master/files/zig
 LINK_FLAGS :=
 
-.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi ezlint submodules
+.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-borrow-check borrow-check test-all build build-conformance test-conformance run napi ezlint submodules
 
-test: test-unit test-linter test-recovery test-config
+test: test-unit test-linter test-recovery test-config test-borrow-check
+
+# Run the borrow-check rules' own unit tests (cheap, fast — under 5s).
+test-borrow-check:
+	$(ZIG) test tools/ez-borrow-check/main.zig $(LINK_FLAGS)
+
+# Layer 1 (annotation hygiene) + Layer 2 (escape analysis) on every
+# .zig file under src/.  Exit non-zero on any finding — wires into CI
+# as a single command.  Verbose mode: EZ_BORROW_VERBOSE=1 make borrow-check
+borrow-check:
+	@find src -name '*.zig' -print0 | xargs -0 $(ZIG) run tools/ez-borrow-check/main.zig --
+	@find src -name '*.zig' -print0 | xargs -0 $(ZIG) run tools/ez-borrow-check/main.zig -- --escape
+	@echo "borrow-check: clean ✓"
 
 test-unit:
 	$(ZIG) test src/root.zig $(LINK_FLAGS)

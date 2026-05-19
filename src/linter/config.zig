@@ -63,12 +63,12 @@ pub const Config = struct {
     rule_severity_table: [rule_count]RuleSeverity,
     /// Per-rule JSON options value. null = no options configured.
     /// Points into the retained json_parsed tree — valid for the config's lifetime.
-    rule_options: [rule_count]?*const std.json.Value = [_]?*const std.json.Value{null} ** rule_count,
+    rule_options: [rule_count]?*const std.json.Value = @splat(null),
     /// Second rule option (items[2] when config has 3+ elements). null if absent.
-    rule_options2: [rule_count]?*const std.json.Value = [_]?*const std.json.Value{null} ** rule_count,
+    rule_options2: [rule_count]?*const std.json.Value = @splat(null),
     /// Slice of all options (items[1..]) for rules like no-restricted-globals
     /// that take a variable-length list.  Lifetime tied to the config arena.
-    rule_options_all: [rule_count]?[]std.json.Value = [_]?[]std.json.Value{null} ** rule_count,
+    rule_options_all: [rule_count]?[]std.json.Value = @splat(null),
     /// Synthetic JSON array values allocated for rules with 2+ options.
     /// (reserved for future use — currently unused)
     synthetic_options: std.ArrayListUnmanaged(*std.json.Value) = .empty,
@@ -551,9 +551,16 @@ test "parseConfigJson with categories" {
     // All correctness rules should be error. Check no-debugger (index 0, correctness).
     try std.testing.expect(config.rule_severity_table[0] == .@"error");
 
-    // Style rules should be off. no-var is the first style rule.
-    // Count: 62 correctness + 43 suspicious = 105
-    try std.testing.expect(config.rule_severity_table[105] == .off);
+    // Style rules should be off. Find the first style-category rule and
+    // assert it.  (Was hardcoded to index 105 — drifts when rules change.)
+    const linter_mod = @import("linter.zig");
+    var first_style_idx: ?usize = null;
+    for (linter_mod.rule_categories, 0..) |cat, i| {
+        if (cat == .style) { first_style_idx = i; break; }
+    }
+    if (first_style_idx) |idx| {
+        try std.testing.expect(config.rule_severity_table[idx] == .off);
+    }
 }
 
 test "Config.shouldLintFile" {
