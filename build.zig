@@ -25,9 +25,14 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run ez");
     run_step.dependOn(&run_cmd.step);
 
-    // ── ez-borrow-check (Layer 1 annotation linter) ──────────
+    // ── zbc (Layer 1 annotation linter + Layer 2 escape analyzer) ──
+    // Relocated from tools/ez-borrow-check to zbc/ in phase 44.
+    // Builds the CLI exe directly from the zbc subtree; same as
+    // before, just a different path.  Phase 45 will switch this to
+    // a build.zig.zon path-dependency once zbc lives in its own
+    // repo.
     const borrow_check_mod = b.createModule(.{
-        .root_source_file = b.path("tools/ez-borrow-check/main.zig"),
+        .root_source_file = b.path("zbc/main.zig"),
         .target = target,
         .optimize = optimize,
     });
