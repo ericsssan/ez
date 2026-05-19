@@ -389,6 +389,7 @@ pub const ScopeCfgParallel = struct {
         }
     }
 
+    /// @returns owned
     pub fn start(
         allocator: std.mem.Allocator,
         ast: *const Ast,

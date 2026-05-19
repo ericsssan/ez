@@ -201,6 +201,7 @@ pub const LintContext = struct {
         return self.ast.nodeMainToken(index);
     }
 
+    /// @returns borrowed_from(self)
     pub fn tokenText(self: *const LintContext, index: TokenIndex) []const u8 {
         return self.ast.tokenText(index);
     }
@@ -208,6 +209,7 @@ pub const LintContext = struct {
     /// ESLint-flavored AST type name for `n` (e.g. "BlockStatement",
     /// "ArrayExpression").  Used by message-template `{{type}}` substitutions.
     /// Falls back to the lowercase tag name when no ESLint mapping exists.
+    /// @returns borrowed_from(self)
     pub fn nodeEslintTypeName(self: *const LintContext, n: NodeIndex) []const u8 {
         if (n == .none) return "Node";
         return switch (self.ast.nodeTag(n)) {
@@ -451,6 +453,7 @@ pub const LintContext = struct {
     /// Extract the static property name of a member expression as a []const u8
     /// view into the source.  Returns null when no static name can be computed
     /// (computed access with a non-literal key, or a non-member node).
+    /// @returns borrowed_from(self)
     pub fn staticPropertyName(self: *const LintContext, n: NodeIndex) ?[]const u8 {
         if (n == .none) return null;
         const tag = self.ast.nodeTag(n);
@@ -492,6 +495,7 @@ pub const LintContext = struct {
     /// quotes; template_literal with no expressions stripped of backticks).
     /// Returns null for non-string literals, computed values, etc.  Matches
     /// the subset of ESLint's astUtils.getStaticStringValue we need today.
+    /// @returns borrowed_from(self)
     pub fn nodeStaticStringValue(self: *const LintContext, n: NodeIndex) ?[]const u8 {
         if (n == .none) return null;
         const tag = self.ast.nodeTag(n);
@@ -518,6 +522,7 @@ pub const LintContext = struct {
     /// `\\([0-3][0-7]{1,2}|[4-7][0-7]|0(?=[89])|[1-7])`).  Returns the
     /// matched digits (without the leading backslash) or null if the node
     /// has no static string value or contains no octal escape.
+    /// @returns borrowed_from(self)
     pub fn nodeRawOctalEscapeMatch(self: *const LintContext, n: NodeIndex) ?[]const u8 {
         const raw = self.nodeStaticStringValue(n) orelse return null;
         var i: usize = 0;
@@ -624,6 +629,7 @@ pub const LintContext = struct {
     /// Look up the per-name message in `no-restricted-globals` options array.
     /// Returns the message when entry is `{ name, message }`, else null
     /// (rule then falls back to the default messageId).
+    /// @returns borrowed_from(self)
     pub fn ruleOptionsMessageForName(self: *const LintContext, name: []const u8) ?[]const u8 {
         const all = self.rule_options_all orelse return null;
         for (all) |item| {
@@ -1276,6 +1282,7 @@ pub const LintContext = struct {
     /// Resolve the static key name of an object-literal/pattern property
     /// entry.  Returns null for computed properties with non-literal keys
     /// (e.g. `[a]: …`) — those can't be statically matched.
+    /// @returns borrowed_from(self)
     pub fn propertyEntryStaticName(self: *const LintContext, prop: NodeIndex) ?[]const u8 {
         const tag = self.ast.nodeTag(prop);
         if (tag == .shorthand_property) {
@@ -1602,6 +1609,7 @@ pub const LintContext = struct {
     /// Property name text for a MemberExpression (dot access).
     /// Handles the fact that member_expr.rhs is a property_ident node whose
     /// main_token is the property name token.
+    /// @returns borrowed_from(self)
     pub fn memberPropertyName(self: *const LintContext, member_rhs: NodeIndex) []const u8 {
         return self.ast.tokenText(self.ast.nodeMainToken(member_rhs));
     }
@@ -1618,6 +1626,7 @@ pub const LintContext = struct {
         return self.ast.extraData(T, index);
     }
 
+    /// @returns borrowed_from(self)
     pub fn extraSlice(self: *const LintContext, range: SubRange) []const u32 {
         return self.ast.extraSlice(range);
     }
@@ -1625,6 +1634,7 @@ pub const LintContext = struct {
     /// Source text covering the node's full subtree span — equivalent to
     /// ESLint's `sourceCode.getText(node)`.  Returns a slice into the AST's
     /// borrowed source buffer; valid for the lifetime of the lint pass.
+    /// @returns borrowed_from(self)
     pub fn sourceText(self: *const LintContext, index: NodeIndex) []const u8 {
         const sp = self.nodeSpan(index);
         const src = self.ast.source;
@@ -1635,6 +1645,7 @@ pub const LintContext = struct {
     /// Source text between two byte offsets.  Used by fix-codegen when
     /// the replacement needs to preserve characters between two AST nodes
     /// (e.g. wrap parens, comments) that the nodes themselves don't carry.
+    /// @returns borrowed_from(self)
     pub fn sourceTextRange(self: *const LintContext, start: u32, end: u32) []const u8 {
         const src = self.ast.source;
         if (start > end or end > src.len) return "";
@@ -2070,6 +2081,7 @@ pub const LintContext = struct {
         return @intCast(self.extraSlice(sr).len);
     }
 
+    /// @returns borrowed_from(self)
     pub fn argsTextBetweenParens(self: *const LintContext, call: NodeIndex) []const u8 {
         if (call == .none) return "";
         const data = self.nodeData(call);
@@ -2637,14 +2649,17 @@ pub const LintContext = struct {
 
     // ── Semantic accessors ────────────────────────────────
 
+    /// @returns borrowed_from(self)
     pub fn scopes(self: *const LintContext) *const ScopeTree {
         return &self.semantic.scopes;
     }
 
+    /// @returns borrowed_from(self)
     pub fn symbols(self: *const LintContext) *const SymbolTable {
         return &self.semantic.symbols;
     }
 
+    /// @returns borrowed_from(self)
     pub fn references(self: *const LintContext) *const ReferenceTable {
         return &self.semantic.references;
     }
@@ -3355,6 +3370,7 @@ pub const LintContext = struct {
     /// Return the parameter slice for `fn_node` — works on fn_decl/expr,
     /// arrow_fn (ArrowData params), and method_def (MethodData params).
     /// Empty slice on unknown shapes.
+    /// @returns borrowed_from(self)
     pub fn functionParams(self: *const LintContext, fn_node: NodeIndex) []const u32 {
         if (fn_node == .none) return &.{};
         const d = self.nodeData(fn_node);
@@ -3739,31 +3755,37 @@ pub const LintContext = struct {
     // ── Rule options ──────────────────────────────────────
 
     /// Get the rule's JSON options value, or null if none configured.
+    /// @returns borrowed_from(self)
     pub fn getOptions(self: *const LintContext) ?*const std.json.Value {
         return self.rule_options;
     }
 
     /// Get the second rule option (items[2] in ESLint config), or null if absent.
+    /// @returns borrowed_from(self)
     pub fn getOptions2(self: *const LintContext) ?*const std.json.Value {
         return self.rule_options2;
     }
 
     /// Get the ESLint settings object, or null if not configured.
+    /// @returns borrowed_from(self)
     pub fn getSettings(self: *const LintContext) ?*const std.json.Value {
         return self.settings;
     }
 
     /// Get a string field from the ESLint settings object.
+    /// @returns borrowed_from(self)
     pub fn getSettingString(self: *const LintContext, key: []const u8) ?[]const u8 {
         return _jsonFieldString(self.settings, key);
     }
 
     /// Get the ESLint languageOptions object, or null if not configured.
+    /// @returns borrowed_from(self)
     pub fn getLanguageOptions(self: *const LintContext) ?*const std.json.Value {
         return self.language_options;
     }
 
     /// Get a string field from languageOptions.
+    /// @returns borrowed_from(self)
     pub fn getLanguageOptionString(self: *const LintContext, key: []const u8) ?[]const u8 {
         return _jsonFieldString(self.language_options, key);
     }
@@ -3913,6 +3935,7 @@ pub const LintContext = struct {
     }
 
     /// Get a string field from the rule's JSON options object.
+    /// @returns borrowed_from(self)
     pub fn getOptionString(self: *const LintContext, key: []const u8) ?[]const u8 {
         return _jsonFieldString(self.rule_options, key);
     }
@@ -3951,6 +3974,7 @@ pub const LintContext = struct {
 
     /// Return the raw source text for source-level rules (e.g.
     /// no-irregular-whitespace, no-mixed-spaces-and-tabs).
+    /// @returns borrowed_from(self)
     pub fn source(self: *const LintContext) []const u8 {
         return self.ast.source;
     }

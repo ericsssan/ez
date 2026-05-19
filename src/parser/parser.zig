@@ -894,6 +894,7 @@ pub const Parser = struct {
     }
 
     /// Get the source text for the token at `index`.
+    /// @returns borrowed_from(self)
     pub fn tokenText(self: *const Parser, index: TokenIndex) []const u8 {
         const tag = self.tags_ptr[index];
         // Variable-lexeme tokens (identifiers, literals, escaped_keyword, etc.) are the first
@@ -3093,6 +3094,7 @@ pub const Parser = struct {
     }
 
     /// Extract string content (without quotes) from a string literal at the given position.
+    /// @returns borrowed_from(self)
     pub fn getStringContent(self: *const Parser, start: u32) []const u8 {
         if (start >= self.source.len) return "";
         const quote = self.source[start];
@@ -8152,6 +8154,7 @@ pub const Parser = struct {
     }
 
     /// Return a slice of the scratch buffer from `top` to the current end.
+    /// @returns borrowed_from(self)
     pub fn scratchSlice(self: *const Parser, top: usize) []const u32 {
         return self.scratch.items[top..];
     }

@@ -212,6 +212,7 @@ inline fn langMatches(rule_lang: RuleLang, file_lang: Language) bool {
 /// Rules whose `lang` filter does not match `language` are skipped entirely.
 ///
 /// Returns an owned slice of diagnostics. The caller owns the memory.
+/// @returns owned
 pub fn lint(
     allocator: std.mem.Allocator,
     tree: *const Ast,
@@ -342,6 +343,7 @@ pub fn lint(
 /// Reports fall back to single-token spans (which is what symbol-phase
 /// rules emit anyway). Useful when a host has already run semantic and
 /// wants a fast pre-pass for native rules at parse time.
+/// @returns owned
 pub fn lintSymbolRuleOnly(
     allocator: std.mem.Allocator,
     tree: *const Ast,
@@ -387,6 +389,7 @@ pub fn lintSymbolRuleOnly(
 /// so we don't double-emit.
 ///
 /// Names that don't match a registered rule are silently skipped.
+/// @returns owned
 pub fn lintRulesByName(
     allocator: std.mem.Allocator,
     tree: *const Ast,
