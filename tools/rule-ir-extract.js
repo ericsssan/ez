@@ -1189,6 +1189,7 @@ function extractNoImportAssignHandler(rawHandler, _stmts, { sourceFile } = {}) {
         messageId: "readonly",
         hasNameData: true,
         reportAtWriteExpr: true,
+        namespaceMemberMessageId: "readonlyMember",
       },
     };
   }

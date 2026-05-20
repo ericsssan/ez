@@ -3110,6 +3110,150 @@ pub const LintContext = struct {
         return .none;
     }
 
+    /// True iff `arg` is the first argument of a well-known mutation
+    /// function call: `Object.assign|defineProperty|defineProperties|freeze|setPrototypeOf`
+    /// or `Reflect.defineProperty|deleteProperty|set|setPrototypeOf`.
+    /// Returns the enclosing CallExpression node (for span reporting),
+    /// or `.none` otherwise.  Mirrors ESLint no-import-assign's
+    /// isArgumentOfWellKnownMutationFunction.
+    pub fn argOfWellKnownMutation(self: *const LintContext, arg: NodeIndex) NodeIndex {
+        if (arg == .none) return .none;
+        const parent = self.parentOf(arg);
+        if (parent == .none) return .none;
+        const ptag = self.ast.nodeTag(parent);
+        if (ptag != .call_expr and ptag != .optional_call_expr) return .none;
+        // First argument check — args live in SubRange at data.rhs.
+        const pdata = self.ast.nodeData(parent);
+        if (pdata.rhs == .none) return .none;
+        const args = self.ast.extraSlice(.{ .start = @intFromEnum(pdata.rhs), .end = @intFromEnum(pdata.rhs) + 0 });
+        _ = args;
+        // Use first-arg helper instead.
+        if (self.callFirstArg(parent) != arg) return .none;
+        // Callee must be Object.<X> or Reflect.<X>.
+        const callee = pdata.lhs;
+        if (callee == .none) return .none;
+        var skipped = callee;
+        while (true) {
+            const stag = self.ast.nodeTag(skipped);
+            if (stag == .grouping_expr) {
+                skipped = self.ast.nodeData(skipped).lhs;
+                continue;
+            }
+            break;
+        }
+        const stag = self.ast.nodeTag(skipped);
+        const is_member = stag == .member_expr or stag == .optional_member_expr;
+        if (!is_member) return .none;
+        const obj = self.ast.nodeData(skipped).lhs;
+        if (obj == .none or self.ast.nodeTag(obj) != .identifier) return .none;
+        // Skip when the name resolves to a user-declared binding rather
+        // than the global Object/Reflect (matches ESLint's findVariable
+        // gate via @eslint-community/eslint-utils).
+        if (!self.isGlobalReference(obj)) return .none;
+        const obj_name = self.ast.tokenText(self.ast.nodeMainToken(obj));
+        const prop = self.staticPropertyName(skipped) orelse return .none;
+        if (std.mem.eql(u8, obj_name, "Object")) {
+            if (std.mem.eql(u8, prop, "assign")
+                or std.mem.eql(u8, prop, "defineProperty")
+                or std.mem.eql(u8, prop, "defineProperties")
+                or std.mem.eql(u8, prop, "freeze")
+                or std.mem.eql(u8, prop, "setPrototypeOf")) return parent;
+        }
+        if (std.mem.eql(u8, obj_name, "Reflect")) {
+            if (std.mem.eql(u8, prop, "defineProperty")
+                or std.mem.eql(u8, prop, "deleteProperty")
+                or std.mem.eql(u8, prop, "set")
+                or std.mem.eql(u8, prop, "setPrototypeOf")) return parent;
+        }
+        return .none;
+    }
+
+    /// First argument of a call_expr / optional_call_expr / new_expr; `.none` if none.
+    fn callFirstArg(self: *const LintContext, call: NodeIndex) NodeIndex {
+        const d = self.ast.nodeData(call);
+        if (d.rhs == .none) return .none;
+        const sr = self.extraData(ast_mod.SubRange, @intFromEnum(d.rhs));
+        const args = self.ast.extraSlice(sr);
+        if (args.len == 0) return .none;
+        return @enumFromInt(args[0]);
+    }
+
+    /// Returns the enclosing write-expression NodeIndex when `member` is
+    /// a member access in a write position, else `.none`.  Specifically:
+    ///   * AssignmentExpression with `member` as `.left` (any operator)
+    ///   * UpdateExpression with `member` as `.argument`
+    ///   * UnaryExpression `delete member`
+    ///   * For-in / for-of with `member` as `.left`
+    ///   * Destructuring patterns: ArrayPattern element, RestElement
+    ///     argument, AssignmentPattern.left, ObjectPattern Property.value
+    /// Skips false positives like RHS uses, for-in iteree, default
+    /// expressions, and deeper member chains (`mod.X.Y = z` writes via
+    /// `mod.X` but not TO it — that's handled by the deeper member).
+    pub fn memberInWriteContext(self: *const LintContext, member: NodeIndex) NodeIndex {
+        if (member == .none) return .none;
+        // Reject if `member` is the OBJECT of another member access —
+        // the actual write happens further down the chain.
+        const parent = self.parentOf(member);
+        if (parent == .none) return .none;
+        const ptag = self.ast.nodeTag(parent);
+        const pdata = self.ast.nodeData(parent);
+        switch (ptag) {
+            .member_expr, .optional_member_expr,
+            .computed_member_expr, .optional_computed_member_expr => {
+                if (pdata.lhs == member) return .none; // deeper member chain
+                return .none;
+            },
+            .assign, .add_assign, .sub_assign, .mul_assign, .div_assign,
+            .mod_assign, .exp_assign, .and_assign, .or_assign, .xor_assign,
+            .shl_assign, .shr_assign, .ushr_assign,
+            .logical_and_assign, .logical_or_assign, .nullish_assign => {
+                if (pdata.lhs == member) return parent;
+                return .none;
+            },
+            .prefix_inc, .postfix_inc, .prefix_dec, .postfix_dec => {
+                if (pdata.lhs == member) return parent;
+                return .none;
+            },
+            .delete_expr => {
+                if (pdata.lhs == member) return parent;
+                return .none;
+            },
+            .for_in_stmt, .for_of_stmt, .for_await_of_stmt => {
+                // ForInData / ForInOfData: extra has binding (left) + expr (right).
+                if (pdata.lhs == .none) return .none;
+                const fd = self.extraData(ast_mod.ForInOfData, @intFromEnum(pdata.lhs));
+                if (fd.binding == member) return parent;
+                return .none;
+            },
+            .array_pattern => return parent,
+            .rest_element => return parent,
+            .assignment_pattern => {
+                if (pdata.lhs == member) return parent; // left side of `X = default`
+                return .none;
+            },
+            .property, .shorthand_property, .computed_property => {
+                // Only when parent's parent is object_pattern AND member is the value.
+                if (pdata.rhs != member) return .none;
+                const gp = self.parentOf(parent);
+                if (gp == .none) return .none;
+                if (self.ast.nodeTag(gp) == .object_pattern) return parent;
+                return .none;
+            },
+            else => return .none,
+        }
+    }
+
+    /// True iff the given symbol was bound via `import * as <name>` —
+    /// i.e. the decl_node's parent is an `import_namespace_specifier`.
+    /// Used by no-import-assign's readonlyMember branch.
+    pub fn isNamespaceImportBinding(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
+        const decl = self.semantic.symbols.getDeclNode(sym_id);
+        if (decl == .none) return false;
+        const parent = self.parentOf(decl);
+        if (parent == .none) return false;
+        return self.ast.nodeTag(parent) == .import_namespace_specifier;
+    }
+
     /// Walk parents from `id` upward to find the enclosing write-expression
     /// node — AssignmentExpression, UpdateExpression, UnaryExpression (for
     /// `delete X`), CallExpression (for mutation helpers like Object.assign),

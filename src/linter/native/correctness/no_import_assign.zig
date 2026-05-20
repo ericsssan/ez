@@ -60,4 +60,40 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         });
         prev_reported_node = id_node;
     }
+    var r2: u32 = 0;
+    while (r2 < count) : (r2 += 1) {
+        const ref_id = ReferenceId.fromInt(r2);
+        const sym_id = refs.getSymbol(ref_id);
+        if (sym_id == .none) continue;
+        switch (symbols.getBindingKind(sym_id)) {
+            .import_binding => {},
+            else => continue,
+        }
+        if (!ctx.isNamespaceImportBinding(sym_id)) continue;
+        const id_node = refs.getNode(ref_id);
+        if (id_node == .none) continue;
+        const parent = ctx.parentOf(id_node);
+        if (parent == .none) continue;
+        const ptag = ctx.nodeTag(parent);
+        const is_member = ptag == .member_expr or ptag == .optional_member_expr
+            or ptag == .computed_member_expr or ptag == .optional_computed_member_expr;
+        const wkm = ctx.argOfWellKnownMutation(id_node);
+        if (wkm != .none) {
+            const __name_wkm = ctx.tokenText(ctx.nodeMainToken(id_node));
+            ctx.reportWithMessageIdAndData(wkm, "readonlyMember", &[_]@import("../../lint_context.zig").MessageDataEntry{
+                .{ .key = "name", .val = __name_wkm },
+            });
+            continue;
+        }
+        if (!is_member) continue;
+        // id_node must be the OBJECT of the member access (lhs).
+        if (ctx.nodeData(parent).lhs != id_node) continue;
+        const qualifies = ctx.memberInWriteContext(parent);
+        if (qualifies == .none) continue;
+        const member_write_node = ctx.writeRefReportNode(qualifies);
+        const __name = ctx.tokenText(ctx.nodeMainToken(id_node));
+        ctx.reportWithMessageIdAndData(member_write_node, "readonlyMember", &[_]@import("../../lint_context.zig").MessageDataEntry{
+            .{ .key = "name", .val = __name },
+        });
+    }
 }

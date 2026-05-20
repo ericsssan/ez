@@ -1228,6 +1228,7 @@ function emit(rule) {
     let hasNameData = false;
     let messageId = null;
     let reportAtWriteExpr = false;
+    let namespaceMemberMessageId = null;
     for (const h of rule.handlers) {
       if (h.kind !== "for-each-write-ref-of-binding") {
         throw new Error(`unsupported mixed handler kind in write-ref-binding rule: ${h.kind}`);
@@ -1236,8 +1237,9 @@ function emit(rule) {
       hasNameData = hasNameData || !!h.hasNameData;
       messageId = messageId ?? h.messageId;
       reportAtWriteExpr = reportAtWriteExpr || !!h.reportAtWriteExpr;
+      namespaceMemberMessageId = namespaceMemberMessageId ?? h.namespaceMemberMessageId;
     }
-    for (const line of emitWriteRefOfBindingHandler({ bindingKinds: [...merged], messageId, hasNameData, reportAtWriteExpr }, ctx))
+    for (const line of emitWriteRefOfBindingHandler({ bindingKinds: [...merged], messageId, hasNameData, reportAtWriteExpr, namespaceMemberMessageId }, ctx))
       out.push(line);
   } else if (hasNodeHandler) {
     // for-each-node: emit run(<nodeBinding>, ctx) with each handler's body
@@ -1520,6 +1522,60 @@ function emitWriteRefOfBindingHandler(handler, _ctx) {
   }
   lines.push(`        prev_reported_node = id_node;`);
   lines.push(`    }`);
+  if (handler.namespaceMemberMessageId) {
+    // Second pass: detect writes to MEMBERS of a namespace import
+    // (`import * as mod from 'mod'; mod.foo = 1`).  The reference is a
+    // READ of `mod`; the write target is the MemberExpression wrapping
+    // it.  Reports `readonlyMember` at the enclosing write expression.
+    lines.push(`    var r2: u32 = 0;`);
+    lines.push(`    while (r2 < count) : (r2 += 1) {`);
+    lines.push(`        const ref_id = ReferenceId.fromInt(r2);`);
+    lines.push(`        const sym_id = refs.getSymbol(ref_id);`);
+    lines.push(`        if (sym_id == .none) continue;`);
+    lines.push(`        switch (symbols.getBindingKind(sym_id)) {`);
+    lines.push(`            ${arms} => {},`);
+    lines.push(`            else => continue,`);
+    lines.push(`        }`);
+    lines.push(`        if (!ctx.isNamespaceImportBinding(sym_id)) continue;`);
+    lines.push(`        const id_node = refs.getNode(ref_id);`);
+    lines.push(`        if (id_node == .none) continue;`);
+    lines.push(`        const parent = ctx.parentOf(id_node);`);
+    lines.push(`        if (parent == .none) continue;`);
+    lines.push(`        const ptag = ctx.nodeTag(parent);`);
+    lines.push(`        const is_member = ptag == .member_expr or ptag == .optional_member_expr`);
+    lines.push(`            or ptag == .computed_member_expr or ptag == .optional_computed_member_expr;`);
+    // First check: bare reference (`mod`) is itself a well-known mutation
+    // call's first arg → `Object.assign(mod, …)` etc.  ESLint flags these
+    // even though `mod` itself isn't written; the named imports get
+    // mutated.  Report at the enclosing CallExpression.
+    lines.push(`        const wkm = ctx.argOfWellKnownMutation(id_node);`);
+    lines.push(`        if (wkm != .none) {`);
+    lines.push(`            const __name_wkm = ctx.tokenText(ctx.nodeMainToken(id_node));`);
+    lines.push(`            ctx.reportWithMessageIdAndData(wkm, "${zigStr(handler.namespaceMemberMessageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    lines.push(`                .{ .key = "name", .val = __name_wkm },`);
+    lines.push(`            });`);
+    lines.push(`            continue;`);
+    lines.push(`        }`);
+    lines.push(`        if (!is_member) continue;`);
+    lines.push(`        // id_node must be the OBJECT of the member access (lhs).`);
+    lines.push(`        if (ctx.nodeData(parent).lhs != id_node) continue;`);
+    // ESLint flags `mod.X` only when `mod.X` itself is the write target.
+    // Inspect the IMMEDIATE parent of the MemberExpression — only specific
+    // shapes qualify (matches ESLint's isAssignmentLeft +
+    // isOperandOfMutationUnaryOperator + isIterationVariable).
+    lines.push(`        const qualifies = ctx.memberInWriteContext(parent);`);
+    lines.push(`        if (qualifies == .none) continue;`);
+    // Walk all the way up to the outer write expression for the span —
+    // matches ESLint's getWriteNode walking from the identifier to the
+    // enclosing AssignmentExpression/etc.  For destructuring patterns
+    // the inner result is the pattern node; the outer is the assignment.
+    lines.push(`        const member_write_node = ctx.writeRefReportNode(qualifies);`);
+    lines.push(`        const __name = ctx.tokenText(ctx.nodeMainToken(id_node));`);
+    lines.push(`        ctx.reportWithMessageIdAndData(member_write_node, "${zigStr(handler.namespaceMemberMessageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+    lines.push(`            .{ .key = "name", .val = __name },`);
+    lines.push(`        });`);
+    lines.push(`    }`);
+  }
   lines.push(`}`);
   return lines;
 }
