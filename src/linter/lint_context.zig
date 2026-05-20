@@ -1602,6 +1602,24 @@ pub const LintContext = struct {
             }
             return;
         }
+        // Member ↔ member at pattern position: `[a.b] = [a.b]` writes to
+        // `a.b` from `a.b`.  Mirror the top-level handler's `props:true`
+        // path (member-chain token equality + simple-chain gate).
+        const lm = lt == .member_expr or lt == .optional_member_expr
+            or lt == .computed_member_expr or lt == .optional_computed_member_expr;
+        const rm = rt == .member_expr or rt == .optional_member_expr
+            or rt == .computed_member_expr or rt == .optional_computed_member_expr;
+        if (lm and rm
+            and self.getOptionBool("props", true)
+            and self.nodeTokensEqual(left, right)
+            and self.isSimpleMemberChain(left)
+            and self.isSimpleMemberChain(right))
+        {
+            self.reportWithMessageIdAndData(right, message_id, &[_]MessageDataEntry{
+                .{ .key = "name", .val = self.sourceText(right) },
+            });
+            return;
+        }
         if (lt == .array_pattern and rt == .array_literal) {
             const ld = self.ast.nodeData(left);
             const rd = self.ast.nodeData(right);
