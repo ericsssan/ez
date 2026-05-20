@@ -983,6 +983,41 @@ test "no-unsafe-member-access" {
     });
 }
 
+test "no-unsafe-return" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-return",
+        .lang = .ts,
+        .valid = &.{
+            // No declared return type → no check.
+            "function f() { return anything; }",
+            // Declared return type is any → opt-in.
+            "declare const a: any; function f(): any { return a; }",
+            // Declared return type is void → returning any is fine.
+            "declare const a: any; function f(): void { return a; }",
+            // Returning a well-typed value into a typed function.
+            "function f(): number { return 1; }",
+            // Arrow with implicit return of well-typed value.
+            "const f = (): number => 1;",
+            // Async function returning a well-typed value (Promise<number> peeled).
+            "async function f(): Promise<number> { return 1; }",
+            // Explicit non-any cast on the return value.
+            "declare const a: any; function f(): number { return a as number; }",
+        },
+        .invalid = &.{
+            // any → number.
+            .{ .code = "declare const a: any; function f(): number { return a; }" },
+            // any → number[] (containsAny on array element check).
+            .{ .code = "declare const a: any[]; function f(): number[] { return a; }" },
+            // Async fn returning any while declared Promise<number>.
+            .{ .code = "declare const a: any; async function f(): Promise<number> { return a; }" },
+            // Arrow with implicit any return into typed signature.
+            .{ .code = "declare const a: any; const f = (): number => a;" },
+            // Explicit `as any` is still unsafe.
+            .{ .code = "function f(): number { return (1 as any); }" },
+        },
+    });
+}
+
 test "no-unsafe-assignment" {
     try RuleTester.run(.{
         .rule = "no-unsafe-assignment",
