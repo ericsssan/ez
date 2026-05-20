@@ -1899,24 +1899,43 @@ function emitStatement(stmt, indent, ctx) {
       }
       return [`${ind}ctx.reportSpanWithMessageId(.{ .start = ${startExpr}, .end = ${endExpr} }, ${msgId});`];
     }
-    // Custom `loc:` + fix (typically replace-range) — emit
-    // reportSpanWithFixAndMessageId with separate diag span and fix span.
-    if (stmt.loc && stmt.fix && stmt.fix.kind === "replace-range") {
+    // Custom `loc:` + fix — emit reportSpanWithFixAndMessageId with separate
+    // diag span (from loc) and fix span (derived from fix.kind).  Supports
+    // replace-range, insert-before, insert-after, replace-text, remove.
+    if (stmt.loc && stmt.fix) {
       const dStart = emitExpr(stmt.loc.start, ctx);
       const dEnd = emitExpr(stmt.loc.end, ctx);
-      const fStart = emitExpr(stmt.fix.start, ctx);
-      const fEnd = emitExpr(stmt.fix.end, ctx);
-      // Text: literal or templated
-      if (stmt.fix.textExpr === undefined) {
+      const diagSpan = `.{ .start = ${dStart}, .end = ${dEnd} }`;
+      let fStart, fEnd, fixText, fixTextExpr;
+      if (stmt.fix.kind === "replace-range") {
+        fStart = emitExpr(stmt.fix.start, ctx);
+        fEnd = emitExpr(stmt.fix.end, ctx);
+        fixText = stmt.fix.text;
+        fixTextExpr = stmt.fix.textExpr;
+      } else {
+        const fixNode = emitExpr(stmt.fix.node, ctx);
+        const fixNodeIsToken = TOKEN_EXPR_OPS.has(stmt.fix.node?.op);
+        const fixStartExpr = fixNodeIsToken ? `ctx.ast.tokenStart(${fixNode})` : `ctx.nodeSpan(${fixNode}).start`;
+        const fixEndExpr   = fixNodeIsToken ? `ctx.tokenEnd(${fixNode})`        : `ctx.nodeSpan(${fixNode}).end`;
+        switch (stmt.fix.kind) {
+          case "insert-before": fStart = fixStartExpr; fEnd = fixStartExpr; break;
+          case "insert-after":  fStart = fixEndExpr;   fEnd = fixEndExpr;   break;
+          default:              fStart = fixStartExpr; fEnd = fixEndExpr;
+        }
+        fixText = stmt.fix.kind === "remove" ? "" : stmt.fix.text;
+        fixTextExpr = stmt.fix.textExpr;
+      }
+      const fixSpan = `.{ .start = ${fStart}, .end = ${fEnd} }`;
+      if (fixTextExpr === undefined) {
         return [
-          `${ind}ctx.reportSpanWithFixAndMessageId(.{ .start = ${dStart}, .end = ${dEnd} }, .{ .start = ${fStart}, .end = ${fEnd} }, "${zigStr(stmt.fix.text)}", ${msgId});`,
+          `${ind}ctx.reportSpanWithFixAndMessageId(${diagSpan}, ${fixSpan}, "${zigStr(fixText)}", ${msgId});`,
         ];
       }
       return [
         `${ind}{`,
-        `${ind}    const __fix_text = ${emitAllocPrint(stmt.fix.textExpr, ctx)};`,
+        `${ind}    const __fix_text = ${emitAllocPrint(fixTextExpr, ctx)};`,
         `${ind}    defer ctx.allocator.free(__fix_text);`,
-        `${ind}    ctx.reportSpanWithFixAndMessageId(.{ .start = ${dStart}, .end = ${dEnd} }, .{ .start = ${fStart}, .end = ${fEnd} }, __fix_text, ${msgId});`,
+        `${ind}    ctx.reportSpanWithFixAndMessageId(${diagSpan}, ${fixSpan}, __fix_text, ${msgId});`,
         `${ind}}`,
       ];
     }

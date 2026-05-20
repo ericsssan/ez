@@ -241,6 +241,16 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
   //   - option destructures: const [{ opt1, opt2 }] = context.options
   const createBodyStmts = createFn.body?.type === "BlockStatement" ? createFn.body.body : [];
   const helpers = {};
+  // Names of any FunctionDeclaration (module-level or in create body), kept
+  // so bare-identifier resolution can avoid mistakenly treating them as
+  // destructured astUtils helpers when extraction didn't register them.
+  const userFnNames = new Set();
+  for (const stmt of (ast?.body || [])) {
+    if (stmt.type === "FunctionDeclaration" && stmt.id?.type === "Identifier") userFnNames.add(stmt.id.name);
+  }
+  for (const stmt of createBodyStmts) {
+    if (stmt.type === "FunctionDeclaration" && stmt.id?.type === "Identifier") userFnNames.add(stmt.id.name);
+  }
   const constants = { ...(moduleConstants || {}) };
   // Regex-literal constants declared in create() body (not emitted to IR; used only during extraction).
   const regexConsts = {};
@@ -554,7 +564,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
 
     // Seed locals with option bindings from the create() outer scope.
     const initLocals = new Map(optionLocals);
-    const scope = { ctxName, nodeParamName: h.nodeParam, locals: initLocals, helpers, constants, regexConsts, boolPreds, handlerSelector: h.selector, moduleImports: moduleImports || {}, optionsAliases, optionsObjectAliases };
+    const scope = { ctxName, nodeParamName: h.nodeParam, locals: initLocals, helpers, constants, regexConsts, boolPreds, handlerSelector: h.selector, moduleImports: moduleImports || {}, optionsAliases, optionsObjectAliases, userFnNames };
     const body = [];
     for (const stmt of stmts) {
       const r = extractStatement(stmt, scope);
@@ -7698,11 +7708,26 @@ function extractExpr(expr, scope) {
       // astUtils helpers — accept both `astUtils.X(...)` and bare `X(...)`
       // (rules often destructure from ./utils/ast-utils).  Match BEFORE the
       // generic "unknown call target" rejection so bare-form calls resolve.
-      const isAstUtilsCall = (name) =>
-        (callee.type === "Identifier" && callee.name === name)
-        || (callee.type === "MemberExpression" && !callee.computed
+      //
+      // Guard: a bare-name match only fires when no user-defined helper of
+      // the same name is in scope.  Otherwise a rule that ships its own
+      // local `function couldBeError(node) { ... }` (n-plugin no-callback-
+      // literal does exactly this) would silently get our astUtils-flavored
+      // semantics instead of its own — a subtle conformance bug.
+      const isAstUtilsCall = (name) => {
+        if (callee.type === "MemberExpression" && !callee.computed
             && callee.property?.type === "Identifier" && callee.property.name === name
-            && callee.object?.type === "Identifier" && callee.object.name === "astUtils");
+            && callee.object?.type === "Identifier" && callee.object.name === "astUtils") return true;
+        if (callee.type !== "Identifier" || callee.name !== name) return false;
+        // Bare-name fallback is safe only when no user-declared function or
+        // helper of the same name shadows astUtils.  Otherwise we'd mis-map
+        // a local helper (eslint-plugin-n no-callback-literal's couldBeError
+        // is a real example) to ESLint-core astUtils semantics.
+        if (scope.userFnNames && scope.userFnNames.has(name)) return false;
+        if (scope.helpers && scope.helpers[name]) return false;
+        if (scope.boolPreds && scope.boolPreds[name]) return false;
+        return true;
+      };
       if (isAstUtilsCall("isStartOfExpressionStatement") && expr.arguments.length === 1) {
         const arg = extractExpr(expr.arguments[0], scope);
         if (!arg.ok) return arg;
