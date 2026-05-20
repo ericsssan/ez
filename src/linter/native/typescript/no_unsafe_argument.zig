@@ -100,6 +100,16 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg: NodeIndex = @enumFromInt(args[i]);
+        // Spread element handling: TSe distinguishes unsafeSpread (any),
+        // unsafeArraySpread (any[]).  When the spread source's type is
+        // any → fire unsafeSpread; when its element type is any (i.e.
+        // it's `any[]` / `Array<any>`) → fire unsafeArraySpread.
+        if (ctx.nodeTag(arg) == .spread_element) {
+            checkSpreadArg(arg, ctx);
+            // Consume the rest of the param slots — we can't realistically
+            // pair tuple-spread positions against the rest of the args.
+            return;
+        }
         // If we've entered the rest region, all remaining args are
         // checked against the rest element type.
         if (rest_param) |_| {
@@ -122,6 +132,32 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
         const param_ty_node = paramTypeAnnotationNode(param, ctx);
         if (param_ty_node == .none) continue; // param has no declared type
         checkArgAgainstType(arg, param_ty_node, ctx);
+    }
+}
+
+/// Spread element handling for `foo(...x)`:
+///   * if typeOf(x) is any        → unsafeSpread     (data.sender = "`any`")
+///   * if typeOf(x.element) is any (x is `any[]`) → unsafeArraySpread
+/// Tuple spread (`foo(...[a, b])`) needs per-position type tracking
+/// which we don't yet do — we'd need TS type service to know each
+/// tuple slot's type.
+fn checkSpreadArg(spread: NodeIndex, ctx: *const LintContext) void {
+    const inner = ctx.nodeData(spread).lhs;
+    if (inner == .none) return;
+    // Skip explicit non-any cast on the spread source (`...(x as Foo)`).
+    if (rhsIsExplicitNonAnyCast(inner, ctx)) {
+        // Still need to check the cast target — if `as any`, the source
+        // becomes any.  rhsIsExplicitNonAnyCast already checked that
+        // the target is non-any, so we can return safely.
+        return;
+    }
+    if (ctx.typeNodeIsAny(inner)) {
+        ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeSpread");
+        return;
+    }
+    if (ctx.typeNodeContainsAny(inner)) {
+        // Receiver isn't itself `any` but contains any — array/tuple of any.
+        ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeArraySpread");
     }
 }
 

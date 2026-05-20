@@ -405,6 +405,14 @@ pub const LintContext = struct {
         return id.eq(tymod.ID_ANY);
     }
 
+    /// True when the inferred type at this node is the built-in
+    /// `Function` type — used by no-unsafe-call.  Caller should also
+    /// check typeNodeIsAny separately when both should fire.
+    pub fn typeNodeIsFunction(self: *const LintContext, n: NodeIndex) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.isFunctionRef(&c.store, c.typeOf(n));
+    }
+
     /// True when the type id reaches `unknown` either directly or through
     /// a composite.  Used by unsafe-* rules to suppress on declared types
     /// like `unknown`, `unknown[]`, `Set<unknown>` — `unknown` is the safe

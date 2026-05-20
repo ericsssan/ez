@@ -288,6 +288,18 @@ pub fn isUnknown(store: *const TypeStore, id: TypeId) bool {
     return store.get(id).kind == .unknown;
 }
 
+/// True when the type is the built-in `Function` type — typescript-eslint
+/// flags calling values of type `Function` because the type is callable
+/// without signature constraints (any args, any return).  This catches
+/// the simple case (`const f: Function = ...; f()`) but not custom
+/// subtypes (`interface MyFn extends Function {}`) which would need
+/// interface heritage tracking we don't yet do.
+pub fn isFunctionRef(store: *const TypeStore, id: TypeId) bool {
+    const t = store.get(id);
+    if (t.kind != .type_ref) return false;
+    return std.mem.eql(u8, t.name, "Function");
+}
+
 pub fn containsUnknown(store: *const TypeStore, id: TypeId) bool {
     if (isUnknown(store, id)) return true;
     const t = store.get(id);

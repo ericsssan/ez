@@ -46,6 +46,14 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // runtime expression.  Walk up to find a TS-type ancestor and skip.
     if (inTypePosition(node, ctx)) return;
     const allow_opt_chain = optionAllowOptionalChaining(ctx);
+    const tag = ctx.nodeTag(node);
+    // Second TSe selector: for computed member access (`obj[key]`), the
+    // KEY itself may be any.  Fires `unsafeComputedMemberAccess` at the
+    // key node.  Skipped for literal keys and update expressions (TSe
+    // perf optimization — those types are never any).
+    if (isComputedMemberExpr(tag)) {
+        checkComputedKey(node, allow_opt_chain, ctx);
+    }
     const state = computeState(node, allow_opt_chain, ctx);
     if (state != .unsafe) return;
     // We're at the firing position — only fire if our receiver isn't
@@ -61,6 +69,29 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // property.  For `x.a` we want the span of `a`.
     const prop_span = propertySpan(node, ctx);
     ctx.reportSpanWithMessageId(prop_span, "unsafeMemberExpression");
+}
+
+fn checkComputedKey(node: NodeIndex, allow_opt_chain: bool, ctx: *const LintContext) void {
+    // Suppress when the optional chain is `?.[key]` and the option is set.
+    if (allow_opt_chain and isOptionalMemberExpr(ctx.nodeTag(node))) return;
+    const key = ctx.nodeData(node).rhs;
+    if (key == .none) return;
+    // Skip literal and update-expression keys (perf — types can't be any).
+    switch (ctx.nodeTag(key)) {
+        .string_literal, .number_literal, .boolean_literal, .null_literal,
+        .bigint_literal, .regex_literal,
+        .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec => return,
+        else => {},
+    }
+    if (!ctx.typeNodeIsAny(key)) return;
+    ctx.reportSpanWithMessageId(ctx.nodeSpan(key), "unsafeComputedMemberAccess");
+}
+
+fn isComputedMemberExpr(tag: Node.Tag) bool {
+    return switch (tag) {
+        .computed_member_expr, .optional_computed_member_expr => true,
+        else => false,
+    };
 }
 
 /// State of a member access for the chain algorithm.  Mirrors TSe's

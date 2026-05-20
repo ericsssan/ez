@@ -989,19 +989,17 @@ test "no-unsafe-member-access" {
             // unknown for the property, but the OBJECT is well-typed
             // so the rule doesn't fire.
             "declare const obj: { a: number }; obj.a;",
-            // bracketed access where INDEX is any but RECEIVER isn't —
-            // typescript-eslint v8 doesn't fire here.
-            "declare const a: number[]; declare const k: any; a[k];",
+            // Literal key on typed receiver — perf optimization in TSe:
+            // literal keys can't be any.
+            "declare const a: number[]; a[0];",
         },
         .invalid = &.{
             .{ .code = "declare const a: any; a.b;" },
             .{ .code = "declare const a: any; a[0];" },
             .{ .code = "declare const a: any; a?.b;" },
-            // any[] flowing — `a[0]` on `any[]` is any, but `a` itself
-            // is `array_t(any)`.  Our typeNodeIsAny on `a` should NOT
-            // fire (array_t is not any).  So this is VALID for member-access
-            // semantics — let the no-unsafe-* family member that runs
-            // after `[0]` handle it.
+            // Computed key is any: receiver well-typed but key any →
+            // unsafeComputedMemberAccess.
+            .{ .code = "declare const a: number[]; declare const k: any; a[k];" },
         },
     });
 }
