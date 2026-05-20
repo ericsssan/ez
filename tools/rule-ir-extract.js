@@ -410,6 +410,22 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
         locals: localsMap,
         helpers, constants, boolPreds, regexConsts, moduleImports: moduleImports || {},
       };
+      // Inline-expr shortcut: `function f(args) { return <expr>; }` registers
+      // as an expression-position inliner so `const X = f(node)` can bind X
+      // to the helper's substituted return-expression IR.  This complements
+      // inline-statements (which is statement-position only).  Body must be a
+      // single ReturnStatement with a directly-extractable argument.
+      if (stmts.length === 1 && stmts[0].type === "ReturnStatement" && stmts[0].argument) {
+        const r = extractExpr(stmts[0].argument, scope);
+        if (r.ok) {
+          helpers[name] = { kind: "inline-expr", params: markers, expr: r.expr };
+          pendingInlineFns.splice(i, 1);
+          progress = true;
+          continue;
+        }
+        // Fall through to inline-statements path (which will fail loudly via
+        // the "return with value not supported" branch).
+      }
       const irStmts = [];
       let okAll = true;
       for (const s of stmts) {
@@ -478,6 +494,7 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractReadonlyGlobalAssignHandler,
       extractDeclaredVariableModifyingRefHandler, // sprint #2
       extractDefaultCaseLastHandler, // default-case-last
+      extractDefaultCaseHandler,     // default-case
       extractNoEmptyStaticBlockHandler, // no-empty-static-block
       extractNoDuplicateCaseHandler, // no-duplicate-case
       extractNoReturnAssignHandler,  // no-return-assign
@@ -1867,6 +1884,103 @@ function extractDefaultCaseLastHandler(rawHandler, stmts, { ctxName }) {
         cond: { op: "unary", operator: "!", operand: { op: "node-is-last-switch-case", node: { op: "node-ref" } } },
         then: [{ op: "report", node: { op: "node-ref" }, messageId }],
       }],
+    },
+  };
+}
+
+// Recognize the default-case rule shape:
+//
+//   SwitchStatement(node) {
+//     if (!node.cases.length) return;
+//     const hasDefault = node.cases.some(v => v.test === null);
+//     if (!hasDefault) {
+//       ...comment-pattern check on getCommentsAfter(lastCase)...
+//       context.report({ node, messageId: "missingDefaultCase" });
+//     }
+//   }
+//
+// Detection is anchored on the `node.cases.some(v => v.test === null)` test
+// — that subexpression is specific enough to identify this rule without
+// over-matching other SwitchStatement-targeted rules.  The Zig helper
+// (ctx.checkDefaultCase) implements all the case-iteration + trailing-comment
+// matching against the optional commentPattern option.
+function extractDefaultCaseHandler(rawHandler, stmts, { ctxName }) {
+  if (rawHandler.selector !== "SwitchStatement") return { ok: false };
+  // Find a `context.report({ node: <handlerParam>, messageId: "<X>" })` call
+  // anywhere in the body and extract its messageId literal.
+  // visitor-key-driven walk avoids the cyclic `parent` backref on AST nodes.
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let messageId = null;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || messageId) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "CallExpression"
+        && n.callee?.type === "MemberExpression"
+        && n.callee.object?.type === "Identifier"
+        && n.callee.object.name === ctxName
+        && n.callee.property?.name === "report"
+        && n.arguments?.[0]?.type === "ObjectExpression") {
+      for (const p of n.arguments[0].properties) {
+        if (p.type !== "Property") continue;
+        const k = p.key?.name || p.key?.value;
+        if (k === "messageId" && p.value?.type === "Literal" && typeof p.value.value === "string") {
+          messageId = p.value.value;
+        }
+      }
+      return;
+    }
+    for (const k of childKeys(n)) {
+      const v = n[k];
+      if (v != null) walk(v);
+    }
+  };
+  // Look for the signature `<param>.cases.some(<id> => <id>.test === null)`
+  // — strong evidence this is the default-case rule (and only this one).
+  let hasDefaultCheck = false;
+  const checkForHasDefault = (n) => {
+    if (!n || typeof n !== "object" || hasDefaultCheck) return;
+    if (n.type === "CallExpression"
+        && n.callee?.type === "MemberExpression"
+        && n.callee.property?.name === "some"
+        && n.callee.object?.type === "MemberExpression"
+        && !n.callee.object.computed
+        && n.callee.object.property?.name === "cases"
+        && n.callee.object.object?.type === "Identifier"
+        && n.callee.object.object.name === rawHandler.nodeParam
+        && n.arguments?.length === 1
+        && n.arguments[0].type === "ArrowFunctionExpression"
+        && n.arguments[0].params?.length === 1) {
+      const arrow = n.arguments[0];
+      const elemParam = arrow.params[0].name;
+      const body = arrow.body.type === "BlockStatement"
+        ? (arrow.body.body[0]?.type === "ReturnStatement" ? arrow.body.body[0].argument : null)
+        : arrow.body;
+      const sideIsTestNull = (a, b) =>
+        a?.type === "MemberExpression" && !a.computed
+        && a.property?.name === "test"
+        && a.object?.type === "Identifier" && a.object.name === elemParam
+        && b?.type === "Literal" && b.value === null;
+      if (body?.type === "BinaryExpression"
+          && (body.operator === "===" || body.operator === "==")
+          && (sideIsTestNull(body.left, body.right) || sideIsTestNull(body.right, body.left))) {
+        hasDefaultCheck = true;
+        return;
+      }
+    }
+    if (Array.isArray(n)) { for (const c of n) checkForHasDefault(c); return; }
+    for (const k of childKeys(n)) {
+      const v = n[k];
+      if (v != null) checkForHasDefault(v);
+    }
+  };
+  for (const s of stmts) { checkForHasDefault(s); walk(s); }
+  if (!hasDefaultCheck || !messageId) return { ok: false };
+  return {
+    ok: true,
+    handler: {
+      kind: "default-case-check",
+      selector: "SwitchStatement",
+      messageId,
     },
   };
 }
@@ -7594,6 +7708,13 @@ function extractExpr(expr, scope) {
         if (!arg.ok) return arg;
         return { ok: true, expr: { op: "is-start-of-expression-statement", node: arg.expr } };
       }
+      // astUtils.couldBeError(node) — true if the node may evaluate to an
+      // Error object.  Recursive semantics are implemented in Zig (ctx.couldBeError).
+      if (isAstUtilsCall("couldBeError") && expr.arguments.length === 1) {
+        const arg = extractExpr(expr.arguments[0], scope);
+        if (!arg.ok) return arg;
+        return { ok: true, expr: { op: "could-be-error", node: arg.expr } };
+      }
       if (isAstUtilsCall("needsPrecedingSemicolon") && expr.arguments.length === 2
           && isSourceCodeReceiver(expr.arguments[0], scope)) {
         const arg = extractExpr(expr.arguments[1], scope);
@@ -7631,6 +7752,25 @@ function extractExpr(expr, scope) {
           const arg = extractExpr(expr.arguments[0], scope);
           if (!arg.ok) return arg;
           return { ok: true, expr: { op: "has-comments-before-args", node: arg.expr } };
+        }
+        if (h.kind === "inline-expr") {
+          // `function f(args) { return <expr>; }` — substitute each param
+          // marker with the corresponding call-arg's IR throughout the
+          // pre-extracted return-expression.
+          if (expr.arguments.length !== h.params.length) {
+            return { ok: false, reason: `inline-expr helper '${callee.name}' expects ${h.params.length} arg(s), got ${expr.arguments.length}` };
+          }
+          const argIRs = [];
+          for (const a of expr.arguments) {
+            const r = extractExpr(a, scope);
+            if (!r.ok) return r;
+            argIRs.push(r.expr);
+          }
+          let result = h.expr;
+          for (let i = 0; i < h.params.length; i++) {
+            result = substituteIdentRef(result, h.params[i], argIRs[i]);
+          }
+          return { ok: true, expr: result };
         }
         // report-if inline-as-expression isn't meaningful (it's a statement).
         // Fall through to the statement-level inliner via extractStatement.
@@ -7878,7 +8018,7 @@ function extractRule(file) {
       for (const [k, v] of Object.entries(helpers)) {
         // Internal-only helpers — inlined at call site, never referenced
         // from the validated IR and not in HELPER_KINDS.
-        if (v && (v.kind === "inline-statements" || v.kind === "tokens-equal")) continue;
+        if (v && (v.kind === "inline-statements" || v.kind === "inline-expr" || v.kind === "tokens-equal")) continue;
         filtered[k] = v;
       }
       return Object.keys(filtered).length > 0 ? filtered : undefined;

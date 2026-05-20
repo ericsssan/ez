@@ -19,6 +19,8 @@ pub const meta = RuleMeta{
 
 pub const relevant_tags = [_]Node.Tag{};
 
+pub const needs_semantic = true;
+
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
     class,

@@ -121,12 +121,12 @@ const no_with = @import("suspicious/no_with.zig");
 const require_yield = @import("correctness/require_yield.zig");  // IR-generated via subtree-contains-tag op
 const no_case_declarations = @import("suspicious/no_case_declarations.zig");
 // const no_sequences = @import("suspicious/no_sequences.zig");  // hand-written — disabled per IR-only constraint
-// const no_throw_literal = @import("suspicious/no_throw_literal.zig");  // hand-written — disabled per IR-only constraint
+const no_throw_literal = @import("suspicious/no_throw_literal.zig");  // IR-generated via could-be-error op
 // v0.5 suspicious rules
 // const no_console = @import("suspicious/no_console.zig");  // hand-written — disabled per IR-only constraint
 // const no_alert = @import("suspicious/no_alert.zig");  // hand-written — disabled per IR-only constraint
 // const no_duplicate_imports = @import("suspicious/no_duplicate_imports.zig");  // hand-written — disabled per IR-only constraint
-// const default_case = @import("suspicious/default_case.zig");  // hand-written — disabled per IR-only constraint
+const default_case = @import("style/default_case.zig");  // IR-generated via default-case-check handler
 // const radix = @import("suspicious/radix.zig");  // hand-written — disabled per IR-only constraint
 // const no_shadow = @import("suspicious/no_shadow.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 suspicious rules
@@ -416,12 +416,12 @@ pub const all_rules = .{
     require_yield,
     no_case_declarations,
     // no_sequences, // runner >> native (runner 42, native 32, gap 10); fall back to JS runner
-    // no_throw_literal, // hand-written — disabled
+    no_throw_literal,
     // Suspicious v0.5 (6)
     // no_console, // hand-written — disabled
     // no_alert, // runner >> native (runner 41, native 34, 8 FN); fall back
     // no_duplicate_imports, // runner >> native (runner 85, native 59, gap 26, 1 FP); fall back to JS runner
-    // default_case, // hand-written — disabled
+    default_case,
     // radix, // runner >> native (runner 54, native 31, 21 FN 2 FP); fall back
     // no_shadow, // runner >> native (runner 314/368, native 305/368, 9 more FN); fall back to runner
     // Suspicious v0.6 (6)

@@ -1606,6 +1606,63 @@ pub const LintContext = struct {
         return std.mem.eql(u8, raw[1 .. raw.len - 1], val);
     }
 
+    /// Mirrors ESLint astUtils.couldBeError: returns true when `n` may evaluate
+    /// to an Error object.  Truthy node tags terminate the walk; assignment /
+    /// logical / sequence / conditional shapes recurse per ESLint's semantics.
+    pub fn couldBeError(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        return switch (self.ast.nodeTag(n)) {
+            .identifier,
+            .call_expr,
+            .optional_call_expr,
+            .new_expr,
+            .member_expr,
+            .computed_member_expr,
+            .optional_member_expr,
+            .optional_computed_member_expr,
+            .tagged_template,
+            .yield_expr,
+            .yield_delegate,
+            .await_expr,
+            => true,
+            // Strip parens — ESLint's `ChainExpression` collapses; our AST
+            // already direct-tags optional chains, but a parenthesized arg
+            // (e.g. `throw (foo)`) should still see through.
+            .grouping_expr => self.couldBeError(self.ast.nodeData(n).lhs),
+            // AssignmentExpression: `=` and `&&=` carry the right operand; `||=`
+            // and `??=` may carry either; arithmetic/bitwise assignments cannot
+            // produce an Error value.
+            .assign,
+            .logical_and_assign,
+            => self.couldBeError(self.ast.nodeData(n).rhs),
+            .logical_or_assign,
+            .nullish_assign,
+            => self.couldBeError(self.ast.nodeData(n).lhs) or self.couldBeError(self.ast.nodeData(n).rhs),
+            // LogicalExpression: `&&` short-circuits to right; `||` / `??` may
+            // surface either operand.
+            .logical_and => self.couldBeError(self.ast.nodeData(n).rhs),
+            .logical_or,
+            .nullish_coalesce,
+            => self.couldBeError(self.ast.nodeData(n).lhs) or self.couldBeError(self.ast.nodeData(n).rhs),
+            .conditional => blk: {
+                const d = self.ast.nodeData(n);
+                if (d.rhs == .none) break :blk false;
+                const e = self.ast.extraData(ast_mod.Conditional, @intFromEnum(d.rhs));
+                break :blk self.couldBeError(e.consequent) or self.couldBeError(e.alternate);
+            },
+            .sequence_expr => blk: {
+                const d = self.ast.nodeData(n);
+                const slice = self.ast.extraSlice(.{
+                    .start = @intFromEnum(d.lhs),
+                    .end = @intFromEnum(d.rhs),
+                });
+                if (slice.len == 0) break :blk false;
+                break :blk self.couldBeError(@enumFromInt(slice[slice.len - 1]));
+            },
+            else => false,
+        };
+    }
+
     /// Property name text for a MemberExpression (dot access).
     /// Handles the fact that member_expr.rhs is a property_ident node whose
     /// main_token is the property name token.
@@ -3259,6 +3316,121 @@ pub const LintContext = struct {
             if (j + 7 <= text.len and std.ascii.eqlIgnoreCase(text[j..j + 7], "through")) return true;
         }
         return false;
+    }
+
+    /// Mirror of ESLint's default-case rule.  When a switch has no `default:`
+    /// clause AND lacks a trailing "no default" comment after the last case,
+    /// report at the switch.  Custom `commentPattern` option uses the
+    /// literal-prefix substring approach shared with commentMatchesFallthrough.
+    pub fn checkDefaultCase(self: *const LintContext, switch_node: NodeIndex, message_id: []const u8) void {
+        if (switch_node == .none) return;
+        if (self.ast.nodeTag(switch_node) != .switch_stmt) return;
+        const d = self.ast.nodeData(switch_node);
+        if (d.rhs == .none) return; // no cases payload → skip
+        const sr = self.extraData(SubRange, @intFromEnum(d.rhs));
+        const cases = self.extraSlice(sr);
+        // Empty switch: ESLint comment in the rule explicitly skips ("no easy
+        // way to extract comments inside it now") — we mirror that.
+        if (cases.len == 0) return;
+        // Already has a `default:` clause → done.
+        for (cases) |c| {
+            const case_node: NodeIndex = @enumFromInt(c);
+            if (self.ast.nodeTag(case_node) == .switch_default) return;
+        }
+        // Find the trailing comment between the last case and the switch's
+        // closing `}`.  If it matches the pattern, allow the missing default.
+        const last_case: NodeIndex = @enumFromInt(cases[cases.len - 1]);
+        const custom = self.getOptionString("commentPattern");
+        if (self.lastCommentAfterMatchesNoDefault(last_case, switch_node, custom)) return;
+        self.reportWithMessageId(switch_node, message_id);
+    }
+
+    /// Walk source bytes between `after_node.end` and `outer_node.end - 1`
+    /// (the `}` of the switch) looking for the LAST comment in that gap.
+    /// Returns true when that comment matches the no-default pattern
+    /// (custom literal-prefix substring, OR the default `^no default$`
+    /// case-insensitive whole-trimmed-text match).
+    fn lastCommentAfterMatchesNoDefault(self: *const LintContext, after_node: NodeIndex, outer_node: NodeIndex, custom: ?[]const u8) bool {
+        const src = self.ast.source;
+        const after_span = self.nodeSpan(after_node);
+        const outer_span = self.nodeSpan(outer_node);
+        if (after_span.end >= outer_span.end) return false;
+        const gap_start: usize = @intCast(after_span.end);
+        if (outer_span.end == 0) return false;
+        // Scan up to (but not including) the trailing `}`.
+        var gap_end: usize = @intCast(outer_span.end);
+        if (gap_end > src.len) gap_end = src.len;
+        if (gap_end == 0) return false;
+        // Step back past whitespace before `}` to find the real comment-end
+        // candidate.  We accept the last comment in [gap_start, gap_end).
+        var last_lo: ?usize = null;
+        var last_hi: usize = 0;
+        var i: usize = gap_start;
+        while (i < gap_end) {
+            const c = src[i];
+            if (c == '/' and i + 1 < gap_end and src[i + 1] == '/') {
+                // line comment until \n or gap_end
+                const text_start = i + 2;
+                var j = text_start;
+                while (j < gap_end and src[j] != '\n') : (j += 1) {}
+                last_lo = text_start;
+                last_hi = j;
+                i = j;
+                continue;
+            }
+            if (c == '/' and i + 1 < gap_end and src[i + 1] == '*') {
+                const text_start = i + 2;
+                var j = text_start;
+                while (j + 1 < gap_end and !(src[j] == '*' and src[j + 1] == '/')) : (j += 1) {}
+                last_lo = text_start;
+                last_hi = j;
+                if (j + 1 < gap_end) i = j + 2 else i = gap_end;
+                continue;
+            }
+            i += 1;
+        }
+        if (last_lo) |s| return commentMatchesNoDefault(src[s..last_hi], custom);
+        return false;
+    }
+
+    /// Default-case marker matcher.  Mirrors ESLint's
+    /// `/^no default$/iu` against the trimmed comment text, OR a custom
+    /// pattern provided as a string — we approximate the regex via its
+    /// literal prefix (same convention as commentMatchesFallthrough).
+    fn commentMatchesNoDefault(text: []const u8, custom: ?[]const u8) bool {
+        if (isEslintDirectiveComment(text)) return false;
+        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        if (custom) |pat| {
+            // Peel a leading `^` so anchored regexes like "^skip default"
+            // become a startsWith check.  Anything after the literal prefix
+            // (regex metachars) is approximated as "match any tail."
+            var anchored_start = false;
+            var start: usize = 0;
+            if (pat.len > 0 and pat[0] == '^') { anchored_start = true; start = 1; }
+            var end: usize = start;
+            while (end < pat.len) : (end += 1) {
+                const c = pat[end];
+                if (c == '\\' or c == '(' or c == ')' or c == '[' or c == ']'
+                    or c == '{' or c == '}' or c == '|' or c == '?' or c == '*'
+                    or c == '+' or c == '.' or c == '^' or c == '$') break;
+            }
+            const lit = pat[start..end];
+            if (lit.len > 0) {
+                if (anchored_start) {
+                    return trimmed.len >= lit.len
+                        and std.ascii.eqlIgnoreCase(trimmed[0..lit.len], lit);
+                }
+                return substringCaseInsensitive(trimmed, lit);
+            }
+            // Custom pattern provided but no literal anchor (e.g. ".?" /
+            // ".*" / pure-metachar shape) — user explicitly opted into
+            // "any comment counts."  Prefer false-negatives (skip report)
+            // over false-positives when we can't precisely evaluate the regex.
+            return true;
+        }
+        // Default: /^no default$/iu — exact case-insensitive match of trimmed text.
+        return trimmed.len == "no default".len
+            and std.ascii.eqlIgnoreCase(trimmed, "no default");
     }
 
     /// If `reportUnusedFallthroughComment: true` and there's a fall-through-

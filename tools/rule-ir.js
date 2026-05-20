@@ -281,6 +281,10 @@ const EXPR_OPS = new Set([
   // (e.g. previous-switch-case, nearest-function-ancestor) needs an
   // existence guard.
   "node-not-none",
+  // Mirror of astUtils.couldBeError(n) — true when `n` may evaluate to an
+  // Error object.  Recursive over assignment / logical / sequence /
+  // conditional shapes per ESLint's semantics.  Used by no-throw-literal.
+  "could-be-error",
 ]);
 
 // Helper-function kinds.
@@ -448,6 +452,10 @@ function validateRule(rule) {
     if (h.kind === "no-empty-check") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       if (typeof h.selector !== "string") return fail("selector must be string", path);
+      continue;
+    }
+    if (h.kind === "default-case-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       continue;
     }
     if (h.kind === "noop-stub") {
@@ -881,6 +889,9 @@ function validateExpr(e, path) {
       || e.op === "node-nearest-function-ancestor"
       || e.op === "is-constructor-method"
       || e.op === "is-generator-function-or-method") {
+    return validateExpr(e.node, `${path}.node`);
+  }
+  if (e.op === "could-be-error") {
     return validateExpr(e.node, `${path}.node`);
   }
   if (e.op === "node-subtree-contains-tag") {
