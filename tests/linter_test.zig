@@ -955,6 +955,29 @@ test "no-unsafe-call" {
     });
 }
 
+test "no-unsafe-member-access chains and options" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-member-access",
+        .lang = .ts,
+        .valid = &.{
+            // Long chain on any: TSe reports only the innermost access.
+            // The outer accesses propagate Unsafe without re-reporting.
+            // Our test asserts that the rule fires "at least once" — we
+            // verify the dedup via differential corpus instead.  Here we
+            // only check the truly clean cases.
+            "const x: number = 1; x.a;", // not any
+            // Type-position member: `implements FG.A`.
+            "declare namespace FG { interface A {} } class B implements FG.A {}",
+        },
+        .invalid = &.{
+            // Chain: at least one error (the innermost firing point).
+            .{ .code = "declare const x: any; x.a.b.c.d;" },
+            // Unresolved global like `x` (no symbol) → unknown, but explicit any → fires.
+            .{ .code = "declare const a: any; a.foo;" },
+        },
+    });
+}
+
 test "no-unsafe-member-access" {
     try RuleTester.run(.{
         .rule = "no-unsafe-member-access",

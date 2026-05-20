@@ -45,25 +45,63 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // as member_expr at the AST level even though it's a type, not a
     // runtime expression.  Walk up to find a TS-type ancestor and skip.
     if (inTypePosition(node, ctx)) return;
+    const allow_opt_chain = optionAllowOptionalChaining(ctx);
+    const state = computeState(node, allow_opt_chain, ctx);
+    if (state != .unsafe) return;
+    // We're at the firing position — only fire if our receiver isn't
+    // itself an Unsafe member access (that one will report instead).
     const data = ctx.nodeData(node);
     const obj = data.lhs;
-    if (!ctx.typeNodeIsAny(obj)) return;
-    // Suppress when the receiver is a bare `this` — typescript-eslint
-    // allows `this.x` in any context because `this` typing inside
-    // methods is a separate concern.
-    if (ctx.nodeTag(obj) == .this_expr) return;
-    // Suppress when the receiver is itself a member access — the chain
-    // has already (or will) report at the innermost unsafe point.  This
-    // matches typescript-eslint's State.Unsafe propagation: once an
-    // ancestor in the chain reports, all outer ones suppress.
-    // (Member accesses on call/cast results are NOT suppressed because
-    // those receivers are not member_expr nodes themselves.)
-    if (isMemberExpr(ctx.nodeTag(obj))) return;
+    if (isMemberExpr(ctx.nodeTag(obj))) {
+        const inner = computeState(obj, allow_opt_chain, ctx);
+        if (inner == .unsafe) return; // already reported on the inner
+    }
     // Report at the property identifier, not the whole expression — TSe
     // reports `node.property` so column data points at the offending
     // property.  For `x.a` we want the span of `a`.
     const prop_span = propertySpan(node, ctx);
     ctx.reportSpanWithMessageId(prop_span, "unsafeMemberExpression");
+}
+
+/// State of a member access for the chain algorithm.  Mirrors TSe's
+/// internal enum:
+///   * unsafe: receiver is `any`; this access reports.
+///   * chained: this is an optional access (`?.`) and allowOptionalChaining
+///     is on — suppress this access but DON'T propagate Unsafe upward.
+///   * safe: receiver is not `any` — no report.
+const State = enum { unsafe, chained, safe };
+
+fn computeState(node: NodeIndex, allow_opt_chain: bool, ctx: *const LintContext) State {
+    const tag = ctx.nodeTag(node);
+    if (allow_opt_chain and isOptionalMemberExpr(tag)) return .chained;
+    const data = ctx.nodeData(node);
+    const obj = data.lhs;
+    // bare `this`: typescript-eslint suppresses (handled by a different
+    // messageId path that requires noImplicitThis; we conservatively skip).
+    if (ctx.nodeTag(obj) == .this_expr) return .safe;
+    // Recurse into nested member access — if the inner one is Unsafe,
+    // we inherit Unsafe (this node will be suppressed at fire-time).
+    if (isMemberExpr(ctx.nodeTag(obj))) {
+        const inner = computeState(obj, allow_opt_chain, ctx);
+        if (inner == .unsafe) return .unsafe;
+        // Chained or safe inner: fall through to check our own receiver.
+    }
+    if (ctx.typeNodeIsAny(obj)) return .unsafe;
+    return .safe;
+}
+
+fn isOptionalMemberExpr(tag: Node.Tag) bool {
+    return switch (tag) {
+        .optional_member_expr, .optional_computed_member_expr => true,
+        else => false,
+    };
+}
+
+fn optionAllowOptionalChaining(ctx: *const LintContext) bool {
+    const opts = ctx.rule_options orelse return false;
+    if (opts.* != .object) return false;
+    const v = opts.object.get("allowOptionalChaining") orelse return false;
+    return v == .bool and v.bool;
 }
 
 fn isMemberExpr(tag: Node.Tag) bool {
