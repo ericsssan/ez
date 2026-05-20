@@ -17,7 +17,12 @@ fn lintSource(source: []const u8) ![]const LintDiagnostic {
     var tokens = lex_result.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
-    var sem = try SemanticAnalyzer.analyze(allocator, &tree);
+    // Rules that consult ctx.parentOf() (e.g. no-extra-semi) need
+    // semantic.parent_indices populated.  Match RuleTester's setup.
+    var sem = try SemanticAnalyzer.analyzeWithOptions(allocator, &tree, .{
+        .is_module = true,
+        .build_parents = true,
+    });
     defer sem.deinit(allocator);
     const diags = try linter.lint(allocator, &tree, &sem, null, .js);
     errdefer linter.freeDiagnostics(allocator, diags);

@@ -1174,6 +1174,113 @@ pub const LintContext = struct {
         }
     }
 
+    /// no-extra-semi class-body branch: scan the class body's token range
+    /// for stray semicolons that aren't inside any member's token range,
+    /// reporting each.  Fix matches ESLint's FixTracker.retainSurroundingTokens
+    /// shape: expand to enclose the immediately-adjacent tokens and replace
+    /// with the surrounding text minus the semicolon.
+    pub fn checkClassBodyExtraSemis(self: *const LintContext, body: NodeIndex, message_id: []const u8) void {
+        if (body == .none) return;
+        const tag = self.ast.nodeTag(body);
+        if (tag != .class_body and tag != .static_block) return;
+        const d = self.ast.nodeData(body);
+        const main_tok = self.ast.nodeMainToken(body);
+        // For static_block the main_token is `static`, not `{`.  Walk
+        // forward to find the opening `{`.
+        var open_tok: TokenIndex = main_tok;
+        if (tag == .static_block) {
+            while (open_tok + 1 < self.ast.tokens.len and self.ast.tokenTag(open_tok) != .l_brace) {
+                open_tok += 1;
+            }
+        }
+        // Find the matching `}` by depth-scanning tokens.  Members may
+        // contain nested braces; main_token is the OUTER `{` at depth 1.
+        var close_tok: TokenIndex = open_tok;
+        {
+            var depth: i32 = 1;
+            var t: TokenIndex = open_tok + 1;
+            while (t < self.ast.tokens.len) : (t += 1) {
+                const tt = self.ast.tokenTag(t);
+                if (tt == .l_brace) depth += 1
+                else if (tt == .r_brace) {
+                    depth -= 1;
+                    if (depth == 0) { close_tok = t; break; }
+                }
+            }
+            if (close_tok == open_tok) return; // unmatched — bail
+        }
+
+        const members: []const u32 = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+
+        _ = members; // brace-depth scan below doesn't need the members list
+
+        // Brace-depth scan: walk tokens between open_tok and close_tok.
+        // At depth 0 we're at class-body level; any `;` whose previous
+        // non-trivia token is `{`, `}`, or `;` is a stray (it follows a
+        // member terminator, a block close, or another stray).  A `;` that
+        // follows an identifier / literal / `)` / etc. is the legitimate
+        // terminator of a PropertyDefinition and is not flagged.
+        var depth: i32 = 0;
+        var prev_tok_tag: @import("../parser/token.zig").Tag = .l_brace;
+        var tok: TokenIndex = open_tok + 1;
+        while (tok < close_tok) : (tok += 1) {
+            const tt = self.ast.tokenTag(tok);
+            if (tt == .l_brace) {
+                depth += 1;
+                prev_tok_tag = tt;
+                continue;
+            }
+            if (tt == .r_brace) {
+                if (depth > 0) depth -= 1;
+                prev_tok_tag = tt;
+                continue;
+            }
+            if (tt != .semicolon) {
+                prev_tok_tag = tt;
+                continue;
+            }
+            // Semicolon at class-body level only matters at depth 0.  Inside
+            // nested `{...}` (method bodies, static blocks, computed keys,
+            // initializer expressions), semicolons are statement terminators
+            // and the regular empty_stmt path handles any extra ones.
+            if (depth != 0) {
+                prev_tok_tag = tt;
+                continue;
+            }
+            const is_stray = switch (prev_tok_tag) {
+                .l_brace, .r_brace, .semicolon => true,
+                else => false,
+            };
+            if (!is_stray) {
+                prev_tok_tag = tt;
+                continue;
+            }
+            // Stray `;` — report with FixTracker-style surrounding-token fix.
+            if (tok == 0) { prev_tok_tag = tt; continue; }
+            const prev_tok = tok - 1;
+            const next_tok = tok + 1;
+            if (next_tok > close_tok) { prev_tok_tag = tt; continue; }
+            const prev_start: u32 = self.ast.tokenStart(prev_tok);
+            const next_end: u32 = self.tokenEnd(next_tok);
+            const semi_start: u32 = self.ast.tokenStart(tok);
+            const semi_end: u32 = self.tokenEnd(tok);
+            const src = self.ast.source;
+            if (prev_start > src.len or next_end > src.len) { prev_tok_tag = tt; continue; }
+            const left = src[prev_start..semi_start];
+            const right = src[semi_end..next_end];
+            const buf = self.allocator.alloc(u8, left.len + right.len) catch { prev_tok_tag = tt; continue; };
+            @memcpy(buf[0..left.len], left);
+            @memcpy(buf[left.len..], right);
+            self.reportSpanWithFixAndMessageId(
+                .{ .start = semi_start, .end = semi_end },
+                .{ .start = prev_start, .end = next_end },
+                buf,
+                message_id,
+            );
+            prev_tok_tag = tt;
+        }
+    }
+
     /// no-dupe-keys: walk an object_literal's properties and emit a diag
     /// for each duplicate static key.  Accounts for getter/setter pairs
     /// (those don't collide with each other but collide with init forms).

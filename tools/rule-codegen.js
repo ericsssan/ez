@@ -309,7 +309,7 @@ function emit(rule) {
   } else if (hasValidTypeofCheck) {
     relevantTags = ["typeof_expr"];
   } else if (hasNoExtraSemiCheck) {
-    relevantTags = ["empty_stmt"];
+    relevantTags = ["empty_stmt", "class_body"];
   } else if (hasAnyNoRegexSpaces) {
     relevantTags = [];
     if (hasNoRegexSpacesCheck) relevantTags.push("regex_literal");
@@ -888,7 +888,17 @@ function emit(rule) {
   } else if (hasNoExtraSemiCheck) {
     const h = rule.handlers.find(x => x.kind === "no-extra-semi-check");
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
-    out.push(`    if (ctx.nodeTag(node) != .empty_stmt) return;`);
+    out.push(`    const tag = ctx.nodeTag(node);`);
+    // Class-body dispatch: stray `;` tokens inside class bodies aren't
+    // parsed as empty_stmt nodes (only as direct tokens), so handle them
+    // via a direct token scan in the helper.  Static blocks aren't
+    // dispatched here — semis inside them are real empty_stmts and the
+    // regular path handles them.
+    out.push(`    if (tag == .class_body) {`);
+    out.push(`        ctx.checkClassBodyExtraSemis(node, "${zigStr(h.messageId)}");`);
+    out.push(`        return;`);
+    out.push(`    }`);
+    out.push(`    if (tag != .empty_stmt) return;`);
     out.push(`    const parent = ctx.parentOf(node);`);
     out.push(`    if (parent == .none) return;`);
     // Allowed parents: loops, if, labeled, with — empty stmt as their body is valid.

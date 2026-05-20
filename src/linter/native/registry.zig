@@ -299,7 +299,7 @@ pub const all_rules = .{
     // Correctness (40)
     no_debugger,
     no_empty,
-    // no_extra_semi, // native 21/53 vs runner 53 — class-body extra-semi + FixTracker range divergence; disabled
+    no_extra_semi,
     no_dupe_keys,
     no_dupe_args,
     no_sparse_arrays,

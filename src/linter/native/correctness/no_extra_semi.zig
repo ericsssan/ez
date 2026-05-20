@@ -17,7 +17,7 @@ pub const meta = RuleMeta{
     .fixable = true,
 };
 
-pub const relevant_tags = [_]Node.Tag{.empty_stmt};
+pub const relevant_tags = [_]Node.Tag{.empty_stmt, .class_body};
 
 pub const needs_semantic = true;
 
@@ -27,7 +27,12 @@ const Messages = enum {
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (ctx.nodeTag(node) != .empty_stmt) return;
+    const tag = ctx.nodeTag(node);
+    if (tag == .class_body) {
+        ctx.checkClassBodyExtraSemis(node, "unexpected");
+        return;
+    }
+    if (tag != .empty_stmt) return;
     const parent = ctx.parentOf(node);
     if (parent == .none) return;
     switch (ctx.nodeTag(parent)) {
