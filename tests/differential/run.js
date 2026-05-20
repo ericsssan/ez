@@ -105,11 +105,13 @@ function truncateCode(code, maxLines = 8) {
   return lines.slice(0, maxLines).join("\n") + `\n  ... (${lines.length - maxLines} more lines)`;
 }
 
-/** Print a code snippet with line numbers, highlighting specific lines. */
-function printCodeSnippet(code, highlightLines, indent = "    ") {
+/** Print a code snippet with line numbers, highlighting specific lines.
+ *  When `columnMarks` is a Map<line, Array<{col, endCol, label}>>, an
+ *  extra caret-underline row is rendered beneath the line showing the
+ *  reported span (helpful for column-level diffs). */
+function printCodeSnippet(code, highlightLines, indent = "    ", columnMarks = null) {
   const lines = code.split("\n");
   const hlSet = new Set(highlightLines);
-  // Show a window of ±2 lines around each highlighted line
   const toShow = new Set();
   for (const hl of hlSet) {
     for (let i = Math.max(1, hl - 2); i <= Math.min(lines.length, hl + 2); i++) toShow.add(i);
@@ -119,7 +121,21 @@ function printCodeSnippet(code, highlightLines, indent = "    ") {
     if (prev >= 0 && lineNum > prev + 1) console.log(indent + "  ...");
     const marker = hlSet.has(lineNum) ? "►" : " ";
     const num = String(lineNum).padStart(3);
-    console.log(`${indent}${marker}${num}: ${lines[lineNum - 1]}`);
+    const src = lines[lineNum - 1] ?? "";
+    console.log(`${indent}${marker}${num}: ${src}`);
+    // Caret underline showing reported column spans, when provided.
+    if (columnMarks) {
+      const marks = columnMarks.get(lineNum) || [];
+      for (const m of marks) {
+        const col = Math.max(1, m.col ?? 1);
+        const endCol = Math.max(col + 1, m.endCol ?? (col + 1));
+        const len = Math.min(endCol - col, Math.max(1, src.length - col + 1));
+        const padding = " ".repeat(num.length + 1 + 2 + (col - 1)); // line-num + ": " + col offset
+        const carets = "^".repeat(Math.max(1, len));
+        const label = m.label ? ` ${m.label}` : "";
+        console.log(`${indent} ${padding}${carets}${label}`);
+      }
+    }
     prev = lineNum;
   }
 }
@@ -153,21 +169,49 @@ function printDiagDiff(esDiags, ourDiags, indent) {
   for (const d of esDiags)  { (esByLine.get(d.line) ?? esByLine.set(d.line, []).get(d.line)).push(d); }
   for (const d of ourDiags) { (ourByLine.get(d.line) ?? ourByLine.set(d.line, []).get(d.line)).push(d); }
   const lines = new Set([...esByLine.keys(), ...ourByLine.keys()]);
+  // Renders a single diagnostic.  Distinguishes "field absent in oracle"
+  // (TSe test sources commonly omit endLine/endColumn) from "diagnostic
+  // says null" using the `~` marker — the question marks were
+  // confusing readers into thinking data was corrupted.
   const fmt = (d) => {
     if (!d) return "(missing)";
     const id = d.messageId != null ? d.messageId : (d.message ?? "").slice(0, 60);
-    const fix = d.fix ? `fix=${JSON.stringify(d.fix).slice(0, 60)}` : "no-fix";
-    return `${d.line}:${d.column ?? "?"}-${d.endLine ?? "?"}:${d.endColumn ?? "?"} sev=${d.severity ?? "?"} id="${id}" ${fix}`;
+    const c    = d.column    != null ? String(d.column)    : "~";
+    const elc  = d.endLine   != null ? String(d.endLine)   : "~";
+    const ecc  = d.endColumn != null ? String(d.endColumn) : "~";
+    const sev  = d.severity  != null ? String(d.severity)  : "~";
+    const fix  = d.fix ? `fix=${JSON.stringify(d.fix).slice(0, 60)}` : "no-fix";
+    let data = "";
+    if (d.data && typeof d.data === "object" && Object.keys(d.data).length > 0) {
+      const dataStr = JSON.stringify(d.data);
+      data = ` data=${dataStr.length > 80 ? dataStr.slice(0, 77) + "..." : dataStr}`;
+    }
+    return `${d.line}:${c}-${elc}:${ecc} sev=${sev} id="${id}"${data} ${fix}`;
   };
+  // Field-level diff between two diagnostics on the same line.
+  // Symmetric: when either side has null, we say "~ vs <val>" instead of
+  // pretending it's a hard disagreement (the oracle entry simply didn't
+  // declare that field).
   const fieldDiff = (a, b) => {
     const out = [];
     for (const k of ["column", "endLine", "endColumn", "messageId", "message", "severity"]) {
       const av = a[k], bv = b[k];
-      if (av !== bv && !(av == null && bv == null)) out.push(`${k}: es=${JSON.stringify(av)} ez=${JSON.stringify(bv)}`);
+      if (av !== bv && !(av == null && bv == null)) {
+        const avs = av == null ? "~" : JSON.stringify(av);
+        const bvs = bv == null ? "~" : JSON.stringify(bv);
+        out.push(`${k}: oracle=${avs}  ez=${bvs}`);
+      }
+    }
+    // Data dict — compare normalised JSON (TSe data values are
+    // template substitutions, e.g. {property: '.a'}).
+    const adata = a.data && Object.keys(a.data).length > 0 ? JSON.stringify(a.data) : null;
+    const bdata = b.data && Object.keys(b.data).length > 0 ? JSON.stringify(b.data) : null;
+    if (adata !== bdata && !(adata == null && bdata == null)) {
+      out.push(`data: oracle=${adata ?? "~"}  ez=${bdata ?? "~"}`);
     }
     const af = a.fix ? JSON.stringify(a.fix) : null;
     const bf = b.fix ? JSON.stringify(b.fix) : null;
-    if (af !== bf) out.push(`fix: es=${af ?? "null"} ez=${bf ?? "null"}`);
+    if (af !== bf) out.push(`fix: oracle=${af ?? "~"}  ez=${bf ?? "~"}`);
     return out;
   };
   for (const ln of [...lines].sort((a, b) => a - b)) {
@@ -179,12 +223,28 @@ function printDiagDiff(esDiags, ourDiags, indent) {
       if (e && o) {
         const diffs = fieldDiff(e, o);
         if (diffs.length === 0) continue; // identical on this line — passed strict
-        console.log(`${indent}line ${ln}: differ on [${diffs.map(d => d.split(":")[0]).join(", ")}]`);
+        // Categorise the diff for one-glance triage:
+        //   (oracle imprecise)  — every diff has oracle field missing (null/undefined)
+        //                         and ez supplied data: noise from imperfect oracle.
+        //   (ez imprecise)      — every diff has ez missing what oracle had:
+        //                         likely a real gap (ez doesn't expose this field).
+        //   (location only)     — only column/endLine/endColumn disagree.
+        //   otherwise           — real semantic difference (messageId, message, fix, data).
+        const fieldNames = diffs.map(d => d.split(":")[0]);
+        const onlyLocation = fieldNames.every(f => f === "column" || f === "endLine" || f === "endColumn");
+        const oracleImprecise = diffs.every(d => / oracle=~  /.test(d) || / oracle=~$/.test(d));
+        const ezImprecise = diffs.every(d => /  ez=~$/.test(d));
+        let tag;
+        if (oracleImprecise) tag = "(oracle imprecise)";
+        else if (ezImprecise) tag = "(ez imprecise)";
+        else if (onlyLocation) tag = "(location only)";
+        else tag = "";
+        console.log(`${indent}line ${ln}: differ${tag ? " " + tag : ""}`);
         for (const d of diffs) console.log(`${indent}  ${d}`);
       } else if (e) {
-        console.log(`${indent}line ${ln}: MISSING in ez   ${fmt(e)}`);
+        console.log(`${indent}line ${ln}: MISSING in ez (oracle expected)  ${fmt(e)}`);
       } else {
-        console.log(`${indent}line ${ln}: EXTRA   in ez   ${fmt(o)}`);
+        console.log(`${indent}line ${ln}: EXTRA   in ez (no oracle entry)  ${fmt(o)}`);
       }
     }
   }
@@ -1076,6 +1136,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
               options: tc.options,
               sourceType,
               filename: tc.filename,
+              declaredErrorsRaw: tc.declaredErrors || null,
+              declaredErrorsCount: (tc.declaredErrors || []).length,
             });
           }
         }
@@ -1154,6 +1216,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
         //      oracle entries whose column/messageId fields are undefined
         const hasDeclaredMsg = Array.isArray(tc.declaredErrors) &&
           tc.declaredErrors.some(e => e && (e.messageId || e.line != null));
+        let softCreditReason = null;
         if (tc.declaredKind === "invalid" && hasDeclaredMsg && (caseNativeFn > 0 || caseNativeFp > 0)) {
           // Match oracle entries with any unspecified column field (column,
           // endLine, endColumn) against native fires on the same line.
@@ -1167,7 +1230,6 @@ if (fs.existsSync(ESLINT_ROOT)) {
               r.column == null || r.endColumn == null || r.endLine == null || r.messageId == null
             ))
             .map(r => r.line);
-          // Build line → remaining-native-fires map.
           const nativeRemaining = new Map();
           for (const r of nativeResult) {
             nativeRemaining.set(r.line, (nativeRemaining.get(r.line) ?? 0) + 1);
@@ -1180,11 +1242,13 @@ if (fs.existsSync(ESLINT_ROOT)) {
               nativeRemaining.set(ln, remaining - 1);
             }
           }
+          if (absolved > 0) softCreditReason = `oracle-imprecise (${absolved} entr${absolved === 1 ? "y" : "ies"} matched by line)`;
           caseNativeFn = Math.max(0, caseNativeFn - absolved);
           caseNativeFp = Math.max(0, caseNativeFp - absolved);
         }
         if (tc.declaredKind === "invalid" && espreeKeys.size === 0 && hasDeclaredMsg &&
             nativeResult.length > 0) {
+          softCreditReason = "oracle line-less but declaredErrors non-empty";
           caseNativeFn = 0;
           caseNativeFp = 0;
         }
@@ -1209,6 +1273,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
               options: tc.options,
               sourceType,
               filename: tc.filename,
+              declaredErrorsRaw: tc.declaredErrors || null,
+              declaredErrorsCount: (tc.declaredErrors || []).length,
             });
           }
         }
@@ -1405,18 +1471,50 @@ if (fs.existsSync(ESLINT_ROOT)) {
           console.log(`    [case ${c.tcIdx}${opts}${st}${fnStr}] [native]  CRASH`);
           printCodeSnippet(c.code, [], "    ");
         } else {
-          const espreeStr = c.espreeLines.length ? `line(s) ${c.espreeLines.join(",")}` : "nothing";
+          // Format the lines summary, distinguishing oracle imprecision.
+          // When the oracle had declaredErrors but no oracleLines/Diags
+          // (test source used messageId-only), call it out explicitly
+          // — readers were confused into thinking the test was VALID
+          // when seeing "ESLint: nothing".
+          const espreeStr = c.espreeLines.length
+            ? `line(s) ${c.espreeLines.join(",")}`
+            : (c.declaredErrorsCount > 0 ? `declared-but-line-less (${c.declaredErrorsCount})` : "nothing");
           const oursStr   = c.ourLines.length    ? `line(s) ${c.ourLines.join(",")}`    : "nothing";
           const opts = c.options.length ? ` options=${JSON.stringify(c.options)}` : "";
           const st   = c.sourceType !== "script" ? ` sourceType=${c.sourceType}` : "";
           const fnStr = c.filename ? ` file=${c.filename}` : "";
           const kindStr = c.kind === "native" ? " [native]" : "";
-          console.log(`    [case ${c.tcIdx}${opts}${st}${fnStr}]${kindStr}  ESLint: ${espreeStr}  ours: ${oursStr}`);
-          printCodeSnippet(c.code, [...c.espreeLines, ...c.ourLines], "    ");
-          // 6-dim breakdown: which fields disagree per diagnostic.
-          // Only print when full per-diag records are available
-          // (otherwise we'd just be repeating the lines summary).
+          console.log(`    [case ${c.tcIdx}${opts}${st}${fnStr}]${kindStr}  Oracle: ${espreeStr}  ours: ${oursStr}`);
+          // Build column marks from both oracle and our diagnostics so the
+          // caret underline shows what each side reported.
+          const columnMarks = new Map();
+          const addMark = (d, label) => {
+            if (!d || d.line == null) return;
+            // Skip caret when no column is known — otherwise we'd
+            // render a stray "^" at column 1 that misleads readers.
+            if (d.column == null) return;
+            const arr = columnMarks.get(d.line) || [];
+            arr.push({ col: d.column, endCol: d.endColumn, label });
+            columnMarks.set(d.line, arr);
+          };
+          for (const d of (c.espreeDiags || [])) addMark(d, "oracle");
+          for (const d of (c.ourDiags || []))    addMark(d, "ez");
+          printCodeSnippet(c.code, [...c.espreeLines, ...c.ourLines], "    ", columnMarks);
           if (c.espreeDiags && c.ourDiags) printDiagDiff(c.espreeDiags, c.ourDiags, "    ");
+          // Surface the test-source-declared errors when oracle is empty
+          // but TSe sources said the case is invalid.  Otherwise the user
+          // sees "Oracle: nothing" and "ez fires X" and has no idea
+          // whether X is correct.
+          if (c.declaredErrorsRaw && c.declaredErrorsRaw.length > 0 &&
+              (c.espreeDiags?.length ?? 0) === 0) {
+            console.log(`    Declared errors (from test source, line-less):`);
+            for (const e of c.declaredErrorsRaw) {
+              const id = e.messageId ?? "(no id)";
+              const data = e.data && Object.keys(e.data).length > 0
+                ? ` data=${JSON.stringify(e.data)}` : "";
+              console.log(`      id="${id}"${data}`);
+            }
+          }
         }
       };
 
