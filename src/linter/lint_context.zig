@@ -1938,7 +1938,18 @@ pub const LintContext = struct {
         while (k < a_len) : (k += 1) {
             const at: u32 = a_first + k;
             const bt: u32 = b_first + k;
-            if (self.ast.tokenTag(at) != self.ast.tokenTag(bt)) return false;
+            const at_tag = self.ast.tokenTag(at);
+            const bt_tag = self.ast.tokenTag(bt);
+            if (at_tag != bt_tag) {
+                // Treat `.` and `?.` as token-equal: ESLint's
+                // isSameReference considers `a.b` and `a?.b` the same
+                // for purposes of self-assign / dupe checks (the
+                // optional flag is defensive, not semantic).
+                const both_dot_like = (at_tag == .dot or at_tag == .question_dot)
+                    and (bt_tag == .dot or bt_tag == .question_dot);
+                if (!both_dot_like) return false;
+                continue;
+            }
             if (!std.mem.eql(u8, self.tokenText(at), self.tokenText(bt))) return false;
         }
         return true;
@@ -7775,6 +7786,16 @@ fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: [
             if (has_uv and !in_group_name and class_depth == 0 and isInvalidUFlagIdentityEscape(nx)) {
                 return true;
             }
+            // `\p{...}` / `\P{...}` Unicode property escape (u/v flag) —
+            // consume through the closing `}` so the inner `{` doesn't
+            // trip the bare-`{` quantifier check below.  Same for the
+            // codepoint escape `\u{H..}`.
+            if ((nx == 'p' or nx == 'P' or nx == 'u') and i + 2 < body.len and body[i + 2] == '{') {
+                var j = i + 3;
+                while (j < body.len and body[j] != '}') j += 1;
+                if (j < body.len) { i = j + 1; continue; }
+                return true; // unterminated
+            }
             if (nx == '\\') { i += 2; continue; }
             i += 2;
             continue;
@@ -7787,6 +7808,22 @@ fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: [
             continue;
         }
         if (class_depth > 0) { i += 1; continue; }
+        // u/v flag: an unescaped `{` outside a class must form a valid
+        // quantifier `{n}` / `{n,}` / `{n,m}`.  Anything else is a syntax
+        // error per the Annex-B-disabled grammar.
+        if (has_uv and c == '{') {
+            var j = i + 1;
+            while (j < body.len and body[j] >= '0' and body[j] <= '9') j += 1;
+            if (j == i + 1) return true; // no digits → invalid `{`
+            // Optional `,` and optional second number, then `}`.
+            if (j < body.len and body[j] == ',') {
+                j += 1;
+                while (j < body.len and body[j] >= '0' and body[j] <= '9') j += 1;
+            }
+            if (j >= body.len or body[j] != '}') return true;
+            i = j + 1;
+            continue;
+        }
         if (c == '(') {
             paren_depth += 1;
             // `(?<X` where X is neither `=` nor `!` opens a named group;
