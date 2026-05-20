@@ -302,8 +302,38 @@ pub const LintContext = struct {
         return self.ast.tokens.items(.has_newline_before)[index];
     }
 
+    /// Mirrors ESLint's `sourceCode.isSpaceBetween(t1, t2)`: true when at
+    /// least one whitespace character exists between the two tokens, with
+    /// `/* */` and `//` comments treated as non-whitespace.  Used by spacing
+    /// rules that need to distinguish `tag /* c */ \`x\`` (no space) from
+    /// `tag /* c */ \`x\`` (space) — the gap may be filled by a comment
+    /// alone, which doesn't count.
     pub fn tokenHasSpaceBetween(self: *const LintContext, a: TokenIndex, b: TokenIndex) bool {
-        return self.ast.tokenStart(b) > self.tokenEnd(a);
+        const lo: usize = @intCast(self.tokenEnd(a));
+        const hi: usize = @intCast(self.ast.tokenStart(b));
+        if (hi <= lo) return false;
+        const src = self.ast.source;
+        if (hi > src.len) return false;
+        var i: usize = lo;
+        while (i < hi) {
+            const c = src[i];
+            // Skip block comments
+            if (c == '/' and i + 1 < hi and src[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < hi and !(src[i] == '*' and src[i + 1] == '/')) i += 1;
+                if (i + 1 < hi) i += 2 else i = hi;
+                continue;
+            }
+            // Skip line comments
+            if (c == '/' and i + 1 < hi and src[i + 1] == '/') {
+                i += 2;
+                while (i < hi and src[i] != '\n') i += 1;
+                continue;
+            }
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') return true;
+            i += 1;
+        }
+        return false;
     }
 
     /// Parent of `n`, skipping intermediate grouping_expr wrappers and TS

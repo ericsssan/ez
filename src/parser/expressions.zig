@@ -4937,10 +4937,17 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
                 });
             },
             .template_head, .template_no_sub => {
+                // Use the template's starting token as main_token (not new_tok)
+                // so node_min_toks/node_max_toks span the tagged-template
+                // range correctly.  Otherwise `new tag`X`` would report a
+                // TaggedTemplateExpression starting at `new` (col 1) instead
+                // of at `tag` (col 5) — diverging from ESLint and breaking
+                // rules like template-tag-spacing that use node.loc.start.
+                const tmpl_start_tok: u32 = p.tokIdx();
                 const tmpl = try parseTemplateLiteralTagged(p);
                 callee = try p.addNode(.{
                     .tag = .tagged_template,
-                    .main_token = new_tok,
+                    .main_token = tmpl_start_tok,
                     .data = .{ .lhs = callee, .rhs = tmpl },
                 });
             },

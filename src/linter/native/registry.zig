@@ -236,6 +236,7 @@ const default_case_last = @import("style/default_case_last.zig");
 // const no_useless_switch_case = @import("style/no_useless_switch_case.zig");  // hand-written — disabled per IR-only constraint
 // const class_methods_use_this = @import("style/class_methods_use_this.zig");  // hand-written — disabled per IR-only constraint
 const avoid_new = @import("style/avoid_new.zig");
+const template_tag_spacing = @import("style/template_tag_spacing.zig");
 // unicorn style rules
 // `no_lonely_if` extracted but unregistered — bare-name collides with eslint-core
 // no-lonely-if (different semantics); needs plugin-scoped registration first.
@@ -540,6 +541,7 @@ pub const all_rules = .{
     prefer_response_static_json,
     prefer_string_trim_start_end,
     require_number_to_fixed_digits_argument,
+    template_tag_spacing,
     // TypeScript (8)
     // ts_no_explicit_any, // hand-written — disabled
     // ts_no_non_null_assertion, // hand-written — disabled
