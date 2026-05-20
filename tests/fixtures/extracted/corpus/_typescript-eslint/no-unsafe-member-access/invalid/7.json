@@ -1,0 +1,41 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-member-access",
+  "kind": "invalid",
+  "index": 7,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 3,
+      "column": 7,
+      "endLine": null,
+      "endColumn": 8,
+      "messageId": "unsafeComputedMemberAccess",
+      "data": {
+        "property": "[y]"
+      }
+    }
+  ],
+  "oracleLines": [
+    3
+  ],
+  "oracleFixes": null,
+  "code": "\nfunction foo(x?: { a: number }, y: any) {\n  x?.[y];\n}\n      ",
+  "ext": ".ts"
+}

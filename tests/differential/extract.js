@@ -756,8 +756,9 @@ function installCorpusIntercept() {
       const langOpts    = { ecmaVersion, sourceType };
       if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
       // projectService causes async TS Language Service errors that crash extraction.
-      // Skip it during extraction — type-aware rules capture oracle results via the TS parser alone.
-      if (false && useProjectService && extractDir) {
+      // EZ_EXTRACT_PROJECT_SERVICE=1 opts in to projectService for type-aware
+      // rule extraction (enables oracle for no-unsafe-assignment/call/etc.).
+      if (process.env.EZ_EXTRACT_PROJECT_SERVICE === "1" && useProjectService && extractDir) {
         langOpts.parserOptions = { ...(langOpts.parserOptions || {}), projectService: { allowDefaultProject: ["*.ts", "*.tsx"] }, tsconfigRootDir: extractDir };
       } else if (useProject && tcTsconfigRootDir) {
         // Pass through project-based type info (uses a specific tsconfig file).
@@ -940,6 +941,12 @@ function evalSonarjsTest(testFile, ruleName) {
     "const DefaultParserRuleTester = _EzRuleTester;",
     "const NoTypeCheckingRuleTester = _EzRuleTester;",
     "const RuleTester = _EzRuleTester;",
+    // typescript-eslint plugin tests use createRuleTesterWithTypes — its
+    // import is stripped above, so stub it to return a _EzRuleTester whose
+    // run() forwards to __EZ_SILENT_RUN__ exactly like the regular RuleTester.
+    "const createRuleTesterWithTypes = (_opts) => new _EzRuleTester();",
+    "const getFixturesRootDir = () => '.';",
+    "const noFormat = (s) => s;",
     "const describe = (name, fn) => { try { fn(); } catch {} };",
     "const it = (name, fn) => { try { fn(); } catch {} };",
   ].join("\n");

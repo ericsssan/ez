@@ -1,0 +1,1 @@
+function foo({ x: y } = { x: 1 } as { x: any }) {}

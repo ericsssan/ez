@@ -39,6 +39,12 @@ pub const needs_semantic = true;
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!ctx.hasTypeChecker()) return;
+    // Suppress when the member access is in TS type position — a qualified
+    // type name like `FG.A` (in `implements FG.A`, `extends FG.A`, or in
+    // any ts_type_annotation / ts_type_reference parent context) parses
+    // as member_expr at the AST level even though it's a type, not a
+    // runtime expression.  Walk up to find a TS-type ancestor and skip.
+    if (inTypePosition(node, ctx)) return;
     const data = ctx.nodeData(node);
     const obj = data.lhs;
     if (!ctx.typeNodeIsAny(obj)) return;
@@ -47,4 +53,36 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // methods is a separate concern.
     if (ctx.nodeTag(obj) == .this_expr) return;
     ctx.reportWithMessageId(node, "unsafeMemberExpression");
+}
+
+/// Walk up from `node` looking for a TS type-position ancestor.  When
+/// the member access lives inside a ts_type_reference (qualified type
+/// name) or any ts_* type node, it's a TYPE — no-unsafe-member-access
+/// must not fire.
+fn inTypePosition(node: NodeIndex, ctx: *const LintContext) bool {
+    var p = ctx.parentOf(node);
+    while (p != .none) : (p = ctx.parentOf(p)) {
+        switch (ctx.nodeTag(p)) {
+            .ts_type_reference, .ts_type_annotation, .ts_type_query,
+            .ts_typeof_type, .ts_indexed_access_type,
+            .ts_union_type, .ts_intersection_type, .ts_array_type,
+            .ts_tuple_type, .ts_conditional_type, .ts_mapped_type,
+            .ts_type_literal, .ts_parenthesized_type,
+            .ts_function_type, .ts_constructor_type,
+            .ts_keyof_type, .ts_template_literal_type,
+            .ts_type_predicate, .ts_infer_type,
+            .ts_type_parameter, .ts_import_type => return true,
+            // Stop walking at clear value-position boundaries.
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .arrow_fn, .async_arrow_fn,
+            .class_decl, .class_expr, .class_body,
+            .method_def, .computed_method_def, .constructor_def,
+            .block_stmt, .expression_stmt, .return_stmt,
+            .if_stmt, .if_else_stmt, .while_stmt, .for_stmt,
+            .root => return false,
+            else => {},
+        }
+    }
+    return false;
 }

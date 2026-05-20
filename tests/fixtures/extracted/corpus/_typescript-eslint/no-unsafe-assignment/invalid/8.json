@@ -1,0 +1,51 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-assignment",
+  "kind": "invalid",
+  "index": 8,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": null,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "unsafeObjectPattern",
+      "data": {
+        "receiver": "error typed",
+        "sender": "error typed"
+      }
+    },
+    {
+      "line": null,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "anyAssignment",
+      "data": {
+        "receiver": "error typed",
+        "sender": "error typed"
+      }
+    }
+  ],
+  "oracleLines": [],
+  "oracleFixes": null,
+  "code": "\nconst {\n  x: { y: z },\n} = { x: spooky };\n      ",
+  "ext": ".ts"
+}

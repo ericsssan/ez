@@ -1,0 +1,37 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-assignment",
+  "kind": "invalid",
+  "index": 48,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": null,
+      "column": 13,
+      "endLine": null,
+      "endColumn": 24,
+      "messageId": "anyAssignment",
+      "data": null
+    }
+  ],
+  "oracleLines": [],
+  "oracleFixes": null,
+  "code": "const x = { y: 1 as any };",
+  "ext": ".ts"
+}

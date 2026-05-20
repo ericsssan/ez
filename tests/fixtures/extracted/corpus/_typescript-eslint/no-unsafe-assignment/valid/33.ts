@@ -1,0 +1,1 @@
+const x: Set<unknown> = y as Set<any>;

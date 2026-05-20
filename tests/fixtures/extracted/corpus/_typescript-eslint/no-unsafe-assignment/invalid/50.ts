@@ -1,0 +1,1 @@
+const x: { y: Set<Set<Set<string>>> } = { y: new Set<Set<Set<any>>>() };

@@ -1,0 +1,1 @@
+const x: { y: number } = { y: 1 };

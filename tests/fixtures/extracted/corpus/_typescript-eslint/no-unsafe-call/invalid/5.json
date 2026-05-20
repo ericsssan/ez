@@ -1,0 +1,41 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-call",
+  "kind": "invalid",
+  "index": 5,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 3,
+      "column": 3,
+      "endLine": null,
+      "endColumn": 7,
+      "messageId": "unsafeCall",
+      "data": {
+        "type": "an `any`"
+      }
+    }
+  ],
+  "oracleLines": [
+    3
+  ],
+  "oracleFixes": null,
+  "code": "\nfunction foo(x: { a: any }) {\n  x?.a();\n}\n      ",
+  "ext": ".ts"
+}

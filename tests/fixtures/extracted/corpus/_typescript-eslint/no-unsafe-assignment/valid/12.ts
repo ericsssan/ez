@@ -1,0 +1,1 @@
+const [x, y] = [1, 2] as number[];

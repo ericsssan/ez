@@ -1,0 +1,39 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-assignment",
+  "kind": "invalid",
+  "index": 22,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 1,
+      "column": 8,
+      "endLine": null,
+      "endColumn": 15,
+      "messageId": "unsafeArrayPatternFromTuple",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    1
+  ],
+  "oracleFixes": null,
+  "code": "const [[[[x]]]] = [1 as any];",
+  "ext": ".ts"
+}

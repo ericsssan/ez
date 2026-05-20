@@ -1,0 +1,1 @@
+const x: Set<string> = new Set<any>();

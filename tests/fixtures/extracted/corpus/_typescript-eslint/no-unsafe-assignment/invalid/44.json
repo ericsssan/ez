@@ -1,0 +1,39 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-assignment",
+  "kind": "invalid",
+  "index": 44,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 3,
+      "column": 8,
+      "endLine": null,
+      "endColumn": 9,
+      "messageId": "unsafeObjectPattern",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    3
+  ],
+  "oracleFixes": null,
+  "code": "\n({\n  x: { y },\n} = { x: { y: 1 } } as { x: { y: any } });\n      ",
+  "ext": ".ts"
+}

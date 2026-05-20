@@ -1,0 +1,1 @@
+const { x } = { x: 1 } as { x: any };

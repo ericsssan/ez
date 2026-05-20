@@ -1,0 +1,41 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-return",
+  "kind": "invalid",
+  "index": 23,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 3,
+      "column": 3,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "unsafeReturn",
+      "data": {
+        "type": "`any`"
+      }
+    }
+  ],
+  "oracleLines": [
+    3
+  ],
+  "oracleFixes": null,
+  "code": "\nfunction foo(): Promise<object> {\n  return {} as any;\n}\n      ",
+  "ext": ".ts"
+}

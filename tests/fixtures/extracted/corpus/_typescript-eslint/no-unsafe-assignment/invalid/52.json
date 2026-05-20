@@ -1,0 +1,39 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-assignment",
+  "kind": "invalid",
+  "index": 52,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 4,
+      "column": 9,
+      "endLine": null,
+      "endColumn": 17,
+      "messageId": "anyAssignment",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    4
+  ],
+  "oracleFixes": null,
+  "code": "\ntype Props = { a: string };\ndeclare function Foo(props: Props): never;\n<Foo a={1 as any} />;\n      ",
+  "ext": ".ts"
+}
