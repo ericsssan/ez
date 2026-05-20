@@ -1519,6 +1519,12 @@ pub const LintContext = struct {
             if (ktag == .number_literal) {
                 return self.ast.tokenText(self.ast.nodeMainToken(key));
             }
+            // Regex literal — ToPropertyKey converts to the regex source
+            // text including the surrounding slashes.  This matches the
+            // string `'/X/flags'` so `{ '/X/': 1, [/X/]: 2 }` collides.
+            if (ktag == .regex_literal) {
+                return self.ast.tokenText(self.ast.nodeMainToken(key));
+            }
         }
         // Class fields share the property-key shape but get their own tags.
         if (tag == .property_def or tag == .computed_property_def) {
