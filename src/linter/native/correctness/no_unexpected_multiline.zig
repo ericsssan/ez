@@ -16,7 +16,7 @@ pub const meta = RuleMeta{
     .description = "Disallow confusing multiline expressions",
 };
 
-pub const relevant_tags = [_]Node.Tag{.call_expr, .computed_member_expr, .tagged_template};
+pub const relevant_tags = [_]Node.Tag{.call_expr, .computed_member_expr, .tagged_template, .divide};
 
 pub const needs_semantic = true;
 

@@ -1333,7 +1333,8 @@ pub const LintContext = struct {
             .property, .computed_property,
             .method_def, .computed_method_def,
             .getter_def, .computed_getter_def,
-            .setter_def, .computed_setter_def => {
+            .setter_def, .computed_setter_def,
+            .property_def, .computed_property_def => {
                 const k = self.ast.nodeData(prop).lhs;
                 return if (k == .none) prop else k;
             },
@@ -1381,10 +1382,13 @@ pub const LintContext = struct {
 
     /// True iff `prop` is a non-computed `__proto__: …` proto setter
     /// (a special syntax that doesn't create a regular property — excluded
-    /// from no-dupe-keys collision tracking).
+    /// from no-dupe-keys collision tracking).  The shorthand form
+    /// `{ __proto__ }` and the computed form `{ ['__proto__']: x }` are
+    /// REGULAR properties named "__proto__" and do NOT trigger the
+    /// prototype-setter magic; they should be tracked normally.
     fn isProtoSetterProperty(self: *const LintContext, prop: NodeIndex) bool {
         const tag = self.ast.nodeTag(prop);
-        if (tag != .property and tag != .shorthand_property) return false;
+        if (tag != .property) return false; // exclude shorthand + computed
         if (self.propertyEntryKind(prop) != .init) return false;
         const name = self.propertyEntryStaticName(prop) orelse return false;
         return std.mem.eql(u8, name, "__proto__");
@@ -1485,6 +1489,14 @@ pub const LintContext = struct {
             if (ktag == .number_literal) {
                 return self.ast.tokenText(self.ast.nodeMainToken(key));
             }
+            // BigInt literal: `1n` becomes property name "1" (trailing `n` is
+            // stripped during ToPropertyKey).  Return the digits so
+            // propertyKeysEqual can compare against `1` / `'1'`.
+            if (ktag == .bigint_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 1 and raw[raw.len - 1] == 'n') return raw[0 .. raw.len - 1];
+                return raw;
+            }
         }
         if (tag == .computed_property) {
             const key = self.ast.nodeData(prop).lhs;
@@ -1506,6 +1518,45 @@ pub const LintContext = struct {
             // separately in checkNoDupeKeys (`0x1` vs `1` both → 1).
             if (ktag == .number_literal) {
                 return self.ast.tokenText(self.ast.nodeMainToken(key));
+            }
+        }
+        // Class fields share the property-key shape but get their own tags.
+        if (tag == .property_def or tag == .computed_property_def) {
+            const key = self.ast.nodeData(prop).lhs;
+            if (key == .none) return null;
+            const ktag = self.ast.nodeTag(key);
+            if (ktag == .identifier) return self.ast.tokenText(self.ast.nodeMainToken(key));
+            if (ktag == .string_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2) return raw[1 .. raw.len - 1];
+            }
+            if (ktag == .number_literal) return self.ast.tokenText(self.ast.nodeMainToken(key));
+            if (ktag == .bigint_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 1 and raw[raw.len - 1] == 'n') return raw[0 .. raw.len - 1];
+                return raw;
+            }
+            if (ktag == .null_literal) return "null";
+            if (ktag == .template_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2 and raw[0] == '`' and raw[raw.len - 1] == '`') {
+                    return raw[1 .. raw.len - 1];
+                }
+            }
+        }
+        // Computed method/getter/setter with bigint or null keys — same
+        // ToPropertyKey coercion as object literals: `1n` → "1", `null` → "null".
+        if (tag == .computed_method_def or tag == .computed_getter_def or tag == .computed_setter_def
+            or tag == .method_def or tag == .getter_def or tag == .setter_def) {
+            const key = self.ast.nodeData(prop).lhs;
+            if (key != .none) {
+                const ktag = self.ast.nodeTag(key);
+                if (ktag == .bigint_literal) {
+                    const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+                    if (raw.len >= 1 and raw[raw.len - 1] == 'n') return raw[0 .. raw.len - 1];
+                    return raw;
+                }
+                if (ktag == .null_literal) return "null";
             }
         }
         return null;
@@ -4581,17 +4632,30 @@ pub const LintContext = struct {
         const body = raw[1 .. raw.len - 1];
         // Walk the body; backslash escapes consume 2 chars and disqualify
         // the fix (offsets would shift).  ESLint still reports without a
-        // fix in those cases.
+        // fix in those cases.  The two levels of escape matter:
+        //   * `'\['`  in source = `[` in string = regex class opener.
+        //   * `'\\['` in source = `\[` in string = regex ESCAPED `[`
+        //     (literal bracket, NOT a class opener).
+        // The walker needs to keep these straight.
         var i: usize = 0;
         var class_depth: i32 = 0;
         var saw_escape = false;
         while (i < body.len) {
             const c = body[i];
             if (c == '\\') {
-                // String-escape decoding: `\[` and `\]` in the source are
-                // just `[`/`]` once the string is evaluated, so adjust the
-                // bracket tracker accordingly.  Other escapes consume both
-                // bytes and disqualify the fix (offsets would shift).
+                if (i + 1 < body.len and body[i + 1] == '\\') {
+                    // `\\` source = single `\` in the regex pattern, which
+                    // starts a regex escape consuming the next pattern char.
+                    // The escaped char (whatever it is) is regex-literal —
+                    // not a class boundary.  Skip the whole `\\X` sequence;
+                    // X usually takes 1 source byte, but if it's itself a
+                    // JS escape (`\\\\`), we'd need to skip more — accept
+                    // an under-skip in that rare case since saw_escape is
+                    // already set and we'll bail on emitting a fix.
+                    saw_escape = true;
+                    i += if (i + 2 < body.len) 3 else 2;
+                    continue;
+                }
                 if (i + 1 < body.len) {
                     const nx = body[i + 1];
                     if (nx == '[') { class_depth += 1; saw_escape = true; i += 2; continue; }
@@ -5261,21 +5325,23 @@ pub const LintContext = struct {
         });
         var cause_value: NodeIndex = .none;
         var has_spread = false;
+        var method_cause: NodeIndex = .none; // last method/getter/setter named "cause"
         for (props) |raw| {
             const p: NodeIndex = @enumFromInt(raw);
             const ptag = self.ast.nodeTag(p);
             if (ptag == .spread_element) { has_spread = true; continue; }
-            // Methods / getters / setters with key "cause" are
-            // technically incorrectCause per ESLint, but the rule
-            // reports at the value's FunctionExpression span while our
-            // AST keeps the function inside an extra payload — span
-            // fidelity drift becomes a strict-key FN+FP.  Skip rather
-            // than mis-report; the rule still catches the simple
-            // `cause: anotherError` case.
             const is_method = ptag == .method_def or ptag == .computed_method_def
                 or ptag == .getter_def or ptag == .setter_def
                 or ptag == .computed_getter_def or ptag == .computed_setter_def;
-            if (is_method) continue;
+            if (is_method) {
+                // Methods / getters / setters with key "cause" are
+                // `incorrectCause` per ESLint.  We report at the function
+                // span; the catch-error rule's expected loc covers the
+                // entire MethodDefinition / Property+FunctionExpression
+                // pair which our property entry's nodeSpan provides.
+                if (self.propertyKeyEquals(p, "cause")) method_cause = p;
+                continue;
+            }
             if (self.propertyKeyEquals(p, "cause")) {
                 cause_value = self.propertyValueOf(p);
                 // Don't break — ESLint takes the LAST matching cause.
@@ -5283,6 +5349,22 @@ pub const LintContext = struct {
         }
         if (has_spread) return;
         if (cause_value == .none) {
+            // Method-form cause (cause()/get cause/set cause) reports
+            // `incorrectCause` at the FunctionExpression of the value.
+            // For ESTree shorthand methods that's [`(` of params, `}` of
+            // body] — there's no `function` keyword.  Use the params
+            // open-paren as the start; body close as the end.
+            if (method_cause != .none) {
+                const params_sp = self.nodeFunctionParamsSpan(method_cause);
+                var sp = params_sp;
+                const body = self.nodeBodyBlock(method_cause);
+                if (body != .none) {
+                    const body_span = self.nodeSpan(body);
+                    if (body_span.end > sp.end) sp.end = body_span.end;
+                }
+                self.reportSpanWithMessageId(sp, "incorrectCause");
+                return;
+            }
             self.reportWithMessageId(node, "missingCause");
             return;
         }
@@ -5398,6 +5480,15 @@ pub const LintContext = struct {
         return false;
     }
 
+    fn isAllRegexFlagChars(text: []const u8) bool {
+        if (text.len == 0) return false;
+        for (text) |c| switch (c) {
+            'g', 'i', 'm', 's', 'u', 'y' => {},
+            else => return false,
+        };
+        return true;
+    }
+
     pub fn checkNoUnexpectedMultiline(self: *const LintContext, node: NodeIndex) void {
         const tag = self.ast.nodeTag(node);
         const src = self.ast.source;
@@ -5435,6 +5526,60 @@ pub const LintContext = struct {
                 const quasi_start = self.nodeSpan(quasi).start;
                 if (!self.sourceContainsLineBreak(tag_end, quasi_start)) return;
                 self.reportSpanWithMessageId(.{ .start = quasi_start, .end = quasi_start + 1 }, "taggedTemplate");
+            },
+            .divide => {
+                // ESLint's `BinaryExpression[operator='/'] > BinaryExpression[operator='/'].left`
+                // — visit divisions that are the left side of an outer
+                // division.  When the trailing identifier matches regex
+                // flags and is adjacent to the outer slash, the whole
+                // pattern visually reads as a regex literal: flag the
+                // broken line.
+                const parent = self.parentOf(node);
+                if (parent == .none) return;
+                if (self.ast.nodeTag(parent) != .divide) return;
+                const pdata = self.ast.nodeData(parent);
+                if (pdata.lhs != node) return; // we must be parent.left
+                // Tokens: inner-left, `/`, inner-right, OUTER`/`, identifier(flags)
+                // Find the outer `/` and the flag identifier after it.
+                const outer_right = pdata.rhs;
+                if (outer_right == .none) return;
+                // First token of outer_right.  For `g.test(baz)` this is
+                // `g`; for `g` alone it's `g` too.  ESLint inspects the
+                // token after the outer slash, so we match by token-index
+                // rather than node-tag — handles `/g.test(...)` shapes
+                // where the right side is a larger expression.
+                const outer_right_i = outer_right.toInt();
+                const flag_tok: TokenIndex = if (outer_right_i < self.node_min_toks.len)
+                    self.node_min_toks[outer_right_i]
+                else
+                    self.ast.nodeMainToken(outer_right);
+                if (self.ast.tokenTag(flag_tok) != .identifier) return;
+                const flag_text = self.ast.tokenText(flag_tok);
+                if (!isAllRegexFlagChars(flag_text)) return;
+                // Outer `/` token = the token immediately before the flag.
+                if (flag_tok == 0) return;
+                const slash_tok = flag_tok - 1;
+                if (self.ast.tokenTag(slash_tok) != .slash) return;
+                // Adjacency: slash end == flag identifier start.
+                if (self.tokenEnd(slash_tok) != self.ast.tokenStart(flag_tok)) return;
+                // node.left = inner left.  Find the first non-`)` token
+                // after it — should be the inner slash.  Line-break
+                // between left and that slash → report.
+                const inner_left = data.lhs;
+                if (inner_left == .none) return;
+                const left_end = self.nodeSpan(inner_left).end;
+                var p: usize = left_end;
+                var saw_newline = false;
+                while (p < src.len) : (p += 1) {
+                    const c = src[p];
+                    if (c == ' ' or c == '\t' or c == '\r') continue;
+                    if (c == '\n') { saw_newline = true; continue; }
+                    if (c == ')') continue;
+                    break;
+                }
+                if (!saw_newline) return;
+                if (p >= src.len or src[p] != '/') return;
+                self.reportSpanWithMessageId(.{ .start = @intCast(p), .end = @intCast(p + 1) }, "division");
             },
             else => {},
         }

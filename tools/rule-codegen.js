@@ -336,7 +336,7 @@ function emit(rule) {
   } else if (hasNoUnusedPrivateMembersCheck) {
     relevantTags = ["class_body"];
   } else if (hasNoUnexpectedMultilineCheck) {
-    relevantTags = ["call_expr", "computed_member_expr", "tagged_template"];
+    relevantTags = ["call_expr", "computed_member_expr", "tagged_template", "divide"];
   } else if (hasPreserveCaughtErrorCheck) {
     relevantTags = ["throw_stmt"];
   } else if (hasConstructorSuperCheck) {
