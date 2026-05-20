@@ -895,8 +895,10 @@ pub const LintContext = struct {
                 if (self.ast.nodeTag(lhs) != .identifier) continue;
                 if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(lhs)), counter_name)) continue;
                 // Right-side: try to determine sign of the constant.
-                // Simple: if rhs is a positive number_literal, dir = op sign;
-                // if negative-unary, flip.
+                // Strip a leading unary +/- and remember the sign.  Then
+                // detect a "non-zero positive constant" payload (number,
+                // bigint, or the `true` boolean literal — ESLint's
+                // getStaticValue coerces these consistently).
                 const rhs = ud.rhs;
                 var pos_sign: i32 = 1;
                 var inner = rhs;
@@ -906,10 +908,26 @@ pub const LintContext = struct {
                 } else if (self.ast.nodeTag(inner) == .unary_plus) {
                     inner = self.ast.nodeData(inner).lhs;
                 }
-                if (self.ast.nodeTag(inner) != .number_literal) continue;
-                const num_text = self.ast.tokenText(self.ast.nodeMainToken(inner));
-                const v = parseNumericLiteral(num_text) orelse continue;
-                if (v == 0) continue; // no direction change
+                const inner_tag = self.ast.nodeTag(inner);
+                var nonzero: bool = false;
+                switch (inner_tag) {
+                    .number_literal => {
+                        const num_text = self.ast.tokenText(self.ast.nodeMainToken(inner));
+                        if (parseNumericLiteral(num_text)) |v| nonzero = v != 0;
+                    },
+                    .bigint_literal => {
+                        // `0n` is the only zero bigint shape; anything else is non-zero.
+                        const t = self.ast.tokenText(self.ast.nodeMainToken(inner));
+                        nonzero = !std.mem.eql(u8, t, "0n");
+                    },
+                    .boolean_literal => {
+                        // ESLint coerces booleans: true=1 (non-zero), false=0.
+                        const t = self.ast.tokenText(self.ast.nodeMainToken(inner));
+                        nonzero = std.mem.eql(u8, t, "true");
+                    },
+                    else => continue,
+                }
+                if (!nonzero) continue;
                 const op_sign: i32 = if (update_tag == .add_assign) 1 else -1;
                 const dir: i32 = op_sign * pos_sign;
                 if (dir == wrong) return true;

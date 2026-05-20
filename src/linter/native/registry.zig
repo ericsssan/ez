@@ -339,7 +339,7 @@ pub const all_rules = .{
     no_empty_static_block,
     no_duplicate_case,
     no_async_promise_executor,
-    // for_direction, // native 49/72 vs runner 72 — needs more shape coverage; disabled
+    for_direction,
     // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
     // no_async_promise_executor, // hand-written — disabled
     no_compare_neg_zero,

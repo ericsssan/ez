@@ -760,7 +760,15 @@ function emit(rule) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    if (ctx.nodeTag(node) != .for_stmt) return;`);
     out.push(`    if (ctx.forStmtHasWrongDirection(node)) {`);
-    out.push(`        ctx.reportWithMessageId(node, "${zigStr(h.messageId)}");`);
+    // ESLint's loc spans from the for_stmt start to the end of the token
+    // immediately before the body (i.e. the closing `)` of the for header).
+    out.push(`        const __body = ctx.nodeData(node).rhs;`);
+    out.push(`        const __end = if (__body != .none) blk: {`);
+    out.push(`            const __body_tok = ctx.nodeMainToken(__body);`);
+    out.push(`            break :blk if (__body_tok > 0) ctx.tokenEnd(__body_tok - 1) else ctx.nodeSpan(node).end;`);
+    out.push(`        } else ctx.nodeSpan(node).end;`);
+    out.push(`        const __sp = ctx.nodeSpan(node);`);
+    out.push(`        ctx.reportSpanWithMessageId(.{ .start = __sp.start, .end = __end }, "${zigStr(h.messageId)}");`);
     out.push(`    }`);
     out.push(`}`);
   } else if (hasValidTypeofCheck) {
