@@ -836,6 +836,209 @@ pub const LintContext = struct {
     /// for-direction: check whether a for-statement's update goes in the
     /// wrong direction relative to its test comparison.  Returns true when
     /// the loop's update is direction-mismatched (e.g. `for(i=0; i<10; i--)`).
+    /// Returns the statically-evaluable numeric value of `node`, or null
+    /// when the expression isn't a known constant.  Handles literals,
+    /// unary +/-, parens, binary +-*/, and `const` bindings (one hop
+    /// per identifier — depth-bounded).  Mirrors a small subset of
+    /// @eslint-community/eslint-utils' getStaticValue for the cases
+    /// for-direction needs.  Returns NaN on division-by-zero (caller
+    /// can use `std.math.isNan` to filter).
+    pub fn staticNumericValue(self: *const LintContext, node: NodeIndex) ?f64 {
+        return self.staticNumericValueDepth(node, 0);
+    }
+
+    fn staticNumericValueDepth(self: *const LintContext, node: NodeIndex, depth: u32) ?f64 {
+        if (node == .none or depth > 8) return null;
+        const tag = self.ast.nodeTag(node);
+        switch (tag) {
+            .number_literal => {
+                const t = self.ast.tokenText(self.ast.nodeMainToken(node));
+                return parseNumericLiteral(t);
+            },
+            .bigint_literal => {
+                const t = self.ast.tokenText(self.ast.nodeMainToken(node));
+                if (t.len < 1 or t[t.len - 1] != 'n') return null;
+                return parseNumericLiteral(t[0 .. t.len - 1]);
+            },
+            .boolean_literal => {
+                const t = self.ast.tokenText(self.ast.nodeMainToken(node));
+                return if (std.mem.eql(u8, t, "true")) 1.0 else 0.0;
+            },
+            .null_literal => return 0.0,
+            .grouping_expr => return self.staticNumericValueDepth(self.ast.nodeData(node).lhs, depth + 1),
+            .unary_minus => {
+                const v = self.staticNumericValueDepth(self.ast.nodeData(node).lhs, depth + 1) orelse return null;
+                return -v;
+            },
+            .unary_plus => return self.staticNumericValueDepth(self.ast.nodeData(node).lhs, depth + 1),
+            .add => {
+                const d = self.ast.nodeData(node);
+                const l = self.staticNumericValueDepth(d.lhs, depth + 1) orelse return null;
+                const r = self.staticNumericValueDepth(d.rhs, depth + 1) orelse return null;
+                return l + r;
+            },
+            .subtract => {
+                const d = self.ast.nodeData(node);
+                const l = self.staticNumericValueDepth(d.lhs, depth + 1) orelse return null;
+                const r = self.staticNumericValueDepth(d.rhs, depth + 1) orelse return null;
+                return l - r;
+            },
+            .multiply => {
+                const d = self.ast.nodeData(node);
+                const l = self.staticNumericValueDepth(d.lhs, depth + 1) orelse return null;
+                const r = self.staticNumericValueDepth(d.rhs, depth + 1) orelse return null;
+                return l * r;
+            },
+            .divide => {
+                const d = self.ast.nodeData(node);
+                const l = self.staticNumericValueDepth(d.lhs, depth + 1) orelse return null;
+                const r = self.staticNumericValueDepth(d.rhs, depth + 1) orelse return null;
+                return l / r;
+            },
+            .identifier => {
+                // Resolve to a binding whose initialiser is statically
+                // evaluable.  `const` is always safe; `let`/`var` are
+                // accepted iff the symbol has no non-init write refs
+                // (mirrors ESLint's getStaticValue effective-const gate).
+                const ref_id = self.nodeRefId(node);
+                if (ref_id == .none) return null;
+                const sym_id = self.semantic.references.getSymbol(ref_id);
+                if (sym_id == .none) return null;
+                const kind = self.semantic.symbols.getBindingKind(sym_id);
+                const is_const_kind = kind == .@"const" or kind == .import_binding;
+                if (!is_const_kind) {
+                    // Effective-const check for let/var.
+                    if (kind != .let and kind != .@"var") return null;
+                    const range = self.semantic.symbols.getRefRange(sym_id);
+                    const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
+                    for (sym_refs) |rid| {
+                        const k = self.semantic.references.getKind(rid);
+                        if (k.isWrite() and k != .write_init) return null;
+                    }
+                }
+                const decl = self.semantic.symbols.getDeclNode(sym_id);
+                if (decl == .none) return null;
+                const decl_parent = self.parentOf(decl);
+                if (decl_parent == .none) return null;
+                if (self.ast.nodeTag(decl_parent) != .declarator) return null;
+                const init = self.ast.nodeData(decl_parent).rhs;
+                if (init == .none) return null;
+                return self.staticNumericValueDepth(init, depth + 1);
+            },
+            else => return null,
+        }
+    }
+
+    /// Returns the statically-evaluable STRING value of `node`, or null
+    /// when it isn't a known string constant.  Handles string literals,
+    /// template literals with no expressions, parens, binary `+` of
+    /// string-typed operands (concat), and effective-const Identifier
+    /// bindings.  Returned slice is allocated in `arena` for templated
+    /// / concatenated results; literal slices borrow from the source.
+    pub fn staticStringValue(self: *const LintContext, arena: std.mem.Allocator, node: NodeIndex) ?[]const u8 {
+        return self.staticStringValueDepth(arena, node, 0);
+    }
+
+    fn staticStringValueDepth(self: *const LintContext, arena: std.mem.Allocator, node: NodeIndex, depth: u32) ?[]const u8 {
+        if (node == .none or depth > 8) return null;
+        const tag = self.ast.nodeTag(node);
+        switch (tag) {
+            .string_literal => {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(node));
+                if (raw.len < 2) return null;
+                return raw[1 .. raw.len - 1];
+            },
+            .template_literal => {
+                // Only no-expression template `` `text` `` is statically known.
+                const d = self.ast.nodeData(node);
+                if (d.lhs != .none and d.rhs != .none and d.lhs != d.rhs) return null;
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(node));
+                if (raw.len < 2 or raw[0] != '`' or raw[raw.len - 1] != '`') return null;
+                return raw[1 .. raw.len - 1];
+            },
+            .grouping_expr => return self.staticStringValueDepth(arena, self.ast.nodeData(node).lhs, depth + 1),
+            .add => {
+                const d = self.ast.nodeData(node);
+                const l = self.staticStringValueDepth(arena, d.lhs, depth + 1) orelse return null;
+                const r = self.staticStringValueDepth(arena, d.rhs, depth + 1) orelse return null;
+                const buf = arena.alloc(u8, l.len + r.len) catch return null;
+                @memcpy(buf[0..l.len], l);
+                @memcpy(buf[l.len..], r);
+                return buf;
+            },
+            .identifier => {
+                const ref_id = self.nodeRefId(node);
+                if (ref_id == .none) return null;
+                const sym_id = self.semantic.references.getSymbol(ref_id);
+                if (sym_id == .none) return null;
+                const kind = self.semantic.symbols.getBindingKind(sym_id);
+                const is_const_kind = kind == .@"const" or kind == .import_binding;
+                if (!is_const_kind) {
+                    if (kind != .let and kind != .@"var") return null;
+                    const range = self.semantic.symbols.getRefRange(sym_id);
+                    const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
+                    for (sym_refs) |rid| {
+                        const k = self.semantic.references.getKind(rid);
+                        if (k.isWrite() and k != .write_init) return null;
+                    }
+                }
+                const decl = self.semantic.symbols.getDeclNode(sym_id);
+                if (decl == .none) return null;
+                const decl_parent = self.parentOf(decl);
+                if (decl_parent == .none) return null;
+                if (self.ast.nodeTag(decl_parent) != .declarator) return null;
+                const init = self.ast.nodeData(decl_parent).rhs;
+                if (init == .none) return null;
+                return self.staticStringValueDepth(arena, init, depth + 1);
+            },
+            else => return null,
+        }
+    }
+
+    /// True iff `id` is an Identifier whose effective-const binding's
+    /// initializer is the global identifier `target_name`.  One hop;
+    /// e.g. `const r = RegExp; r` resolves to "RegExp" for callers like
+    /// isGlobalRegExpCall.  Returns false for non-Identifier, non-const-
+    /// effective bindings, or chains beyond one hop.
+    pub fn identifierResolvesToGlobal(self: *const LintContext, id: NodeIndex, target_name: []const u8) bool {
+        if (id == .none) return false;
+        if (self.ast.nodeTag(id) != .identifier) return false;
+        const ref_id = self.nodeRefId(id);
+        if (ref_id == .none) return false;
+        const sym_id = self.semantic.references.getSymbol(ref_id);
+        if (sym_id == .none) return false;
+        const kind = self.semantic.symbols.getBindingKind(sym_id);
+        const is_const_kind = kind == .@"const" or kind == .import_binding;
+        if (!is_const_kind) {
+            if (kind != .let and kind != .@"var") return false;
+            const range = self.semantic.symbols.getRefRange(sym_id);
+            const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
+            for (sym_refs) |rid| {
+                const k = self.semantic.references.getKind(rid);
+                if (k.isWrite() and k != .write_init) return false;
+            }
+        }
+        const decl = self.semantic.symbols.getDeclNode(sym_id);
+        if (decl == .none) return false;
+        const decl_parent = self.parentOf(decl);
+        if (decl_parent == .none) return false;
+        if (self.ast.nodeTag(decl_parent) != .declarator) return false;
+        const init = self.nodeSkipGrouping(self.ast.nodeData(decl_parent).rhs);
+        if (init == .none) return false;
+        if (self.ast.nodeTag(init) != .identifier) return false;
+        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(init)), target_name)) return false;
+        return self.isGlobalReference(init);
+    }
+
+    /// Same as staticNumericValue but returns the sign as ±1 / 0, or null.
+    pub fn staticNumericSign(self: *const LintContext, node: NodeIndex) ?i32 {
+        const v = self.staticNumericValue(node) orelse return null;
+        if (std.math.isNan(v)) return null;
+        if (v > 0) return 1;
+        if (v < 0) return -1;
+        return 0;
+    }
+
     pub fn forStmtHasWrongDirection(self: *const LintContext, n: NodeIndex) bool {
         if (self.ast.nodeTag(n) != .for_stmt) return false;
         // for_stmt data: lhs = ForExtra index, rhs = body
@@ -894,42 +1097,13 @@ pub const LintContext = struct {
                 const lhs = ud.lhs;
                 if (self.ast.nodeTag(lhs) != .identifier) continue;
                 if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(lhs)), counter_name)) continue;
-                // Right-side: try to determine sign of the constant.
-                // Strip a leading unary +/- and remember the sign.  Then
-                // detect a "non-zero positive constant" payload (number,
-                // bigint, or the `true` boolean literal — ESLint's
-                // getStaticValue coerces these consistently).
-                const rhs = ud.rhs;
-                var pos_sign: i32 = 1;
-                var inner = rhs;
-                if (self.ast.nodeTag(inner) == .unary_minus) {
-                    pos_sign = -1;
-                    inner = self.ast.nodeData(inner).lhs;
-                } else if (self.ast.nodeTag(inner) == .unary_plus) {
-                    inner = self.ast.nodeData(inner).lhs;
-                }
-                const inner_tag = self.ast.nodeTag(inner);
-                var nonzero: bool = false;
-                switch (inner_tag) {
-                    .number_literal => {
-                        const num_text = self.ast.tokenText(self.ast.nodeMainToken(inner));
-                        if (parseNumericLiteral(num_text)) |v| nonzero = v != 0;
-                    },
-                    .bigint_literal => {
-                        // `0n` is the only zero bigint shape; anything else is non-zero.
-                        const t = self.ast.tokenText(self.ast.nodeMainToken(inner));
-                        nonzero = !std.mem.eql(u8, t, "0n");
-                    },
-                    .boolean_literal => {
-                        // ESLint coerces booleans: true=1 (non-zero), false=0.
-                        const t = self.ast.tokenText(self.ast.nodeMainToken(inner));
-                        nonzero = std.mem.eql(u8, t, "true");
-                    },
-                    else => continue,
-                }
-                if (!nonzero) continue;
+                // Right-side: static-evaluate to a numeric value.  Handles
+                // literals (number/bigint/boolean), unary +/-, parens,
+                // binary +-*/, and effective-const Identifier bindings.
+                const sign = self.staticNumericSign(ud.rhs) orelse continue;
+                if (sign == 0) continue; // zero delta — no direction change
                 const op_sign: i32 = if (update_tag == .add_assign) 1 else -1;
-                const dir: i32 = op_sign * pos_sign;
+                const dir: i32 = op_sign * sign;
                 if (dir == wrong) return true;
             }
         }
@@ -4937,24 +5111,26 @@ pub const LintContext = struct {
         const args = self.extraSlice(range);
         if (args.len == 0) return;
         const first_arg: NodeIndex = @enumFromInt(args[0]);
-        if (self.ast.nodeTag(first_arg) != .string_literal) return;
-        // Flags handling — assume no flags when the second arg isn't a
-        // string literal (ESLint's behaviour when flags can't be
-        // statically determined: try without u/v).
-        var flags: []const u8 = "";
-        if (args.len >= 2) {
-            const flags_arg: NodeIndex = @enumFromInt(args[1]);
-            if (self.ast.nodeTag(flags_arg) == .string_literal) {
-                const fr = self.sourceText(flags_arg);
-                if (fr.len >= 2) flags = fr[1 .. fr.len - 1];
-            }
-        }
-        const raw = self.sourceText(first_arg);
-        if (raw.len < 2) return;
-        const body = raw[1 .. raw.len - 1];
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
+        // First-arg pattern: literal string for fast path, otherwise
+        // try staticStringValue (handles parens, `+` concat, and
+        // effective-const bindings).
+        const body = if (self.ast.nodeTag(first_arg) == .string_literal) blk: {
+            const raw = self.sourceText(first_arg);
+            if (raw.len < 2) return;
+            break :blk raw[1 .. raw.len - 1];
+        } else self.staticStringValue(arena, first_arg) orelse return;
+        // Flags handling — resolve via staticStringValue (handles literal,
+        // template literal, parens, `+` concat, and effective-const
+        // bindings).  When flags can't be statically known, ESLint tries
+        // without u/v; we mirror with empty flags.
+        var flags: []const u8 = "";
+        if (args.len >= 2) {
+            const flags_arg: NodeIndex = @enumFromInt(args[1]);
+            if (self.staticStringValue(arena, flags_arg)) |fs| flags = fs;
+        }
         // Decode JS string escapes so the regex parser sees the real
         // pattern (e.g. source `'\\1'` decodes to `\1` which IS a backref;
         // `'\1'` decodes to `\x01` which isn't).
@@ -6246,9 +6422,16 @@ pub const LintContext = struct {
         const callee = self.nodeSkipGrouping(self.ast.nodeData(node).lhs);
         const ctag = self.ast.nodeTag(callee);
         if (ctag == .identifier) {
-            if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "RegExp")) return false;
-            if (!self.isGlobalReference(callee)) return false;
-            return !self.globalIsExplicitlyDisabled("RegExp");
+            const name = self.ast.tokenText(self.ast.nodeMainToken(callee));
+            if (std.mem.eql(u8, name, "RegExp")) {
+                if (!self.isGlobalReference(callee)) return false;
+                return !self.globalIsExplicitlyDisabled("RegExp");
+            }
+            // Follow an effective-const alias one hop: `const r = RegExp; new r(...)`.
+            if (self.identifierResolvesToGlobal(callee, "RegExp")) {
+                return !self.globalIsExplicitlyDisabled("RegExp");
+            }
+            return false;
         }
         if (ctag == .member_expr or ctag == .computed_member_expr) {
             const prop = self.staticPropertyName(callee) orelse return false;
