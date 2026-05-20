@@ -930,6 +930,59 @@ test "no-extra-non-null-assertion" {
     });
 }
 
+test "no-unsafe-call" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-call",
+        .lang = .ts,
+        .valid = &.{
+            // Plain typed function.
+            "function f(): void {} f();",
+            // No type information → no annotation → not any → safe.
+            "const f = function() {}; f();",
+            // Method on a typed value: x.toString — our checker types
+            // the property access as `unknown` (not any), so no fire.
+            "const x: number = 1; x.toString();",
+            // unknown is NOT any.
+            "declare const f: unknown; if (typeof f === 'function') {}",
+        },
+        .invalid = &.{
+            .{ .code = "declare const f: any; f();" },
+            .{ .code = "declare const f: any; new f();" },
+            .{ .code = "declare const tag: any; tag`x`;" },
+            // any propagates through member access:
+            .{ .code = "declare const o: any; o.x();" },
+        },
+    });
+}
+
+test "no-unsafe-member-access" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-member-access",
+        .lang = .ts,
+        .valid = &.{
+            "const x: number = 1; x.toString();",
+            "const a: number[] = []; a[0];",
+            // Typed object property access — our inference returns
+            // unknown for the property, but the OBJECT is well-typed
+            // so the rule doesn't fire.
+            "declare const obj: { a: number }; obj.a;",
+            // bracketed access where INDEX is any but RECEIVER isn't —
+            // typescript-eslint v8 doesn't fire here.
+            "declare const a: number[]; declare const k: any; a[k];",
+        },
+        .invalid = &.{
+            .{ .code = "declare const a: any; a.b;" },
+            .{ .code = "declare const a: any; a[0];" },
+            .{ .code = "declare const a: any; a?.b;" },
+            // any[] flowing — `a[0]` on `any[]` is any, but `a` itself
+            // is `array_t(any)`.  Our typeNodeIsAny on `a` should NOT
+            // fire (array_t is not any).  So this is VALID for member-access
+            // semantics — let the no-unsafe-* family member that runs
+            // after `[0]` handle it.
+        },
+    });
+}
+
 test "no-unsafe-assignment" {
     try RuleTester.run(.{
         .rule = "no-unsafe-assignment",

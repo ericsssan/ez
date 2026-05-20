@@ -278,6 +278,8 @@ const ts_no_non_null_asserted_optional_chain = @import("typescript/no_non_null_a
 const ts_no_extra_non_null_assertion = @import("typescript/no_extra_non_null_assertion.zig");
 // Type-aware: hand-written — uses the TS type checker, doesn't fit IR codegen.
 const ts_no_unsafe_assignment = @import("typescript/no_unsafe_assignment.zig");
+const ts_no_unsafe_call = @import("typescript/no_unsafe_call.zig");
+const ts_no_unsafe_member_access = @import("typescript/no_unsafe_member_access.zig");
 // v0.8 TypeScript rules
 // const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
@@ -573,6 +575,8 @@ pub const all_rules = .{
     // TypeScript v0.8 (9)
     ts_no_extra_non_null_assertion,
     ts_no_unsafe_assignment,
+    ts_no_unsafe_call,
+    ts_no_unsafe_member_access,
     // ts_no_empty_object_type, // runner >> native (runner 35, native 19, gap 16, 4 FP); fall back to JS runner
     // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
     // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner

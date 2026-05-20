@@ -94,8 +94,8 @@ pub const Checker = struct {
             .null_literal => tymod.ID_NULL,
             .regex_literal => self.regexpRefType(),
             .template_literal => tymod.ID_STRING,
-            .tagged_template => tymod.ID_ANY,
-            .this_expr, .super_expr => tymod.ID_ANY,
+            .tagged_template => tymod.ID_UNKNOWN,
+            .this_expr, .super_expr => tymod.ID_UNKNOWN,
 
             .identifier => self.inferIdentifier(node),
 
@@ -129,19 +129,26 @@ pub const Checker = struct {
             .array_literal => self.inferArrayLiteral(node),
             .object_literal => self.inferObjectLiteral(node),
 
-            .call_expr, .optional_call_expr, .new_expr => tymod.ID_ANY,
+            // We don't infer function return types yet.  Default to
+            // `unknown` (NOT `any`) — `unknown` doesn't trigger
+            // no-unsafe-* rules, which is the safer default.  When the
+            // callee itself is `any`, anyness propagates through `call_expr`
+            // because rules query `typeOfNode(callee)` directly.
+            .call_expr, .optional_call_expr, .new_expr => tymod.ID_UNKNOWN,
 
             .member_expr, .computed_member_expr,
             .optional_member_expr, .optional_computed_member_expr => self.inferMember(node),
 
             .await_expr => self.inferAwait(node),
-            .yield_expr, .yield_delegate => tymod.ID_ANY,
+            .yield_expr, .yield_delegate => tymod.ID_UNKNOWN,
 
+            // Function and class expressions have function/constructor
+            // types in TS — never `any` by default.  Return unknown
+            // until we wire up real function-signature types.
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
-            .arrow_fn, .async_arrow_fn => tymod.ID_ANY, // TODO: function type from signature
-
-            .class_expr => tymod.ID_ANY,
-            else => tymod.ID_ANY,
+            .arrow_fn, .async_arrow_fn,
+            .class_expr => tymod.ID_UNKNOWN,
+            else => tymod.ID_UNKNOWN,
         };
     }
 
@@ -211,9 +218,18 @@ pub const Checker = struct {
             .declarator => {
                 const data = self.ast_ref.nodeData(parent);
                 if (data.rhs != .none) return self.typeOf(data.rhs);
-                return tymod.ID_ANY;
+                return tymod.ID_UNKNOWN;
             },
-            else => return tymod.ID_ANY, // TODO: param, property, function decl, etc.
+            // Function/class declarations are not `any` — they have an
+            // inferred (or declared) signature/constructor type.  We
+            // don't model these structurally yet, so return `unknown`
+            // — it's not `any`, so no-unsafe-* won't fire on calls.
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .class_decl => return tymod.ID_UNKNOWN,
+            // Function/method/getter/setter parameter, class field, etc.
+            // We don't resolve these structurally yet — return unknown
+            // rather than any so unsafe-* rules don't spuriously fire.
+            else => return tymod.ID_UNKNOWN,
         }
     }
 
@@ -230,16 +246,19 @@ pub const Checker = struct {
                 break :blk self.store.arrayOf(elem) catch tymod.ID_ANY;
             },
             .ts_parenthesized_type => self.resolveTypeNode(self.ast_ref.nodeData(ty_node).lhs),
-            .ts_typeof_type => tymod.ID_ANY, // we don't resolve `typeof x` yet
-            .ts_keyof_type => tymod.ID_STRING, // approx: keyof T ⊂ string | number | symbol; common case is string-keyed
-            .ts_type_literal => tymod.ID_ANY, // TODO: walk members
-            .ts_function_type, .ts_constructor_type => tymod.ID_ANY, // TODO
-            .ts_tuple_type => tymod.ID_ANY, // TODO
-            .ts_indexed_access_type => tymod.ID_ANY,
-            .ts_conditional_type => tymod.ID_ANY,
-            .ts_mapped_type => tymod.ID_ANY,
+            // Unresolved-but-not-any cases default to `unknown` so
+            // no-unsafe-* rules don't spuriously fire on objects /
+            // functions / etc. declared via structural annotations.
+            .ts_typeof_type => tymod.ID_UNKNOWN, // we don't resolve `typeof x` yet
+            .ts_keyof_type => tymod.ID_STRING, // approx
+            .ts_type_literal => tymod.ID_UNKNOWN, // TODO: walk members
+            .ts_function_type, .ts_constructor_type => tymod.ID_UNKNOWN,
+            .ts_tuple_type => tymod.ID_UNKNOWN,
+            .ts_indexed_access_type => tymod.ID_UNKNOWN,
+            .ts_conditional_type => tymod.ID_UNKNOWN,
+            .ts_mapped_type => tymod.ID_UNKNOWN,
             .ts_template_literal_type => tymod.ID_STRING,
-            else => tymod.ID_ANY,
+            else => tymod.ID_UNKNOWN,
         };
     }
 
@@ -273,8 +292,7 @@ pub const Checker = struct {
 
     fn firstTypeArg(self: *Checker, ref_node: NodeIndex) NodeIndex {
         const data = self.ast_ref.nodeData(ref_node);
-        if (data.rhs == .none) return .none;
-        const range = self.ast_ref.extraData(SubRange, @intFromEnum(data.rhs));
+        const range = self.safeSubRange(data.rhs) orelse return .none;
         if (range.end <= range.start) return .none;
         const idx = self.ast_ref.extra_data[range.start];
         return @enumFromInt(idx);
@@ -282,8 +300,7 @@ pub const Checker = struct {
 
     fn collectTypeArgs(self: *Checker, ref_node: NodeIndex, buf: []TypeId) []TypeId {
         const data = self.ast_ref.nodeData(ref_node);
-        if (data.rhs == .none) return buf[0..0];
-        const range = self.ast_ref.extraData(SubRange, @intFromEnum(data.rhs));
+        const range = self.safeSubRange(data.rhs) orelse return buf[0..0];
         const slice = self.ast_ref.extra_data[range.start..range.end];
         const n = @min(slice.len, buf.len);
         var i: usize = 0;
@@ -296,7 +313,7 @@ pub const Checker = struct {
 
     fn resolveUnion(self: *Checker, ty_node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(ty_node);
-        const range = self.ast_ref.extraData(SubRange, @intFromEnum(data.lhs));
+        const range = self.safeSubRange(data.lhs) orelse return tymod.ID_ANY;
         const slice = self.ast_ref.extra_data[range.start..range.end];
         var buf: [16]TypeId = undefined;
         const n = @min(slice.len, buf.len);
@@ -337,7 +354,7 @@ pub const Checker = struct {
 
     fn inferSequence(self: *Checker, node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(node);
-        const range = self.ast_ref.extraData(SubRange, @intFromEnum(data.lhs));
+        const range = self.safeSubRange(data.lhs) orelse return tymod.ID_UNDEFINED;
         if (range.end <= range.start) return tymod.ID_UNDEFINED;
         const last_idx = self.ast_ref.extra_data[range.end - 1];
         return self.typeOf(@enumFromInt(last_idx));
@@ -377,12 +394,26 @@ pub const Checker = struct {
         return tymod.ID_NUMBER;
     }
 
+    /// Safely read a SubRange stored in a NodeIndex slot.  The parser
+    /// uses .none for "no payload"; out-of-bounds extra indices appear
+    /// when the parser stores 0 (root sentinel) for empty payloads.
+    /// Returns null when the range can't be safely read or yields a
+    /// span that extends past extra_data.
+    fn safeSubRange(self: *Checker, slot: NodeIndex) ?SubRange {
+        if (slot == .none) return null;
+        const idx = @intFromEnum(slot);
+        const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+        if (idx + 1 >= ext_len) return null;
+        const r = self.ast_ref.extraData(SubRange, idx);
+        if (r.start > r.end or r.end > ext_len) return null;
+        return r;
+    }
+
     fn inferArrayLiteral(self: *Checker, node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(node);
-        if (data.lhs == .none) return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
-        const idx = @intFromEnum(data.lhs);
-        if (idx + 1 >= self.ast_ref.extra_data.len) return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
-        const range = self.ast_ref.extraData(SubRange, idx);
+        const range = self.safeSubRange(data.lhs) orelse {
+            return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
+        };
         if (range.end <= range.start) return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
         // Element type = union of element types.
         var buf: [32]TypeId = undefined;
@@ -417,19 +448,23 @@ pub const Checker = struct {
     fn inferObjectLiteral(self: *Checker, node: NodeIndex) TypeId {
         _ = self;
         _ = node;
-        // For now, object literals with explicit annotation get the
-        // declared type; bare object literals widen to any-shape.  Real
-        // structural typing comes later — for unsafe-* this is enough
-        // because the SOURCE side of assignments is what matters.
-        return tymod.ID_ANY;
+        // Without structural typing we return `unknown`, not `any` —
+        // TS doesn't make `{ a: 1 }` an any-flavored value, it's an
+        // inferred structural type.  Returning unknown prevents
+        // false-positives on no-unsafe-*.
+        return tymod.ID_UNKNOWN;
     }
 
     fn inferMember(self: *Checker, node: NodeIndex) TypeId {
-        // Member access on any → any (propagates).  Otherwise default any.
+        // Member access on any → any (anyness propagates through the
+        // unknown property).  Otherwise the property's type is
+        // unresolved — default to `unknown` rather than `any` so we
+        // don't false-positive no-unsafe-* on every plain method call
+        // like `x.toString()`.
         const data = self.ast_ref.nodeData(node);
         const obj_ty = self.typeOf(data.lhs);
         if (tymod.isAny(&self.store, obj_ty)) return tymod.ID_ANY;
-        return tymod.ID_ANY; // TODO: structural lookup
+        return tymod.ID_UNKNOWN;
     }
 
     fn inferAwait(self: *Checker, node: NodeIndex) TypeId {
