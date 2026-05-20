@@ -164,8 +164,12 @@ pub const Checker = struct {
 
     fn inferIdentifier(self: *Checker, node: NodeIndex) TypeId {
         // Look up the symbol for this identifier and consult its declared
-        // type.  Identifiers that don't resolve (globals, etc.) → any.
-        const sym = self.symbolForIdentRef(node) orelse return tymod.ID_ANY;
+        // type.  Identifiers that don't resolve to a user-declared binding
+        // are typically globals (console, window, etc.) — we don't have
+        // type info for them, but defaulting to `any` would cascade
+        // unsafe-* FPs on `console.log`, `window.x`, etc.  Use `unknown`
+        // so unsafe-* rules don't fire on unresolved references.
+        const sym = self.symbolForIdentRef(node) orelse return tymod.ID_UNKNOWN;
         return self.declaredTypeForSymbol(sym);
     }
 
@@ -199,7 +203,10 @@ pub const Checker = struct {
     /// the ts_type_annotation node in identifier.data.rhs), or by walking
     /// up to the declarator and falling back to the initializer.
     fn declaredTypeAtBinding(self: *Checker, binding: NodeIndex) TypeId {
-        if (binding == .none) return tymod.ID_ANY;
+        // Implicit-global symbols (Map, console, etc.) have no decl node.
+        // Treat them as unknown — we don't have type info but they're not
+        // actually `any`, so unsafe-* must not fire on them.
+        if (binding == .none) return tymod.ID_UNKNOWN;
         // Direct annotation on the identifier.
         if (self.ast_ref.nodeTag(binding) == .identifier) {
             const bd = self.ast_ref.nodeData(binding);

@@ -52,7 +52,44 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // allows `this.x` in any context because `this` typing inside
     // methods is a separate concern.
     if (ctx.nodeTag(obj) == .this_expr) return;
-    ctx.reportWithMessageId(node, "unsafeMemberExpression");
+    // Suppress when the receiver is itself a member access — the chain
+    // has already (or will) report at the innermost unsafe point.  This
+    // matches typescript-eslint's State.Unsafe propagation: once an
+    // ancestor in the chain reports, all outer ones suppress.
+    // (Member accesses on call/cast results are NOT suppressed because
+    // those receivers are not member_expr nodes themselves.)
+    if (isMemberExpr(ctx.nodeTag(obj))) return;
+    // Report at the property identifier, not the whole expression — TSe
+    // reports `node.property` so column data points at the offending
+    // property.  For `x.a` we want the span of `a`.
+    const prop_span = propertySpan(node, ctx);
+    ctx.reportSpanWithMessageId(prop_span, "unsafeMemberExpression");
+}
+
+fn isMemberExpr(tag: Node.Tag) bool {
+    return switch (tag) {
+        .member_expr, .computed_member_expr,
+        .optional_member_expr, .optional_computed_member_expr => true,
+        else => false,
+    };
+}
+
+/// Span of the property identifier / computed key — matches typescript-eslint's
+/// `node.property` location reporting.  For `obj.prop` returns the span of
+/// `prop`; for `obj[expr]` returns the span of `expr`.
+fn propertySpan(node: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+    const tag = ctx.nodeTag(node);
+    const data = ctx.nodeData(node);
+    switch (tag) {
+        .computed_member_expr, .optional_computed_member_expr => {
+            return ctx.nodeSpan(data.rhs);
+        },
+        .member_expr, .optional_member_expr => {
+            // rhs is a property_ident node whose main_token IS the property identifier.
+            return ctx.nodeSpan(data.rhs);
+        },
+        else => return ctx.nodeSpan(node),
+    }
 }
 
 /// Walk up from `node` looking for a TS type-position ancestor.  When
