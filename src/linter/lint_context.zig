@@ -2540,6 +2540,19 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
+        // Parenthesised sequence_expr (`(a, b)`) — our parser elides the
+        // grouping_expr wrapper when a sequence appears in a position that
+        // requires parens (e.g. conditional alternate, function arg).  The
+        // closing `)` isn't a tracked child so node_max_toks ends at the
+        // last element.  Walk forward past whitespace and consume a `)` if
+        // present.  Top-level sequence (no parens) sees a different next
+        // char and leaves the span unchanged.
+        if (tag == .sequence_expr) {
+            var p: usize = end;
+            while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\r' or src[p] == '\n')) p += 1;
+            if (p < src.len and src[p] == ')') end = @intCast(p + 1);
+            return .{ .start = first_start, .end = end };
+        }
         // Statements that include their trailing `;` in ESTree's `range` —
         // declarations, simple statements, and expression statements all
         // count.  If the next non-whitespace char past the existing end is
