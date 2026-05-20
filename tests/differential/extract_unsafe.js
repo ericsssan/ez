@@ -168,11 +168,28 @@ for (const rule of RULES) {
             data: e.data ?? null,
           })) : [{ messageId: null, line: null }])
         : [],
-      // Without explicit line numbers we leave oracleLines empty; the
-      // differential then treats native fires as FPs even when they're
-      // actually TPs that beat the runner.  Live with the imperfect
-      // metric — derivation heuristics over-declared errors that
-      // require type service (e.g. Function-subtype detection).
+      // Populate oracleDiags from the source-declared errors when they
+      // carry column/messageId.  The differential's eslintResult
+      // construction prefers oracleDiags over oracleLines (line-only).
+      // Without this the differential built bare {line} keys with
+      // undefined column/messageId, mismatching native's full keys.
+      oracleDiags: kind === "invalid" && Array.isArray(errors)
+        ? errors
+            .filter((e) => typeof e.line === "number")
+            .map((e) => ({
+              rule: `@typescript-eslint/${rule}`,
+              line: e.line,
+              column: e.column ?? null,
+              // TSe test source typically omits endLine when the
+              // diagnostic spans a single line — default to line.
+              // Without this, strict-key matching mismatches every
+              // case (oracle endLine: null vs native endLine: line).
+              endLine: e.endLine ?? e.line,
+              endColumn: e.endColumn ?? null,
+              messageId: e.messageId ?? null,
+              data: e.data ?? null,
+            }))
+        : null,
       oracleLines: kind === "invalid"
         ? (Array.isArray(errors) ? errors.map((e) => e.line ?? null).filter((l) => typeof l === "number") : [])
         : [],

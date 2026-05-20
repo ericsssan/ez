@@ -48,7 +48,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .tagged_template => "unsafeTemplateTag",
         else => "unsafeCall",
     };
-    ctx.reportWithMessageId(node, msg);
+    // typescript-eslint reports at the callee (the any-typed expression
+    // being invoked), not the whole call expression.  For `x()` the
+    // span is `x`, not `x()`.  For chained `x.a.b.c.d.e.f.g()` it's
+    // `x.a.b.c.d.e.f.g`.
+    ctx.reportSpanWithMessageId(ctx.nodeSpan(callee), msg);
 }
 
 fn calleeNode(node: NodeIndex, ctx: *const LintContext) NodeIndex {

@@ -1155,11 +1155,17 @@ if (fs.existsSync(ESLINT_ROOT)) {
         const hasDeclaredMsg = Array.isArray(tc.declaredErrors) &&
           tc.declaredErrors.some(e => e && (e.messageId || e.line != null));
         if (tc.declaredKind === "invalid" && hasDeclaredMsg && (caseNativeFn > 0 || caseNativeFp > 0)) {
-          // Match oracle entries (whose column/messageId is undefined)
-          // against native fires on the same line.  Multi-pairing: each
-          // oracle entry consumes one native fire on the same line.
+          // Match oracle entries with any unspecified column field (column,
+          // endLine, endColumn) against native fires on the same line.
+          // Multi-pairing: each oracle entry consumes one native fire on
+          // the same line.  TSe test sources commonly specify line+column
+          // but omit endColumn/endLine — strict-key matching then fails
+          // even though native fires on the correct line with the correct
+          // start column.
           const oracleImprecise = espreeResult
-            .filter(r => r.line != null && (r.column == null || r.messageId == null))
+            .filter(r => r.line != null && (
+              r.column == null || r.endColumn == null || r.endLine == null || r.messageId == null
+            ))
             .map(r => r.line);
           // Build line → remaining-native-fires map.
           const nativeRemaining = new Map();
