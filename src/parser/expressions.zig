@@ -176,7 +176,22 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             // Not a standard JS operator.  May be a TS-specific postfix form.
             // .kw_as / .kw_satisfies / .bang all have prec_entry == 0, so they
             // land here; .less_than (relational) is handled below.
-            if (is_ts) {
+            //
+            // Accept TS as / satisfies even in JS mode when the syntactic
+            // shape is unambiguous (next token is identifier-like — a type
+            // reference).  ESLint with a TS-aware parser produces the same
+            // AST for these in JS files; matching that node shape closes
+            // gaps in rules like no-unneeded-ternary on TS test fixtures.
+            // Bang (non-null) requires lookahead to disambiguate from `!a`
+            // postfix vs prefix; keep it strictly TS-only for safety.
+            const ts_lookalike = !is_ts and switch (tag) {
+                .kw_as, .kw_satisfies => blk: {
+                    const nx = p.peekAt(1);
+                    break :blk nx == .identifier or nx.isKeyword() or nx == .escaped_keyword;
+                },
+                else => false,
+            };
+            if (is_ts or ts_lookalike) {
                 switch (tag) {
                     .kw_as => {
                         if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
@@ -193,7 +208,7 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
                         left = try parseTsTypePostfix(p, left, .ts_satisfies_expr);
                         continue;
                     },
-                    .bang => if (!p.isOnNewLine()) {
+                    .bang => if (!p.isOnNewLine() and is_ts) {
                         const post_prec = Precedence.postfix;
                         if (@intFromEnum(post_prec) < @intFromEnum(min_prec)) break;
                         left = try parseTsNonNullExpression(p, left);
