@@ -405,6 +405,15 @@ pub const LintContext = struct {
         return id.eq(tymod.ID_ANY);
     }
 
+    /// True when the type id reaches `unknown` either directly or through
+    /// a composite.  Used by unsafe-* rules to suppress on declared types
+    /// like `unknown`, `unknown[]`, `Set<unknown>` — `unknown` is the safe
+    /// sink for any-typed values, so any → unknown should not fire.
+    pub fn typeIdContainsUnknown(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.containsUnknown(&c.store, id);
+    }
+
     /// Parent of `n`, skipping intermediate grouping_expr wrappers and TS
     /// instantiation-expression wrappers (`f<T>(...)` parses as
     /// new_expr → ts_instantiation_expr → callee).  Skipping the wrapper

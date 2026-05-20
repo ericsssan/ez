@@ -37,18 +37,61 @@ pub const meta = RuleMeta{
     .lang = .ts_only,
 };
 
-pub const relevant_tags = [_]Node.Tag{ .call_expr, .optional_call_expr, .new_expr };
+pub const relevant_tags = [_]Node.Tag{ .call_expr, .optional_call_expr, .new_expr, .tagged_template };
 
 pub const needs_semantic = true;
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!ctx.hasTypeChecker()) return;
     const data = ctx.nodeData(node);
+    if (ctx.nodeTag(node) == .tagged_template) {
+        checkTaggedTemplate(node, data, ctx);
+        return;
+    }
     const callee = unwrapGrouping(data.lhs, ctx);
     const args = callArguments(node, ctx) orelse return;
     if (args.len == 0) return;
     const params_decl = resolveCalleeParams(callee, ctx) orelse return;
     checkArgs(args, params_decl, ctx);
+}
+
+/// Tagged templates: `tag\`pre${a}${b}\`` calls `tag(strings, a, b)` —
+/// the first param of `tag` is TemplateStringsArray, and subsequent
+/// params receive the interpolated expressions in order.  We walk the
+/// template_literal's interpolation nodes (every other child after the
+/// initial string) and check each against the corresponding param
+/// type starting at index 1.
+fn checkTaggedTemplate(node: NodeIndex, data: Node.Data, ctx: *const LintContext) void {
+    _ = node;
+    const callee = unwrapGrouping(data.lhs, ctx);
+    const params_decl = resolveCalleeParams(callee, ctx) orelse return;
+    if (params_decl.params.len == 0) return;
+    const template = data.rhs;
+    if (ctx.nodeTag(template) != .template_literal) return;
+    const tdata = ctx.nodeData(template);
+    // template_literal stores its parts range as direct start/end node indices
+    // in data.lhs/data.rhs — NOT a SubRange struct at an extra index.
+    if (tdata.lhs == .none or tdata.rhs == .none) return;
+    const r_start = @intFromEnum(tdata.lhs);
+    const r_end = @intFromEnum(tdata.rhs);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    if (r_start > r_end or r_end > ext_len) return;
+    const parts = ctx.ast.extra_data[r_start..r_end];
+    // Template parts alternate: template_element, expr, template_element, expr, ...
+    // Skip template_elements (string fragments), check expressions against
+    // params[1], params[2], ... (params[0] is TemplateStringsArray).
+    var param_idx: usize = 1;
+    for (parts) |part_idx| {
+        const part: NodeIndex = @enumFromInt(part_idx);
+        if (ctx.nodeTag(part) == .template_element) continue;
+        if (param_idx >= params_decl.params.len) return;
+        const param: NodeIndex = @enumFromInt(params_decl.params[param_idx]);
+        const param_ty = paramTypeAnnotationNode(param, ctx);
+        if (param_ty != .none) {
+            checkArgAgainstType(part, param_ty, ctx);
+        }
+        param_idx += 1;
+    }
 }
 
 fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext) void {
@@ -86,6 +129,7 @@ fn checkArgAgainstType(arg: NodeIndex, param_ty_node: NodeIndex, ctx: *const Lin
     const declared = ctx.resolveTypeAnnotationNode(param_ty_node);
     if (ctx.typeIdIsAny(declared)) return; // param is `: any` opt-in
     if (ctx.typeIdContainsAny(declared)) return; // param itself contains any
+    if (ctx.typeIdContainsUnknown(declared)) return; // unknown is safe target for any
     if (!ctx.typeNodeContainsAny(arg)) return;
     if (rhsIsExplicitNonAnyCast(arg, ctx)) return;
     ctx.reportWithMessageId(arg, "unsafeArgument");
@@ -177,7 +221,10 @@ fn paramsForDecl(decl: NodeIndex, ctx: *const LintContext) ?ParamDecl {
     switch (ctx.nodeTag(parent)) {
         // function foo(...) { ... } — decl IS the binding identifier
         // inside the fn_decl, parent is the fn_decl itself.
-        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => {
+        // `declare function foo(...)` produces ts_declare_function with the same
+        // FnData layout (lhs = extra index to FnData).
+        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+        .ts_declare_function => {
             const data = ctx.nodeData(parent);
             const fd = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
             return paramsFromFnData(fd, ctx);

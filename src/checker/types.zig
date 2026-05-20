@@ -277,6 +277,36 @@ pub fn isAny(store: *const TypeStore, id: TypeId) bool {
     return t.kind == .any;
 }
 
+/// True when the type is `unknown` or contains `unknown` reachable at
+/// any composite position.  `unknown` is the recommended safe target
+/// for any-typed values (e.g. `function f(x: unknown)` is the typed
+/// API contract that says "I'll narrow this before use"), so the
+/// unsafe-* rules must suppress when the destination type accepts
+/// any via an unknown slot.
+pub fn isUnknown(store: *const TypeStore, id: TypeId) bool {
+    if (id.eq(ID_UNKNOWN)) return true;
+    return store.get(id).kind == .unknown;
+}
+
+pub fn containsUnknown(store: *const TypeStore, id: TypeId) bool {
+    if (isUnknown(store, id)) return true;
+    const t = store.get(id);
+    return switch (t.kind) {
+        .union_t, .intersection_t => for (store.idsOf(t.list_data)) |m| {
+            if (containsUnknown(store, m)) break true;
+        } else false,
+        .array_t, .readonly_array_t, .tuple_t => for (store.idsOf(t.list_data)) |m| {
+            if (containsUnknown(store, m)) break true;
+        } else false,
+        // type_ref with type args: peek args.  Catches Set<unknown>,
+        // Promise<unknown>, etc.
+        .type_ref => for (store.idsOf(t.list_data)) |m| {
+            if (containsUnknown(store, m)) break true;
+        } else false,
+        else => false,
+    };
+}
+
 /// True when the type has any `any` reachable in the local shape: unions
 /// where one member is any, intersections (any & T = any).  Used by
 /// no-unsafe-assignment to flag `const x: { a: number } = { a: anyVal }`

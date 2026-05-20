@@ -983,6 +983,21 @@ test "no-unsafe-member-access" {
     });
 }
 
+test "no-unsafe-argument tagged template" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-argument",
+        .lang = .ts,
+        .valid = &.{
+            // TemplateStringsArray + typed args, all well-typed inputs.
+            "function foo(t: TemplateStringsArray, a: number) {} foo`${1}`;",
+        },
+        .invalid = &.{
+            // Real corpus case 40: typed arg, any value.
+            .{ .code = "function foo(t: TemplateStringsArray, a: number) {} declare const arg: any; foo`${arg}`;" },
+        },
+    });
+}
+
 test "no-unsafe-argument" {
     try RuleTester.run(.{
         .rule = "no-unsafe-argument",

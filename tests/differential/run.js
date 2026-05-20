@@ -910,7 +910,16 @@ if (fs.existsSync(ESLINT_ROOT)) {
     // they extend (different messageIds, broader/narrower semantics, TS-only
     // syntax handling).  Only auto-route ts-eslint → core native when the
     // semantics provably match.
-    const TS_AUTOROUTE_ALLOWLIST = new Set();
+    // Type-aware unsafe-* rules: our native versions have the bare names
+    // (no-unsafe-assignment etc.) registered under @typescript-eslint/* tests.
+    // Auto-route to the native impl so the corpus exercises our checker.
+    const TS_AUTOROUTE_ALLOWLIST = new Set([
+      "no-unsafe-assignment",
+      "no-unsafe-call",
+      "no-unsafe-member-access",
+      "no-unsafe-return",
+      "no-unsafe-argument",
+    ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
         const core = ruleName.slice("@typescript-eslint/".length);

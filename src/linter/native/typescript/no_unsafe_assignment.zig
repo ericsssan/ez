@@ -88,6 +88,9 @@ fn reportIfUnsafe(
         // already opting into anyness on the LHS; suppress to match TSe.
         return;
     }
+    // `unknown` (and unknown-flavored composites) are the safe sink for
+    // any-typed values; typescript-eslint suppresses these.
+    if (ctx.typeIdContainsUnknown(lhs_ty)) return;
     if (!ctx.typeNodeContainsAny(rhs)) return;
     if (rhsIsExplicitNonAnyCast(rhs, ctx)) return;
     ctx.reportWithMessageId(decl_node, "anyAssignment");

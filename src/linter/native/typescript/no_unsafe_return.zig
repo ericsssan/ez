@@ -92,6 +92,7 @@ fn reportIfUnsafeReturn(
     }
     const declared = ctx.resolveTypeAnnotationNode(ty_node);
     if (ctx.typeIdIsAny(declared)) return; // explicit `: any` opt-in
+    if (ctx.typeIdContainsUnknown(declared)) return; // unknown is safe target for any
     if (declaredIsVoid(ty_node, ctx)) return; // returning to void allowed
     if (!ctx.typeNodeContainsAny(ret_value)) return;
     if (rhsIsExplicitNonAnyCast(ret_value, ctx)) return;
