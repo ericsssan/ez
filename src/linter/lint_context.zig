@@ -1732,9 +1732,10 @@ pub const LintContext = struct {
         if (!std.mem.eql(u8, syms.getName(sym_id), "undefined")) return false;
         const range = syms.getRefRange(sym_id);
         const refs = &self.semantic.references;
-        var r = range.start;
-        while (r < range.end) : (r += 1) {
-            const rid = reference_mod.ReferenceId.fromInt(r);
+        // range.start..range.end are positions into semantic.ref_by_sym
+        // (the reordered table indexed by symbol), not direct ref_ids.
+        const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
+        for (sym_refs) |rid| {
             if (refs.getKind(rid).isWrite()) return false;
         }
         // The primary decl must be a `var undefined;` / `let undefined;`
@@ -6107,10 +6108,11 @@ pub const LintContext = struct {
         const syms = &self.semantic.symbols;
         const refs = &self.semantic.references;
         const range = syms.getRefRange(sym_id);
+        // range.start..range.end are positions into semantic.ref_by_sym
+        // (the reordered ref table indexed by symbol), not direct ref_ids.
+        const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
         var has_read = false;
-        var r = range.start;
-        while (r < range.end) : (r += 1) {
-            const rid = reference_mod.ReferenceId.fromInt(r);
+        for (sym_refs) |rid| {
             const k = refs.getKind(rid);
             if (k.isWrite()) return;
             if (k.isRead()) has_read = true;
