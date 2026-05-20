@@ -983,6 +983,43 @@ test "no-unsafe-member-access" {
     });
 }
 
+test "no-unsafe-argument" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-argument",
+        .lang = .ts,
+        .valid = &.{
+            // Param is any → opt-in.
+            "function f(x: any) {} declare const a: any; f(a);",
+            // Arg is well-typed.
+            "function f(x: number) {} f(1);",
+            // No param type → no check.
+            "function f(x) {} declare const a: any; f(a);",
+            // Method call — we can't resolve method params; skip.
+            "declare const o: { m(x: number): void }; declare const a: any; o.m(a);",
+            // Explicit non-any cast.
+            "function f(x: number) {} declare const a: any; f(a as number);",
+            // Extra args beyond params → can't verify; skip.
+            "function f(x: number) {} declare const a: any; f(1, a);",
+        },
+        .invalid = &.{
+            // any → typed param.
+            .{ .code = "function f(x: number) {} declare const a: any; f(a);" },
+            // Arrow IIFE with typed param.
+            .{ .code = "declare const a: any; ((x: number) => x)(a);" },
+            // const f = function(...): typed param.
+            .{ .code = "const f = function(x: number) {}; declare const a: any; f(a);" },
+            // const f = arrow with typed param.
+            .{ .code = "const f = (x: number) => x; declare const a: any; f(a);" },
+            // Rest param: rest element is number, passing any.
+            .{ .code = "function f(...xs: number[]) {} declare const a: any; f(1, a);" },
+            // Multiple args, second one is unsafe.
+            .{ .code = "function f(x: string, y: number) {} declare const a: any; f('s', a);" },
+            // `as any` is still unsafe.
+            .{ .code = "function f(x: number) {} f(1 as any);" },
+        },
+    });
+}
+
 test "no-unsafe-return" {
     try RuleTester.run(.{
         .rule = "no-unsafe-return",
