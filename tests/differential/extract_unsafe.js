@@ -158,9 +158,6 @@ for (const rule of RULES) {
         tsconfigRootDir: path.join(__dirname, "..", "fixtures", "extracted"),
       },
       output,
-      // Without a TS oracle we don't know the exact column/messageId.
-      // For invalid cases, the differential will still check we fire >=1
-      // diagnostic on the right rule.
       declaredErrors: kind === "invalid"
         ? (Array.isArray(errors) ? errors.map((e) => ({
             line: e.line ?? null,
@@ -171,8 +168,13 @@ for (const rule of RULES) {
             data: e.data ?? null,
           })) : [{ messageId: null, line: null }])
         : [],
+      // Without explicit line numbers we leave oracleLines empty; the
+      // differential then treats native fires as FPs even when they're
+      // actually TPs that beat the runner.  Live with the imperfect
+      // metric — derivation heuristics over-declared errors that
+      // require type service (e.g. Function-subtype detection).
       oracleLines: kind === "invalid"
-        ? (Array.isArray(errors) ? errors.map((e) => e.line ?? null).filter(Boolean) : [])
+        ? (Array.isArray(errors) ? errors.map((e) => e.line ?? null).filter((l) => typeof l === "number") : [])
         : [],
       oracleFixes: null,
       code,
