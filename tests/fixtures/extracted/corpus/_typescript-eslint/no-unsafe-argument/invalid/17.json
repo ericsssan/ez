@@ -1,0 +1,50 @@
+{
+  "rule": "@typescript-eslint/no-unsafe-argument",
+  "kind": "invalid",
+  "index": 17,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "column": 15,
+      "data": {
+        "receiver": "`number`",
+        "sender": "`any`"
+      },
+      "endColumn": 18,
+      "line": 9,
+      "messageId": "unsafeArgument"
+    },
+    {
+      "column": 27,
+      "data": {
+        "receiver": "`string`",
+        "sender": "`any`"
+      },
+      "endColumn": 30,
+      "line": 9,
+      "messageId": "unsafeArgument"
+    }
+  ],
+  "oracleLines": [
+    9,
+    9
+  ],
+  "oracleFixes": null
+}
