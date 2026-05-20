@@ -1,0 +1,330 @@
+// Type representation for the Ez TS type checker.
+//
+// Design constraints:
+//   * Types live in a TypeStore arena (no individual frees).
+//   * TypeId is a u32 index; .none is the sentinel for "not yet computed".
+//   * Singletons for the common scalar types live at fixed slots [0..N) so
+//     hot-paths can compare TypeIds directly without a flag dispatch.
+//   * Composite types (union, intersection, object, function, array, tuple,
+//     reference) carry payload slices stored in side-arrays so the base
+//     struct stays small and uniform.
+
+const std = @import("std");
+const ast = @import("../parser/ast.zig");
+
+pub const TypeId = enum(u32) {
+    none = std.math.maxInt(u32),
+    _,
+
+    pub fn toInt(self: TypeId) u32 {
+        return @intFromEnum(self);
+    }
+    pub fn fromInt(i: u32) TypeId {
+        return @enumFromInt(i);
+    }
+    pub fn eq(a: TypeId, b: TypeId) bool {
+        return @intFromEnum(a) == @intFromEnum(b);
+    }
+};
+
+pub const TypeKind = enum(u8) {
+    // ── scalars (every instance points at the singleton slot) ──
+    any,
+    unknown,
+    never,
+    null_t,
+    undefined_t,
+    void_t,
+    number,
+    string,
+    boolean,
+    bigint,
+    symbol,
+    object_keyword, // the bare `object` keyword (non-primitive)
+
+    // ── literals ───────────────────────────────────────────
+    string_literal,
+    number_literal,
+    bigint_literal,
+    boolean_literal,
+
+    // ── composite ──────────────────────────────────────────
+    union_t,
+    intersection_t,
+    /// Anonymous object type — `{ a: number; b: string }`.  Properties live
+    /// in `object_props` at [extra_start .. extra_end).
+    object_t,
+    /// Function/method/constructor — signatures in `signatures` at
+    /// [extra_start .. extra_end).
+    function_t,
+    /// Array<T> / T[].  extra_start = element TypeId (single slot).
+    array_t,
+    /// readonly T[] / ReadonlyArray<T>.  extra_start = element TypeId.
+    readonly_array_t,
+    /// [A, B, C].  Element TypeIds at [extra_start .. extra_end).
+    tuple_t,
+    /// Named reference: Foo, Foo<T>, etc.  `name` holds the textual name,
+    /// type args at [extra_start .. extra_end).  Used pre-resolution and
+    /// for type-parameter references that we can't resolve fully.
+    type_ref,
+    /// Type parameter binding (T inside `function<T>(...)`).
+    type_param,
+};
+
+/// Side-array of TypeIds — used by union/intersection/tuple/function args.
+pub const TypeIdList = struct {
+    start: u32,
+    end: u32,
+
+    pub const empty: TypeIdList = .{ .start = 0, .end = 0 };
+
+    pub fn len(self: TypeIdList) u32 {
+        return self.end - self.start;
+    }
+};
+
+pub const ObjectProp = struct {
+    name: []const u8,
+    type_id: TypeId,
+    optional: bool = false,
+    readonly: bool = false,
+};
+
+pub const Signature = struct {
+    params_start: u32, // into signature_params (TypeId slice)
+    params_end: u32,
+    return_type: TypeId,
+    is_async: bool = false,
+    is_generator: bool = false,
+};
+
+pub const Type = struct {
+    kind: TypeKind,
+    /// Tagged extra:
+    ///   string_literal/number_literal/bigint_literal/boolean_literal → literal_value
+    ///   union/intersection/tuple/function → list_data
+    ///   object_t → object_props list
+    ///   array_t/readonly_array_t → list_data.start = element TypeId
+    ///   type_ref/type_param → name + type_args
+    literal_value: LiteralValue = .{ .none = {} },
+    list_data: TypeIdList = .empty,
+    object_props: ObjectPropList = ObjectPropList.empty,
+    signatures: SignatureList = SignatureList.empty,
+    name: []const u8 = "",
+};
+
+pub const LiteralValue = union(enum) {
+    none: void,
+    string: []const u8,
+    number: f64,
+    bigint: []const u8,
+    boolean: bool,
+};
+
+pub const ObjectPropList = struct {
+    start: u32,
+    end: u32,
+    pub const empty: ObjectPropList = .{ .start = 0, .end = 0 };
+    pub fn len(self: ObjectPropList) u32 {
+        return self.end - self.start;
+    }
+};
+
+pub const SignatureList = struct {
+    start: u32,
+    end: u32,
+    pub const empty: SignatureList = .{ .start = 0, .end = 0 };
+    pub fn len(self: SignatureList) u32 {
+        return self.end - self.start;
+    }
+};
+
+// ── Singleton slots (must match the order in TypeStore.init) ──
+pub const ID_ANY: TypeId = @enumFromInt(0);
+pub const ID_UNKNOWN: TypeId = @enumFromInt(1);
+pub const ID_NEVER: TypeId = @enumFromInt(2);
+pub const ID_NULL: TypeId = @enumFromInt(3);
+pub const ID_UNDEFINED: TypeId = @enumFromInt(4);
+pub const ID_VOID: TypeId = @enumFromInt(5);
+pub const ID_NUMBER: TypeId = @enumFromInt(6);
+pub const ID_STRING: TypeId = @enumFromInt(7);
+pub const ID_BOOLEAN: TypeId = @enumFromInt(8);
+pub const ID_BIGINT: TypeId = @enumFromInt(9);
+pub const ID_SYMBOL: TypeId = @enumFromInt(10);
+pub const ID_OBJECT_KW: TypeId = @enumFromInt(11);
+
+pub const SINGLETON_COUNT: u32 = 12;
+
+pub const TypeStore = struct {
+    gpa: std.mem.Allocator,
+    types: std.ArrayList(Type) = .empty,
+    /// Backing storage for TypeIdList payloads (union/intersection/tuple).
+    type_id_pool: std.ArrayList(TypeId) = .empty,
+    /// Backing storage for object_props.
+    object_prop_pool: std.ArrayList(ObjectProp) = .empty,
+    /// Backing storage for signature_params (TypeIds packed).
+    signature_pool: std.ArrayList(Signature) = .empty,
+    signature_param_pool: std.ArrayList(TypeId) = .empty,
+
+    pub fn init(gpa: std.mem.Allocator) !TypeStore {
+        var self: TypeStore = .{ .gpa = gpa };
+        try self.types.ensureTotalCapacity(gpa, SINGLETON_COUNT);
+        // Order MUST match the ID_* constants above.
+        try self.types.append(gpa, .{ .kind = .any });
+        try self.types.append(gpa, .{ .kind = .unknown });
+        try self.types.append(gpa, .{ .kind = .never });
+        try self.types.append(gpa, .{ .kind = .null_t });
+        try self.types.append(gpa, .{ .kind = .undefined_t });
+        try self.types.append(gpa, .{ .kind = .void_t });
+        try self.types.append(gpa, .{ .kind = .number });
+        try self.types.append(gpa, .{ .kind = .string });
+        try self.types.append(gpa, .{ .kind = .boolean });
+        try self.types.append(gpa, .{ .kind = .bigint });
+        try self.types.append(gpa, .{ .kind = .symbol });
+        try self.types.append(gpa, .{ .kind = .object_keyword });
+        return self;
+    }
+
+    pub fn deinit(self: *TypeStore) void {
+        self.types.deinit(self.gpa);
+        self.type_id_pool.deinit(self.gpa);
+        self.object_prop_pool.deinit(self.gpa);
+        self.signature_pool.deinit(self.gpa);
+        self.signature_param_pool.deinit(self.gpa);
+    }
+
+    pub inline fn get(self: *const TypeStore, id: TypeId) *const Type {
+        return &self.types.items[id.toInt()];
+    }
+
+    pub fn add(self: *TypeStore, ty: Type) !TypeId {
+        const id: TypeId = .fromInt(@intCast(self.types.items.len));
+        try self.types.append(self.gpa, ty);
+        return id;
+    }
+
+    /// Append the given TypeIds to the pool and return a list pointing at them.
+    pub fn appendTypeIds(self: *TypeStore, ids: []const TypeId) !TypeIdList {
+        const start: u32 = @intCast(self.type_id_pool.items.len);
+        try self.type_id_pool.appendSlice(self.gpa, ids);
+        const end: u32 = @intCast(self.type_id_pool.items.len);
+        return .{ .start = start, .end = end };
+    }
+
+    pub fn idsOf(self: *const TypeStore, list: TypeIdList) []const TypeId {
+        return self.type_id_pool.items[list.start..list.end];
+    }
+
+    pub fn appendObjectProps(self: *TypeStore, props: []const ObjectProp) !ObjectPropList {
+        const start: u32 = @intCast(self.object_prop_pool.items.len);
+        try self.object_prop_pool.appendSlice(self.gpa, props);
+        const end: u32 = @intCast(self.object_prop_pool.items.len);
+        return .{ .start = start, .end = end };
+    }
+
+    pub fn propsOf(self: *const TypeStore, list: ObjectPropList) []const ObjectProp {
+        return self.object_prop_pool.items[list.start..list.end];
+    }
+
+    // ── Convenience constructors ──────────────────────────
+
+    pub fn unionOf(self: *TypeStore, members: []const TypeId) !TypeId {
+        // Flatten + dedup (cheap: most unions are small).
+        var buf = std.ArrayList(TypeId).empty;
+        defer buf.deinit(self.gpa);
+        for (members) |m| {
+            const t = self.get(m);
+            if (t.kind == .union_t) {
+                for (self.idsOf(t.list_data)) |inner| {
+                    try addUnique(self.gpa, &buf, inner);
+                }
+            } else {
+                try addUnique(self.gpa, &buf, m);
+            }
+        }
+        if (buf.items.len == 0) return ID_NEVER;
+        if (buf.items.len == 1) return buf.items[0];
+        // any-in-union collapses to any (TS semantics).
+        for (buf.items) |m| if (m.eq(ID_ANY)) return ID_ANY;
+        const list = try self.appendTypeIds(buf.items);
+        return try self.add(.{ .kind = .union_t, .list_data = list });
+    }
+
+    pub fn arrayOf(self: *TypeStore, elem: TypeId) !TypeId {
+        const list = try self.appendTypeIds(&.{elem});
+        return try self.add(.{ .kind = .array_t, .list_data = list });
+    }
+
+    pub fn typeRef(self: *TypeStore, name: []const u8, args: []const TypeId) !TypeId {
+        const list = if (args.len == 0) TypeIdList.empty else try self.appendTypeIds(args);
+        return try self.add(.{ .kind = .type_ref, .name = name, .list_data = list });
+    }
+
+    fn addUnique(gpa: std.mem.Allocator, buf: *std.ArrayList(TypeId), id: TypeId) !void {
+        for (buf.items) |x| if (x.eq(id)) return;
+        try buf.append(gpa, id);
+    }
+};
+
+// ── Anyness — the core query for no-unsafe-* rules ──────────
+
+/// Returns true when the type is `any` or contains `any` anywhere reachable
+/// without a barrier (function return type counts; opaque type ref payload
+/// does not — we don't follow refs here).
+pub fn isAny(store: *const TypeStore, id: TypeId) bool {
+    if (id.eq(ID_ANY)) return true;
+    const t = store.get(id);
+    return t.kind == .any;
+}
+
+/// True when the type has any `any` reachable in the local shape: unions
+/// where one member is any, intersections (any & T = any).  Used by
+/// no-unsafe-assignment to flag `const x: { a: number } = { a: anyVal }`
+/// when the source has any in the corresponding slot.
+pub fn containsAny(store: *const TypeStore, id: TypeId) bool {
+    if (isAny(store, id)) return true;
+    const t = store.get(id);
+    return switch (t.kind) {
+        .union_t, .intersection_t => for (store.idsOf(t.list_data)) |m| {
+            if (containsAny(store, m)) break true;
+        } else false,
+        // For arrays/tuples we DO peek one level: `any[]` is unsafe.
+        .array_t, .readonly_array_t => for (store.idsOf(t.list_data)) |m| {
+            if (containsAny(store, m)) break true;
+        } else false,
+        .tuple_t => for (store.idsOf(t.list_data)) |m| {
+            if (containsAny(store, m)) break true;
+        } else false,
+        else => false,
+    };
+}
+
+test "TypeStore singletons" {
+    var store = try TypeStore.init(std.testing.allocator);
+    defer store.deinit();
+    try std.testing.expect(isAny(&store, ID_ANY));
+    try std.testing.expect(!isAny(&store, ID_NUMBER));
+    try std.testing.expect(!containsAny(&store, ID_STRING));
+}
+
+test "TypeStore union flattens and collapses any" {
+    var store = try TypeStore.init(std.testing.allocator);
+    defer store.deinit();
+    const num_or_str = try store.unionOf(&.{ ID_NUMBER, ID_STRING });
+    try std.testing.expect(!containsAny(&store, num_or_str));
+    const with_any = try store.unionOf(&.{ ID_NUMBER, ID_ANY });
+    try std.testing.expect(with_any.eq(ID_ANY));
+}
+
+test "TypeStore array of any flagged by containsAny" {
+    var store = try TypeStore.init(std.testing.allocator);
+    defer store.deinit();
+    const arr_any = try store.arrayOf(ID_ANY);
+    try std.testing.expect(!isAny(&store, arr_any));
+    try std.testing.expect(containsAny(&store, arr_any));
+}
+
+// Keep std referenced when only used in tests.
+comptime {
+    _ = ast;
+}

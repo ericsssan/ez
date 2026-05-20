@@ -9,6 +9,9 @@ const ExtraIndex = ast_mod.ExtraIndex;
 const SubRange = ast_mod.SubRange;
 const regex_parser = @import("regex_parser.zig");
 const unicode_marks = @import("../parser/unicode_marks.zig");
+const checker_mod = @import("../checker/root.zig");
+const Checker = checker_mod.Checker;
+const tymod = checker_mod.types;
 const Span = parser.span.Span;
 const Location = parser.span.Location;
 const Severity = parser.diagnostic.Severity;
@@ -177,6 +180,14 @@ pub const LintContext = struct {
     /// Inline `/* global <name>[:off|readonly|...] */` directives parsed from source.
     /// Populated once by the linter before rules run; empty when no directives exist.
     inline_globals: []const InlineGlobalEntry = &.{},
+    /// Lazily-built TS type checker storage.  Pointer to a slot owned by
+    /// the linter; on first call to a type-aware helper we allocate the
+    /// Checker into that slot, and subsequent helpers reuse it.  Null when
+    /// the caller (e.g. unit tests that don't construct via lint()) does
+    /// not provide type-checker storage; type-aware helpers degrade to
+    /// "everything is any" in that case.
+    checker_storage: ?*?Checker = null,
+
     /// Per-node minimum/maximum main_token index over the node's full subtree.
     /// Used by `nodeSpan` so a node's diagnostic span covers from the first
     /// child token (`node_min_toks[i]`) to the last child token+len
@@ -334,6 +345,64 @@ pub const LintContext = struct {
             i += 1;
         }
         return false;
+    }
+
+    // ── Type-aware queries (TS rules) ────────────────────────
+    //
+    // Lazy-initialize the Checker on first call.  Callers that don't have
+    // type-checker storage wired (legacy unit tests) get a conservative
+    // "all-any" view: typeIsAny returns true and typeContainsAny returns
+    // true, so safety-flavored rules over-fire rather than miss — but
+    // rules can guard by checking hasTypeChecker first.
+
+    pub fn hasTypeChecker(self: *const LintContext) bool {
+        return self.checker_storage != null;
+    }
+
+    fn ensureChecker(self: *const LintContext) ?*Checker {
+        const storage = self.checker_storage orelse return null;
+        if (storage.* == null) {
+            storage.* = Checker.init(self.allocator, self.ast, self.semantic) catch return null;
+        }
+        return &(storage.*.?);
+    }
+
+    /// Infer the TypeId of an expression node.  Returns ID_ANY when no
+    /// checker storage is configured.
+    pub fn typeOfNode(self: *const LintContext, n: NodeIndex) tymod.TypeId {
+        const c = self.ensureChecker() orelse return tymod.ID_ANY;
+        return c.typeOf(n);
+    }
+
+    pub fn typeNodeIsAny(self: *const LintContext, n: NodeIndex) bool {
+        const c = self.ensureChecker() orelse return true;
+        return c.typeIsAny(n);
+    }
+
+    pub fn typeNodeContainsAny(self: *const LintContext, n: NodeIndex) bool {
+        const c = self.ensureChecker() orelse return true;
+        return c.typeContainsAny(n);
+    }
+
+    /// Resolve a TS type-position AST node (ts_type_reference, etc.) to
+    /// a TypeId.  Used by no-unsafe-* rules to look at the LHS declared
+    /// type via the binding's annotation node directly.
+    pub fn resolveTypeAnnotationNode(self: *const LintContext, ty_node: NodeIndex) tymod.TypeId {
+        const c = self.ensureChecker() orelse return tymod.ID_ANY;
+        return c.resolveTypeNode(ty_node);
+    }
+
+    /// True when the type id reaches `any` either directly or through a
+    /// composite (union/intersection/array/tuple).
+    pub fn typeIdContainsAny(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return true;
+        return tymod.containsAny(&c.store, id);
+    }
+
+    /// True when the type id IS exactly `any`.
+    pub fn typeIdIsAny(self: *const LintContext, id: tymod.TypeId) bool {
+        _ = self;
+        return id.eq(tymod.ID_ANY);
     }
 
     /// Parent of `n`, skipping intermediate grouping_expr wrappers and TS

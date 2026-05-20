@@ -271,6 +271,11 @@ pub fn lint(
         }
     }
 
+    // Lazily-initialized TS type checker.  Only allocated when a
+    // type-aware rule (no-unsafe-*, etc.) actually queries types.
+    var checker_storage: ?@import("../checker/root.zig").Checker = null;
+    defer if (checker_storage) |*c| c.deinit();
+
     var ctx = LintContext{
         .ast = tree,
         .semantic = semantic,
@@ -282,6 +287,7 @@ pub fn lint(
         .inline_globals = inline_globals,
         .node_max_toks = node_max_toks,
         .node_min_toks = node_min_toks,
+        .checker_storage = &checker_storage,
     };
 
     // ── Phase 1: AST node walk (CSR dispatch) ─────────────────
@@ -452,6 +458,9 @@ pub fn lintRulesByName(
         }
     }
 
+    var checker_storage: ?@import("../checker/root.zig").Checker = null;
+    defer if (checker_storage) |*c| c.deinit();
+
     var ctx = LintContext{
         .ast = tree,
         .semantic = semantic,
@@ -463,6 +472,7 @@ pub fn lintRulesByName(
         .inline_globals = inline_globals,
         .node_max_toks = node_max_toks,
         .node_min_toks = node_min_toks,
+        .checker_storage = &checker_storage,
     };
 
     // Phase 1: node walk via CSR dispatch.

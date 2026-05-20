@@ -19,6 +19,9 @@ pub const parent_builder = @import("parser/root.zig").parent_builder;
 pub const scope_events = @import("parser/root.zig").scope_events;
 pub const event_resolver = @import("parser/root.zig").event_resolver;
 
+// ── Checker module ────────────────────────────────────────
+pub const checker = @import("checker/root.zig");
+
 // ── Linter module ─────────────────────────────────────────
 pub const lint_context = @import("linter/root.zig").lint_context;
 pub const linter = @import("linter/root.zig").linter;
@@ -42,6 +45,7 @@ pub const napi = @import("cli/napi.zig");
 
 test {
     _ = @import("parser/root.zig");
+    _ = @import("checker/root.zig");
     _ = @import("linter/root.zig");
     _ = @import("cli/file_discovery.zig");
     _ = @import("cli/parallel.zig");

@@ -930,6 +930,32 @@ test "no-extra-non-null-assertion" {
     });
 }
 
+test "no-unsafe-assignment" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-assignment",
+        .lang = .ts,
+        .valid = &.{
+            // Non-any RHS into typed LHS.
+            "const x: number = 1;",
+            "const x: string = 'hello';",
+            // No annotation → no type-aware check.
+            "const x = anything;",
+            // Explicit `: any` on the LHS opts in.
+            "const x: any = 1;",
+            // Non-any cast on RHS is the user opting in.
+            "declare const a: any; const x: number = a as number;",
+        },
+        .invalid = &.{
+            // any flowing into typed slot.
+            .{ .code = "declare const a: any; const x: number = a;" },
+            // any[] flowing into number[].
+            .{ .code = "declare const a: any[]; const x: number[] = a;" },
+            // any RHS via `as any`.
+            .{ .code = "const x: number = (1 as any);" },
+        },
+    });
+}
+
 test "prefer-namespace-keyword" {
     try RuleTester.run(.{
         .rule = "prefer-namespace-keyword",
