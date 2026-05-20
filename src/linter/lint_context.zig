@@ -4815,9 +4815,11 @@ pub const LintContext = struct {
             const flags_raw = self.sourceText(flags_arg);
             if (flags_raw.len < 2) return;
             const flags_body = flags_raw[1 .. flags_raw.len - 1];
-            // u / v flags can change how `{` and bracket classes parse —
-            // bail rather than reproduce ESLint's regex-parser fallout.
-            if (std.mem.indexOfAny(u8, flags_body, "uv") != null) return;
+            // u flag changes `{` quantifier strictness in ways that can
+            // make our literal-prefix tracker wrong; bail there.  v flag
+            // only changes intra-class semantics (nested classes, set
+            // notation) — outside-class space tracking still works.
+            if (std.mem.indexOfScalar(u8, flags_body, 'u') != null) return;
         }
         // Raw string source text including surrounding quotes.
         const raw = self.sourceText(first_arg);
@@ -7845,6 +7847,17 @@ fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: [
             if (class_depth > 0) class_depth -= 1;
             i += 1;
             continue;
+        }
+        // Reserved double-punctuators (`&&`, `--`, `!!`, `##`, …) inside
+        // a character class are forbidden under u flag (without v).  The
+        // v flag gives these characters set-notation meaning; u rejects.
+        if (class_depth > 0 and has_u and !has_v and i + 1 < body.len) {
+            const cn = body[i + 1];
+            if (cn == c) switch (c) {
+                '&', '!', '#', '$', '%', '*', '+', ',', '.', ':', ';',
+                '<', '=', '>', '?', '@', '^', '`', '~', '-' => return true,
+                else => {},
+            };
         }
         if (class_depth > 0) { i += 1; continue; }
         // u/v flag: an unescaped `{` outside a class must form a valid

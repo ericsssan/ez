@@ -1008,8 +1008,10 @@ fn validateRegexVFlagClass(p: *Parser, body: []const u8, i_ptr: *usize) Error!vo
                 }
             }
             i += 2;
-            // For \p{...}, \P{...}, \q{...}, \k<...> skip past the brace/angle body.
-            if ((e == 'p' or e == 'P' or e == 'q') and i < body.len and body[i] == '{') {
+            // For \p{...}, \P{...}, \q{...}, \u{...} skip past the brace
+            // body — these wrap a name / codepoint hex and the inner `{`/`}`
+            // are NOT class-syntax punctuation.  Same for \k<name>.
+            if ((e == 'p' or e == 'P' or e == 'q' or e == 'u') and i < body.len and body[i] == '{') {
                 i += 1;
                 while (i < body.len and body[i] != '}') : (i += 1) {}
                 if (i < body.len) i += 1;
