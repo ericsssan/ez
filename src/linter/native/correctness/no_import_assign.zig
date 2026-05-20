@@ -53,7 +53,11 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // Destructuring with defaults can yield two write references that share
         // their identifier node ({Foo = 0} pattern); suppress the duplicate.
         if (id_node == prev_reported_node) continue;
-        ctx.reportWithMessageId(id_node, "readonly");
+        const report_node = ctx.writeRefReportNode(id_node);
+        const __name = ctx.tokenText(ctx.nodeMainToken(id_node));
+        ctx.reportWithMessageIdAndData(report_node, "readonly", &[_]@import("../../lint_context.zig").MessageDataEntry{
+            .{ .key = "name", .val = __name },
+        });
         prev_reported_node = id_node;
     }
 }

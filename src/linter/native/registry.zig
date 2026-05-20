@@ -316,7 +316,7 @@ pub const all_rules = .{
 
     no_func_assign,
     no_invalid_regexp,
-    // no_import_assign, // native 57/116 vs runner 116 — endColumn + 34 FP; needs report-at-write-expr fix
+    no_import_assign,
     no_self_assign,
     // no_self_compare, // hand-written — disabled
     // no_unsafe_optional_chaining, // runner >> native (runner 187, native 155, gap 32); fall back to JS runner

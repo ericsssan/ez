@@ -1227,6 +1227,7 @@ function emit(rule) {
     const merged = new Set();
     let hasNameData = false;
     let messageId = null;
+    let reportAtWriteExpr = false;
     for (const h of rule.handlers) {
       if (h.kind !== "for-each-write-ref-of-binding") {
         throw new Error(`unsupported mixed handler kind in write-ref-binding rule: ${h.kind}`);
@@ -1234,8 +1235,9 @@ function emit(rule) {
       for (const b of h.bindingKinds) merged.add(b);
       hasNameData = hasNameData || !!h.hasNameData;
       messageId = messageId ?? h.messageId;
+      reportAtWriteExpr = reportAtWriteExpr || !!h.reportAtWriteExpr;
     }
-    for (const line of emitWriteRefOfBindingHandler({ bindingKinds: [...merged], messageId, hasNameData }, ctx))
+    for (const line of emitWriteRefOfBindingHandler({ bindingKinds: [...merged], messageId, hasNameData, reportAtWriteExpr }, ctx))
       out.push(line);
   } else if (hasNodeHandler) {
     // for-each-node: emit run(<nodeBinding>, ctx) with each handler's body
@@ -1500,7 +1502,19 @@ function emitWriteRefOfBindingHandler(handler, _ctx) {
   lines.push(`        // their identifier node ({Foo = 0} pattern); suppress the duplicate.`);
   lines.push(`        if (id_node == prev_reported_node) continue;`);
   if (handler.messageId) {
-    lines.push(`        ctx.reportWithMessageId(id_node, "${zigStr(handler.messageId)}");`);
+    if (handler.reportAtWriteExpr) {
+      // no-import-assign style: report at the enclosing write expression
+      // (AssignmentExpression / UpdateExpression / ForIn /…) so the span
+      // covers the whole mutation, and pass `data: { name }` for the
+      // "'{{name}}' is read-only." template.
+      lines.push(`        const report_node = ctx.writeRefReportNode(id_node);`);
+      lines.push(`        const __name = ctx.tokenText(ctx.nodeMainToken(id_node));`);
+      lines.push(`        ctx.reportWithMessageIdAndData(report_node, "${zigStr(handler.messageId)}", &[_]@import("../../lint_context.zig").MessageDataEntry{`);
+      lines.push(`            .{ .key = "name", .val = __name },`);
+      lines.push(`        });`);
+    } else {
+      lines.push(`        ctx.reportWithMessageId(id_node, "${zigStr(handler.messageId)}");`);
+    }
   } else {
     lines.push(`        ctx.report(id_node);`);
   }

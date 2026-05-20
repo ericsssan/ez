@@ -3059,6 +3059,35 @@ pub const LintContext = struct {
         return .none;
     }
 
+    /// Walk parents from `id` upward to find the enclosing write-expression
+    /// node — AssignmentExpression, UpdateExpression, UnaryExpression (for
+    /// `delete X`), CallExpression (for mutation helpers like Object.assign),
+    /// ForInStatement, or ForOfStatement.  Mirrors no-import-assign's
+    /// `getWriteNode(idNode)` — diagnostic span should cover the whole
+    /// mutating expression, not just the bound identifier.
+    /// Returns `id` itself if no such ancestor is found.
+    pub fn writeRefReportNode(self: *const LintContext, id: NodeIndex) NodeIndex {
+        if (id == .none) return id;
+        var cur = self.parentOf(id);
+        while (cur != .none) {
+            switch (self.ast.nodeTag(cur)) {
+                .assign, .add_assign, .sub_assign, .mul_assign, .div_assign,
+                .mod_assign, .exp_assign, .and_assign, .or_assign, .xor_assign,
+                .shl_assign, .shr_assign, .ushr_assign,
+                .logical_and_assign, .logical_or_assign, .nullish_assign,
+                .prefix_inc, .postfix_inc, .prefix_dec, .postfix_dec,
+                .unary_plus, .unary_minus, .bitwise_not, .logical_not,
+                .typeof_expr, .void_expr, .delete_expr,
+                .call_expr, .optional_call_expr,
+                .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
+                => return cur,
+                else => {},
+            }
+            cur = self.parentOf(cur);
+        }
+        return id;
+    }
+
     /// Body of an arrow function node (`(params) => body`).  Returns the
     /// body NodeIndex — block_stmt for braced arrows, expression for
     /// concise-body arrows.  `.none` for non-arrow inputs.

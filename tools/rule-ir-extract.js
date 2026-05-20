@@ -1188,6 +1188,7 @@ function extractNoImportAssignHandler(rawHandler, _stmts, { sourceFile } = {}) {
         bindingKinds: ["import_binding"],
         messageId: "readonly",
         hasNameData: true,
+        reportAtWriteExpr: true,
       },
     };
   }
