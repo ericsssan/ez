@@ -60,10 +60,17 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         ctx.reportWithMessageId(node, msg_arr);
         return;
     }
-    if (!isFloatingPromise(expr, ctx)) return;
+    const useless = hasUselessRejectionHandler(expr, ctx);
+    if (!isFloatingPromise(expr, ctx)) {
+        // Allow-list skips the regular floating promise check — but a
+        // .catch(non-callable) or .then(_, non-callable) at the chain
+        // tail still indicates a silently-swallowed rejection.  TSe
+        // fires for these regardless of allow-list.
+        if (!useless) return;
+        if (!returnsPromise(expr, ctx)) return;
+    }
     if (precededByAwaitKeyword(node, ctx)) return;
     if (optionIgnoreIIFE(ctx) and isImmediatelyInvokedFn(expr, ctx)) return;
-    const useless = hasUselessRejectionHandler(expr, ctx);
     const msg = if (useless)
         (if (ignore_void) "floatingUselessRejectionHandlerVoid" else "floatingUselessRejectionHandler")
     else
@@ -694,7 +701,13 @@ fn calleeNodeReturnsPromise(callee: NodeIndex, ctx: *const LintContext) bool {
         .arrow_fn => {
             const data = ctx.nodeData(callee);
             const ad = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
-            return returnTypeIsPromise(ad.return_type, ctx);
+            if (returnTypeIsPromise(ad.return_type, ctx)) return true;
+            // Inline-expression body: `() => Promise.reject()`.
+            const body = ad.body;
+            if (body != .none and ctx.nodeTag(body) != .block_stmt) {
+                if (returnsPromise(body, ctx)) return true;
+            }
+            return false;
         },
         .identifier => {
             if (ctx.typeNodeIsPromise(callee)) return true;
