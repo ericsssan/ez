@@ -34,7 +34,7 @@ pub const meta = RuleMeta{
     .lang = .ts_only,
 };
 
-pub const relevant_tags = [_]Node.Tag{ .declarator, .assign };
+pub const relevant_tags = [_]Node.Tag{ .declarator, .assign, .assignment_pattern };
 
 pub const needs_semantic = true;
 
@@ -45,8 +45,39 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     switch (ctx.nodeTag(node)) {
         .declarator => checkDeclarator(node, ctx),
         .assign => checkAssign(node, ctx),
+        .assignment_pattern => checkAssignmentPattern(node, ctx),
         else => {},
     }
+}
+
+/// Function-parameter default-value destructuring:
+///   `function foo([x] = [1] as [any])` — when no arg is passed, the
+///   param's value is `[1] as [any]`, so destructuring `[x]` binds `x`
+///   to `any`.  TSe fires `unsafeArrayPatternFromTuple` /
+///   `unsafeObjectPattern` for these positions.
+///
+/// We trigger on `assignment_pattern` nodes whose binding side (lhs) is
+/// a destructure pattern.  Nested patterns (e.g. an element of an outer
+/// pattern that itself has a default) are already handled by the outer
+/// pattern walk via `peelAssignmentPattern`, so we only act when the
+/// parent is a function-parameter-style context (not another pattern).
+fn checkAssignmentPattern(node: NodeIndex, ctx: *const LintContext) void {
+    const data = ctx.nodeData(node);
+    const pat = data.lhs;
+    const ptag = ctx.nodeTag(pat);
+    if (ptag != .array_pattern and ptag != .object_pattern) return;
+    // Skip when an outer destructure will already walk into this.
+    const parent = ctx.parentOf(node);
+    if (parent != .none) {
+        const ptag2 = ctx.nodeTag(parent);
+        switch (ptag2) {
+            .array_pattern, .object_pattern, .array_literal, .object_literal => return,
+            else => {},
+        }
+    }
+    if (data.rhs == .none) return;
+    const sender_ty = ctx.typeOfNode(data.rhs);
+    checkDestructure(pat, sender_ty, ctx);
 }
 
 fn checkDeclarator(node: NodeIndex, ctx: *const LintContext) void {
