@@ -424,6 +424,21 @@ pub const LintContext = struct {
         return t.kind == .boolean or t.kind == .boolean_literal;
     }
 
+    /// True when the type id is string-like: `string`, string literal
+    /// type, or a union of those.
+    pub fn typeIdIsStringy(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind == .string or t.kind == .string_literal) return true;
+        if (t.kind == .union_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (!self.typeIdIsStringy(m)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
     /// If `id` is a `type_ref`, return its name; otherwise empty.
     pub fn typeIdRefName(self: *const LintContext, id: tymod.TypeId) []const u8 {
         const c = self.ensureChecker() orelse return &.{};
