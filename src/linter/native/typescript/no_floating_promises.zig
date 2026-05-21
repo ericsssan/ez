@@ -1120,6 +1120,51 @@ fn calleeIsPromiseConstructor(new_expr: NodeIndex, ctx: *const LintContext) bool
     // checkThenables:true — `new X()` where X's class body declares a
     // `.then` method counts as Promise-flavored.
     if (optionCheckThenables(ctx) and classHasThenMethod(name, ctx)) return true;
+    // `declare const X: SomeConstructor;` where SomeConstructor extends
+    // PromiseConstructor (transitively).  Walking through identifier →
+    // declared interface name → extends chain catches the
+    // `PromisePolyfill: PromisePolyfillConstructor extends PromiseConstructor`
+    // pattern.
+    if (calleeIdentifierResolvesToPromiseConstructor(callee, ctx)) return true;
+    return false;
+}
+
+fn calleeIdentifierResolvesToPromiseConstructor(ident: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    const ty = ctx.nodeData(bd.rhs).lhs;
+    if (ty == .none or ctx.nodeTag(ty) != .ts_type_reference) return false;
+    const ifname = ctx.tokenText(ctx.nodeMainToken(ty));
+    return interfaceExtendsPromiseConstructor(ifname, ctx);
+}
+
+/// True when `name` is an interface that transitively extends
+/// PromiseConstructor.  One hop only.
+fn interfaceExtendsPromiseConstructor(name: []const u8, ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .ts_interface_decl) continue;
+        const dd = tree.nodeData(ni);
+        const id = tree.extraData(ast.InterfaceData, @intFromEnum(dd.lhs));
+        if (!std.mem.eql(u8, tree.tokenText(id.name), name)) continue;
+        if (id.extends_end <= id.extends_start) return false;
+        const ext_len: u32 = @intCast(tree.extra_data.len);
+        if (id.extends_end > ext_len) return false;
+        for (tree.extra_data[id.extends_start..id.extends_end]) |tok| {
+            const ext_name = tree.tokenText(tok);
+            if (std.mem.eql(u8, ext_name, "PromiseConstructor")) return true;
+            // One-hop transitively.
+            if (interfaceExtendsPromiseConstructor(ext_name, ctx)) return true;
+        }
+        return false;
+    }
     return false;
 }
 
