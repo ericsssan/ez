@@ -27,11 +27,24 @@ const Messages = enum {
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (blk: { const __t = ctx.nodeTag(node); break :blk (__t == .number_literal or __t == .bigint_literal); }) {
-        if (std.mem.startsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), ".")) {
-            ctx.reportWithMessageId(node, "leading");
+        const text = ctx.tokenText(ctx.nodeMainToken(node));
+        if (std.mem.startsWith(u8, text, ".")) {
+            // Fix: prepend "0" — but if the previous source character
+            // is an identifier-tail (e.g. `typeof.2`), insert " 0" so
+            // the merged token sequence still parses.
+            const start = ctx.nodeSpan(node).start;
+            const src = ctx.ast.source;
+            const needs_space = start > 0 and isIdentTailByte(src[start - 1]);
+            const repl: []const u8 = if (needs_space) " 0" else "0";
+            ctx.reportWithFixAndMessageId(node, (.{ .start = start, .end = start }), repl, "leading");
         }
-        if (std.mem.endsWith(u8, ctx.tokenText(ctx.nodeMainToken(node)), ".")) {
+        if (std.mem.endsWith(u8, text, ".")) {
             ctx.reportWithFixAndMessageId(node, (.{ .start = ctx.nodeSpan(node).end,   .end = ctx.nodeSpan(node).end }), "0", "trailing");
         }
     }
+}
+
+fn isIdentTailByte(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+           (c >= '0' and c <= '9') or c == '_' or c == '$';
 }

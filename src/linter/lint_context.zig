@@ -2517,17 +2517,66 @@ pub const LintContext = struct {
     }
 
     /// True when emitting code in front of `node` would merge it with the
-    /// preceding statement under JavaScript ASI rules — i.e., the previous
-    /// non-whitespace character is neither `;` nor `}`.  Used by fix codegen
-    /// for rules that turn a callsite into an array literal (`Array(...)` →
-    /// `[...]`) and need to insert a leading `;` to avoid ambiguity.
+    /// preceding statement under JavaScript ASI rules.  Used by fix codegen
+    /// for rules that turn a callsite into an array literal (`Array(...)`
+    /// → `[...]`) and need to insert a leading `;` to avoid ambiguity.
+    /// Mirrors ESLint's `astUtils.needsPrecedingSemicolon`.
     ///
-    /// Conservative impl: skips ASCII whitespace only.  Inline comments
-    /// before a node are rare in the rules that use this helper, and a false
-    /// "needs semicolon" emits an extra `;` (still valid JS) rather than
-    /// breaking the program.
+    /// The character-level check skips ASCII whitespace and looks at the
+    /// preceding non-whitespace character:
+    ///   * Punctuators `; ( { [ , ? :` and start-of-file → no `;` needed.
+    ///   * `)`: the prev token closes a statement (`if (...)`/`for(...)`/
+    ///     `while(...)`/`with(...)`) → no `;` needed.  Otherwise it
+    ///     closes a call/grouping expression → add `;`.
+    ///   * `}`: the prev token closes a function/class/object expression
+    ///     → add `;`.  A block statement (if/for/while body, plain block)
+    ///     → no `;` needed.
+    ///   * Anything else (identifier, keyword end, number, string) → `;`.
     pub fn needsPrecedingSemicolon(self: *const LintContext, node: NodeIndex) bool {
         if (node == .none) return false;
+        // First, the parent-context check: if `node`'s expression_stmt
+        // parent is itself the BODY of a control-flow statement
+        // (`if (a) Array()` etc), the preceding `)` token belongs to
+        // that statement's header and adding a `;` would change
+        // semantics (the body would become an empty stmt).
+        var p = self.parentOf(node);
+        var expr_stmt: NodeIndex = .none;
+        while (p != .none) : (p = self.parentOf(p)) {
+            const tag = self.nodeTag(p);
+            if (tag == .expression_stmt) {
+                const gp = self.parentOf(p);
+                if (gp == .none) break;
+                switch (self.nodeTag(gp)) {
+                    .if_stmt, .if_else_stmt, .while_stmt, .do_while_stmt,
+                    .for_stmt, .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
+                    .with_stmt, .labeled_stmt => return false,
+                    else => {},
+                }
+                expr_stmt = p;
+                break;
+            }
+            // Stop at function/class boundaries — anything above isn't
+            // in the same statement.
+            switch (tag) {
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+                .arrow_fn, .async_arrow_fn,
+                .class_decl, .class_expr => break,
+                else => {},
+            }
+        }
+        // Prev-sibling check: when the previous statement is a
+        // declaration or a non-expression statement (var/let/const,
+        // function/class/type decl, import, export, return, etc.) the
+        // ASI rules terminate it cleanly regardless of its final
+        // character — no manual `;` needed.  Only an
+        // expression-position predecessor (or none at all) can be
+        // ambiguous with a leading `[...]`.
+        if (expr_stmt != .none) {
+            if (self.prevSiblingAcceptsTrailingArrayLiteral(expr_stmt)) return false;
+        }
+        // Character-level scan: look at the previous non-whitespace
+        // character to decide.  Mirrors ESLint's astUtils.
         const start = self.nodeSpan(node).start;
         if (start == 0) return false;
         const src = self.ast.source;
@@ -2536,9 +2585,197 @@ pub const LintContext = struct {
             i -= 1;
             const c = src[i];
             if (c == ' ' or c == '\t' or c == '\n' or c == '\r') continue;
-            return c != ';' and c != '}';
+            // Skip over block comments: `*/` at i, `/*` somewhere before.
+            if (c == '/' and i > 0 and src[i - 1] == '*') {
+                // Walk back to the matching `/*`.
+                var j: usize = i - 1;
+                while (j > 0) {
+                    j -= 1;
+                    if (src[j] == '*' and j > 0 and src[j - 1] == '/') {
+                        i = j - 1;
+                        break;
+                    }
+                } else {
+                    return false; // unterminated; bail safely
+                }
+                continue;
+            }
+            switch (c) {
+                ';', '(', '{', '[', ',', '?', ':' => return false,
+                ')' => return self.prevParenClosesNonStatement(@intCast(i + 1)),
+                '}' => return self.prevBraceClosesExprBlock(@intCast(i + 1)),
+                '+', '-' => {
+                    // `a++` / `a--`: postfix increment/decrement has a
+                    // restricted production — a LineTerminator between
+                    // it and the next token mandates ASI.  No manual
+                    // `;` needed.
+                    if (i > 0 and src[i - 1] == c) return false;
+                    return true;
+                },
+                else => {
+                    // Identifier-or-keyword end.  Check for statement-
+                    // terminating keywords (return/break/continue/yield/
+                    // throw/debugger) — these have restricted productions
+                    // or are themselves complete statements.  Skip when
+                    // preceded by `.` (the word is a property name).
+                    if (isIdentTail(c)) {
+                        const kw = identStartingAt(src, i + 1);
+                        if (std.mem.eql(u8, kw, "return") or
+                            std.mem.eql(u8, kw, "break") or
+                            std.mem.eql(u8, kw, "continue") or
+                            std.mem.eql(u8, kw, "yield") or
+                            std.mem.eql(u8, kw, "throw") or
+                            std.mem.eql(u8, kw, "debugger"))
+                        {
+                            const kw_start = (i + 1) - kw.len;
+                            if (kw_start == 0 or src[kw_start - 1] != '.') return false;
+                        }
+                    }
+                    return true;
+                },
+            }
         }
         return false;
+    }
+
+    /// At a `)` token-end position, determine whether it closes a node
+    /// that is NOT a statement-like construct.  Used by
+    /// needsPrecedingSemicolon: `;` is needed when the `)` closes
+    /// `f()` / `(expr)` / `function() {}` / `class {}` (expression
+    /// position) but NOT when it closes `if (cond)` / `while (cond)`
+    /// etc (statement headers).
+    fn prevParenClosesNonStatement(self: *const LintContext, end_pos: u32) bool {
+        const owner = self.findNodeEndingAt(end_pos) orelse return true;
+        return switch (self.nodeTag(owner)) {
+            .if_stmt, .if_else_stmt, .while_stmt, .do_while_stmt,
+            .for_stmt, .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
+            .with_stmt => false,
+            else => true,
+        };
+    }
+
+    /// At a `}` token-end position, determine whether it closes a
+    /// function/class/object EXPRESSION rather than a plain block
+    /// statement.  Block statements (if/while bodies, plain blocks)
+    /// terminate cleanly so no `;` is needed.
+    fn prevBraceClosesExprBlock(self: *const LintContext, end_pos: u32) bool {
+        const owner = self.findNodeEndingAt(end_pos) orelse return false;
+        // The `}` may be the closing brace of a block_stmt body — check
+        // its enclosing function/class to see if we're inside a function
+        // expression, class expression, or object literal whose closing
+        // brace lives at the same position.
+        var cur = owner;
+        for (0..3) |_| {
+            switch (self.nodeTag(cur)) {
+                .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+                .class_expr, .object_literal => return true,
+                else => {},
+            }
+            const parent = self.parentOf(cur);
+            if (parent == .none) break;
+            // Only walk up while the parent's span also ends at end_pos.
+            if (self.nodeSpan(parent).end != end_pos) break;
+            cur = parent;
+        }
+        return false;
+    }
+
+    /// Linear scan of nodes whose span ends exactly at `pos`.  Returns
+    /// the innermost (smallest-span) match.  Used by the preceding-
+    /// semicolon helpers to identify which node owns a `)` / `}` token.
+    /// Looks at the previous sibling of `expr_stmt` (within its
+    /// enclosing block/program).  Returns true when the predecessor
+    /// is a declaration or non-expression statement that ASI handles
+    /// cleanly — meaning a following `[...]` cannot bind to it.  Most
+    /// expression statements still need the manual `;` to avoid
+    /// `f() \n []` → `f()[]` misparse.
+    fn prevSiblingAcceptsTrailingArrayLiteral(self: *const LintContext, expr_stmt: NodeIndex) bool {
+        const parent = self.parentOf(expr_stmt);
+        if (parent == .none) return false;
+        const ptag = self.nodeTag(parent);
+        if (ptag != .block_stmt and ptag != .root and ptag != .static_block) return false;
+        // Find this stmt's position in the parent's body and look at
+        // the predecessor.  block_stmt/root/static_block store the
+        // child-stmt range as direct start/end indices in data.lhs/rhs
+        // (despite the ast.zig comments suggesting an extra index).
+        const pd = self.nodeData(parent);
+        const ext_len: u32 = @intCast(self.ast.extra_data.len);
+        const r_start = @intFromEnum(pd.lhs);
+        const r_end = @intFromEnum(pd.rhs);
+        if (r_start > r_end or r_end > ext_len) return false;
+        const stmts = self.ast.extra_data[r_start..r_end];
+        var idx: usize = 0;
+        var found = false;
+        while (idx < stmts.len) : (idx += 1) {
+            const ni: NodeIndex = @enumFromInt(stmts[idx]);
+            if (ni == expr_stmt) { found = true; break; }
+        }
+        if (!found or idx == 0) return false;
+        const prev: NodeIndex = @enumFromInt(stmts[idx - 1]);
+        // If the predecessor's last source character is `}`, fall back
+        // to the char-level brace check — it knows the difference
+        // between a function/class/object-expression `}` (needs `;`)
+        // and a plain block `}` (doesn't).  Skipping it for any
+        // declaration would miss `const foo = function () {} \n Array()`.
+        const prev_span = self.nodeSpan(prev);
+        if (prev_span.end > 0 and prev_span.end <= self.ast.source.len) {
+            const last = self.ast.source[prev_span.end - 1];
+            if (last == '}') return false;
+        }
+        return switch (self.nodeTag(prev)) {
+            // Declarations terminate the statement regardless of last token.
+            .var_decl, .let_decl, .const_decl,
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .class_decl,
+            .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
+            .ts_namespace_decl, .ts_module_decl, .ts_declare_function,
+            .import_decl,
+            .export_named, .export_named_from, .export_default_expr, .export_default_fn,
+            .export_default_class, .export_all,
+            // Statement-like constructs whose terminators are unambiguous.
+            .return_stmt, .break_stmt, .continue_stmt, .throw_stmt, .debugger_stmt,
+            .empty_stmt,
+            // Block-like / labeled stmts: their ending `}` is a block
+            // terminator, not an expression terminator.  The char-level
+            // `}` check below handles fn/class/object expression cases.
+            .block_stmt, .if_stmt, .if_else_stmt, .while_stmt, .do_while_stmt,
+            .for_stmt, .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
+            .with_stmt, .switch_stmt, .try_stmt, .labeled_stmt => true,
+            else => false,
+        };
+    }
+
+    fn isIdentTail(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+               (c >= '0' and c <= '9') or c == '_' or c == '$';
+    }
+
+    /// Walk backward from `end_exclusive` while characters look like
+    /// identifier tail chars; return the slice that begins at the first
+    /// non-ident char (or 0).  Used to extract the keyword that ends
+    /// just before a given position.
+    fn identStartingAt(src: []const u8, end_exclusive: usize) []const u8 {
+        var s = end_exclusive;
+        while (s > 0 and isIdentTail(src[s - 1])) s -= 1;
+        return src[s..end_exclusive];
+    }
+
+    fn findNodeEndingAt(self: *const LintContext, pos: u32) ?NodeIndex {
+        const total: u32 = @intCast(self.ast.nodes.len);
+        var best: ?NodeIndex = null;
+        var best_len: u32 = std.math.maxInt(u32);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            const sp = self.nodeSpan(ni);
+            if (sp.end != pos) continue;
+            const len = sp.end -| sp.start;
+            if (len < best_len) {
+                best = ni;
+                best_len = len;
+            }
+        }
+        return best;
     }
 
     /// True when a Call/NewExpression has TypeScript generic type arguments
