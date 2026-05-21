@@ -37,6 +37,7 @@ const RULES = [
   "no-unnecessary-boolean-literal-compare",
   "prefer-find",
   "prefer-return-this-type",
+  "no-duplicate-type-constituents",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];
