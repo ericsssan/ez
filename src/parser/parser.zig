@@ -4150,7 +4150,9 @@ pub const Parser = struct {
             // const declarations always require an initializer (except in TS ambient contexts)
             if (is_const and !(self.is_ts and is_ts_ambient)) {
                 try self.emitDiagnostic(self.currentSpan(), "Missing initializer in const declaration", .{});
-                return error.ParseError;
+                // Soft error in TS — continue producing the declarator so
+                // type-aware tools still see the binding's annotation.
+                if (!self.is_ts) return error.ParseError;
             }
         }
 
