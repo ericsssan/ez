@@ -427,6 +427,15 @@ pub const LintContext = struct {
         return tymod.isError(&c.store, id);
     }
 
+    /// True when the type id IS exactly `unknown` (the singleton or
+    /// the .unknown kind).  Distinct from `typeIdContainsUnknown`,
+    /// which walks composites — useful when the rule cares about
+    /// the TOP type, not whether unknown appears nested.
+    pub fn typeIdIsUnknown(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.isUnknown(&c.store, id);
+    }
+
     /// True when both type ids are `type_ref` types with the same outer
     /// name (`Set<X>` vs `Set<Y>`, `Promise<X>` vs `Promise<Y>`).  Used
     /// by no-unsafe-return to distinguish `unsafeReturnAssignment`

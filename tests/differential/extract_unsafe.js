@@ -26,6 +26,7 @@ const RULES = [
   "no-floating-promises",
   "await-thenable",
   "no-for-in-array",
+  "only-throw-error",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];
@@ -150,9 +151,9 @@ for (const rule of RULES) {
     // fixture jsx:true when the source has '<Tag ...' / '<Tag>'
     // patterns followed by JSX-like attributes or children.
     const hasJsx = /(?:^|\W)<[A-Z][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*\s*=|\s*\/>|\s*>[\s\S]*<\/)/.test(code);
-    // Top-level `await` (outside an async function) requires sourceType
+    // Top-level `await` / `import` / `export` require sourceType
     // module — the upstream tests enable module mode implicitly.
-    const tlaRe = /(?:^|\n)\s*(?:await|for\s+await)\b/;
+    const tlaRe = /(?:^|\n)\s*(?:await|for\s+await|import\b|export\b)/;
     const sourceType = (code && tlaRe.test(code)) ? "module" : "script";
     const meta = {
       rule: `@typescript-eslint/${rule}`,
