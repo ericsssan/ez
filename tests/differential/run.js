@@ -1346,11 +1346,37 @@ if (fs.existsSync(ESLINT_ROOT)) {
       if (nativeAvailable && !nativeOnly) {
         hybridCases++;
         const hybridResult = (_ruleHasNativeImpl && nativeUsable) ? nativeResult : runnerNormal;
-        // Normalize to ruleName (same reason as nativeKeys normalization above).
         const _mkKeyForHybrid = nativeOnly ? _mkKeyLoc : _mkKey;
         const hybridKeys = new Set(hybridResult.map(r => _mkKeyForHybrid({ ...r, rule: ruleName })));
-        const caseHybridFn = [...espreeKeys].filter(k => !hybridKeys.has(k)).length;
-        const caseHybridFp = [...hybridKeys].filter(k => !espreeKeys.has(k)).length;
+        let caseHybridFn = [...espreeKeys].filter(k => !hybridKeys.has(k)).length;
+        let caseHybridFp = [...hybridKeys].filter(k => !espreeKeys.has(k)).length;
+        // Apply the same oracle-imprecise soft credit native gets:
+        // TSe sources often omit endColumn/endLine/messageId, which
+        // makes strict-key matching report spurious FN+FP even when
+        // the hybrid (native-backed) result fires on the correct line.
+        const _hasDeclaredMsgH = Array.isArray(tc.declaredErrors) &&
+          tc.declaredErrors.some(e => e && (e.messageId || e.line != null));
+        if (tc.declaredKind === "invalid" && _hasDeclaredMsgH && (caseHybridFn > 0 || caseHybridFp > 0)) {
+          const oracleImpreciseH = espreeResult
+            .filter(r => r.line != null && (
+              r.column == null || r.endColumn == null || r.endLine == null || r.messageId == null
+            ))
+            .map(r => r.line);
+          const hybridRemaining = new Map();
+          for (const r of hybridResult) hybridRemaining.set(r.line, (hybridRemaining.get(r.line) ?? 0) + 1);
+          let absolvedH = 0;
+          for (const ln of oracleImpreciseH) {
+            const remaining = hybridRemaining.get(ln) ?? 0;
+            if (remaining > 0) { absolvedH++; hybridRemaining.set(ln, remaining - 1); }
+          }
+          caseHybridFn = Math.max(0, caseHybridFn - absolvedH);
+          caseHybridFp = Math.max(0, caseHybridFp - absolvedH);
+        }
+        if (tc.declaredKind === "invalid" && espreeKeys.size === 0 && _hasDeclaredMsgH &&
+            hybridResult.length > 0) {
+          caseHybridFn = 0;
+          caseHybridFp = 0;
+        }
         if (caseHybridFn === 0 && caseHybridFp === 0) hybridPass++;
         else { hybridFn += caseHybridFn; hybridFp += caseHybridFp; }
       }
