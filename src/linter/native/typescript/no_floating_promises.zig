@@ -51,8 +51,77 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (precededByAwaitKeyword(node, ctx)) return;
     if (optionIgnoreIIFE(ctx) and isImmediatelyInvokedFn(expr, ctx)) return;
     const ignore_void = optionIgnoreVoid(ctx);
-    const msg = if (ignore_void) "floatingVoid" else "floating";
+    const useless = hasUselessRejectionHandler(expr, ctx);
+    const msg = if (useless)
+        (if (ignore_void) "floatingUselessRejectionHandlerVoid" else "floatingUselessRejectionHandler")
+    else
+        (if (ignore_void) "floatingVoid" else "floating");
     ctx.reportWithMessageId(node, msg);
+}
+
+/// True when the call-chain tail is a `.catch(handler)` / `.then(_, h)`
+/// where the handler is statically non-callable (null, undefined, a
+/// literal, no arg).  TSe uses this to emit the *UselessRejectionHandler*
+/// messageId.
+fn hasUselessRejectionHandler(expr: NodeIndex, ctx: *const LintContext) bool {
+    const e = unwrap(expr, ctx);
+    const tag = ctx.nodeTag(e);
+    if (tag != .call_expr and tag != .optional_call_expr) return false;
+    const callee = unwrap(ctx.nodeData(e).lhs, ctx);
+    const ctag = ctx.nodeTag(callee);
+    if (ctag != .member_expr and ctag != .optional_member_expr) return false;
+    const md = ctx.nodeData(callee);
+    if (md.rhs == .none) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    const args = callArgs(e, ctx);
+    if (std.mem.eql(u8, name, "catch")) {
+        return args.len == 0 or isUselessHandlerNode(args[0], ctx);
+    }
+    if (std.mem.eql(u8, name, "then") and args.len >= 2) {
+        return isUselessHandlerNode(args[1], ctx);
+    }
+    return false;
+}
+
+fn isUselessHandlerNode(raw: u32, ctx: *const LintContext) bool {
+    const h: NodeIndex = @enumFromInt(raw);
+    return switch (ctx.nodeTag(h)) {
+        .null_literal, .number_literal, .string_literal, .boolean_literal, .bigint_literal, .regex_literal => true,
+        .identifier => blk: {
+            const text = ctx.tokenText(ctx.nodeMainToken(h));
+            if (std.mem.eql(u8, text, "undefined")) break :blk true;
+            // `maybeCallable: string | (() => void)` — declared union
+            // including a non-callable branch.  Detect: identifier whose
+            // declared type-annotation has a non-function-type member.
+            break :blk identifierTypeHasNonCallableUnionMember(h, ctx);
+        },
+        else => false,
+    };
+}
+
+fn identifierTypeHasNonCallableUnionMember(ident: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    const ty = ctx.nodeData(bd.rhs).lhs;
+    if (ty == .none) return false;
+    if (ctx.nodeTag(ty) != .ts_union_type) return false;
+    const data = ctx.nodeData(ty);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (s > e or e > ext_len) return false;
+    for (ctx.ast.extra_data[s..e]) |r| {
+        const m: NodeIndex = @enumFromInt(r);
+        switch (ctx.nodeTag(m)) {
+            .ts_function_type => continue,
+            else => return true,
+        }
+    }
+    return false;
 }
 
 /// Match expression against `allowForKnownSafeCalls` / `allowForKnownSafePromises`
@@ -91,6 +160,21 @@ fn matchesAllowedSpecifier(expr: NodeIndex, ctx: *const LintContext) bool {
 fn valueHasNamedType(expr: NodeIndex, spec: std.json.Value, ctx: *const LintContext) bool {
     const e = unwrap(expr, ctx);
     const tag = ctx.nodeTag(e);
+    // `promise.finally()` / `promise.then(...)` — chain calls preserve
+    // the named type, so check the receiver.
+    if (tag == .call_expr or tag == .optional_call_expr) {
+        const callee = unwrap(ctx.nodeData(e).lhs, ctx);
+        const ctag = ctx.nodeTag(callee);
+        if (ctag == .member_expr or ctag == .optional_member_expr) {
+            const md = ctx.nodeData(callee);
+            if (md.rhs != .none) {
+                const pname = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+                if (std.mem.eql(u8, pname, "then") or std.mem.eql(u8, pname, "catch") or std.mem.eql(u8, pname, "finally")) {
+                    if (valueHasNamedType(md.lhs, spec, ctx)) return true;
+                }
+            }
+        }
+    }
     if (tag == .identifier) {
         const sym = symbolForIdent(e, ctx) orelse return false;
         const decl = ctx.semantic.symbols.getDeclNode(sym);
@@ -311,9 +395,16 @@ fn isFloatingPromise(expr: NodeIndex, ctx: *const LintContext) bool {
         }
         return false;
     }
-    // Logical expressions: `a && b` — if both branches are promises, it floats.
+    // Logical expressions: `a && b` — recurse into operands.
+    //
+    // Skip the recursion when the LHS is bound to a `let` variable
+    // initialized to a literal that statically eliminates the RHS
+    // path: TSe relies on TS narrowing here and we can't do flow.
+    // For `const`-bound LHS the immutability lets us bypass this
+    // (whole-program reasoning isn't needed).
     if (tag == .logical_and or tag == .logical_or or tag == .nullish_coalesce) {
         const data = ctx.nodeData(e);
+        if (letBoundShortCircuitsRhs(tag, data.lhs, ctx)) return false;
         return isFloatingPromise(data.lhs, ctx) or isFloatingPromise(data.rhs, ctx);
     }
     // Conditional `c ? a : b`.
@@ -392,7 +483,19 @@ fn calleeNodeReturnsPromise(callee: NodeIndex, ctx: *const LintContext) bool {
             const sym = symbolForIdent(callee, ctx) orelse return false;
             const decl = ctx.semantic.symbols.getDeclNode(sym);
             if (decl == .none) return false;
-            if (ctx.nodeTag(decl) == .identifier) {
+            // `function f(): Promise<X>` / `async function f()` — the
+            // symbol decl node IS the fn_decl itself.
+            const dtag = ctx.nodeTag(decl);
+            switch (dtag) {
+                .async_fn_decl, .async_generator_fn_decl => return true,
+                .fn_decl, .generator_fn_decl => {
+                    const dd = ctx.nodeData(decl);
+                    const fd = ctx.extraData(ast.FnData, @intFromEnum(dd.lhs));
+                    return returnTypeIsPromise(fd.return_type, ctx);
+                },
+                else => {},
+            }
+            if (dtag == .identifier) {
                 const bd = ctx.nodeData(decl);
                 if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
                     const ty_node = ctx.nodeData(bd.rhs).lhs;
@@ -401,6 +504,28 @@ fn calleeNodeReturnsPromise(callee: NodeIndex, ctx: *const LintContext) bool {
                         // FnData.body (the parser reuses the field).
                         const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty_node).lhs));
                         return fnTypeReturnIsPromise(fd.body, ctx);
+                    }
+                }
+                // Var declarator init: `const f = async () => ...;` —
+                // call to f returns Promise.  Walk to the parent
+                // declarator and check its init.
+                const dparent = ctx.parentOf(decl);
+                if (dparent != .none and ctx.nodeTag(dparent) == .declarator) {
+                    const init = unwrap(ctx.nodeData(dparent).rhs, ctx);
+                    if (init != .none) {
+                        const itag = ctx.nodeTag(init);
+                        switch (itag) {
+                            .async_fn_expr, .async_generator_fn_expr, .async_arrow_fn => return true,
+                            .fn_expr, .generator_fn_expr => {
+                                const fd2 = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(init).lhs));
+                                if (returnTypeIsPromise(fd2.return_type, ctx)) return true;
+                            },
+                            .arrow_fn => {
+                                const ad2 = ctx.extraData(ast.ArrowData, @intFromEnum(ctx.nodeData(init).lhs));
+                                if (returnTypeIsPromise(ad2.return_type, ctx)) return true;
+                            },
+                            else => {},
+                        }
                     }
                 }
             }
@@ -626,12 +751,7 @@ fn chainEndsWithRejectionHandler(e: NodeIndex, ctx: *const LintContext) bool {
 /// "useless" cases (variable not a function) require type info to detect.
 fn isUselessHandler(handler_args: []const u32, ctx: *const LintContext) bool {
     if (handler_args.len == 0) return true;
-    const h: NodeIndex = @enumFromInt(handler_args[0]);
-    switch (ctx.nodeTag(h)) {
-        .null_literal => return true,
-        .identifier => return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(h)), "undefined"),
-        else => return false,
-    }
+    return isUselessHandlerNode(handler_args[0], ctx);
 }
 
 fn callArgs(call: NodeIndex, ctx: *const LintContext) []const u32 {
@@ -655,10 +775,18 @@ fn identifierDeclaredTypeIsPromise(ident: NodeIndex, ctx: *const LintContext) bo
     if (decl == .none) return false;
     if (ctx.nodeTag(decl) != .identifier) return false;
     const bd = ctx.nodeData(decl);
-    if (bd.rhs == .none) return false;
-    if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
-    const ty = ctx.nodeData(bd.rhs).lhs;
-    return tsTypeIsPromise(ty, ctx);
+    if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
+        const ty = ctx.nodeData(bd.rhs).lhs;
+        if (tsTypeIsPromise(ty, ctx)) return true;
+    }
+    // No annotation — check the declarator init: `const p = Promise.resolve(...)`
+    // or `const p = someAsyncFn()`.  We treat the identifier's "type" as the
+    // init expression's return type.
+    const dparent = ctx.parentOf(decl);
+    if (dparent == .none or ctx.nodeTag(dparent) != .declarator) return false;
+    const init = unwrap(ctx.nodeData(dparent).rhs, ctx);
+    if (init == .none) return false;
+    return returnsPromise(init, ctx);
 }
 
 /// For `obj.foo`, look up obj's declared type, find property `foo`, and
@@ -796,6 +924,59 @@ fn objectLiteralPropertyIsPromise(init: NodeIndex, name: []const u8, ctx: *const
         return returnsPromise(pd.rhs, ctx);
     }
     return false;
+}
+
+/// Heuristic for "TS narrowed this short-circuit away" patterns
+/// (`let condition = false; condition && X;`).  Returns true when LHS
+/// is a `let`-bound identifier whose declarator init is a literal that
+/// TS would normally narrow to and statically eliminates the RHS:
+///   `&&` short-circuits when LHS is `false` / `null` / `undefined` / `0` / `""`.
+///   `||` short-circuits when LHS is `true` / non-empty string / non-zero number.
+///   `??` short-circuits when LHS is not `null` / `undefined`.
+/// Used to suppress recursion into the RHS for these cases — matches
+/// TSe's flow-based suppression without requiring real flow analysis.
+fn letBoundShortCircuitsRhs(op: Node.Tag, lhs: NodeIndex, ctx: *const LintContext) bool {
+    const l = unwrap(lhs, ctx);
+    if (ctx.nodeTag(l) != .identifier) return false;
+    const sym = symbolForIdent(l, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const dparent = ctx.parentOf(decl);
+    if (dparent == .none or ctx.nodeTag(dparent) != .declarator) return false;
+    const vd = ctx.parentOf(dparent);
+    if (vd == .none) return false;
+    const kind_text = ctx.tokenText(ctx.nodeMainToken(vd));
+    if (!std.mem.eql(u8, kind_text, "let") and !std.mem.eql(u8, kind_text, "var")) return false;
+    const init = unwrap(ctx.nodeData(dparent).rhs, ctx);
+    if (init == .none) return false;
+    const litok = literalTruthy(init, ctx) orelse return false;
+    return switch (op) {
+        .logical_and => !litok.truthy,
+        .logical_or => litok.truthy,
+        .nullish_coalesce => !litok.nullish,
+        else => false,
+    };
+}
+
+const LiteralValue = struct { truthy: bool, nullish: bool };
+fn literalTruthy(n: NodeIndex, ctx: *const LintContext) ?LiteralValue {
+    switch (ctx.nodeTag(n)) {
+        .boolean_literal => {
+            const text = ctx.tokenText(ctx.nodeMainToken(n));
+            const is_true = std.mem.eql(u8, text, "true");
+            return .{ .truthy = is_true, .nullish = false };
+        },
+        .null_literal => return .{ .truthy = false, .nullish = true },
+        .identifier => {
+            // `undefined` is parsed as an identifier reference.
+            const text = ctx.tokenText(ctx.nodeMainToken(n));
+            if (std.mem.eql(u8, text, "undefined"))
+                return .{ .truthy = false, .nullish = true };
+            return null;
+        },
+        else => return null,
+    }
 }
 
 fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {
