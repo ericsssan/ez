@@ -50,10 +50,15 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // The Function-detection path catches `const t: Function = ...; t()`
     // — TSe flags this because `Function` accepts any args.  Suppress
     // when the source defines its own `Function` type alias/interface
-    // anywhere in scope: `type Function = () => void` shadows the
-    // built-in and the user-defined version is presumably safe.
-    const is_function = !is_any and ctx.typeNodeIsFunction(callee)
+    // anywhere in scope.  Also fires when the callee's declared type is
+    // a user interface that `extends Function` (transitively): TSe's
+    // isBuiltinSymbolLike walks the inheritance graph; we approximate
+    // by scanning for `interface X extends Function`.
+    var is_function = !is_any and ctx.typeNodeIsFunction(callee)
         and !fileShadowsFunctionType(ctx);
+    if (!is_any and !is_function) {
+        if (inheritsFunctionByName(callee, ctx)) is_function = true;
+    }
     if (!is_any and !is_function) return;
     const msg = switch (ctx.nodeTag(node)) {
         .new_expr => "unsafeNew",
@@ -101,4 +106,94 @@ fn fileShadowsFunctionType(ctx: *const LintContext) bool {
         if (std.mem.eql(u8, name, "Function")) return true;
     }
     return false;
+}
+
+/// True when the callee's declared type name is a user interface that
+/// (transitively) extends `Function`.  Approximates TSe's
+/// isBuiltinSymbolLike walk over the inheritance graph by:
+///   1. resolving the callee's declared type-ref name
+///   2. scanning for `interface <Name> extends ... Function ...`
+/// One-hop only — `interface A extends B; interface B extends Function`
+/// won't be caught.  Coarse but enough for the common-case test fixtures.
+fn inheritsFunctionByName(callee: NodeIndex, ctx: *const LintContext) bool {
+    const name = declaredTypeRefName(callee, ctx) orelse return false;
+    if (name.len == 0) return false;
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .ts_interface_decl) continue;
+        const data = tree.nodeData(ni);
+        const id = tree.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
+        const iname = tree.tokenText(id.name);
+        if (!std.mem.eql(u8, iname, name)) continue;
+        // Walk extends entries.  Parser stores TOKEN indices for each
+        // extends type (per parseClass's implements list pattern).
+        const ext_start = id.extends_start;
+        const ext_end = id.extends_end;
+        if (ext_end <= ext_start) continue;
+        const slice = tree.extra_data[ext_start..ext_end];
+        var extends_function = false;
+        for (slice) |tok| {
+            const txt = tree.tokenText(tok);
+            if (std.mem.eql(u8, txt, "Function")) {
+                extends_function = true;
+                break;
+            }
+        }
+        if (!extends_function) continue;
+        // TSe's "isBuiltinSymbolLike" considers a subtype of Function
+        // safe to call iff it has at least one call/construct signature.
+        // Walk the body — if any member is ts_call_signature or
+        // ts_construct_signature, treat as safe.  Property/method
+        // signatures do NOT make it safe (calling them invokes the
+        // implicit Function, not the property).
+        const body_start = id.body_start;
+        const body_end = id.body_end;
+        var has_callable_signature = false;
+        if (body_end > body_start) {
+            const body = tree.extra_data[body_start..body_end];
+            for (body) |raw| {
+                const member: NodeIndex = @enumFromInt(raw);
+                const mtag = tree.nodeTag(member);
+                if (mtag == .ts_call_signature or mtag == .ts_construct_signature) {
+                    has_callable_signature = true;
+                    break;
+                }
+            }
+        }
+        if (!has_callable_signature) return true;
+    }
+    return false;
+}
+
+/// Returns the textual name of the declared type for an expression that
+/// resolves through an identifier reference annotated with a single
+/// ts_type_reference.  `declare const x: Unsafe; x()` → returns "Unsafe".
+/// Returns null for expressions whose declared type is more complex
+/// (union, type literal, etc.).
+fn declaredTypeRefName(node: NodeIndex, ctx: *const LintContext) ?[]const u8 {
+    if (ctx.nodeTag(node) != .identifier) return null;
+    // Look up the symbol's declaration to find the annotation.
+    const refs = &ctx.semantic.references;
+    const total = refs.count();
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const rid = parser.reference.ReferenceId.fromInt(i);
+        if (refs.getNode(rid) != node) continue;
+        if (!refs.isResolved(rid)) return null;
+        const sym = refs.getSymbol(rid);
+        const decl = ctx.semantic.symbols.getDeclNode(sym);
+        if (decl == .none) return null;
+        if (ctx.nodeTag(decl) != .identifier) return null;
+        const decl_data = ctx.nodeData(decl);
+        if (decl_data.rhs == .none) return null;
+        if (ctx.nodeTag(decl_data.rhs) != .ts_type_annotation) return null;
+        const ty = ctx.nodeData(decl_data.rhs).lhs;
+        if (ty == .none or ctx.nodeTag(ty) != .ts_type_reference) return null;
+        const name_tok = ctx.nodeMainToken(ty);
+        return ctx.tokenText(name_tok);
+    }
+    return null;
 }

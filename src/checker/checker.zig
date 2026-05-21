@@ -203,9 +203,6 @@ pub const Checker = struct {
     /// the ts_type_annotation node in identifier.data.rhs), or by walking
     /// up to the declarator and falling back to the initializer.
     fn declaredTypeAtBinding(self: *Checker, binding: NodeIndex) TypeId {
-        // Implicit-global symbols (Map, console, etc.) have no decl node.
-        // Treat them as unknown — we don't have type info but they're not
-        // actually `any`, so unsafe-* must not fire on them.
         if (binding == .none) return tymod.ID_UNKNOWN;
         // Direct annotation on the identifier.
         if (self.ast_ref.nodeTag(binding) == .identifier) {
@@ -258,7 +255,7 @@ pub const Checker = struct {
             // functions / etc. declared via structural annotations.
             .ts_typeof_type => tymod.ID_UNKNOWN, // we don't resolve `typeof x` yet
             .ts_keyof_type => tymod.ID_STRING, // approx
-            .ts_type_literal => tymod.ID_UNKNOWN, // TODO: walk members
+            .ts_type_literal => self.resolveTypeLiteral(ty_node),
             .ts_function_type, .ts_constructor_type => tymod.ID_UNKNOWN,
             .ts_tuple_type => tymod.ID_UNKNOWN,
             .ts_indexed_access_type => tymod.ID_UNKNOWN,
@@ -267,6 +264,51 @@ pub const Checker = struct {
             .ts_template_literal_type => tymod.ID_STRING,
             else => tymod.ID_UNKNOWN,
         };
+    }
+
+    /// Walk a `{ k1: T1; k2: T2; ... }` type literal and build an
+    /// object_t in the type store.  Captures named property signatures
+    /// only — index signatures (`[key: K]: V`) and call/construct
+    /// signatures are out of scope (they need separate representation
+    /// in our Type model).  Index signatures cause the property lookup
+    /// to fall back to "we don't know" — equivalent to unknown.
+    fn resolveTypeLiteral(self: *Checker, ty_node: NodeIndex) TypeId {
+        // Layout (matches template_literal): start/end stored DIRECTLY
+        // in data.lhs/data.rhs as NodeIndex slots — NOT a SubRange struct
+        // at an extra index.  (The ast.zig doc comment "lhs = extra SubRange
+        // of members" is misleading; the parser uses NodeIndex.fromInt
+        // on range.start/end and stuffs them into lhs/rhs.)
+        const data = self.ast_ref.nodeData(ty_node);
+        if (data.lhs == .none or data.rhs == .none) return tymod.ID_UNKNOWN;
+        const r_start = @intFromEnum(data.lhs);
+        const r_end = @intFromEnum(data.rhs);
+        const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+        if (r_start > r_end or r_end > ext_len) return tymod.ID_UNKNOWN;
+        const member_node_indices = self.ast_ref.extra_data[r_start..r_end];
+        var props_buf: [32]tymod.ObjectProp = undefined;
+        var prop_count: usize = 0;
+        for (member_node_indices) |raw| {
+            if (prop_count >= props_buf.len) break;
+            const member: NodeIndex = @enumFromInt(raw);
+            if (self.ast_ref.nodeTag(member) != .ts_property_signature) continue;
+            const member_data = self.ast_ref.nodeData(member);
+            const name_node = member_data.lhs;
+            if (name_node == .none) continue;
+            const name_tok = self.ast_ref.nodeMainToken(name_node);
+            const name = self.ast_ref.tokenText(name_tok);
+            // The type annotation is stored in rhs as a ts_type_annotation
+            // wrapper (`name: Type` → the colon-wrapped type node).
+            // No annotation → property type is any (TS implicit any).
+            var prop_ty: TypeId = tymod.ID_ANY;
+            if (member_data.rhs != .none and self.ast_ref.nodeTag(member_data.rhs) == .ts_type_annotation) {
+                const ty_inner = self.ast_ref.nodeData(member_data.rhs).lhs;
+                prop_ty = self.resolveTypeNode(ty_inner);
+            }
+            props_buf[prop_count] = .{ .name = name, .type_id = prop_ty };
+            prop_count += 1;
+        }
+        const list = self.store.appendObjectProps(props_buf[0..prop_count]) catch return tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
     }
 
     fn resolveTypeRef(self: *Checker, ty_node: NodeIndex) TypeId {
@@ -463,14 +505,33 @@ pub const Checker = struct {
     }
 
     fn inferMember(self: *Checker, node: NodeIndex) TypeId {
-        // Member access on any → any (anyness propagates through the
-        // unknown property).  Otherwise the property's type is
-        // unresolved — default to `unknown` rather than `any` so we
-        // don't false-positive no-unsafe-* on every plain method call
-        // like `x.toString()`.
+        // Member access on any → any (anyness propagates).
+        // Member access on a structural object type → look up the
+        // property by name and return its declared type.  This lets
+        // `function foo(x: { a: any }) { x.a; }` correctly see `x.a`
+        // as any.  Falls back to `unknown` when the receiver type
+        // isn't structural or the property isn't declared (which
+        // catches the common `x.toString()`-on-typed-receiver pattern).
         const data = self.ast_ref.nodeData(node);
         const obj_ty = self.typeOf(data.lhs);
         if (tymod.isAny(&self.store, obj_ty)) return tymod.ID_ANY;
+        const tag = self.ast_ref.nodeTag(node);
+        const obj = self.store.get(obj_ty);
+        if (obj.kind != .object_t) return tymod.ID_UNKNOWN;
+        const prop_name: []const u8 = switch (tag) {
+            .member_expr, .optional_member_expr => blk: {
+                // .rhs is a property_ident node; main_token IS the
+                // property name token.
+                if (data.rhs == .none) break :blk &.{};
+                const t = self.ast_ref.nodeMainToken(data.rhs);
+                break :blk self.ast_ref.tokenText(t);
+            },
+            else => return tymod.ID_UNKNOWN,
+        };
+        if (prop_name.len == 0) return tymod.ID_UNKNOWN;
+        for (self.store.propsOf(obj.object_props)) |p| {
+            if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
+        }
         return tymod.ID_UNKNOWN;
     }
 
