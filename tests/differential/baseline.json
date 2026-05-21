@@ -882,6 +882,24 @@
         "crash": 0
       }
     },
+    "@typescript-eslint/prefer-promise-reject-errors": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 13,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 11,
+        "fp": 21,
+        "crash": 0
+      }
+    },
     "@typescript-eslint/unified-signatures": {
       "runner": {
         "fn": 4,
@@ -8329,7 +8347,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
+        "fn": 39,
         "fp": 0,
         "crash": 0
       }
@@ -21656,9 +21674,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 11375,
-    "runnerCasesPerSec": 8174,
-    "nativeCasesPerSec": 68822,
+    "totalElapsedMs": 10955,
+    "runnerCasesPerSec": 8473,
+    "nativeCasesPerSec": 68398,
     "totalCases": 73102
   }
 }
