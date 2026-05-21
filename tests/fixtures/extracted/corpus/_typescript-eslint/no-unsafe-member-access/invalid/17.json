@@ -46,6 +46,30 @@
       }
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-member-access",
+      "line": 4,
+      "column": 7,
+      "endLine": 4,
+      "endColumn": 12,
+      "messageId": "unsafeMemberExpression",
+      "data": {
+        "property": ".outer"
+      }
+    },
+    {
+      "rule": "@typescript-eslint/no-unsafe-member-access",
+      "line": 4,
+      "column": 21,
+      "endLine": 4,
+      "endColumn": 26,
+      "messageId": "unsafeMemberExpression",
+      "data": {
+        "property": ".inner"
+      }
+    }
+  ],
   "oracleLines": [
     4,
     4

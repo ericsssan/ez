@@ -32,6 +32,19 @@
       }
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-member-access",
+      "line": 3,
+      "column": 5,
+      "endLine": 3,
+      "endColumn": 8,
+      "messageId": "unsafeMemberExpression",
+      "data": {
+        "property": "['a']"
+      }
+    }
+  ],
   "oracleLines": [
     3
   ],

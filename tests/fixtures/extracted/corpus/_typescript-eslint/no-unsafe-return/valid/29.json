@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      class Foo {\n        public foo(): this {\n          return this;\n        }\n\n        protected then(resolve: () => void): void {\n          resolve();\n        }\n      }\n    ",

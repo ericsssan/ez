@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      // create a scope since it's illegal to declare a duplicate identifier\n      // 'Function' in the global script scope.\n      {\n        type Function = () => void;\n        const notGlobalFunctionType: Function = (() => {}) as Function;\n        notGlobalFunctionType();\n      }\n    ",

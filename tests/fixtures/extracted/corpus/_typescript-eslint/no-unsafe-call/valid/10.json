@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\ninterface CallGoodConstructBad extends Function {\n  (): void;\n}\ndeclare const safe: CallGoodConstructBad;\nsafe();\n    ",

@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\ninterface SafeWithNonVoidCallSignature extends Function {\n  (): void;\n  (x: string): string;\n}\ndeclare const safe: SafeWithNonVoidCallSignature;\nsafe();\n    ",

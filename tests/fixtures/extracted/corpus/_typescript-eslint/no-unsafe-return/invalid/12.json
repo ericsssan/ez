@@ -33,6 +33,7 @@
       }
     }
   ],
+  "oracleDiags": [],
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nfunction foo(): Set<string[]> {\n  return new Set<any[]>();\n}\n      ",

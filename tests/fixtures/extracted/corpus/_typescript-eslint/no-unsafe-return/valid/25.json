@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      function foo(): any {\n        return [] as any[];\n      }\n    ",

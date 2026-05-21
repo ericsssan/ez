@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\ntype Foo = { bar: unknown };\nconst bar: any = 1;\nconst foo: Foo = { bar };\n    ",

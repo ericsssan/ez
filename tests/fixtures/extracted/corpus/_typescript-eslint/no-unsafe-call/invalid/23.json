@@ -38,6 +38,26 @@
       "data": null
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-call",
+      "line": 3,
+      "column": 3,
+      "endLine": 3,
+      "endColumn": 7,
+      "messageId": "errorCallThis",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-unsafe-call",
+      "line": 4,
+      "column": 3,
+      "endLine": 4,
+      "endColumn": 14,
+      "messageId": "errorCallThis",
+      "data": null
+    }
+  ],
   "oracleLines": [
     3,
     4

@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      async function fn<T extends any>(x: T): Promise<unknown> {\n        return x as any;\n      }\n    ",

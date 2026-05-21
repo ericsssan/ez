@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\ntype Props = { a: string };\ndeclare function Foo(props: Props): never;\n<Foo a={'foo'} />;\n      ",

@@ -32,6 +32,19 @@
       }
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-call",
+      "line": 3,
+      "column": 3,
+      "endLine": 3,
+      "endColumn": 4,
+      "messageId": "unsafeCall",
+      "data": {
+        "type": "an `any`"
+      }
+    }
+  ],
   "oracleLines": [
     3
   ],

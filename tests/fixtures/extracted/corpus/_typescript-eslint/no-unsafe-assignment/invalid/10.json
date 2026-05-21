@@ -30,6 +30,7 @@
       "data": null
     }
   ],
+  "oracleDiags": [],
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nconst [x] = 1 as any;\n      ",

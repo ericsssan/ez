@@ -32,6 +32,7 @@
       }
     }
   ],
+  "oracleDiags": [],
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nfunction foo() {\n  return [] as Array<any>;\n}\n      ",

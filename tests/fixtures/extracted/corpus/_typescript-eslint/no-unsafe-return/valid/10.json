@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nasync function foo(): Promise<any> {\n  return Promise.resolve({} as any);\n}\n    ",

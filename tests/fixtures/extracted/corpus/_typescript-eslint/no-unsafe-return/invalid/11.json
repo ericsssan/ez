@@ -33,6 +33,7 @@
       }
     }
   ],
+  "oracleDiags": [],
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nfunction foo(): Map<string, string> {\n  return new Map<string, any>();\n}\n      ",

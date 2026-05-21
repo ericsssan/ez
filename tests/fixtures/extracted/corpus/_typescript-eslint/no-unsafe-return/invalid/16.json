@@ -42,6 +42,30 @@
       }
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-return",
+      "line": 3,
+      "column": 3,
+      "endLine": 3,
+      "endColumn": 15,
+      "messageId": "unsafeReturnThis",
+      "data": {
+        "type": "`any`"
+      }
+    },
+    {
+      "rule": "@typescript-eslint/no-unsafe-return",
+      "line": 7,
+      "column": 16,
+      "endLine": 7,
+      "endColumn": 20,
+      "messageId": "unsafeReturnThis",
+      "data": {
+        "type": "`any`"
+      }
+    }
+  ],
   "oracleLines": [
     3,
     7

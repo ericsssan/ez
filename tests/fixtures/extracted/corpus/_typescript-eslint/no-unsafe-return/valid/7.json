@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\ndeclare function foo(arg: null | (() => any)): void;\nfoo((): any => 'foo' as any);\n    ",

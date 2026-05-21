@@ -50,11 +50,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!isFloatingPromise(expr, ctx)) return;
     if (precededByAwaitKeyword(node, ctx)) return;
     if (optionIgnoreIIFE(ctx) and isImmediatelyInvokedFn(expr, ctx)) return;
-    // allowForKnownSafeCalls / allowForKnownSafePromises: TSe accepts
-    // a list of TypeOrValue specifiers; we support the simple string
-    // form (`"myFn"` matches calls whose callee is an identifier with
-    // that name; matches values typed as a class with that name).
-    if (matchesAllowedSpecifier(expr, ctx)) return;
     const ignore_void = optionIgnoreVoid(ctx);
     const msg = if (ignore_void) "floatingVoid" else "floating";
     ctx.reportWithMessageId(node, msg);
@@ -84,8 +79,100 @@ fn matchesAllowedSpecifier(expr: NodeIndex, ctx: *const LintContext) bool {
     // matching the declared annotation name on the callee's symbol.
     if (opts.object.get("allowForKnownSafePromises")) |sp| {
         if (calleeReturnsNamedType(expr, sp, ctx)) return true;
+        if (valueHasNamedType(expr, sp, ctx)) return true;
     }
     return false;
+}
+
+/// Match an identifier reference or member access against a safe-promises
+/// spec by walking its declaration annotation.  Supports:
+///   `let p: SafePromise<T> = ...; p;`         (identifier)
+///   `let p: { a: SafePromise<T> } = ...; p.a;` (member access)
+fn valueHasNamedType(expr: NodeIndex, spec: std.json.Value, ctx: *const LintContext) bool {
+    const e = unwrap(expr, ctx);
+    const tag = ctx.nodeTag(e);
+    if (tag == .identifier) {
+        const sym = symbolForIdent(e, ctx) orelse return false;
+        const decl = ctx.semantic.symbols.getDeclNode(sym);
+        if (decl == .none) return false;
+        if (ctx.nodeTag(decl) != .identifier) return false;
+        const bd = ctx.nodeData(decl);
+        if (bd.rhs == .none) return false;
+        if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+        const ty = ctx.nodeData(bd.rhs).lhs;
+        return typeReferenceNameMatches(ty, spec, ctx);
+    }
+    if (tag == .member_expr or tag == .optional_member_expr) {
+        const md = ctx.nodeData(e);
+        const obj = unwrap(md.lhs, ctx);
+        if (md.rhs == .none) return false;
+        const prop_name = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+        if (ctx.nodeTag(obj) != .identifier) return false;
+        const sym = symbolForIdent(obj, ctx) orelse return false;
+        const decl = ctx.semantic.symbols.getDeclNode(sym);
+        if (decl == .none) return false;
+        if (ctx.nodeTag(decl) != .identifier) return false;
+        const bd = ctx.nodeData(decl);
+        if (bd.rhs == .none) return false;
+        if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+        const ty = ctx.nodeData(bd.rhs).lhs;
+        return propertyTypeMatches(ty, prop_name, spec, ctx);
+    }
+    return false;
+}
+
+/// Walk a type annotation and check if it (or one of its members) is a
+/// ts_type_reference whose name matches the spec list.
+fn typeReferenceNameMatches(ty: NodeIndex, spec: std.json.Value, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return typeReferenceNameMatches(ctx.nodeData(ty).lhs, spec, ctx),
+        .ts_union_type, .ts_intersection_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (typeReferenceNameMatches(m, spec, ctx)) return true;
+            }
+            return false;
+        },
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            return specifierListMatchesName(spec, name);
+        },
+        else => return false,
+    }
+}
+
+fn propertyTypeMatches(ty: NodeIndex, prop_name: []const u8, spec: std.json.Value, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return propertyTypeMatches(ctx.nodeData(ty).lhs, prop_name, spec, ctx),
+        .ts_type_literal => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (ctx.nodeTag(m) != .ts_property_signature) continue;
+                const pd = ctx.nodeData(m);
+                const key = pd.lhs;
+                if (key == .none) continue;
+                const key_name = ctx.tokenText(ctx.nodeMainToken(key));
+                if (!std.mem.eql(u8, key_name, prop_name)) continue;
+                if (pd.rhs == .none) return false;
+                if (ctx.nodeTag(pd.rhs) != .ts_type_annotation) return false;
+                return typeReferenceNameMatches(ctx.nodeData(pd.rhs).lhs, spec, ctx);
+            }
+            return false;
+        },
+        else => return false,
+    }
 }
 
 fn specifierListMatchesName(spec: std.json.Value, name: []const u8) bool {
@@ -196,6 +283,7 @@ fn unwrap(n: NodeIndex, ctx: *const LintContext) NodeIndex {
 /// Top-level dispatch: is this expression a floating promise?
 fn isFloatingPromise(expr: NodeIndex, ctx: *const LintContext) bool {
     const e = unwrap(expr, ctx);
+    if (matchesAllowedSpecifier(e, ctx)) return false;
     const tag = ctx.nodeTag(e);
     // `await` always suppresses; `void` suppresses only when ignoreVoid
     // is true (the default).  When ignoreVoid:false, `void X` is still
@@ -264,9 +352,17 @@ fn returnsPromise(e: NodeIndex, ctx: *const LintContext) bool {
             const callee = unwrap(ctx.nodeData(e).lhs, ctx);
             return calleeNodeReturnsPromise(callee, ctx);
         },
-        .identifier => return ctx.typeNodeIsPromise(e),
+        .identifier => {
+            if (ctx.typeNodeIsPromise(e)) return true;
+            // Walk the declaration annotation: catches union/intersection
+            // types containing Promise, type aliases, etc.
+            return identifierDeclaredTypeIsPromise(e, ctx);
+        },
         .member_expr, .computed_member_expr,
-        .optional_member_expr, .optional_computed_member_expr => return ctx.typeNodeIsPromise(e),
+        .optional_member_expr, .optional_computed_member_expr => {
+            if (ctx.typeNodeIsPromise(e)) return true;
+            return memberExprDeclaredTypeIsPromise(e, ctx);
+        },
         else => return ctx.typeNodeIsPromise(e),
     }
 }
@@ -330,13 +426,51 @@ fn fnTypeReturnIsPromise(ty: NodeIndex, ctx: *const LintContext) bool {
 
 fn tsTypeIsPromise(ty: NodeIndex, ctx: *const LintContext) bool {
     if (ty == .none) return false;
-    if (ctx.nodeTag(ty) != .ts_type_reference) return false;
-    const name = ctx.tokenText(ctx.nodeMainToken(ty));
-    if (std.mem.eql(u8, name, "Promise")) return true;
-    // Class extending Promise (in this file).  PromiseLike is only
-    // promise-flavored under checkThenables:true which we don't yet
-    // support — keep it out of the default path to avoid FPs.
-    return classExtendsPromise(name, ctx);
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return tsTypeIsPromise(ctx.nodeData(ty).lhs, ctx),
+        .ts_union_type, .ts_intersection_type => {
+            // Parser stores start/end directly in lhs/rhs as indices
+            // into ast.extra_data.
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (tsTypeIsPromise(m, ctx)) return true;
+            }
+            return false;
+        },
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            if (std.mem.eql(u8, name, "Promise")) return true;
+            // Class extending Promise (in this file).  PromiseLike is
+            // only promise-flavored under checkThenables:true which we
+            // don't yet support — keep it out of the default path.
+            // Also resolve one-hop type aliases.
+            if (classExtendsPromise(name, ctx)) return true;
+            return typeAliasBodyIsPromise(name, ctx);
+        },
+        else => return false,
+    }
+}
+
+/// Look for `type X = ...` and check if RHS is Promise-flavored.
+fn typeAliasBodyIsPromise(name: []const u8, ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
+        const data = tree.nodeData(ni);
+        if (data.lhs == .none) continue;
+        const alias_name = tree.tokenText(tree.nodeMainToken(data.lhs));
+        if (!std.mem.eql(u8, alias_name, name)) continue;
+        return tsTypeIsPromise(data.rhs, ctx);
+    }
+    return false;
 }
 
 /// Walk class_decl nodes; if any has the given name AND `extends Promise`
@@ -461,28 +595,29 @@ fn calleeDeclaredReturnIsPromise(call: NodeIndex, ctx: *const LintContext) bool 
     return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ty_inner)), "Promise");
 }
 
-/// True when the expression's tail call is a chain method with a handler:
-///   .catch(_) — any non-empty arg
-///   .then(_, _) — 2 args (the second is the rejection handler)
-///   .finally(_) — any non-empty arg
+/// True when there's a rejection handler ANYWHERE in the call chain.
+/// `.finally(handler)` does NOT handle rejections — TSe still flags
+/// it.  We walk back from the tail call through chained `.X()`
+/// receiver expressions, looking for `.catch(handler)` or
+/// `.then(handler, rejHandler)`.
 fn chainEndsWithRejectionHandler(e: NodeIndex, ctx: *const LintContext) bool {
-    const tag = ctx.nodeTag(e);
-    if (tag != .call_expr and tag != .optional_call_expr) return false;
-    const callee = unwrap(ctx.nodeData(e).lhs, ctx);
-    const ctag = ctx.nodeTag(callee);
-    if (ctag != .member_expr and ctag != .optional_member_expr) return false;
-    const md = ctx.nodeData(callee);
-    if (md.rhs == .none) return false;
-    const name = ctx.tokenText(ctx.nodeMainToken(md.rhs));
-    const args = callArgs(e, ctx);
-    // .catch() / .finally() with NO arg is a useless rejection handler
-    // — TSe fires `floatingUselessRejectionHandler*` for this.  We don't
-    // distinguish the messageId but we DO want to fire, so don't
-    // suppress when args.len == 0.
-    if (std.mem.eql(u8, name, "catch") and args.len >= 1 and !isUselessHandler(args, ctx)) return true;
-    if (std.mem.eql(u8, name, "finally") and args.len >= 1 and !isUselessHandler(args, ctx)) return true;
-    if (std.mem.eql(u8, name, "then") and args.len >= 2 and !isUselessHandler(args[1..], ctx)) return true;
-    return false;
+    var cur = e;
+    while (true) {
+        const tag = ctx.nodeTag(cur);
+        if (tag != .call_expr and tag != .optional_call_expr) return false;
+        const callee = unwrap(ctx.nodeData(cur).lhs, ctx);
+        const ctag = ctx.nodeTag(callee);
+        if (ctag != .member_expr and ctag != .optional_member_expr) return false;
+        const md = ctx.nodeData(callee);
+        if (md.rhs == .none) return false;
+        const name = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+        const args = callArgs(cur, ctx);
+        if (std.mem.eql(u8, name, "catch") and args.len >= 1 and !isUselessHandler(args, ctx)) return true;
+        if (std.mem.eql(u8, name, "then") and args.len >= 2 and !isUselessHandler(args[1..], ctx)) return true;
+        // .finally / .then(handler) / anything else: keep walking the
+        // receiver chain looking for an earlier handler.
+        cur = md.lhs;
+    }
 }
 
 /// A rejection handler that's `undefined`, `null`, or another non-function
@@ -506,6 +641,161 @@ fn callArgs(call: NodeIndex, ctx: *const LintContext) []const u32 {
     const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
     if (range.start > range.end or range.end > ext_len) return &.{};
     return ctx.ast.extra_data[range.start..range.end];
+}
+
+/// Walk the declaration annotation for an identifier reference and
+/// check if its declared type contains Promise (handles union /
+/// intersection / parenthesized / type-alias).  Used as a fallback when
+/// the checker's typeOf doesn't directly say Promise — happens for
+/// `declare const x: Promise<T> & Y` style intersections that the
+/// checker stores as a composite kind rather than a `type_ref`.
+fn identifierDeclaredTypeIsPromise(ident: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none) return false;
+    if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    const ty = ctx.nodeData(bd.rhs).lhs;
+    return tsTypeIsPromise(ty, ctx);
+}
+
+/// For `obj.foo`, look up obj's declared type, find property `foo`, and
+/// check if the property's annotation is Promise-flavored.  Handles
+/// `interface I { p: Promise<X> }` / `type T = { p: Promise<X> }` /
+/// object-literal assignment.
+fn memberExprDeclaredTypeIsPromise(m: NodeIndex, ctx: *const LintContext) bool {
+    const md = ctx.nodeData(m);
+    const obj = unwrap(md.lhs, ctx);
+    if (md.rhs == .none) return false;
+    const prop_name = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    if (ctx.nodeTag(obj) != .identifier) return false;
+    const sym = symbolForIdent(obj, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none) return false;
+    if (ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
+        const ty = ctx.nodeData(bd.rhs).lhs;
+        if (propertyTypeIsPromise(ty, prop_name, ctx)) return true;
+    }
+    // Object literal initializer: `const obj = { foo: Promise.resolve() };`
+    // The declarator's binding identifier has its init wired into the
+    // parent var_declarator's rhs.  Find the parent declarator.
+    const parent = ctx.parentOf(decl);
+    if (parent == .none) return false;
+    if (ctx.nodeTag(parent) != .declarator) return false;
+    const init = ctx.nodeData(parent).rhs;
+    if (init == .none) return false;
+    return objectLiteralPropertyIsPromise(init, prop_name, ctx);
+}
+
+/// Walk a type-annotation node looking for a property `name` and check
+/// if its type is Promise-flavored.  Handles ts_type_literal /
+/// ts_type_reference (resolving to interface or alias body) / unions /
+/// intersections / parenthesized.
+fn propertyTypeIsPromise(ty: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return propertyTypeIsPromise(ctx.nodeData(ty).lhs, name, ctx),
+        .ts_union_type, .ts_intersection_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (propertyTypeIsPromise(m, name, ctx)) return true;
+            }
+            return false;
+        },
+        .ts_type_literal => return typeLiteralPropertyIsPromise(ty, name, ctx),
+        .ts_type_reference => {
+            const tname = ctx.tokenText(ctx.nodeMainToken(ty));
+            // Walk all type/interface decls for matching name.
+            return namedTypeBodyPropertyIsPromise(tname, name, ctx);
+        },
+        else => return false,
+    }
+}
+
+fn typeLiteralPropertyIsPromise(lit: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
+    // ts_type_literal stores start/end of member NodeIndex slice
+    // directly in lhs/rhs (parser pattern).
+    const data = ctx.nodeData(lit);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (s > e or e > ext_len) return false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(m) != .ts_property_signature and ctx.nodeTag(m) != .ts_method_signature) continue;
+        const pd = ctx.nodeData(m);
+        const key = pd.lhs;
+        if (key == .none) continue;
+        const key_name = ctx.tokenText(ctx.nodeMainToken(key));
+        if (!std.mem.eql(u8, key_name, name)) continue;
+        // Property type annotation is wrapped in ts_type_annotation in rhs.
+        if (pd.rhs == .none) return false;
+        if (ctx.nodeTag(pd.rhs) != .ts_type_annotation) return false;
+        const ty = ctx.nodeData(pd.rhs).lhs;
+        return tsTypeIsPromise(ty, ctx);
+    }
+    return false;
+}
+
+fn namedTypeBodyPropertyIsPromise(type_name: []const u8, prop_name: []const u8, ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        const tag = tree.nodeTag(ni);
+        switch (tag) {
+            .ts_type_alias_decl => {
+                const d = tree.nodeData(ni);
+                if (d.lhs == .none) continue;
+                const n = tree.tokenText(tree.nodeMainToken(d.lhs));
+                if (!std.mem.eql(u8, n, type_name)) continue;
+                return propertyTypeIsPromise(d.rhs, prop_name, ctx);
+            },
+            .ts_interface_decl => {
+                const d = tree.nodeData(ni);
+                if (d.lhs == .none) continue;
+                const n = tree.tokenText(tree.nodeMainToken(d.lhs));
+                if (!std.mem.eql(u8, n, type_name)) continue;
+                // Interface body is a ts_type_literal-like list in rhs.
+                if (d.rhs == .none) return false;
+                return typeLiteralPropertyIsPromise(d.rhs, prop_name, ctx);
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn objectLiteralPropertyIsPromise(init: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
+    const e = unwrap(init, ctx);
+    if (ctx.nodeTag(e) != .object_literal) return false;
+    const data = ctx.nodeData(e);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    const s = @intFromEnum(data.lhs);
+    const en = @intFromEnum(data.rhs);
+    if (s > en or en > ext_len) return false;
+    for (ctx.ast.extra_data[s..en]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(m) != .property) continue;
+        const pd = ctx.nodeData(m);
+        const key = pd.lhs;
+        if (key == .none) continue;
+        const key_name = ctx.tokenText(ctx.nodeMainToken(key));
+        if (!std.mem.eql(u8, key_name, name)) continue;
+        return returnsPromise(pd.rhs, ctx);
+    }
+    return false;
 }
 
 fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {

@@ -30,6 +30,17 @@
       "data": null
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-call",
+      "line": 3,
+      "column": 1,
+      "endLine": 3,
+      "endColumn": 6,
+      "messageId": "errorCall",
+      "data": null
+    }
+  ],
   "oracleLines": [
     3
   ],

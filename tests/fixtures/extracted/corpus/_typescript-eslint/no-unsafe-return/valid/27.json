@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      declare const value: Promise<any>;\n      function foo() {\n        return value;\n      }\n    ",

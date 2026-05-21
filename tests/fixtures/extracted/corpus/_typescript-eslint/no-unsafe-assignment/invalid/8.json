@@ -44,6 +44,7 @@
       }
     }
   ],
+  "oracleDiags": [],
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nconst {\n  x: { y: z },\n} = { x: spooky };\n      ",

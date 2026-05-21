@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\ninterface SurprisinglySafe extends Function {\n  (): string;\n}\ndeclare const safe: SurprisinglySafe;\nsafe();\n    ",

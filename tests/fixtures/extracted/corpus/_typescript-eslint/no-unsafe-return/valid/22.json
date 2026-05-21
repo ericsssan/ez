@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      function fn<T extends any>(x: T): Promise<unknown> {\n        return Promise.resolve(x as any);\n      }\n    ",

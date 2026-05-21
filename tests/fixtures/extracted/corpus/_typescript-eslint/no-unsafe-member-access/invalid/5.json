@@ -32,6 +32,19 @@
       }
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-member-access",
+      "line": 4,
+      "column": 7,
+      "endLine": 4,
+      "endColumn": 15,
+      "messageId": "errorMemberExpression",
+      "data": {
+        "property": ".property"
+      }
+    }
+  ],
   "oracleLines": [
     4
   ],

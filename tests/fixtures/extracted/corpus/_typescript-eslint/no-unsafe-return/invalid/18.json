@@ -32,6 +32,19 @@
       }
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-return",
+      "line": 5,
+      "column": 3,
+      "endLine": 5,
+      "endColumn": 16,
+      "messageId": "unsafeReturn",
+      "data": {
+        "type": "error"
+      }
+    }
+  ],
   "oracleLines": [
     5
   ],

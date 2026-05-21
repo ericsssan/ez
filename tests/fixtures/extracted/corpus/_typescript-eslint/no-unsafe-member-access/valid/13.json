@@ -25,6 +25,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nfunction foo(x?: { a: number }, y: string) {\n  x?.[y];\n}\n      ",

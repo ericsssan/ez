@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      function fn<T extends any>(x: T): Set<unknown> {\n        return x as Set<any>;\n      }\n    ",

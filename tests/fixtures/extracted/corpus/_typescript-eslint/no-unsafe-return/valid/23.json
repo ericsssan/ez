@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      type Wrapper<T> = { inner: T };\n      type Extractor<D extends Wrapper<any>> = D extends Wrapper<infer V> ? V : never;\n      const fn =\n        <D extends Wrapper<any>>(foo: Extractor<D>) =>\n        () =>\n          foo;\n    ",

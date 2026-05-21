@@ -38,6 +38,26 @@
       "data": null
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-member-access",
+      "line": 5,
+      "column": 18,
+      "endLine": 5,
+      "endColumn": 22,
+      "messageId": "unsafeMemberExpression",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-unsafe-member-access",
+      "line": 5,
+      "column": 25,
+      "endLine": 5,
+      "endColumn": 34,
+      "messageId": "unsafeMemberExpression",
+      "data": null
+    }
+  ],
   "oracleLines": [
     5,
     5

@@ -32,6 +32,7 @@
       }
     }
   ],
+  "oracleDiags": [],
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nconst foo = () => {\n  return [] as any[];\n};\n      ",

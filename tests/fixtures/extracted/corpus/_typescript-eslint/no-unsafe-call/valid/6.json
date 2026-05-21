@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      let foo: any = 23;\n      String(foo); // ERROR: Unsafe call of an any typed value\n    ",

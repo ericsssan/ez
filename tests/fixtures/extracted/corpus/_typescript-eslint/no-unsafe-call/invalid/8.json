@@ -30,6 +30,7 @@
       "data": null
     }
   ],
+  "oracleDiags": [],
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\nfunction foo(x: { a: any }) {\n  new x.a();\n}\n      ",

@@ -33,6 +33,7 @@
       }
     }
   ],
+  "oracleDiags": [],
   "oracleLines": [],
   "oracleFixes": null,
   "code": "const x: Set<string> = new Set<any>();",

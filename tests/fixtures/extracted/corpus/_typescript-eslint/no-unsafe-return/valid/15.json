@@ -21,6 +21,7 @@
   },
   "output": null,
   "declaredErrors": [],
+  "oracleDiags": null,
   "oracleLines": [],
   "oracleFixes": null,
   "code": "\n      type Foo<T = number> = { prop: T };\n      function foo(): Foo {\n        return { prop: 1 } as Foo<number>;\n      }\n    ",

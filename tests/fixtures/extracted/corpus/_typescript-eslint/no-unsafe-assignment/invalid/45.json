@@ -30,6 +30,17 @@
       "data": null
     }
   ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unsafe-assignment",
+      "line": 3,
+      "column": 7,
+      "endLine": 3,
+      "endColumn": 8,
+      "messageId": "unsafeArrayPatternFromTuple",
+      "data": null
+    }
+  ],
   "oracleLines": [
     3
   ],
