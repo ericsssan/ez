@@ -116,6 +116,21 @@ pub const Checker = struct {
             .sequence_expr => self.inferSequence(node),
             .conditional => self.inferConditional(node),
             .assign => self.typeOf(self.ast_ref.nodeData(node).rhs),
+            // Compound assignments: result is the new value of LHS.  If
+            // LHS is any, result is any.  Otherwise approximate based on
+            // operator class (most produce number; string/bigint variants
+            // would need a more refined check but rarely surface for
+            // unsafe-* rules).
+            .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign,
+            .exp_assign, .and_assign, .or_assign, .xor_assign, .shl_assign,
+            .shr_assign, .ushr_assign, .logical_and_assign, .logical_or_assign,
+            .nullish_assign => blk: {
+                const lhs_ty = self.typeOf(self.ast_ref.nodeData(node).lhs);
+                if (tymod.isAny(&self.store, lhs_ty)) break :blk tymod.ID_ANY;
+                const rhs_ty = self.typeOf(self.ast_ref.nodeData(node).rhs);
+                if (tymod.isAny(&self.store, rhs_ty)) break :blk tymod.ID_ANY;
+                break :blk lhs_ty;
+            },
 
             .logical_and, .logical_or, .nullish_coalesce => self.inferLogical(node),
 
@@ -138,12 +153,10 @@ pub const Checker = struct {
             .array_literal => self.inferArrayLiteral(node),
             .object_literal => self.inferObjectLiteral(node),
 
-            // We don't infer function return types yet.  Default to
-            // `unknown` (NOT `any`) — `unknown` doesn't trigger
-            // no-unsafe-* rules, which is the safer default.  When the
-            // callee itself is `any`, anyness propagates through `call_expr`
-            // because rules query `typeOfNode(callee)` directly.
-            .call_expr, .optional_call_expr, .new_expr => tymod.ID_UNKNOWN,
+            // Call/new: propagate any through the call (TSe: calling
+            // `any` returns `any`).  Default to `unknown` otherwise —
+            // we don't infer return types from bodies yet.
+            .call_expr, .optional_call_expr, .new_expr => self.inferCallReturn(node),
 
             .member_expr, .computed_member_expr,
             .optional_member_expr, .optional_computed_member_expr => self.inferMember(node),
@@ -536,6 +549,18 @@ pub const Checker = struct {
         const a = self.typeOf(data.lhs);
         const b = self.typeOf(data.rhs);
         return self.store.unionOf(&.{ a, b }) catch tymod.ID_ANY;
+    }
+
+    /// Call/new expression return type.  TSe rule: when the callee
+    /// itself is `any`, the call returns `any` (anyness propagates
+    /// through the call).  Otherwise default to `unknown` since we
+    /// don't infer return types from function bodies.
+    fn inferCallReturn(self: *Checker, node: NodeIndex) TypeId {
+        const callee = self.ast_ref.nodeData(node).lhs;
+        if (callee == .none) return tymod.ID_UNKNOWN;
+        const callee_ty = self.typeOf(callee);
+        if (tymod.isAny(&self.store, callee_ty)) return tymod.ID_ANY;
+        return tymod.ID_UNKNOWN;
     }
 
     fn inferArith(self: *Checker, node: NodeIndex, tag: ast.Node.Tag) TypeId {

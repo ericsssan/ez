@@ -79,8 +79,15 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
 fn checkComputedKey(node: NodeIndex, allow_opt_chain: bool, ctx: *const LintContext) void {
     if (allow_opt_chain and isOptionalMemberExpr(ctx.nodeTag(node))) return;
-    const key = ctx.nodeData(node).rhs;
+    var key = ctx.nodeData(node).rhs;
     if (key == .none) return;
+    // Peel grouping_expr wrappers — TSe's `node.property` selector
+    // reports the inner expression's span, not the parens.
+    while (ctx.nodeTag(key) == .grouping_expr) {
+        const inner = ctx.nodeData(key).lhs;
+        if (inner == .none) break;
+        key = inner;
+    }
     switch (ctx.nodeTag(key)) {
         .string_literal, .number_literal, .boolean_literal, .null_literal,
         .bigint_literal, .regex_literal,

@@ -58,7 +58,16 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     var is_function = !is_any and !is_error and ctx.typeNodeIsFunction(callee)
         and !fileShadowsFunctionType(ctx);
     if (!is_any and !is_error and !is_function) {
-        if (inheritsFunctionByName(callee, ctx)) is_function = true;
+        const op_kind: OpKind = if (ctx.nodeTag(node) == .new_expr) .construct else .call_or_tag;
+        if (inheritsFunctionByName(callee, op_kind, ctx)) is_function = true;
+    }
+    // Flow narrowing: `if (typeof x === 'function') { x() }` narrows
+    // x from `unknown` to `Function`-callable, which TSe still treats
+    // as unsafe-to-call (Function accepts any args).  Detect the
+    // typeof-guard pattern when the callee is an identifier inside a
+    // controlling if-statement.
+    if (!is_any and !is_error and !is_function and isNarrowedToFunction(callee, ctx)) {
+        is_function = true;
     }
     if (!is_any and !is_error and !is_function) return;
     const msg = if (is_error)
@@ -79,6 +88,77 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     //   NewExpression → report at the whole `new X(...)` expression.
     const report_at = if (ctx.nodeTag(node) == .new_expr) node else callee;
     ctx.reportSpanWithMessageId(ctx.nodeSpan(report_at), msg);
+}
+
+/// True when `node` is an identifier reference that lives inside a
+/// controlling `if (typeof <same-name> === 'function')` block.  Used by
+/// no-unsafe-call to detect the TS narrowing pattern that converts an
+/// unknown-typed binding to a Function-callable form.
+///
+/// Conditions checked:
+///   * left side is `typeof <Name>` where Name matches our identifier
+///   * comparison is === or == (TSe narrows for both)
+///   * right side is the string literal `'function'` or `"function"`
+///   * negation forms (`!==`, `!=`) DO NOT narrow positively — skip
+///   * the identifier is in the CONSEQUENT of the if
+fn isNarrowedToFunction(node: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(node) != .identifier) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(node));
+    if (name.len == 0) return false;
+    var prev = node;
+    var p = ctx.parentOf(node);
+    while (p != .none) : ({
+        prev = p;
+        p = ctx.parentOf(p);
+    }) {
+        const tag = ctx.nodeTag(p);
+        if (tag != .if_stmt and tag != .if_else_stmt) continue;
+        const data = ctx.nodeData(p);
+        // For if_stmt: data.lhs = condition, data.rhs = consequent.
+        // For if_else_stmt: data.lhs = condition, data.rhs = extra
+        // index to IfData {consequent, alternate}.  We want to know
+        // which branch `prev` (the descendant we came from) is in.
+        const cond = data.lhs;
+        const in_consequent = blk: switch (tag) {
+            .if_stmt => break :blk prev == data.rhs,
+            .if_else_stmt => {
+                const if_data = ctx.extraData(ast.IfData, @intFromEnum(data.rhs));
+                break :blk prev == if_data.consequent;
+            },
+            else => break :blk false,
+        };
+        if (!in_consequent) continue;
+        if (conditionNarrowsToFunction(cond, name, ctx)) return true;
+    }
+    return false;
+}
+
+/// Matches `typeof <name> === 'function'` (and the == / right-flipped /
+/// parenthesized variants).
+fn conditionNarrowsToFunction(cond: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
+    var c = cond;
+    while (ctx.nodeTag(c) == .grouping_expr) c = ctx.nodeData(c).lhs;
+    const tag = ctx.nodeTag(c);
+    if (tag != .strict_equal and tag != .equal) return false;
+    const data = ctx.nodeData(c);
+    return (binOpMatchesTypeofFn(data.lhs, data.rhs, name, ctx) or
+        binOpMatchesTypeofFn(data.rhs, data.lhs, name, ctx));
+}
+
+fn binOpMatchesTypeofFn(left: NodeIndex, right: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
+    var l = left;
+    while (ctx.nodeTag(l) == .grouping_expr) l = ctx.nodeData(l).lhs;
+    if (ctx.nodeTag(l) != .typeof_expr) return false;
+    const inner = ctx.nodeData(l).lhs;
+    if (ctx.nodeTag(inner) != .identifier) return false;
+    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(inner)), name)) return false;
+    var r = right;
+    while (ctx.nodeTag(r) == .grouping_expr) r = ctx.nodeData(r).lhs;
+    if (ctx.nodeTag(r) != .string_literal) return false;
+    const raw = ctx.tokenText(ctx.nodeMainToken(r));
+    if (raw.len < 2) return false;
+    const body = raw[1 .. raw.len - 1];
+    return std.mem.eql(u8, body, "function");
 }
 
 fn calleeNode(node: NodeIndex, ctx: *const LintContext) NodeIndex {
@@ -124,7 +204,9 @@ fn fileShadowsFunctionType(ctx: *const LintContext) bool {
 ///   2. scanning for `interface <Name> extends ... Function ...`
 /// One-hop only — `interface A extends B; interface B extends Function`
 /// won't be caught.  Coarse but enough for the common-case test fixtures.
-fn inheritsFunctionByName(callee: NodeIndex, ctx: *const LintContext) bool {
+const OpKind = enum { call_or_tag, construct };
+
+fn inheritsFunctionByName(callee: NodeIndex, op: OpKind, ctx: *const LintContext) bool {
     const name = declaredTypeRefName(callee, ctx) orelse return false;
     if (name.len == 0) return false;
     const tree = ctx.ast;
@@ -137,44 +219,64 @@ fn inheritsFunctionByName(callee: NodeIndex, ctx: *const LintContext) bool {
         const id = tree.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
         const iname = tree.tokenText(id.name);
         if (!std.mem.eql(u8, iname, name)) continue;
-        // Walk extends entries.  Parser stores TOKEN indices for each
-        // extends type (per parseClass's implements list pattern).
         const ext_start = id.extends_start;
         const ext_end = id.extends_end;
         if (ext_end <= ext_start) continue;
         const slice = tree.extra_data[ext_start..ext_end];
         var extends_function = false;
         for (slice) |tok| {
-            const txt = tree.tokenText(tok);
-            if (std.mem.eql(u8, txt, "Function")) {
+            if (std.mem.eql(u8, tree.tokenText(tok), "Function")) {
                 extends_function = true;
                 break;
             }
         }
         if (!extends_function) continue;
-        // TSe's "isBuiltinSymbolLike" considers a subtype of Function
-        // safe to call iff it has at least one call/construct signature.
-        // Walk the body — if any member is ts_call_signature or
-        // ts_construct_signature, treat as safe.  Property/method
-        // signatures do NOT make it safe (calling them invokes the
-        // implicit Function, not the property).
+        // TSe's "safe-to-{call,construct}" check on a Function subtype:
+        //   * safe-to-call (incl. template tag): any call signature
+        //   * safe-to-construct: any construct signature OR a call
+        //     signature with non-void return type.  TSe special-cases
+        //     this because callable-only types like `(): T` can be
+        //     constructed (the result is the call return type).
         const body_start = id.body_start;
         const body_end = id.body_end;
-        var has_callable_signature = false;
+        var has_call_sig = false;
+        var has_non_void_call_sig = false;
+        var has_construct_sig = false;
         if (body_end > body_start) {
             const body = tree.extra_data[body_start..body_end];
             for (body) |raw| {
                 const member: NodeIndex = @enumFromInt(raw);
                 const mtag = tree.nodeTag(member);
-                if (mtag == .ts_call_signature or mtag == .ts_construct_signature) {
-                    has_callable_signature = true;
-                    break;
+                if (mtag == .ts_call_signature) {
+                    has_call_sig = true;
+                    if (!callSigReturnsVoid(member, tree)) has_non_void_call_sig = true;
+                } else if (mtag == .ts_construct_signature) {
+                    has_construct_sig = true;
                 }
             }
         }
-        if (!has_callable_signature) return true;
+        const safe = switch (op) {
+            .call_or_tag => has_call_sig,
+            .construct => has_construct_sig or has_non_void_call_sig,
+        };
+        if (!safe) return true;
     }
     return false;
+}
+
+/// True when a `ts_call_signature` body has an explicit `: void` return
+/// type.  Missing return type defaults to `any` in TS — treat as
+/// non-void since `(): any` would let TSe construct.
+fn callSigReturnsVoid(sig: NodeIndex, tree: *const ast.Ast) bool {
+    if (tree.nodeTag(sig) != .ts_call_signature) return false;
+    const sd = tree.extraData(ast.InterfaceSigData, @intFromEnum(tree.nodeData(sig).lhs));
+    if (sd.return_type == .none) return false;
+    if (tree.nodeTag(sd.return_type) != .ts_type_annotation) return false;
+    const ty_node = tree.nodeData(sd.return_type).lhs;
+    if (ty_node == .none) return false;
+    if (tree.nodeTag(ty_node) != .ts_type_reference) return false;
+    const name = tree.tokenText(tree.nodeMainToken(ty_node));
+    return std.mem.eql(u8, name, "void");
 }
 
 /// Returns the textual name of the declared type for an expression that
