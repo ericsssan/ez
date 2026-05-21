@@ -105,25 +105,96 @@ fn checkPromiseExecutor(new_node: NodeIndex, ctx: *const LintContext) void {
     var reject_binding = reject_param;
     if (ctx.nodeTag(reject_binding) == .assignment_pattern) reject_binding = ctx.nodeData(reject_binding).lhs;
     if (ctx.nodeTag(reject_binding) != .identifier) return;
-    // Walk reference list for usages of reject_binding inside the executor,
-    // and check each `reject(arg)` call.
-    const reject_sym = symbolForBindingNode(reject_binding, ctx) orelse return;
-    const refs = &ctx.semantic.references;
-    const total = refs.count();
-    var i: u32 = 0;
-    while (i < total) : (i += 1) {
-        const rid = parser.reference.ReferenceId.fromInt(i);
-        if (!refs.isResolved(rid)) continue;
-        if (refs.getSymbol(rid) != reject_sym) continue;
-        const ref_node = refs.getNode(rid);
-        const p = ctx.parentOf(ref_node);
+    const reject_name = ctx.tokenText(ctx.nodeMainToken(reject_binding));
+    // Track which call nodes we've already reported on so the AST
+    // fallback doesn't double-report calls the symbol-based path
+    // already found.
+    var checked_buf: [32]NodeIndex = undefined;
+    var nchecked: usize = 0;
+    // Symbol-based path (preferred — tracks scope properly).
+    if (symbolForBindingNode(reject_binding, ctx)) |reject_sym| {
+        const refs = &ctx.semantic.references;
+        const total = refs.count();
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const rid = parser.reference.ReferenceId.fromInt(i);
+            if (!refs.isResolved(rid)) continue;
+            if (refs.getSymbol(rid) != reject_sym) continue;
+            const ref_node = refs.getNode(rid);
+            const p = ctx.parentOf(ref_node);
+            if (p == .none) continue;
+            const ptag = ctx.nodeTag(p);
+            if (ptag != .call_expr and ptag != .optional_call_expr) continue;
+            if (ctx.nodeData(p).lhs != ref_node) continue;
+            if (nchecked < checked_buf.len) {
+                checked_buf[nchecked] = p;
+                nchecked += 1;
+            }
+            checkRejectArg(p, ctx);
+        }
+    }
+    // AST fallback: scan identifiers named `reject_name` inside the
+    // executor span.  Covers shapes the symbol-based path misses —
+    // forward-reference in later param's default value (the symbol
+    // resolver may not link `reject(5)` to the previous param), and
+    // parameter shadowing implicit `arguments` (`arguments` inside the
+    // body resolves to the implicit arguments object, not the param).
+    const exec_span = ctx.nodeSpan(executor);
+    const tree = ctx.ast;
+    const total_nodes: u32 = @intCast(tree.nodes.len);
+    var k: u32 = 0;
+    while (k < total_nodes) : (k += 1) {
+        const ni: NodeIndex = @enumFromInt(k);
+        if (tree.nodeTag(ni) != .identifier) continue;
+        if (ni == reject_binding) continue;
+        if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ni)), reject_name)) continue;
+        const sp = ctx.nodeSpan(ni);
+        if (sp.start < exec_span.start or sp.end > exec_span.end) continue;
+        const p = ctx.parentOf(ni);
         if (p == .none) continue;
-        // Use must be the callee of a CallExpression.
         const ptag = ctx.nodeTag(p);
         if (ptag != .call_expr and ptag != .optional_call_expr) continue;
-        if (ctx.nodeData(p).lhs != ref_node) continue;
+        if (ctx.nodeData(p).lhs != ni) continue;
+        var seen = false;
+        for (checked_buf[0..nchecked]) |c| if (c == p) { seen = true; break; };
+        if (seen) continue;
+        // Shadowing check: walk parents of `ni` up to `executor`.  If
+        // we cross a function/arrow that declares its own `reject_name`
+        // parameter, the identifier resolves to that inner param, not
+        // the Promise's reject, so skip.
+        if (isShadowedReject(ni, executor, reject_binding, reject_name, ctx)) continue;
         checkRejectArg(p, ctx);
     }
+}
+
+fn isShadowedReject(use: NodeIndex, exec: NodeIndex, reject_binding: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
+    var node_id = ctx.parentOf(use);
+    while (node_id != .none and node_id != exec) : (node_id = ctx.parentOf(node_id)) {
+        const t = ctx.nodeTag(node_id);
+        const is_fn = t == .fn_decl or t == .async_fn_decl or t == .generator_fn_decl or
+            t == .async_generator_fn_decl or t == .fn_expr or t == .async_fn_expr or
+            t == .generator_fn_expr or t == .async_generator_fn_expr or
+            t == .arrow_fn or t == .async_arrow_fn or t == .method_def or t == .computed_method_def;
+        if (!is_fn) continue;
+        // Inspect this function's params; if any binding identifier
+        // matches `name` AND is not the outer reject_binding, shadowing.
+        if (functionParamShadowsName(node_id, name, reject_binding, ctx)) return true;
+    }
+    return false;
+}
+
+fn functionParamShadowsName(fn_node: NodeIndex, name: []const u8, reject_binding: NodeIndex, ctx: *const LintContext) bool {
+    const params = executorParams(fn_node, ctx) orelse return false;
+    for (params) |raw| {
+        const param: NodeIndex = @enumFromInt(raw);
+        var b = param;
+        if (ctx.nodeTag(b) == .assignment_pattern) b = ctx.nodeData(b).lhs;
+        if (ctx.nodeTag(b) == .rest_element) b = ctx.nodeData(b).lhs;
+        if (ctx.nodeTag(b) != .identifier) continue;
+        if (b == reject_binding) continue;
+        if (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(b)), name)) return true;
+    }
+    return false;
 }
 
 /// Find the symbol whose binding declaration is `binding`.  Param

@@ -6158,8 +6158,11 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
 fn parseBindingPattern(p: *Parser) Error!NodeIndex {
     return switch (p.peek()) {
         .identifier => blk: {
-            // Strict mode / TypeScript: eval and arguments cannot be binding names.
-            if (p.in_strict or p.is_ts) {
+            // Strict mode: `eval` and `arguments` cannot be binding names.
+            // (TS without strict mode permits them — matches typescript-eslint
+            // test expectations for fixtures like
+            // `function (foo, arguments) { ... }`.)
+            if (p.in_strict) {
                 const text = p.tokenText(p.tokIdx());
                 if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
                     try p.emitError("cannot use eval or arguments as a binding name in strict mode");
