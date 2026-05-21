@@ -89,6 +89,7 @@ fn reportIfUnsafeReturn(
     // otherwise the contextual type from the function's host.
     var effective_ret_ty: tymod.TypeId = tymod.ID_UNKNOWN;
     var has_effective_type = false;
+    var has_own_annotation = false;
     if (fn_info.return_type != .none) {
         var ty_node = ctx.nodeData(fn_info.return_type).lhs;
         if (fn_info.is_async) {
@@ -100,8 +101,13 @@ fn reportIfUnsafeReturn(
         if (declaredIsVoid(ty_node, ctx)) return;
         effective_ret_ty = declared;
         has_effective_type = true;
+        has_own_annotation = true;
     } else if (contextualReturnType(fn_node, ctx)) |ctx_ret_ty| {
-        if (ctx.typeIdIsAny(ctx_ret_ty)) return;
+        // Contextual return type of `any` doesn't suppress when the
+        // returned value is an explicit `as any` cast — TSe fires
+        // `unsafeReturn` because the cast itself introduces anyness
+        // that the caller's `any` parameter merely tolerates.
+        if (ctx.typeIdIsAny(ctx_ret_ty) and !isExplicitAnyCast(ret_value, ctx)) return;
         if (ctx.typeIdContainsUnknown(ctx_ret_ty)) return;
         effective_ret_ty = ctx_ret_ty;
         has_effective_type = true;
@@ -139,12 +145,19 @@ fn reportIfUnsafeReturn(
         if (!fn_info.is_async and any_class == .promise_any) return;
         // Declared return matches the any-class: `function f(): any[]`
         // returning any[], or `: Promise<any>` returning Promise<any>.
-        // TSe treats these as opt-in (no fire).
-        if (has_effective_type) {
+        // TSe treats these as opt-in (no fire).  Contextual return types
+        // (from declarator/call-arg position) don't grant the same opt-in
+        // because the user didn't write the annotation.
+        if (has_own_annotation) {
             const declared_class = classifyAnyType(effective_ret_ty, ctx);
             if (declared_class == any_class) return;
         }
-        ctx.reportWithMessageId(report_at, "unsafeReturn");
+        // For arrow-expression bodies, TSe reports at the body expression
+        // (not the arrow); for explicit return statements, at the
+        // ReturnStatement.  `report_at` from the caller is the arrow or
+        // the return_stmt respectively — for arrows, drop into ret_value.
+        const final_report = if (ctx.nodeTag(report_at) == .return_stmt) report_at else ret_value;
+        ctx.reportWithMessageId(final_report, "unsafeReturn");
         return;
     }
     // any_class is Safe — but might still be unsafeReturnAssignment.
@@ -485,6 +498,20 @@ fn declaredIsVoid(ty_node: NodeIndex, ctx: *const LintContext) bool {
     if (ctx.nodeTag(ty_node) != .ts_type_reference) return false;
     const name = ctx.tokenText(ctx.nodeMainToken(ty_node));
     return std.mem.eql(u8, name, "void");
+}
+
+fn isExplicitAnyCast(rhs: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(rhs);
+    switch (tag) {
+        .ts_as_expr, .ts_type_assertion => {
+            const data = ctx.nodeData(rhs);
+            const ty_node = if (tag == .ts_as_expr) data.rhs else data.lhs;
+            const cast_ty = ctx.resolveTypeAnnotationNode(ty_node);
+            return ctx.typeIdIsAny(cast_ty);
+        },
+        .grouping_expr, .ts_non_null_expr => return isExplicitAnyCast(ctx.nodeData(rhs).lhs, ctx),
+        else => return false,
+    }
 }
 
 fn rhsIsExplicitNonAnyCast(rhs: NodeIndex, ctx: *const LintContext) bool {
