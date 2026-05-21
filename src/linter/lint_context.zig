@@ -421,6 +421,50 @@ pub const LintContext = struct {
         return tymod.isError(&c.store, c.typeOf(n));
     }
 
+    /// True when the type id is a tuple type.  Used by no-unsafe-argument
+    /// to distinguish per-position spread checks (tuple) from generic
+    /// any-element-array spreads.
+    pub fn typeIdIsTuple(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.store.get(id).kind == .tuple_t;
+    }
+
+    pub fn typeIdTupleLength(self: *const LintContext, id: tymod.TypeId) usize {
+        const c = self.ensureChecker() orelse return 0;
+        const t = c.store.get(id);
+        if (t.kind != .tuple_t) return 0;
+        return c.store.idsOf(t.list_data).len;
+    }
+
+    /// For a tuple_t type, return the element type at position `idx`.
+    /// Returns ID_UNKNOWN when the type isn't a tuple or `idx` is out of bounds.
+    /// For array_t/readonly_array_t, returns the (single) element type for
+    /// any index — TSe's destructure-from-array semantics.
+    pub fn typeIdTupleElementAt(self: *const LintContext, id: tymod.TypeId, idx: usize) tymod.TypeId {
+        const c = self.ensureChecker() orelse return tymod.ID_UNKNOWN;
+        const t = c.store.get(id);
+        const elems = c.store.idsOf(t.list_data);
+        switch (t.kind) {
+            .tuple_t => return if (idx < elems.len) elems[idx] else tymod.ID_UNKNOWN,
+            .array_t, .readonly_array_t => return if (elems.len > 0) elems[0] else tymod.ID_UNKNOWN,
+            else => return tymod.ID_UNKNOWN,
+        }
+    }
+
+    /// For an object_t type, look up a named property's type.  Returns
+    /// ID_UNKNOWN when the type isn't structural or the property
+    /// isn't declared.  Used by no-unsafe-assignment for object pattern
+    /// destructuring: `const { x } = sender` checks sender's `.x` type.
+    pub fn typeIdObjectPropertyType(self: *const LintContext, id: tymod.TypeId, name: []const u8) tymod.TypeId {
+        const c = self.ensureChecker() orelse return tymod.ID_UNKNOWN;
+        const t = c.store.get(id);
+        if (t.kind != .object_t) return tymod.ID_UNKNOWN;
+        for (c.store.propsOf(t.object_props)) |p| {
+            if (std.mem.eql(u8, p.name, name)) return p.type_id;
+        }
+        return tymod.ID_UNKNOWN;
+    }
+
     /// True when the type id reaches `unknown` either directly or through
     /// a composite.  Used by unsafe-* rules to suppress on declared types
     /// like `unknown`, `unknown[]`, `Set<unknown>` — `unknown` is the safe

@@ -101,13 +101,12 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
     while (i < args.len) : (i += 1) {
         const arg: NodeIndex = @enumFromInt(args[i]);
         // Spread element handling: TSe distinguishes unsafeSpread (any),
-        // unsafeArraySpread (any[]).  When the spread source's type is
-        // any → fire unsafeSpread; when its element type is any (i.e.
-        // it's `any[]` / `Array<any>`) → fire unsafeArraySpread.
+        // unsafeArraySpread (any[]), and unsafeTupleSpread (tuple with
+        // any at a position whose paired param is non-any).  Pass the
+        // starting param index so tuple positions can pair against
+        // params[i + slot].
         if (ctx.nodeTag(arg) == .spread_element) {
-            checkSpreadArg(arg, ctx);
-            // Consume the rest of the param slots — we can't realistically
-            // pair tuple-spread positions against the rest of the args.
+            checkSpreadArg(arg, params_decl, i, ctx);
             return;
         }
         // If we've entered the rest region, all remaining args are
@@ -136,27 +135,41 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
 }
 
 /// Spread element handling for `foo(...x)`:
-///   * if typeOf(x) is any        → unsafeSpread     (data.sender = "`any`")
-///   * if typeOf(x.element) is any (x is `any[]`) → unsafeArraySpread
-/// Tuple spread (`foo(...[a, b])`) needs per-position type tracking
-/// which we don't yet do — we'd need TS type service to know each
-/// tuple slot's type.
-fn checkSpreadArg(spread: NodeIndex, ctx: *const LintContext) void {
+///   * typeOf(x) is `any`              → unsafeSpread
+///   * typeOf(x) is tuple `[A, any, B]` → unsafeTupleSpread when any pairs
+///     with a non-any param at the corresponding position
+///   * typeOf(x) is `any[]`            → unsafeArraySpread
+fn checkSpreadArg(spread: NodeIndex, params_decl: ParamDecl, arg_start: usize, ctx: *const LintContext) void {
     const inner = ctx.nodeData(spread).lhs;
     if (inner == .none) return;
-    // Skip explicit non-any cast on the spread source (`...(x as Foo)`).
-    if (rhsIsExplicitNonAnyCast(inner, ctx)) {
-        // Still need to check the cast target — if `as any`, the source
-        // becomes any.  rhsIsExplicitNonAnyCast already checked that
-        // the target is non-any, so we can return safely.
-        return;
-    }
+    if (rhsIsExplicitNonAnyCast(inner, ctx)) return;
     if (ctx.typeNodeIsAny(inner)) {
         ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeSpread");
         return;
     }
+    const src_ty = ctx.typeOfNode(inner);
+    if (ctx.typeIdIsTuple(src_ty)) {
+        const len = ctx.typeIdTupleLength(src_ty);
+        var i: usize = 0;
+        while (i < len) : (i += 1) {
+            const slot = ctx.typeIdTupleElementAt(src_ty, i);
+            if (!ctx.typeIdIsAny(slot)) continue;
+            // Paired param: same-position param accepting `any` is fine.
+            const param_idx = arg_start + i;
+            if (param_idx < params_decl.params.len) {
+                const param: NodeIndex = @enumFromInt(params_decl.params[param_idx]);
+                const pty_node = paramTypeAnnotationNode(param, ctx);
+                if (pty_node != .none) {
+                    const pty = ctx.resolveTypeAnnotationNode(pty_node);
+                    if (ctx.typeIdIsAny(pty) or ctx.typeIdContainsUnknown(pty)) continue;
+                }
+            }
+            ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeTupleSpread");
+            return;
+        }
+        return;
+    }
     if (ctx.typeNodeContainsAny(inner)) {
-        // Receiver isn't itself `any` but contains any — array/tuple of any.
         ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeArraySpread");
     }
 }

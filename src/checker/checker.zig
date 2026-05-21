@@ -266,7 +266,7 @@ pub const Checker = struct {
             .ts_keyof_type => tymod.ID_STRING, // approx
             .ts_type_literal => self.resolveTypeLiteral(ty_node),
             .ts_function_type, .ts_constructor_type => tymod.ID_UNKNOWN,
-            .ts_tuple_type => tymod.ID_UNKNOWN,
+            .ts_tuple_type => self.resolveTupleType(ty_node),
             .ts_indexed_access_type => tymod.ID_UNKNOWN,
             .ts_conditional_type => tymod.ID_UNKNOWN,
             .ts_mapped_type => tymod.ID_UNKNOWN,
@@ -282,18 +282,9 @@ pub const Checker = struct {
     /// in our Type model).  Index signatures cause the property lookup
     /// to fall back to "we don't know" — equivalent to unknown.
     fn resolveTypeLiteral(self: *Checker, ty_node: NodeIndex) TypeId {
-        // Layout (matches template_literal): start/end stored DIRECTLY
-        // in data.lhs/data.rhs as NodeIndex slots — NOT a SubRange struct
-        // at an extra index.  (The ast.zig doc comment "lhs = extra SubRange
-        // of members" is misleading; the parser uses NodeIndex.fromInt
-        // on range.start/end and stuffs them into lhs/rhs.)
+        // Members range stored directly in lhs/rhs — see directRange comment.
         const data = self.ast_ref.nodeData(ty_node);
-        if (data.lhs == .none or data.rhs == .none) return tymod.ID_UNKNOWN;
-        const r_start = @intFromEnum(data.lhs);
-        const r_end = @intFromEnum(data.rhs);
-        const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
-        if (r_start > r_end or r_end > ext_len) return tymod.ID_UNKNOWN;
-        const member_node_indices = self.ast_ref.extra_data[r_start..r_end];
+        const member_node_indices = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
         var props_buf: [32]tymod.ObjectProp = undefined;
         var prop_count: usize = 0;
         for (member_node_indices) |raw| {
@@ -448,8 +439,7 @@ pub const Checker = struct {
 
     fn resolveUnion(self: *Checker, ty_node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(ty_node);
-        const range = self.safeSubRange(data.lhs) orelse return tymod.ID_ANY;
-        const slice = self.ast_ref.extra_data[range.start..range.end];
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
         var buf: [16]TypeId = undefined;
         const n = @min(slice.len, buf.len);
         var i: usize = 0;
@@ -457,7 +447,21 @@ pub const Checker = struct {
             const m: NodeIndex = @enumFromInt(slice[i]);
             buf[i] = self.resolveTypeNode(m);
         }
-        return self.store.unionOf(buf[0..n]) catch tymod.ID_ANY;
+        return self.store.unionOf(buf[0..n]) catch tymod.ID_UNKNOWN;
+    }
+
+    fn resolveTupleType(self: *Checker, ty_node: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(ty_node);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+        var buf: [16]TypeId = undefined;
+        const n = @min(slice.len, buf.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const m: NodeIndex = @enumFromInt(slice[i]);
+            buf[i] = self.resolveTypeNode(m);
+        }
+        const list = self.store.appendTypeIds(buf[0..n]) catch return tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .tuple_t, .list_data = list }) catch tymod.ID_UNKNOWN;
     }
 
     fn resolveIntersection(self: *Checker, ty_node: NodeIndex) TypeId {
@@ -472,14 +476,38 @@ pub const Checker = struct {
         const data = self.ast_ref.nodeData(node);
         const ty_node = if (tag == .ts_as_expr) data.rhs else data.lhs;
         const inner_node = if (tag == .ts_as_expr) data.lhs else data.rhs;
-        // `x as any` widens to any; `x as Foo` becomes Foo.  But
-        // `any as Foo` is exactly the unsafe-* pattern: typescript-eslint
-        // still considers the source `any` for assignment purposes only
-        // when no explicit annotation is given.  Our rule will inspect
-        // the SOURCE expression for any-ness BEFORE the cast, so here
-        // we honor the cast for downstream uses (final type).
-        _ = inner_node;
+        // `as const`: TS-specific syntax that converts literals to their
+        // narrowest readonly form.  Parses as a type reference to `const`.
+        // For an array literal source we synthesize a tuple_t with each
+        // element's specific type — this lets spread-of-tuple checks see
+        // per-position any in `['a', 1 as any] as const`.
+        if (ty_node != .none and self.ast_ref.nodeTag(ty_node) == .ts_type_reference) {
+            const name_tok = self.ast_ref.nodeMainToken(ty_node);
+            const name = self.ast_ref.tokenText(name_tok);
+            if (std.mem.eql(u8, name, "const")) {
+                return self.inferAsConst(inner_node);
+            }
+        }
         return self.resolveTypeNode(ty_node);
+    }
+
+    /// `as const` lowering: for an array_literal source, build a tuple_t
+    /// with each element's specific type.  Otherwise return the source's
+    /// inferred type unchanged.
+    fn inferAsConst(self: *Checker, src: NodeIndex) TypeId {
+        if (src == .none) return tymod.ID_UNKNOWN;
+        if (self.ast_ref.nodeTag(src) != .array_literal) return self.typeOf(src);
+        const data = self.ast_ref.nodeData(src);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+        var buf: [32]TypeId = undefined;
+        const n = @min(slice.len, buf.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const elem: NodeIndex = @enumFromInt(slice[i]);
+            buf[i] = if (elem == .none) tymod.ID_UNDEFINED else self.typeOf(elem);
+        }
+        const list = self.store.appendTypeIds(buf[0..n]) catch return tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .tuple_t, .list_data = list }) catch tymod.ID_UNKNOWN;
     }
 
     fn inferSatisfies(self: *Checker, node: NodeIndex) TypeId {
@@ -544,15 +572,29 @@ pub const Checker = struct {
         return r;
     }
 
+    /// Several AST node tags (ts_union_type, ts_intersection_type,
+    /// ts_tuple_type, ts_type_literal, template_literal) store the
+    /// range start/end DIRECTLY in data.lhs/data.rhs as NodeIndex
+    /// values — NOT a SubRange struct at an extra index.  This helper
+    /// reads that pattern consistently.  Returns null when either slot
+    /// is .none or the range extends past extra_data.
+    fn directRange(self: *Checker, lhs: NodeIndex, rhs: NodeIndex) ?[]const u32 {
+        if (lhs == .none or rhs == .none) return null;
+        const s = @intFromEnum(lhs);
+        const e = @intFromEnum(rhs);
+        const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+        if (s > e or e > ext_len) return null;
+        return self.ast_ref.extra_data[s..e];
+    }
+
     fn inferArrayLiteral(self: *Checker, node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(node);
-        const range = self.safeSubRange(data.lhs) orelse {
+        const slice = self.directRange(data.lhs, data.rhs) orelse {
             return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
         };
-        if (range.end <= range.start) return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
+        if (slice.len == 0) return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
         // Element type = union of element types.
         var buf: [32]TypeId = undefined;
-        const slice = self.ast_ref.extra_data[range.start..range.end];
         const n = @min(slice.len, buf.len);
         var i: usize = 0;
         while (i < n) : (i += 1) {
