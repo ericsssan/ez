@@ -95,37 +95,62 @@ fn reportIfUnsafeReturn(
             if (peelPromise(ty_node, ctx)) |inner| ty_node = inner;
         }
         const declared = ctx.resolveTypeAnnotationNode(ty_node);
-        if (ctx.typeIdIsAny(declared)) return;
-        if (ctx.typeIdContainsAny(declared)) return; // `Set<any>` etc.: user opted in
-        if (ctx.typeIdContainsUnknown(declared)) return;
+        if (ctx.typeIdIsAny(declared)) return; // `: any` opt-in
+        if (ctx.typeIdContainsUnknown(declared)) return; // unknown-flavored target
         if (declaredIsVoid(ty_node, ctx)) return;
         effective_ret_ty = declared;
         has_effective_type = true;
     } else if (contextualReturnType(fn_node, ctx)) |ctx_ret_ty| {
         if (ctx.typeIdIsAny(ctx_ret_ty)) return;
-        if (ctx.typeIdContainsAny(ctx_ret_ty)) return;
         if (ctx.typeIdContainsUnknown(ctx_ret_ty)) return;
         effective_ret_ty = ctx_ret_ty;
         has_effective_type = true;
     }
-    const has_any = ctx.typeNodeContainsAny(ret_value);
-    const has_err = !has_any and ctx.typeNodeIsError(ret_value);
-    if (!has_any and !has_err) return;
-    if (rhsIsExplicitNonAnyCast(ret_value, ctx)) return;
-    if (!fn_info.is_async and ctx.typeNodeIsPromiseOfAny(ret_value)) return;
-
-    // Distinguish messageIds:
-    //   * unsafeReturn          — return value is directly any/error
-    //   * unsafeReturnAssignment — return is generic-of-any flowing into
-    //                              a same-outer-name generic destination
+    // Mirror TSe's discriminateAnyType: classify return value as
+    // directly any / any[] / Promise<any> / "safe but maybe still
+    // unsafe-via-assignment".  These four categories control whether
+    // we fire `unsafeReturn`; the assignability check below handles
+    // the `unsafeReturnAssignment` path that fires even on "safe"
+    // return-value classification.
     const ret_ty = ctx.typeOfNode(ret_value);
-    const ret_is_directly_any = ctx.typeIdIsAny(ret_ty);
-    const msg = if (!ret_is_directly_any and has_effective_type and
-        ctx.typeIdSameOuterRef(ret_ty, effective_ret_ty))
-        "unsafeReturnAssignment"
-    else
-        "unsafeReturn";
-    ctx.reportWithMessageId(report_at, msg);
+    const any_class = classifyAnyType(ret_ty, ctx);
+    const has_err = ctx.typeNodeIsError(ret_value);
+
+    if (any_class != .safe or has_err) {
+        if (rhsIsExplicitNonAnyCast(ret_value, ctx)) return;
+        if (!fn_info.is_async and any_class == .promise_any) return;
+        ctx.reportWithMessageId(report_at, "unsafeReturn");
+        return;
+    }
+    // any_class is Safe — but might still be unsafeReturnAssignment.
+    // Fires when:
+    //   - ret_ty is a generic with any in its args (e.g. Set<any>)
+    //   - effective_ret_ty has SAME outer name as ret_ty
+    //     (different outer name → TSe's isUnsafeAssignment returns
+    //     null because Set<any> is structurally assignable to
+    //     ReadonlySet<X> etc.)
+    //   - effective_ret_ty's matching generic args are NOT any
+    //     (Set<any> → Set<any> is identity, no diff)
+    if (!has_effective_type) return;
+    if (!ctx.typeNodeContainsAny(ret_value)) return;
+    if (rhsIsExplicitNonAnyCast(ret_value, ctx)) return;
+    if (!ctx.typeIdSameOuterRef(ret_ty, effective_ret_ty)) return;
+    // Suppress when the receiver also contains any in the same slots
+    // — that's an opt-in, not a mismatch.
+    if (ctx.typeIdContainsAny(effective_ret_ty)) return;
+    ctx.reportWithMessageId(report_at, "unsafeReturnAssignment");
+}
+
+/// TSe's AnyType discrimination.  `Safe` means the type isn't an
+/// "any-flavored" wrapper; assignability is what determines
+/// unsafeReturnAssignment for those cases.
+const AnyClass = enum { any, any_array, promise_any, safe };
+
+fn classifyAnyType(ty: tymod.TypeId, ctx: *const LintContext) AnyClass {
+    if (ctx.typeIdIsAny(ty)) return .any;
+    if (ctx.typeIdIsAnyArray(ty)) return .any_array;
+    if (ctx.typeIdIsPromiseOfAny(ty)) return .promise_any;
+    return .safe;
 }
 
 /// Walk up from a function expression (arrow_fn / fn_expr) to find the

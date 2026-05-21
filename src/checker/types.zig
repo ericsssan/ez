@@ -432,6 +432,36 @@ pub fn isError(store: *const TypeStore, id: TypeId) bool {
     return store.get(id).kind == .error_t;
 }
 
+/// True when the type is `Promise<T>` (any T or T contains any).
+pub fn isPromiseOfAny(store: *const TypeStore, id: TypeId) bool {
+    const t = store.get(id);
+    if (t.kind != .type_ref) return false;
+    if (!std.mem.eql(u8, t.name, "Promise")) return false;
+    const args = store.idsOf(t.list_data);
+    if (args.len == 0) return false;
+    return containsAny(store, args[0]);
+}
+
+/// True when the type is `any[]` / `readonly any[]` / `Array<any>` /
+/// `ReadonlyArray<any>` — TSe's "any array" classification.
+pub fn isAnyArray(store: *const TypeStore, id: TypeId) bool {
+    const t = store.get(id);
+    switch (t.kind) {
+        .array_t, .readonly_array_t => {
+            const elems = store.idsOf(t.list_data);
+            return elems.len > 0 and containsAny(store, elems[0]);
+        },
+        .type_ref => {
+            if (std.mem.eql(u8, t.name, "Array") or std.mem.eql(u8, t.name, "ReadonlyArray")) {
+                const args = store.idsOf(t.list_data);
+                return args.len > 0 and containsAny(store, args[0]);
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
 pub fn containsUnknown(store: *const TypeStore, id: TypeId) bool {
     if (isUnknown(store, id)) return true;
     const t = store.get(id);

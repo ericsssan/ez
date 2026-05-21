@@ -464,12 +464,19 @@ pub const LintContext = struct {
     /// caller is expected to await.
     pub fn typeNodeIsPromiseOfAny(self: *const LintContext, n: NodeIndex) bool {
         const c = self.ensureChecker() orelse return false;
-        const t = c.store.get(c.typeOf(n));
-        if (t.kind != .type_ref) return false;
-        if (!std.mem.eql(u8, t.name, "Promise")) return false;
-        const args = c.store.idsOf(t.list_data);
-        if (args.len == 0) return false;
-        return tymod.containsAny(&c.store, args[0]);
+        return tymod.isPromiseOfAny(&c.store, c.typeOf(n));
+    }
+
+    pub fn typeIdIsPromiseOfAny(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.isPromiseOfAny(&c.store, id);
+    }
+
+    /// True when the type is `any[]` / `readonly any[]` / `Array<any>` /
+    /// `ReadonlyArray<any>`.  Matches TSe's `isTypeAnyArrayType`.
+    pub fn typeIdIsAnyArray(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.isAnyArray(&c.store, id);
     }
 
     /// True when the type id is a tuple type.  Used by no-unsafe-argument

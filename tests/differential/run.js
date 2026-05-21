@@ -130,7 +130,13 @@ function printCodeSnippet(code, highlightLines, indent = "    ", columnMarks = n
         const col = Math.max(1, m.col ?? 1);
         const endCol = Math.max(col + 1, m.endCol ?? (col + 1));
         const len = Math.min(endCol - col, Math.max(1, src.length - col + 1));
-        const padding = " ".repeat(num.length + 1 + 2 + (col - 1)); // line-num + ": " + col offset
+        // Source line format is `${indent}${marker}${num}: ${src}`.
+        // Total prefix before src col 1 = indent.length + 1 (marker) +
+        // num.length (3) + 2 (": ") = indent.length + 6.
+        // Caret line format is `${indent} ${padding}${carets}`.
+        // So padding = (prefix.length - indent.length - 1) + (col - 1)
+        // = 5 + (col - 1) = num.length + 2 + (col - 1).
+        const padding = " ".repeat(num.length + 2 + (col - 1));
         const carets = "^".repeat(Math.max(1, len));
         const label = m.label ? ` ${m.label}` : "";
         console.log(`${indent} ${padding}${carets}${label}`);
