@@ -45,18 +45,35 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 }
 
 fn checkRejectCall(call: NodeIndex, ctx: *const LintContext) void {
-    // Callee must be `<obj>.reject` where obj is Promise-like.
-    const callee = ctx.nodeData(call).lhs;
+    // Callee must be `<obj>.reject` / `<obj>?.reject` /
+    // `<obj>['reject']` / `(<obj>.reject)` where obj is Promise-like.
+    var callee = ctx.nodeData(call).lhs;
     if (callee == .none) return;
+    while (ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
     const ctag = ctx.nodeTag(callee);
-    if (ctag != .member_expr and ctag != .optional_member_expr) return;
-    const md = ctx.nodeData(callee);
-    if (md.rhs == .none) return;
-    const method = ctx.tokenText(ctx.nodeMainToken(md.rhs));
-    if (!std.mem.eql(u8, method, "reject")) return;
-    // obj must be Promise-like.  We check: identifier "Promise" or
-    // any expression whose declared type is Promise.
-    if (!receiverIsPromiseLike(md.lhs, ctx)) return;
+    var obj: NodeIndex = .none;
+    var is_reject = false;
+    if (ctag == .member_expr or ctag == .optional_member_expr) {
+        const md = ctx.nodeData(callee);
+        if (md.rhs == .none) return;
+        is_reject = std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(md.rhs)), "reject");
+        obj = md.lhs;
+    } else if (ctag == .computed_member_expr or ctag == .optional_computed_member_expr) {
+        // `Promise['reject']` — rhs is the computed key (string_literal).
+        const md = ctx.nodeData(callee);
+        if (md.rhs == .none) return;
+        if (ctx.nodeTag(md.rhs) != .string_literal) return;
+        const span = ctx.nodeSpan(md.rhs);
+        if (span.end <= span.start + 2) return;
+        const raw = ctx.ast.source[span.start..span.end];
+        // Strip quotes.
+        if (raw.len < 3) return;
+        const inner = raw[1 .. raw.len - 1];
+        is_reject = std.mem.eql(u8, inner, "reject");
+        obj = md.lhs;
+    } else return;
+    if (!is_reject) return;
+    if (!receiverIsPromiseLike(obj, ctx)) return;
     checkRejectArg(call, ctx);
 }
 
@@ -76,9 +93,9 @@ fn checkRejectArg(call: NodeIndex, ctx: *const LintContext) void {
 
 fn checkPromiseExecutor(new_node: NodeIndex, ctx: *const LintContext) void {
     var callee = ctx.nodeData(new_node).lhs;
-    while (ctx.nodeTag(callee) == .ts_instantiation_expr) callee = ctx.nodeData(callee).lhs;
-    if (ctx.nodeTag(callee) != .identifier) return;
-    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "Promise")) return;
+    while (ctx.nodeTag(callee) == .ts_instantiation_expr or
+        ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
+    if (!newCalleeIsPromiseLike(callee, ctx)) return;
     const args = callArgs(new_node, ctx);
     if (args.len == 0) return;
     const executor: NodeIndex = @enumFromInt(args[0]);
@@ -141,15 +158,112 @@ fn executorParams(executor: NodeIndex, ctx: *const LintContext) ?[]const u32 {
     }
 }
 
+fn newCalleeIsPromiseLike(callee: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(callee);
+    if (tag == .identifier) {
+        const name = ctx.tokenText(ctx.nodeMainToken(callee));
+        if (std.mem.eql(u8, name, "Promise")) return true;
+        if (classExtendsPromise(name, ctx)) return true;
+        if (identifierAliasesPromise(callee, ctx)) return true;
+    } else if (tag == .member_expr or tag == .optional_member_expr) {
+        // `new foo.bar(...)` — walk object's annotation, find the
+        // property's type, check if PromiseConstructor.
+        const md = ctx.nodeData(callee);
+        if (md.rhs == .none) return false;
+        const prop = ctx.tokenText(ctx.nodeMainToken(callee));
+        const object = md.lhs;
+        if (object == .none) return false;
+        return memberTypeIsPromiseConstructor(object, prop, ctx);
+    }
+    return false;
+}
+
+fn memberTypeIsPromiseConstructor(object: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    // object's declared annotation should be `{ <prop>: PromiseConstructor; ... }`.
+    if (ctx.nodeTag(object) != .identifier) return false;
+    const sym = symbolForIdent(object, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    var ty = ctx.nodeData(bd.rhs).lhs;
+    if (ty == .none) return false;
+    if (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) != .ts_type_literal) return false;
+    const tld = ctx.nodeData(ty);
+    const s = @intFromEnum(tld.lhs);
+    const e = @intFromEnum(tld.rhs);
+    if (s >= e or e > ctx.ast.extra_data.len) return false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(m) != .ts_property_signature) continue;
+        if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(m)), prop)) continue;
+        const md = ctx.nodeData(m);
+        if (md.rhs == .none or ctx.nodeTag(md.rhs) != .ts_type_annotation) return false;
+        const pty = ctx.nodeData(md.rhs).lhs;
+        if (pty == .none or ctx.nodeTag(pty) != .ts_type_reference) return false;
+        return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(pty)), "PromiseConstructor");
+    }
+    return false;
+}
+
 fn receiverIsPromiseLike(node: NodeIndex, ctx: *const LintContext) bool {
-    // Identifier `Promise` (the global constructor).
-    if (ctx.nodeTag(node) == .identifier) {
-        const name = ctx.tokenText(ctx.nodeMainToken(node));
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) == .identifier) {
+        const name = ctx.tokenText(ctx.nodeMainToken(n));
         if (std.mem.eql(u8, name, "Promise")) return true;
         // Class declared as `class X extends Promise<T>` etc.
         if (classExtendsPromise(name, ctx)) return true;
+        // `const foo = Promise; foo.reject()` — alias.
+        if (identifierAliasesPromise(n, ctx)) return true;
+        // Annotated as PromiseConstructor / Promise / intersection.
+        if (identifierTypeIsPromiseLike(n, ctx)) return true;
     }
     return false;
+}
+
+fn identifierTypeIsPromiseLike(ident: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    return tsTypeIsPromiseLike(ctx.nodeData(bd.rhs).lhs, ctx);
+}
+
+fn tsTypeIsPromiseLike(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    const tag = ctx.nodeTag(ty);
+    if (tag == .ts_parenthesized_type) return tsTypeIsPromiseLike(ctx.nodeData(ty).lhs, ctx);
+    if (tag == .ts_type_reference) {
+        const name = ctx.tokenText(ctx.nodeMainToken(ty));
+        return std.mem.eql(u8, name, "PromiseConstructor") or std.mem.eql(u8, name, "Promise");
+    }
+    if (tag == .ts_intersection_type) {
+        // ANY branch promise-like is enough.
+        const data = ctx.nodeData(ty);
+        const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+        const s = @intFromEnum(data.lhs);
+        const e = @intFromEnum(data.rhs);
+        if (s >= e or e > ext_len) return false;
+        for (ctx.ast.extra_data[s..e]) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            if (tsTypeIsPromiseLike(m, ctx)) return true;
+        }
+    }
+    return false;
+}
+
+fn identifierAliasesPromise(ident: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    const dparent = ctx.parentOf(decl);
+    if (dparent == .none or ctx.nodeTag(dparent) != .declarator) return false;
+    const init = ctx.nodeData(dparent).rhs;
+    if (init == .none or ctx.nodeTag(init) != .identifier) return false;
+    return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(init)), "Promise");
 }
 
 fn classExtendsPromise(name: []const u8, ctx: *const LintContext) bool {
@@ -321,16 +435,62 @@ fn memberIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
     if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
         if (computedMemberIsErrorLike(node, ctx)) return true;
     }
-    // `foo().err` / `foo.err` — if the receiver is a call returning an
-    // object literal with an Error-typed property, the member is
-    // Error-like.  We approximate: walk the receiver's call return type
-    // annotation for a `ts_type_literal` matching the property name.
     const object = ctx.nodeData(node).lhs;
     const prop_tok = ctx.nodeMainToken(node);
     const prop = ctx.tokenText(prop_tok);
     if (object == .none) return false;
-    // Walk the receiver to find its return-type annotation.
+    // `this.field` / `this.#field` — walk to enclosing class and find
+    // the class field with the matching name; check its annotation.
+    if (ctx.nodeTag(object) == .this_expr) {
+        return thisPropertyIsErrorLike(node, prop, ctx);
+    }
+    // `foo().err` / `foo.err` — if the receiver is a call returning an
+    // object literal with an Error-typed property, the member is
+    // Error-like.  We approximate: walk the receiver's call return type
+    // annotation for a `ts_type_literal` matching the property name.
     return receiverPropertyIsErrorLike(object, prop, ctx);
+}
+
+fn thisPropertyIsErrorLike(use: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    // Walk up to find the enclosing class_decl / class_expr.
+    var p = ctx.parentOf(use);
+    while (p != .none) : (p = ctx.parentOf(p)) {
+        const t = ctx.nodeTag(p);
+        if (t == .class_decl or t == .class_expr) {
+            return classFieldIsErrorLike(p, prop, ctx);
+        }
+    }
+    return false;
+}
+
+fn classFieldIsErrorLike(class_node: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    const cd = ctx.extraData(ast.ClassData, @intFromEnum(ctx.nodeData(class_node).lhs));
+    const body = cd.body;
+    if (body == .none) return false;
+    // class_body stores member range in data.lhs..rhs (SubRange).
+    const bd = ctx.nodeData(body);
+    const s = @intFromEnum(bd.lhs);
+    const e = @intFromEnum(bd.rhs);
+    if (s >= e or e > ctx.ast.extra_data.len) return false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const member: NodeIndex = @enumFromInt(raw);
+        const mt = ctx.nodeTag(member);
+        if (mt != .property_def and mt != .computed_property_def) continue;
+        // For private fields the field's main token includes the `#`
+        // sigil; `this.#error` member node's main_token is also `#error`.
+        const name_text = ctx.tokenText(ctx.nodeMainToken(member));
+        if (!std.mem.eql(u8, name_text, prop)) continue;
+        // property_def: rhs = extra index to PropertyData.
+        const pd = ctx.extraData(ast.PropertyData, @intFromEnum(ctx.nodeData(member).rhs));
+        const ann = pd.type_annotation;
+        if (ann == .none or ctx.nodeTag(ann) != .ts_type_annotation) {
+            // No annotation — fall back to initializer.
+            if (pd.value != .none and exprIsErrorLike(pd.value, ctx)) return true;
+            return false;
+        }
+        return tsTypeIsErrorLike(ctx.nodeData(ann).lhs, ctx);
+    }
+    return false;
 }
 
 fn receiverPropertyIsErrorLike(receiver: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
@@ -455,11 +615,54 @@ fn identifierTypeIsErrorLike(ident: NodeIndex, ctx: *const LintContext) bool {
     if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
         const ty = ctx.nodeData(bd.rhs).lhs;
         if (tsTypeIsErrorLike(ty, ctx)) return true;
+        // Type-parameter reference: `<T extends Error>(t: T)` —
+        // walk the named type parameter's constraint.
+        if (ty != .none and ctx.nodeTag(ty) == .ts_type_reference) {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            if (typeParamConstraintIsErrorLike(decl, name, ctx)) return true;
+        }
     }
     const dparent = ctx.parentOf(decl);
     if (dparent != .none and ctx.nodeTag(dparent) == .declarator) {
         const init = ctx.nodeData(dparent).rhs;
         if (init != .none and exprIsErrorLike(init, ctx)) return true;
+    }
+    return false;
+}
+
+fn typeParamConstraintIsErrorLike(at: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
+    // Walk enclosing fn/class via spans to find a ts_type_parameter
+    // matching `name` declared inside it; check its constraint.
+    const tree = ctx.ast;
+    const from_span = ctx.nodeSpan(at);
+    var enclosing: NodeIndex = ctx.parentOf(at);
+    while (enclosing != .none) : (enclosing = ctx.parentOf(enclosing)) {
+        const t = ctx.nodeTag(enclosing);
+        if (t == .fn_decl or t == .async_fn_decl or t == .generator_fn_decl or
+            t == .async_generator_fn_decl or t == .ts_declare_function or
+            t == .fn_expr or t == .async_fn_expr or t == .generator_fn_expr or
+            t == .async_generator_fn_expr or t == .arrow_fn or t == .async_arrow_fn or
+            t == .method_def or t == .computed_method_def or
+            t == .class_decl or t == .class_expr)
+        {
+            const enclosing_span = ctx.nodeSpan(enclosing);
+            const total: u32 = @intCast(tree.nodes.len);
+            var i: u32 = 0;
+            while (i < total) : (i += 1) {
+                const ni: NodeIndex = @enumFromInt(i);
+                if (tree.nodeTag(ni) != .ts_type_parameter) continue;
+                if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
+                const tp_span = ctx.nodeSpan(ni);
+                if (tp_span.start >= enclosing_span.start and
+                    tp_span.end <= enclosing_span.end and
+                    tp_span.end <= from_span.start)
+                {
+                    const constraint = tree.nodeData(ni).lhs;
+                    if (constraint == .none) return false;
+                    return tsTypeIsErrorLike(constraint, ctx);
+                }
+            }
+        }
     }
     return false;
 }
