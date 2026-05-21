@@ -125,7 +125,9 @@ fn exprIsArrayLike(node: NodeIndex, ctx: *const LintContext) bool {
             if (ctx.nodeTag(decl) != .identifier) return false;
             const bd = ctx.nodeData(decl);
             if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
-                return tsTypeIsArrayLike(ctx.nodeData(bd.rhs).lhs, ctx);
+                // Pass `decl` as the `at` anchor — it has proper parent
+                // linkage for scope-walking.
+                return tsTypeIsArrayLikeAt(ctx.nodeData(bd.rhs).lhs, decl, ctx);
             }
             const dparent = ctx.parentOf(decl);
             if (dparent != .none and ctx.nodeTag(dparent) == .declarator) {
@@ -161,15 +163,73 @@ fn tsTypeIsIndexRecord(ty: NodeIndex, ctx: *const LintContext) bool {
 }
 
 fn tsTypeIsArrayLike(ty: NodeIndex, ctx: *const LintContext) bool {
+    return tsTypeIsArrayLikeAt(ty, ty, ctx);
+}
+
+/// Same as tsTypeIsArrayLike but takes an `at` site used as the
+/// lookup anchor when chasing type-parameter constraints.
+fn tsTypeIsArrayLikeAt(ty: NodeIndex, at: NodeIndex, ctx: *const LintContext) bool {
     if (ty == .none) return false;
     const tag = ctx.nodeTag(ty);
-    if (tag == .ts_parenthesized_type) return tsTypeIsArrayLike(ctx.nodeData(ty).lhs, ctx);
+    if (tag == .ts_parenthesized_type) return tsTypeIsArrayLikeAt(ctx.nodeData(ty).lhs, at, ctx);
     if (tag == .ts_array_type or tag == .ts_tuple_type) return true;
+    if (tag == .ts_union_type) {
+        // ALL branches must be array-like for the union to safely reduce.
+        const data = ctx.nodeData(ty);
+        const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+        const s = @intFromEnum(data.lhs);
+        const e = @intFromEnum(data.rhs);
+        if (s >= e or e > ext_len) return false;
+        for (ctx.ast.extra_data[s..e]) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            if (!tsTypeIsArrayLikeAt(m, at, ctx)) return false;
+        }
+        return true;
+    }
     if (tag == .ts_type_reference) {
         const name = ctx.tokenText(ctx.nodeMainToken(ty));
-        return std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray");
+        if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) return true;
+        // Chase type-parameter constraints (`U extends T[]`).  Use the
+        // `at` anchor — constraint nodes themselves often lack a
+        // parent in the parent index.
+        if (lookupNearestTypeParameter(at, name, ctx)) |constraint| {
+            if (constraint != .none) return tsTypeIsArrayLikeAt(constraint, at, ctx);
+        }
     }
     return false;
+}
+
+fn lookupNearestTypeParameter(at: NodeIndex, name: []const u8, ctx: *const LintContext) ?NodeIndex {
+    const tree = ctx.ast;
+    const from_span = ctx.nodeSpan(at);
+    var enclosing: NodeIndex = ctx.parentOf(at);
+    while (enclosing != .none) : (enclosing = ctx.parentOf(enclosing)) {
+        const t = ctx.nodeTag(enclosing);
+        if (t == .fn_decl or t == .async_fn_decl or t == .generator_fn_decl or
+            t == .async_generator_fn_decl or t == .ts_declare_function or
+            t == .fn_expr or t == .async_fn_expr or t == .generator_fn_expr or
+            t == .async_generator_fn_expr or t == .arrow_fn or t == .async_arrow_fn or
+            t == .method_def or t == .computed_method_def or
+            t == .class_decl or t == .class_expr)
+        {
+            const enclosing_span = ctx.nodeSpan(enclosing);
+            const total: u32 = @intCast(tree.nodes.len);
+            var i: u32 = 0;
+            while (i < total) : (i += 1) {
+                const ni: NodeIndex = @enumFromInt(i);
+                if (tree.nodeTag(ni) != .ts_type_parameter) continue;
+                if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
+                const tp_span = ctx.nodeSpan(ni);
+                if (tp_span.start >= enclosing_span.start and
+                    tp_span.end <= enclosing_span.end and
+                    tp_span.end <= from_span.start)
+                {
+                    return tree.nodeData(ni).lhs;
+                }
+            }
+        }
+    }
+    return null;
 }
 
 fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {
