@@ -53,6 +53,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // `void` when ignoreVoid is true (the result is still an array).
     if (isFloatingPromiseArray(expr, ctx)) {
         if (optionIgnoreIIFE(ctx) and isImmediatelyInvokedFn(expr, ctx)) return;
+        if (matchesAllowedSpecifier(unwrap(expr, ctx), ctx)) return;
         // `void X` with ignoreVoid:true suppresses regular floating but
         // arrays are explicitly checked even when voided in ignoreVoid:false.
         // TSe always fires PromiseArray (no `await`/`void` suppression).
@@ -134,6 +135,11 @@ fn exprProducesPromiseArray(e: NodeIndex, ctx: *const LintContext) bool {
                     }
                 }
             }
+            // `cursed()` whose declared return is `[Promise<X>, Promise<Y>]`
+            // — tuple-of-promises is a promise-array in TSe's classification.
+            if (ctag == .identifier) {
+                return calleeReturnsTupleOfPromises(callee, ctx);
+            }
             return false;
         },
         .identifier => return identifierDeclaredTypeIsPromiseArray(e, ctx),
@@ -142,6 +148,97 @@ fn exprProducesPromiseArray(e: NodeIndex, ctx: *const LintContext) bool {
             // `arr?.[0]` where `arr` is array-of-promise-array — element
             // is itself array of promises.  Walk obj's declared annotation.
             return memberExprDeclaredTypeIsPromiseArray(e, ctx);
+        },
+        else => return false,
+    }
+}
+
+/// `declare function cursed(): [Promise<X>, ...]` — return type is a
+/// tuple where at least one element is a Promise.  TSe classifies this
+/// as a promise-array (floatingPromiseArray*).
+fn calleeReturnsTupleOfPromises(ident: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    // Locate the owning declaration: the symbol's decl node may be the
+    // binding identifier itself, or the fn_decl, depending on the kind.
+    var fn_node: NodeIndex = decl;
+    const dtag = ctx.nodeTag(decl);
+    if (dtag == .identifier) {
+        // Variable annotation path: `declare const f: () => [Promise<X>, Y]`.
+        const bd = ctx.nodeData(decl);
+        if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
+            const ty = ctx.nodeData(bd.rhs).lhs;
+            if (ty != .none and ctx.nodeTag(ty) == .ts_function_type) {
+                const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+                return tsTypeIsPromiseTuple(fd.body, ctx);
+            }
+        }
+        // Function-decl binding identifier: parent IS the fn_decl.
+        const p = ctx.parentOf(decl);
+        if (p == .none) return false;
+        fn_node = p;
+    }
+    switch (ctx.nodeTag(fn_node)) {
+        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl, .ts_declare_function => {
+            const dd = ctx.nodeData(fn_node);
+            const fd = ctx.extraData(ast.FnData, @intFromEnum(dd.lhs));
+            const ret_node = fd.return_type;
+            if (ret_node == .none) return false;
+            if (ctx.nodeTag(ret_node) != .ts_type_annotation) return false;
+            return tsTypeIsPromiseTuple(ctx.nodeData(ret_node).lhs, ctx);
+        },
+        else => return false,
+    }
+}
+
+/// True when ty is a tuple type with at least one Promise element, OR a
+/// union containing such a tuple.
+fn tsTypeIsPromiseTuple(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return tsTypeIsPromiseTuple(ctx.nodeData(ty).lhs, ctx),
+        .ts_union_type, .ts_intersection_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (tsTypeIsPromiseTuple(m, ctx)) return true;
+                // also a plain array-of-promise within a union
+                if (tsTypeIsPromiseArray(m, ctx)) return true;
+            }
+            return false;
+        },
+        .ts_tuple_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (tsTypeIsPromise(m, ctx)) return true;
+            }
+            return false;
+        },
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            // Resolve type aliases one hop.
+            const tree = ctx.ast;
+            const total: u32 = @intCast(tree.nodes.len);
+            var i: u32 = 0;
+            while (i < total) : (i += 1) {
+                const ni: NodeIndex = @enumFromInt(i);
+                if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
+                const dd = tree.nodeData(ni);
+                const ad = tree.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+                if (!std.mem.eql(u8, tree.tokenText(ad.name), name)) continue;
+                return tsTypeIsPromiseTuple(ad.type_node, ctx);
+            }
+            return false;
         },
         else => return false,
     }
@@ -157,18 +254,24 @@ fn identifierDeclaredTypeIsPromiseArray(ident: NodeIndex, ctx: *const LintContex
     }
     if (ctx.nodeTag(decl) != .identifier) return false;
     const bd = ctx.nodeData(decl);
-    if (bd.rhs == .none) return false;
-    if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
-    const ty = ctx.nodeData(bd.rhs).lhs;
-    return tsTypeIsPromiseArray(ty, ctx);
+    if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
+        const ty = ctx.nodeData(bd.rhs).lhs;
+        if (tsTypeIsPromiseArray(ty, ctx)) return true;
+    }
+    // No annotation — check the declarator init: `let bar = [p, q];` where
+    // at least one element is a Promise.  Treat as a promise-array.
+    const dparent = ctx.parentOf(decl);
+    if (dparent == .none or ctx.nodeTag(dparent) != .declarator) return false;
+    const init = unwrap(ctx.nodeData(dparent).rhs, ctx);
+    if (init == .none) return false;
+    return exprProducesPromiseArray(init, ctx);
 }
 
 fn typeParameterConstraintIsPromiseArray(tp: NodeIndex, ctx: *const LintContext) bool {
-    // ts_type_parameter has constraint stored as a child; look at children.
-    // Walk node-data: in our parser, the constraint is typically in rhs.
+    // Per parser layout: lhs = constraint, rhs = default.
     const data = ctx.nodeData(tp);
-    if (data.rhs == .none) return false;
-    return tsTypeIsPromiseArray(data.rhs, ctx);
+    if (data.lhs == .none) return false;
+    return tsTypeIsPromiseArray(data.lhs, ctx);
 }
 
 fn memberExprDeclaredTypeIsPromiseArray(m: NodeIndex, ctx: *const LintContext) bool {
@@ -209,24 +312,47 @@ fn tsTypeIsPromiseArray(ty: NodeIndex, ctx: *const LintContext) bool {
             // T[] — check element type T.
             return tsTypeIsPromise(ctx.nodeData(ty).lhs, ctx);
         },
+        .ts_tuple_type => {
+            // `[A, B, Promise<X>, C]` — tuple with any Promise element is
+            // a promise-array under TSe's classification.
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (tsTypeIsPromise(m, ctx)) return true;
+            }
+            return false;
+        },
         .ts_type_reference => {
             const name = ctx.tokenText(ctx.nodeMainToken(ty));
             // `Array<Promise<X>>` / `ReadonlyArray<Promise<X>>`.
             if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
                 return typeRefFirstArgIsPromise(ty, ctx);
             }
-            // Resolve type aliases (one hop).
+            // Resolve type aliases / type parameters (one hop).
             const tree = ctx.ast;
             const total: u32 = @intCast(tree.nodes.len);
             var i: u32 = 0;
             while (i < total) : (i += 1) {
                 const ni: NodeIndex = @enumFromInt(i);
-                if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
-                const dd = tree.nodeData(ni);
-                if (dd.lhs == .none) continue;
-                const aname = tree.tokenText(tree.nodeMainToken(dd.lhs));
-                if (!std.mem.eql(u8, aname, name)) continue;
-                return tsTypeIsPromiseArray(dd.rhs, ctx);
+                const tag = tree.nodeTag(ni);
+                if (tag == .ts_type_alias_decl) {
+                    const dd = tree.nodeData(ni);
+                    const ad = tree.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+                    if (!std.mem.eql(u8, tree.tokenText(ad.name), name)) continue;
+                    return tsTypeIsPromiseArray(ad.type_node, ctx);
+                }
+                if (tag == .ts_type_parameter) {
+                    const tp_name = tree.tokenText(tree.nodeMainToken(ni));
+                    if (!std.mem.eql(u8, tp_name, name)) continue;
+                    // Per parser layout: lhs = constraint, rhs = default.
+                    const dd = tree.nodeData(ni);
+                    if (dd.lhs == .none) continue;
+                    return tsTypeIsPromiseArray(dd.lhs, ctx);
+                }
             }
             return false;
         },
@@ -386,7 +512,8 @@ fn valueHasNamedType(expr: NodeIndex, spec: std.json.Value, ctx: *const LintCont
     const e = unwrap(expr, ctx);
     const tag = ctx.nodeTag(e);
     // `promise.finally()` / `promise.then(...)` — chain calls preserve
-    // the named type, so check the receiver.
+    // the named type, so check the receiver.  Also: a direct call like
+    // `promise()` whose declared return type matches the spec.
     if (tag == .call_expr or tag == .optional_call_expr) {
         const callee = unwrap(ctx.nodeData(e).lhs, ctx);
         const ctag = ctx.nodeTag(callee);
@@ -399,6 +526,7 @@ fn valueHasNamedType(expr: NodeIndex, spec: std.json.Value, ctx: *const LintCont
                 }
             }
         }
+        if (calleeReturnsNamedType(e, spec, ctx)) return true;
     }
     if (tag == .identifier) {
         const sym = symbolForIdent(e, ctx) orelse return false;
@@ -437,6 +565,21 @@ fn typeReferenceNameMatches(ty: NodeIndex, spec: std.json.Value, ctx: *const Lin
     switch (ctx.nodeTag(ty)) {
         .ts_parenthesized_type => return typeReferenceNameMatches(ctx.nodeData(ty).lhs, spec, ctx),
         .ts_union_type, .ts_intersection_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (typeReferenceNameMatches(m, spec, ctx)) return true;
+            }
+            return false;
+        },
+        // Array/tuple of allowed-name elements: TSe matches when the
+        // VALUE's element type is allow-listed.
+        .ts_array_type => return typeReferenceNameMatches(ctx.nodeData(ty).lhs, spec, ctx),
+        .ts_tuple_type => {
             const data = ctx.nodeData(ty);
             const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
             const s = @intFromEnum(data.lhs);
@@ -821,10 +964,10 @@ fn typeAliasBodyIsPromise(name: []const u8, ctx: *const LintContext) bool {
         const ni: NodeIndex = @enumFromInt(i);
         if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
         const data = tree.nodeData(ni);
-        if (data.lhs == .none) continue;
-        const alias_name = tree.tokenText(tree.nodeMainToken(data.lhs));
+        const ad = tree.extraData(ast.TypeAliasData, @intFromEnum(data.lhs));
+        const alias_name = tree.tokenText(ad.name);
         if (!std.mem.eql(u8, alias_name, name)) continue;
-        return tsTypeIsPromise(data.rhs, ctx);
+        return tsTypeIsPromise(ad.type_node, ctx);
     }
     return false;
 }
