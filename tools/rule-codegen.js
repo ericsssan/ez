@@ -907,10 +907,37 @@ function emit(rule) {
     out.push(`        .while_stmt, .do_while_stmt, .if_stmt, .if_else_stmt, .labeled_stmt, .with_stmt => return,`);
     out.push(`        else => {},`);
     out.push(`    }`);
-    // Fix: remove the empty statement entirely.  ESLint's FixTracker
-    // expands to surrounding tokens; for our purposes a plain
-    // removeRange of the node's span is enough for the common cases.
+    // Fix: match ESLint's FixTracker output exactly so the runner's
+    // strict fix comparison (range+text) doesn't flag every match as
+    // FN+FP.  Three shapes:
+    //   * `{ ; }` block with the empty_stmt as sole child  → replace
+    //     the whole block with `{}`.
+    //   * preceded by `;` or `}`                           → extend
+    //     the fix range back one char and emit that char as the
+    //     replacement (mirrors ESLint's "replace [start-1, end] with
+    //     the previous-token text" pattern).
+    //   * neither                                          → plain
+    //     remove (the bare-`;` case).
     out.push(`    const span = ctx.nodeSpan(node);`);
+    out.push(`    const src = ctx.ast.source;`);
+    out.push(`    if (ctx.nodeTag(parent) == .block_stmt) {`);
+    out.push(`        const pd = ctx.nodeData(parent);`);
+    out.push(`        if (@intFromEnum(pd.lhs) + 1 == @intFromEnum(pd.rhs)) {`);
+    out.push(`            // Single child in the block — and it's this empty_stmt.`);
+    out.push(`            const block_span = ctx.nodeSpan(parent);`);
+    out.push(`            ctx.reportSpanWithFixAndMessageId(span, block_span, "{}", "${zigStr(h.messageId)}");`);
+    out.push(`            return;`);
+    out.push(`        }`);
+    out.push(`    }`);
+    out.push(`    if (span.start > 0) {`);
+    out.push(`        const prev = src[span.start - 1];`);
+    out.push(`        if (prev == ';' or prev == '}') {`);
+    out.push(`            const fix_span = @import("../../../parser/span.zig").Span{ .start = span.start - 1, .end = span.end };`);
+    out.push(`            const repl: []const u8 = if (prev == ';') ";" else "}";`);
+    out.push(`            ctx.reportSpanWithFixAndMessageId(span, fix_span, repl, "${zigStr(h.messageId)}");`);
+    out.push(`            return;`);
+    out.push(`        }`);
+    out.push(`    }`);
     out.push(`    ctx.reportSpanWithFixAndMessageId(span, span, "", "${zigStr(h.messageId)}");`);
     out.push(`}`);
   } else if (hasNoEmptyCheck) {

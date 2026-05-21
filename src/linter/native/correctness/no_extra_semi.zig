@@ -41,5 +41,24 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         else => {},
     }
     const span = ctx.nodeSpan(node);
+    const src = ctx.ast.source;
+    if (ctx.nodeTag(parent) == .block_stmt) {
+        const pd = ctx.nodeData(parent);
+        if (@intFromEnum(pd.lhs) + 1 == @intFromEnum(pd.rhs)) {
+            // Single child in the block — and it's this empty_stmt.
+            const block_span = ctx.nodeSpan(parent);
+            ctx.reportSpanWithFixAndMessageId(span, block_span, "{}", "unexpected");
+            return;
+        }
+    }
+    if (span.start > 0) {
+        const prev = src[span.start - 1];
+        if (prev == ';' or prev == '}') {
+            const fix_span = @import("../../../parser/span.zig").Span{ .start = span.start - 1, .end = span.end };
+            const repl: []const u8 = if (prev == ';') ";" else "}";
+            ctx.reportSpanWithFixAndMessageId(span, fix_span, repl, "unexpected");
+            return;
+        }
+    }
     ctx.reportSpanWithFixAndMessageId(span, span, "", "unexpected");
 }

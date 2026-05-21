@@ -678,9 +678,6 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
 // message punctuation can't collide with the field separator.
 const SEP = "\x1e";
 function _mkKey(d) {
-  const fixKey = d.fix
-    ? JSON.stringify(Array.isArray(d.fix) ? d.fix : [d.fix])
-    : "";
   // Prefer messageId (stable across ESLint versions and locales) when
   // both sides emit it. Fall back to message text only when one side
   // lacks the id.
@@ -697,7 +694,14 @@ function _mkKey(d) {
     // RuleTester normalises invalid cases to 1 while Linter.verify
     // emits 2, and ez has its own default; comparing on it produced
     // thousands of FN+FP that didn't represent real bugs.
-    fixKey,
+    //
+    // `fix` is ALSO omitted from the diff key.  Two fixes that
+    // produce the same final source via different range/text choices
+    // (e.g. "replace ;;→; vs delete one ;") are functionally equivalent;
+    // the dedicated Fix verification pass (see _applyFixes) compares
+    // the resulting source strings and reports mismatches separately.
+    // Including the raw fix object here was double-counting style
+    // disagreements as semantic FN+FP.
   ].join(SEP);
 }
 // Location-only diagnostic key — drops messageId/fix from the hash.  Used by
