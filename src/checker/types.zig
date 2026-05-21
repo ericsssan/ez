@@ -508,6 +508,25 @@ pub fn containsAny(store: *const TypeStore, id: TypeId) bool {
     };
 }
 
+/// True when the type reaches `error` at any composite position.  TSe's
+/// unsafe-* rules fire `error*` messageIds on these — an unresolved
+/// type name reads as `error typed` in the diagnostic data.
+pub fn containsError(store: *const TypeStore, id: TypeId) bool {
+    if (isError(store, id)) return true;
+    const t = store.get(id);
+    return switch (t.kind) {
+        .union_t, .intersection_t,
+        .array_t, .readonly_array_t, .tuple_t,
+        .type_ref => for (store.idsOf(t.list_data)) |m| {
+            if (containsError(store, m)) break true;
+        } else false,
+        .object_t => for (store.propsOf(t.object_props)) |p| {
+            if (containsError(store, p.type_id)) break true;
+        } else false,
+        else => false,
+    };
+}
+
 test "TypeStore singletons" {
     var store = try TypeStore.init(std.testing.allocator);
     defer store.deinit();

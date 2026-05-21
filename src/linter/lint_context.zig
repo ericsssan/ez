@@ -412,6 +412,15 @@ pub const LintContext = struct {
         return tymod.isAssignableTo(&c.store, src, dst);
     }
 
+    /// True when the inferred type reaches `error` at any composite
+    /// position.  `error` here is TSe's "unresolved-type-name" sentinel
+    /// — values typed `error[]` / `Set<error>` etc. should fire the
+    /// rule's `error*` messageId like a bare `error`.
+    pub fn typeNodeContainsError(self: *const LintContext, n: NodeIndex) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.containsError(&c.store, c.typeOf(n));
+    }
+
     /// True when both type ids are `type_ref` types with the same outer
     /// name (`Set<X>` vs `Set<Y>`, `Promise<X>` vs `Promise<Y>`).  Used
     /// by no-unsafe-return to distinguish `unsafeReturnAssignment`

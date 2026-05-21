@@ -109,7 +109,19 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
         // params[i + slot].
         if (ctx.nodeTag(arg) == .spread_element) {
             checkSpreadArg(arg, params_decl, i, ctx);
-            return;
+            // If the spread source is a fixed-length tuple, the spread
+            // covers N param positions starting at i.  Trailing args
+            // after the spread shift forward by (N - 1) positions, so
+            // advance the cursor accordingly and keep checking.  For
+            // non-tuple spreads (array, variadic-rest tuple) we don't
+            // know the lengths — stop conservatively.
+            const inner = ctx.nodeData(arg).lhs;
+            if (inner == .none) return;
+            const src_ty = ctx.typeOfNode(inner);
+            if (!ctx.typeIdIsTuple(src_ty)) return;
+            const tuple_len = ctx.typeIdTupleLength(src_ty);
+            if (tuple_len > 1) i += tuple_len - 1;
+            continue;
         }
         // If we've entered the rest region, all remaining args are
         // checked against the rest element type.
@@ -206,7 +218,7 @@ fn checkSpreadArg(spread: NodeIndex, params_decl: ParamDecl, arg_start: usize, c
         }
         return;
     }
-    if (ctx.typeNodeContainsAny(inner)) {
+    if (ctx.typeNodeContainsAny(inner) or ctx.typeNodeContainsError(inner)) {
         ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeArraySpread");
     }
 }
@@ -218,7 +230,7 @@ fn checkArgAgainstType(arg: NodeIndex, param_ty_node: NodeIndex, ctx: *const Lin
     if (ctx.typeIdContainsUnknown(declared)) return; // unknown is safe target for any
     // TSe also fires for `error`-typed values (TS's unresolved-symbol
     // sentinel) — those resolve to `any` for rule purposes.
-    const arg_is_any = ctx.typeNodeContainsAny(arg) or ctx.typeNodeIsError(arg);
+    const arg_is_any = ctx.typeNodeContainsAny(arg) or ctx.typeNodeContainsError(arg);
     if (!arg_is_any) return;
     if (rhsIsExplicitNonAnyCast(arg, ctx)) return;
     ctx.reportWithMessageId(arg, "unsafeArgument");
