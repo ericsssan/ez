@@ -40,10 +40,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const arg = ctx.nodeData(node).lhs;
     if (arg == .none) return;
     // Skip when we can't characterise the value: any/unknown/error are
-    // ambiguous (could be a Promise at runtime).
+    // ambiguous (could be a Promise at runtime).  Exception: if the AST
+    // definitively shows a non-Promise (e.g. literal primitive, void
+    // call, optional call of a typed callback), fire anyway.
     const arg_ty = ctx.typeOfNode(arg);
-    if (ctx.typeIdIsAny(arg_ty)) return;
-    if (ctx.typeIdContainsUnknown(arg_ty)) return;
+    if (ctx.typeIdIsAny(arg_ty) and !exprIsDefinitelyNonPromise(arg, ctx)) return;
+    if (ctx.typeIdContainsUnknown(arg_ty) and !exprIsDefinitelyNonPromise(arg, ctx)) return;
     if (ctx.typeIdIsError(arg_ty)) return;
     // Skip when the value's declared type is a bare type parameter T
     // (resolved or unresolved) — TS narrows T against its constraint
@@ -57,6 +59,217 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     ctx.reportWithMessageId(node, "await");
 }
 
+/// True when the AST shape proves the expression cannot be a
+/// Promise/thenable.  Literal primitives are always non-Promise;
+/// calls of typed callbacks with non-Promise return types are too.
+fn exprIsDefinitelyNonPromise(node: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(node);
+    switch (tag) {
+        .number_literal, .string_literal, .boolean_literal, .null_literal,
+        .bigint_literal, .template_literal, .regex_literal,
+        .array_literal, .object_literal => return true,
+        .grouping_expr, .ts_non_null_expr, .ts_satisfies_expr =>
+            return exprIsDefinitelyNonPromise(ctx.nodeData(node).lhs, ctx),
+        .new_expr => {
+            // `new X()` where X is a known non-Promise constructor.
+            var c = ctx.nodeData(node).lhs;
+            while (ctx.nodeTag(c) == .ts_instantiation_expr) c = ctx.nodeData(c).lhs;
+            if (ctx.nodeTag(c) != .identifier) return false;
+            const name = ctx.tokenText(ctx.nodeMainToken(c));
+            // Built-in non-Promise constructors.  Conservative list.
+            return std.mem.eql(u8, name, "Date") or
+                std.mem.eql(u8, name, "Map") or std.mem.eql(u8, name, "Set") or
+                std.mem.eql(u8, name, "WeakMap") or std.mem.eql(u8, name, "WeakSet") or
+                std.mem.eql(u8, name, "Error") or std.mem.eql(u8, name, "TypeError") or
+                std.mem.eql(u8, name, "RangeError") or std.mem.eql(u8, name, "SyntaxError") or
+                std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "Object") or
+                std.mem.eql(u8, name, "RegExp");
+        },
+        .call_expr, .optional_call_expr => {
+            return callReturnTypeIsDefinitelyNonPromise(node, ctx);
+        },
+        else => return false,
+    }
+}
+
+fn callReturnTypeIsDefinitelyNonPromise(call: NodeIndex, ctx: *const LintContext) bool {
+    const callee = ctx.nodeData(call).lhs;
+    if (callee == .none) return false;
+    var c = callee;
+    while (ctx.nodeTag(c) == .grouping_expr) c = ctx.nodeData(c).lhs;
+    // For member access (`x.y()` / `x?.y()`), look at the property's
+    // declared type on the receiver's type literal.
+    const ct = ctx.nodeTag(c);
+    if (ct == .member_expr or ct == .optional_member_expr or
+        ct == .computed_member_expr or ct == .optional_computed_member_expr) {
+        return memberCallReturnsNonPromise(c, ctx);
+    }
+    if (ct != .identifier) return false;
+    const sym = symbolForIdent(c, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    const dtag = ctx.nodeTag(decl);
+    var return_ty: NodeIndex = .none;
+    if (dtag == .fn_decl or dtag == .async_fn_decl or dtag == .ts_declare_function) {
+        // async fn always returns Promise.
+        if (dtag == .async_fn_decl) return false;
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(decl).lhs));
+        return_ty = fd.return_type;
+    } else if (dtag == .identifier) {
+        const bd = ctx.nodeData(decl);
+        if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+        return annotationFunctionReturnsNonPromise(ctx.nodeData(bd.rhs).lhs, ctx);
+    } else return false;
+    if (return_ty == .none) return false;
+    if (ctx.nodeTag(return_ty) == .ts_type_annotation) return_ty = ctx.nodeData(return_ty).lhs;
+    return tsTypeIsDefinitelyNonPromise(return_ty, ctx);
+}
+
+fn memberCallReturnsNonPromise(member: NodeIndex, ctx: *const LintContext) bool {
+    // `obj.prop()` / `obj?.prop()` — resolve obj's type literal and
+    // find `prop: () => T` then check T.
+    const prop_tok = ctx.nodeMainToken(member);
+    const prop = ctx.tokenText(prop_tok);
+    if (prop.len == 0) return false;
+    const object = ctx.nodeData(member).lhs;
+    if (object == .none) return false;
+    // Walk through nested member accesses to find the root identifier.
+    var root = object;
+    while (true) {
+        const rt = ctx.nodeTag(root);
+        if (rt == .grouping_expr) { root = ctx.nodeData(root).lhs; continue; }
+        if (rt == .member_expr or rt == .optional_member_expr or
+            rt == .computed_member_expr or rt == .optional_computed_member_expr)
+        {
+            // Walk into the property of the parent for deeper type literals.
+            // For now we only handle one-level: obj?.prop().
+            const inner_prop_tok = ctx.nodeMainToken(root);
+            const inner_prop = ctx.tokenText(inner_prop_tok);
+            const inner_obj = ctx.nodeData(root).lhs;
+            // Try resolving inner_obj's annotation to find inner_prop's type.
+            return resolveDottedCallReturnsNonPromise(inner_obj, &.{ inner_prop, prop }, ctx);
+        }
+        break;
+    }
+    if (ctx.nodeTag(root) != .identifier) return false;
+    return resolveDottedCallReturnsNonPromise(root, &.{prop}, ctx);
+}
+
+fn resolveDottedCallReturnsNonPromise(root: NodeIndex, props: []const []const u8, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(root) != .identifier) return false;
+    const sym = symbolForIdent(root, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    var ty = ctx.nodeData(bd.rhs).lhs;
+    if (ty == .none) return false;
+    // Peel union with undefined/null.  TSe narrows optional chains.
+    ty = peelNullable(ty, ctx);
+    // For each prop in the chain, find the type literal property's type.
+    for (props[0 .. props.len - 1]) |p| {
+        if (ctx.nodeTag(ty) != .ts_type_literal) return false;
+        const nty = typeLiteralPropertyType(ty, p, ctx);
+        if (nty == .none) return false;
+        ty = peelNullable(nty, ctx);
+    }
+    // Last prop must be a function type with non-Promise return.
+    if (ctx.nodeTag(ty) != .ts_type_literal) return false;
+    const last_prop = props[props.len - 1];
+    var prop_ty = typeLiteralPropertyType(ty, last_prop, ctx);
+    if (prop_ty == .none) return false;
+    prop_ty = peelNullable(prop_ty, ctx);
+    return annotationFunctionReturnsNonPromise(prop_ty, ctx);
+}
+
+fn peelNullable(ty: NodeIndex, ctx: *const LintContext) NodeIndex {
+    if (ty == .none) return ty;
+    if (ctx.nodeTag(ty) == .ts_parenthesized_type) return peelNullable(ctx.nodeData(ty).lhs, ctx);
+    if (ctx.nodeTag(ty) != .ts_union_type) return ty;
+    const data = ctx.nodeData(ty);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (s >= e or e > ext_len) return ty;
+    var only: NodeIndex = .none;
+    var has_other = false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        const mt = ctx.nodeTag(m);
+        if (mt == .ts_type_reference) {
+            const n = ctx.tokenText(ctx.nodeMainToken(m));
+            if (std.mem.eql(u8, n, "undefined") or std.mem.eql(u8, n, "null")) continue;
+        }
+        if (has_other) return ty; // more than one non-nullable member
+        has_other = true;
+        only = m;
+    }
+    if (only == .none) return ty;
+    return peelNullable(only, ctx);
+}
+
+fn typeLiteralPropertyType(ty: NodeIndex, name: []const u8, ctx: *const LintContext) NodeIndex {
+    if (ctx.nodeTag(ty) != .ts_type_literal) return .none;
+    const data = ctx.nodeData(ty);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (s >= e or e > ctx.ast.extra_data.len) return .none;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(m) != .ts_property_signature) continue;
+        if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(m)), name)) continue;
+        const md = ctx.nodeData(m);
+        if (md.rhs == .none) return .none;
+        if (ctx.nodeTag(md.rhs) != .ts_type_annotation) return .none;
+        return ctx.nodeData(md.rhs).lhs;
+    }
+    return .none;
+}
+
+fn annotationFunctionReturnsNonPromise(ty: NodeIndex, ctx: *const LintContext) bool {
+    var t = ty;
+    if (t == .none) return false;
+    t = peelNullable(t, ctx);
+    if (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    if (ctx.nodeTag(t) != .ts_function_type) return false;
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(t).lhs));
+    // ts_function_type stores return type in FnData.body.
+    return tsTypeIsDefinitelyNonPromise(fd.body, ctx);
+}
+
+fn tsTypeIsDefinitelyNonPromise(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    var t = ty;
+    if (ctx.nodeTag(t) == .ts_type_annotation) t = ctx.nodeData(t).lhs;
+    if (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    switch (ctx.nodeTag(t)) {
+        // void / undefined / null / never / primitives — never a Promise.
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(t));
+            if (std.mem.eql(u8, name, "void") or std.mem.eql(u8, name, "undefined") or
+                std.mem.eql(u8, name, "null") or std.mem.eql(u8, name, "never") or
+                std.mem.eql(u8, name, "number") or std.mem.eql(u8, name, "string") or
+                std.mem.eql(u8, name, "boolean") or std.mem.eql(u8, name, "bigint") or
+                std.mem.eql(u8, name, "symbol")) return true;
+            return false;
+        },
+        .ts_union_type, .ts_intersection_type => {
+            // Every branch must be definitely non-Promise.
+            const data = ctx.nodeData(t);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s >= e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (!tsTypeIsDefinitelyNonPromise(m, ctx)) return false;
+            }
+            return true;
+        },
+        else => return false,
+    }
+}
+
 /// True when `node` is an identifier reference whose declared symbol
 /// resolves to a `ts_type_parameter` declaration.  Type parameters
 /// can be Promise-like at runtime depending on the caller's binding;
@@ -66,9 +279,16 @@ fn identifierIsTypeParameter(node: NodeIndex, ctx: *const LintContext) bool {
     const sym = symbolForIdent(node, ctx) orelse return false;
     const decl = ctx.semantic.symbols.getDeclNode(sym);
     if (decl == .none) return false;
-    if (ctx.nodeTag(decl) == .ts_type_parameter) return true;
+    if (ctx.nodeTag(decl) == .ts_type_parameter) {
+        // Only treat as ambiguous when there's no constraint or the
+        // constraint includes a Promise-like type — a primitive
+        // constraint (`T extends number`) narrows T to definitely
+        // non-Promise, so the rule should fire.
+        return typeParamConstraintAmbiguous(decl, ctx);
+    }
     // Function parameter whose annotation is a type_ref naming a known
-    // type parameter in the enclosing function — treat as ambiguous.
+    // type parameter in the enclosing function — treat as ambiguous
+    // unless the constraint proves non-Promise.
     if (ctx.nodeTag(decl) != .identifier) return false;
     const bd = ctx.nodeData(decl);
     if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
@@ -81,9 +301,22 @@ fn identifierIsTypeParameter(node: NodeIndex, ctx: *const LintContext) bool {
     while (i < total) : (i += 1) {
         const ni: NodeIndex = @enumFromInt(i);
         if (tree.nodeTag(ni) != .ts_type_parameter) continue;
-        if (std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), tname)) return true;
+        if (std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), tname)) {
+            return typeParamConstraintAmbiguous(ni, ctx);
+        }
     }
     return false;
+}
+
+/// True when the type parameter's constraint cannot prove non-Promise —
+/// i.e. no constraint, or the constraint is itself ambiguous.  When
+/// the constraint is a primitive like `number`, we can rule out
+/// Promise statically.
+fn typeParamConstraintAmbiguous(tp_node: NodeIndex, ctx: *const LintContext) bool {
+    const data = ctx.nodeData(tp_node);
+    const constraint = data.lhs;
+    if (constraint == .none) return true;
+    return !tsTypeIsDefinitelyNonPromise(constraint, ctx);
 }
 
 /// True when `node` is an identifier reference whose declared symbol

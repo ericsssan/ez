@@ -2203,14 +2203,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 17,
+        "fn": 15,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 22,
-        "fp": 5,
+        "fn": 21,
+        "fp": 6,
         "crash": 0
       }
     },
@@ -21764,9 +21764,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 11214,
-    "runnerCasesPerSec": 8328,
-    "nativeCasesPerSec": 64989,
+    "totalElapsedMs": 11595,
+    "runnerCasesPerSec": 8033,
+    "nativeCasesPerSec": 64648,
     "totalCases": 73100
   }
 }
