@@ -31,7 +31,7 @@ pub const meta = RuleMeta{
     .lang = .ts_only,
 };
 
-pub const relevant_tags = [_]Node.Tag{ .await_expr, .for_await_of_stmt, .const_decl };
+pub const relevant_tags = [_]Node.Tag{ .await_expr, .for_await_of_stmt, .const_decl, .call_expr, .optional_call_expr };
 
 pub const needs_semantic = true;
 
@@ -44,6 +44,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     }
     if (ntag == .const_decl) {
         runAwaitUsing(node, ctx);
+        return;
+    }
+    if (ntag == .call_expr or ntag == .optional_call_expr) {
+        runPromiseAggregator(node, ctx);
         return;
     }
     const arg = ctx.nodeData(node).lhs;
@@ -90,6 +94,86 @@ fn runForAwait(node: NodeIndex, ctx: *const LintContext) void {
     ctx.reportSpanWithMessageId(.{ .start = stmt_span.start, .end = end_pos }, "forAwaitOfNonAsyncIterable");
 }
 
+
+fn runPromiseAggregator(call: NodeIndex, ctx: *const LintContext) void {
+    // `Promise.all(...)` / `.allSettled(...)` / `.race(...)` / `.any(...)`
+    // expect an iterable of thenables.  For array-literal arguments we
+    // can report non-thenable elements individually.
+    const callee = ctx.nodeData(call).lhs;
+    if (callee == .none) return;
+    const ctag = ctx.nodeTag(callee);
+    if (ctag != .member_expr and ctag != .optional_member_expr) return;
+    const md = ctx.nodeData(callee);
+    if (md.rhs == .none) return;
+    const obj = md.lhs;
+    if (obj == .none or ctx.nodeTag(obj) != .identifier) return;
+    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(obj)), "Promise")) return;
+    const method = ctx.tokenText(ctx.nodeMainToken(callee));
+    if (!std.mem.eql(u8, method, "all") and !std.mem.eql(u8, method, "allSettled") and
+        !std.mem.eql(u8, method, "race") and !std.mem.eql(u8, method, "any")) return;
+    // First arg must be an array_literal we can inspect.
+    const args = callArgs(call, ctx) orelse return;
+    if (args.len == 0) return;
+    const arr_arg: NodeIndex = @enumFromInt(args[0]);
+    if (ctx.nodeTag(arr_arg) != .array_literal) return;
+    // Iterate the array's elements.
+    const ad = ctx.nodeData(arr_arg);
+    const s = @intFromEnum(ad.lhs);
+    const e = @intFromEnum(ad.rhs);
+    if (s >= e or e > ctx.ast.extra_data.len) return;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const el: NodeIndex = @enumFromInt(raw);
+        const el_tag = ctx.nodeTag(el);
+        if (el_tag == .spread_element) {
+            // Spread of an array literal: check whether the spread
+            // value's elements are all Promise-like.  If the source is
+            // an array_literal with all non-Promise children, report
+            // the whole spread.
+            const inner = ctx.nodeData(el).lhs;
+            if (inner == .none) continue;
+            if (spreadIsDefinitelyNonPromise(inner, ctx)) {
+                ctx.reportSpanWithMessageId(ctx.nodeSpan(el), "invalidPromiseAggregatorInput");
+            }
+            continue;
+        }
+        if (elementIsDefinitelyNonPromise(el, ctx)) {
+            ctx.reportSpanWithMessageId(ctx.nodeSpan(el), "invalidPromiseAggregatorInput");
+        }
+    }
+}
+
+fn callArgs(call: NodeIndex, ctx: *const LintContext) ?[]const u32 {
+    const data = ctx.nodeData(call);
+    if (data.rhs == .none) return null;
+    const idx = @intFromEnum(data.rhs);
+    if (idx + 1 >= ctx.ast.extra_data.len) return null;
+    const start = ctx.ast.extra_data[idx];
+    const end = ctx.ast.extra_data[idx + 1];
+    if (end < start or end > ctx.ast.extra_data.len) return null;
+    return ctx.ast.extra_data[start..end];
+}
+
+fn elementIsDefinitelyNonPromise(el: NodeIndex, ctx: *const LintContext) bool {
+    // Reuse our exprIsDefinitelyNonPromise.  For aggregator inputs, a
+    // bare numeric/string literal is the canonical example.
+    return exprIsDefinitelyNonPromise(el, ctx);
+}
+
+fn spreadIsDefinitelyNonPromise(value: NodeIndex, ctx: *const LintContext) bool {
+    // `Promise.all([...[1, 2, 3]])` — value is an array_literal whose
+    // elements are all definitely non-Promise.  Report the entire
+    // spread element in that case.
+    if (ctx.nodeTag(value) != .array_literal) return false;
+    const ad = ctx.nodeData(value);
+    const s = @intFromEnum(ad.lhs);
+    const e = @intFromEnum(ad.rhs);
+    if (s >= e or e > ctx.ast.extra_data.len) return false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const el: NodeIndex = @enumFromInt(raw);
+        if (!exprIsDefinitelyNonPromise(el, ctx)) return false;
+    }
+    return true;
+}
 
 fn runAwaitUsing(node: NodeIndex, ctx: *const LintContext) void {
     // const_decl with main_token text == "await" is `await using`.
@@ -850,17 +934,60 @@ fn classBodyHasThen(body: NodeIndex, ctx: *const LintContext) bool {
     for (tree.extra_data[s..e]) |raw| {
         const m: NodeIndex = @enumFromInt(raw);
         switch (tree.nodeTag(m)) {
-            .method_def, .computed_method_def,
+            .method_def, .computed_method_def => {
+                const md = tree.nodeData(m);
+                if (md.lhs == .none) continue;
+                const key = tree.tokenText(tree.nodeMainToken(md.lhs));
+                if (!std.mem.eql(u8, key, "then")) continue;
+                // Real thenable .then(resolve, reject) takes at least one
+                // parameter.  '.then()' with zero params is a bogus
+                // thenable — the rule still fires.
+                if (md.rhs == .none) continue;
+                const meth_data = tree.extraData(ast.MethodData, @intFromEnum(md.rhs));
+                if (meth_data.params_end > meth_data.params_start) return true;
+            },
             .property_def, .computed_property_def => {
                 const md = tree.nodeData(m);
                 if (md.lhs == .none) continue;
                 const key = tree.tokenText(tree.nodeMainToken(md.lhs));
-                if (std.mem.eql(u8, key, "then")) return true;
+                if (!std.mem.eql(u8, key, "then")) continue;
+                // For property-style `.then = fn`, check the init's
+                // function shape (or annotation) for at least one param.
+                if (md.rhs == .none) continue;
+                const pd = tree.extraData(ast.PropertyData, @intFromEnum(md.rhs));
+                if (propertyValueLooksLikeThenFn(pd.value, ctx)) return true;
+                if (annotationFunctionTakesParams(pd.type_annotation, ctx)) return true;
             },
             else => {},
         }
     }
     return false;
+}
+
+fn propertyValueLooksLikeThenFn(value: NodeIndex, ctx: *const LintContext) bool {
+    if (value == .none) return false;
+    const tag = ctx.nodeTag(value);
+    if (tag == .fn_expr or tag == .async_fn_expr or
+        tag == .generator_fn_expr or tag == .async_generator_fn_expr)
+    {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(value).lhs));
+        return fd.params_end > fd.params;
+    }
+    if (tag == .arrow_fn or tag == .async_arrow_fn) {
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ctx.nodeData(value).lhs));
+        return ad.params_end > ad.params_start;
+    }
+    return false;
+}
+
+fn annotationFunctionTakesParams(ann: NodeIndex, ctx: *const LintContext) bool {
+    if (ann == .none or ctx.nodeTag(ann) != .ts_type_annotation) return false;
+    var t = ctx.nodeData(ann).lhs;
+    if (t == .none) return false;
+    if (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    if (ctx.nodeTag(t) != .ts_function_type) return false;
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(t).lhs));
+    return fd.params_end > fd.params;
 }
 
 fn annotationIsPromise(ann: NodeIndex, ctx: *const LintContext) bool {
