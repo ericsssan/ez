@@ -97,6 +97,8 @@ fn checkTaggedTemplate(node: NodeIndex, data: Node.Data, ctx: *const LintContext
 fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext) void {
     var rest_param: ?NodeIndex = null;
     var rest_elem_ty_node: NodeIndex = .none;
+    var rest_tuple_elements: ?[]const u32 = null;
+    var rest_start_arg: usize = 0;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg: NodeIndex = @enumFromInt(args[i]);
@@ -112,7 +114,13 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
         // If we've entered the rest region, all remaining args are
         // checked against the rest element type.
         if (rest_param) |_| {
-            if (rest_elem_ty_node != .none) {
+            if (rest_tuple_elements) |tuple_elems| {
+                const ti = i - rest_start_arg;
+                if (ti < tuple_elems.len) {
+                    const elem: NodeIndex = @enumFromInt(tuple_elems[ti]);
+                    checkArgAgainstType(arg, elem, ctx);
+                }
+            } else if (rest_elem_ty_node != .none) {
                 checkArgAgainstType(arg, rest_elem_ty_node, ctx);
             }
             continue;
@@ -122,9 +130,20 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
         // Rest parameter: T[] declared → all remaining args check against T.
         if (ctx.nodeTag(param) == .rest_element) {
             rest_param = param;
-            rest_elem_ty_node = restParamElementTypeNode(param, ctx);
-            if (rest_elem_ty_node != .none) {
-                checkArgAgainstType(arg, rest_elem_ty_node, ctx);
+            rest_start_arg = i;
+            // Tuple rest `...params: [T1, T2, T3]` — each arg gets its
+            // matching tuple element type (variadic positional).
+            if (restParamTupleElements(param, ctx)) |elems| {
+                rest_tuple_elements = elems;
+                if (elems.len > 0) {
+                    const elem: NodeIndex = @enumFromInt(elems[0]);
+                    checkArgAgainstType(arg, elem, ctx);
+                }
+            } else {
+                rest_elem_ty_node = restParamElementTypeNode(param, ctx);
+                if (rest_elem_ty_node != .none) {
+                    checkArgAgainstType(arg, rest_elem_ty_node, ctx);
+                }
             }
             continue;
         }
@@ -132,6 +151,24 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
         if (param_ty_node == .none) continue; // param has no declared type
         checkArgAgainstType(arg, param_ty_node, ctx);
     }
+}
+
+/// For `...rest: [T1, T2, T3]`, return the slice of tuple element node
+/// indices.  Each variadic argument position maps to a corresponding
+/// tuple element.  Returns null when the annotation isn't a tuple.
+fn restParamTupleElements(param: NodeIndex, ctx: *const LintContext) ?[]const u32 {
+    const rd = ctx.nodeData(param);
+    const ann = rd.rhs;
+    if (ann == .none) return null;
+    if (ctx.nodeTag(ann) != .ts_type_annotation) return null;
+    const ty_node = ctx.nodeData(ann).lhs;
+    if (ctx.nodeTag(ty_node) != .ts_tuple_type) return null;
+    const data = ctx.nodeData(ty_node);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (s > e or e > ext_len) return null;
+    return ctx.ast.extra_data[s..e];
 }
 
 /// Spread element handling for `foo(...x)`:
@@ -216,7 +253,9 @@ fn unwrapGrouping(node: NodeIndex, ctx: *const LintContext) NodeIndex {
     var n = node;
     while (n != .none) {
         const tag = ctx.nodeTag(n);
-        if (tag != .grouping_expr) break;
+        // `foo<T>(args)` parses as call_expr(ts_instantiation_expr(foo), args)
+        // — peel through the instantiation wrapper to get the real callee.
+        if (tag != .grouping_expr and tag != .ts_instantiation_expr) break;
         n = ctx.nodeData(n).lhs;
     }
     return n;
