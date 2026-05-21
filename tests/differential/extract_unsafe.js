@@ -39,6 +39,7 @@ const RULES = [
   "prefer-return-this-type",
   "no-duplicate-type-constituents",
   "non-nullable-type-assertion-style",
+  "prefer-includes",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];
