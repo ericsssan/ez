@@ -299,6 +299,7 @@ const ts_prefer_return_this_type = @import("typescript/prefer_return_this_type.z
 const ts_no_duplicate_type_constituents = @import("typescript/no_duplicate_type_constituents.zig");
 const ts_non_nullable_type_assertion_style = @import("typescript/non_nullable_type_assertion_style.zig");
 const ts_prefer_includes = @import("typescript/prefer_includes.zig");
+const ts_related_getter_setter_pairs = @import("typescript/related_getter_setter_pairs.zig");
 // v0.8 TypeScript rules
 // const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
@@ -615,6 +616,7 @@ pub const all_rules = .{
     ts_no_duplicate_type_constituents,
     ts_non_nullable_type_assertion_style,
     ts_prefer_includes,
+    ts_related_getter_setter_pairs,
     // ts_no_empty_object_type, // runner >> native (runner 35, native 19, gap 16, 4 FP); fall back to JS runner
     // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
     // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner

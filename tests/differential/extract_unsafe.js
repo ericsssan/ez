@@ -40,6 +40,7 @@ const RULES = [
   "no-duplicate-type-constituents",
   "non-nullable-type-assertion-style",
   "prefer-includes",
+  "related-getter-setter-pairs",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];
