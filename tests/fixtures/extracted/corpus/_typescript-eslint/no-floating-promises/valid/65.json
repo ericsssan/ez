@@ -1,0 +1,38 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "valid",
+  "index": 65,
+  "name": null,
+  "options": [
+    {
+      "allowForKnownSafePromises": [
+        {
+          "from": "file",
+          "name": "SafeThenable"
+        }
+      ]
+    }
+  ],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [],
+  "oracleDiags": null,
+  "oracleLines": [],
+  "oracleFixes": null,
+  "code": "\ninterface SafeThenable<T> {\n  then<TResult1 = T, TResult2 = never>(\n    onfulfilled?:\n      | ((value: T) => TResult1 | SafeThenable<TResult1>)\n      | undefined\n      | null,\n    onrejected?:\n      | ((reason: any) => TResult2 | SafeThenable<TResult2>)\n      | undefined\n      | null,\n  ): SafeThenable<TResult1 | TResult2>;\n}\nlet promise: () => SafeThenable<number> = () => Promise.resolve(5);\npromise().then(() => {});\n      ",
+  "ext": ".ts"
+}

@@ -1,0 +1,180 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "invalid",
+  "index": 46,
+  "name": null,
+  "options": [
+    {
+      "ignoreVoid": false
+    }
+  ],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 4,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "line": 5,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "line": 6,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "line": 7,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "line": 10,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "line": 11,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "line": 12,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "line": 13,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 4,
+      "column": null,
+      "endLine": 4,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 5,
+      "column": null,
+      "endLine": 5,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 6,
+      "column": null,
+      "endLine": 6,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 7,
+      "column": null,
+      "endLine": 7,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 10,
+      "column": null,
+      "endLine": 10,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 11,
+      "column": null,
+      "endLine": 11,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 12,
+      "column": null,
+      "endLine": 12,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 13,
+      "column": null,
+      "endLine": 13,
+      "endColumn": null,
+      "messageId": "floatingUselessRejectionHandler",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    4,
+    5,
+    6,
+    7,
+    10,
+    11,
+    12,
+    13
+  ],
+  "oracleFixes": null,
+  "code": "\ndeclare const maybeCallable: string | (() => void);\ndeclare const definitelyCallable: () => void;\nPromise.resolve().then(() => {}, undefined);\nPromise.resolve().then(() => {}, null);\nPromise.resolve().then(() => {}, 3);\nPromise.resolve().then(() => {}, maybeCallable);\nPromise.resolve().then(() => {}, definitelyCallable);\n\nPromise.resolve().catch(undefined);\nPromise.resolve().catch(null);\nPromise.resolve().catch(3);\nPromise.resolve().catch(maybeCallable);\nPromise.resolve().catch(definitelyCallable);\n      ",
+  "ext": ".ts"
+}

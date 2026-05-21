@@ -1,0 +1,5 @@
+
+Promise.reject()
+  .catch(() => {})
+  .finally(() => {});
+      

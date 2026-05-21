@@ -1,0 +1,50 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "invalid",
+  "index": 58,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 2,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingPromiseArrayVoid",
+      "data": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 2,
+      "column": null,
+      "endLine": 2,
+      "endColumn": null,
+      "messageId": "floatingPromiseArrayVoid",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    2
+  ],
+  "oracleFixes": null,
+  "code": "\n[1, 2, 3].map(() => Promise.reject());\n      ",
+  "ext": ".ts"
+}

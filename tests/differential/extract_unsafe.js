@@ -23,6 +23,7 @@ const RULES = [
   "no-unsafe-call",
   "no-unsafe-member-access",
   "no-unsafe-return",
+  "no-floating-promises",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];

@@ -1,0 +1,60 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "invalid",
+  "index": 74,
+  "name": null,
+  "options": [
+    {
+      "allowForKnownSafePromises": [
+        {
+          "from": "file",
+          "name": "SafeThenable"
+        }
+      ],
+      "checkThenables": true
+    }
+  ],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 15,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 15,
+      "column": null,
+      "endLine": 15,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    15
+  ],
+  "oracleFixes": null,
+  "code": "\ninterface UnsafeThenable<T> {\n  then<TResult1 = T, TResult2 = never>(\n    onfulfilled?:\n      | ((value: T) => TResult1 | UnsafeThenable<TResult1>)\n      | undefined\n      | null,\n    onrejected?:\n      | ((reason: any) => TResult2 | UnsafeThenable<TResult2>)\n      | undefined\n      | null,\n  ): UnsafeThenable<TResult1 | TResult2>;\n}\nlet promise: UnsafeThenable<number> = Promise.resolve(5);\npromise;\n      ",
+  "ext": ".ts"
+}

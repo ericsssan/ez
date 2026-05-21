@@ -1,0 +1,50 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "invalid",
+  "index": 53,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 3,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 3,
+      "column": null,
+      "endLine": 3,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    3
+  ],
+  "oracleFixes": null,
+  "code": "\nconst promiseIntersection: Promise<number> & number;\npromiseIntersection.finally(() => {});\n      ",
+  "ext": ".ts"
+}

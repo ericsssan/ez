@@ -1,0 +1,54 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "invalid",
+  "index": 61,
+  "name": null,
+  "options": [
+    {
+      "ignoreVoid": false
+    }
+  ],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 4,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingPromiseArray",
+      "data": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 4,
+      "column": null,
+      "endLine": 4,
+      "endColumn": null,
+      "messageId": "floatingPromiseArray",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    4
+  ],
+  "oracleFixes": null,
+  "code": "\ndeclare const promiseArray: Array<Promise<unknown>>;\nasync function f() {\n  await promiseArray;\n}\n      ",
+  "ext": ".ts"
+}

@@ -421,6 +421,28 @@ pub const LintContext = struct {
         return tymod.isError(&c.store, c.typeOf(n));
     }
 
+    /// True when the inferred type at this node is `Promise<T>` (any T).
+    pub fn typeNodeIsPromise(self: *const LintContext, n: NodeIndex) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(c.typeOf(n));
+        if (t.kind != .type_ref) return false;
+        return std.mem.eql(u8, t.name, "Promise");
+    }
+
+    /// True when the inferred type is `Promise<T>` and T contains `any`.
+    /// Used by no-unsafe-return to suppress non-async functions that
+    /// happen to return a Promise<any> — TSe accepts this because the
+    /// caller is expected to await.
+    pub fn typeNodeIsPromiseOfAny(self: *const LintContext, n: NodeIndex) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(c.typeOf(n));
+        if (t.kind != .type_ref) return false;
+        if (!std.mem.eql(u8, t.name, "Promise")) return false;
+        const args = c.store.idsOf(t.list_data);
+        if (args.len == 0) return false;
+        return tymod.containsAny(&c.store, args[0]);
+    }
+
     /// True when the type id is a tuple type.  Used by no-unsafe-argument
     /// to distinguish per-position spread checks (tuple) from generic
     /// any-element-array spreads.

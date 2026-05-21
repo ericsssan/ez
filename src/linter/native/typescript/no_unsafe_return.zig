@@ -82,20 +82,29 @@ fn reportIfUnsafeReturn(
     fn_info: FunctionReturnInfo,
     ctx: *const LintContext,
 ) void {
-    if (fn_info.return_type == .none) return;
-    // ts_type_annotation wraps the type; peel to the type node.
-    var ty_node = ctx.nodeData(fn_info.return_type).lhs;
-    // Async function: declared Promise<T> means the actual returned
-    // value's type is T.  Peel one Promise<...> level when async.
-    if (fn_info.is_async) {
-        if (peelPromise(ty_node, ctx)) |inner| ty_node = inner;
+    // When a declared return type exists, honor opt-in cases.
+    if (fn_info.return_type != .none) {
+        var ty_node = ctx.nodeData(fn_info.return_type).lhs;
+        if (fn_info.is_async) {
+            if (peelPromise(ty_node, ctx)) |inner| ty_node = inner;
+        }
+        const declared = ctx.resolveTypeAnnotationNode(ty_node);
+        if (ctx.typeIdIsAny(declared)) return;
+        if (ctx.typeIdContainsUnknown(declared)) return;
+        if (declaredIsVoid(ty_node, ctx)) return;
     }
-    const declared = ctx.resolveTypeAnnotationNode(ty_node);
-    if (ctx.typeIdIsAny(declared)) return; // explicit `: any` opt-in
-    if (ctx.typeIdContainsUnknown(declared)) return; // unknown is safe target for any
-    if (declaredIsVoid(ty_node, ctx)) return; // returning to void allowed
-    if (!ctx.typeNodeContainsAny(ret_value)) return;
+    // Fire on both any-typed return values AND error-typed (unresolved
+    // type-name reference).  TSe uses the same `unsafeReturn` messageId
+    // for both, differing only in the `data.type` template.
+    const has_any = ctx.typeNodeContainsAny(ret_value);
+    const has_err = !has_any and ctx.typeNodeIsError(ret_value);
+    if (!has_any and !has_err) return;
     if (rhsIsExplicitNonAnyCast(ret_value, ctx)) return;
+    // TSe suppresses `Promise<any>` returns from non-async functions —
+    // the caller is expected to await, and the Promise itself isn't
+    // an immediate any.  Only the "anyness leaks through async return
+    // type" path is unsafe.
+    if (!fn_info.is_async and ctx.typeNodeIsPromiseOfAny(ret_value)) return;
     ctx.reportWithMessageId(report_at, "unsafeReturn");
 }
 
@@ -160,23 +169,24 @@ fn functionReturnInfo(fn_node: NodeIndex, ctx: *const LintContext) ?FunctionRetu
         .async_arrow_fn => true,
         else => false,
     };
+    // Return info even when there's no declared return type — the
+    // rule fires on any-typed/error-typed returns even from
+    // inference-typed functions (TSe's behavior when the function's
+    // inferred signature doesn't have an unknown return).
     switch (tag) {
         .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
         .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => {
             const fd = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
-            if (fd.return_type == .none) return null;
             return .{ .return_type = fd.return_type, .is_async = is_async };
         },
         .arrow_fn, .async_arrow_fn => {
             const ad = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
-            if (ad.return_type == .none) return null;
             return .{ .return_type = ad.return_type, .is_async = is_async };
         },
         .method_def, .computed_method_def,
         .getter_def, .setter_def, .computed_getter_def, .computed_setter_def,
         .constructor_def => {
             const md = ctx.extraData(ast.MethodData, @intFromEnum(data.rhs));
-            if (md.return_type == .none) return null;
             return .{ .return_type = md.return_type, .is_async = is_async };
         },
         else => return null,

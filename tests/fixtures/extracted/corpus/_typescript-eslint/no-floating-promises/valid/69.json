@@ -1,0 +1,39 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "valid",
+  "index": 69,
+  "name": null,
+  "options": [
+    {
+      "allowForKnownSafePromises": [
+        {
+          "from": "file",
+          "name": "SafePromise"
+        }
+      ],
+      "checkThenables": true
+    }
+  ],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [],
+  "oracleDiags": null,
+  "oracleLines": [],
+  "oracleFixes": null,
+  "code": "\ninterface SafePromise<T> extends Promise<T> {\n  brand: 'safe';\n}\n\ndeclare const createSafePromise: () => SafePromise<string>;\ncreateSafePromise();\n      ",
+  "ext": ".ts"
+}

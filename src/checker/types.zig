@@ -338,7 +338,8 @@ pub fn containsUnknown(store: *const TypeStore, id: TypeId) bool {
 }
 
 /// True when the type has any `any` reachable in the local shape: unions
-/// where one member is any, intersections (any & T = any).  Used by
+/// where one member is any, intersections (any & T = any), generics whose
+/// type arguments contain any (`Promise<any>`, `Set<any>`).  Used by
 /// no-unsafe-assignment to flag `const x: { a: number } = { a: anyVal }`
 /// when the source has any in the corresponding slot.
 pub fn containsAny(store: *const TypeStore, id: TypeId) bool {
@@ -348,12 +349,16 @@ pub fn containsAny(store: *const TypeStore, id: TypeId) bool {
         .union_t, .intersection_t => for (store.idsOf(t.list_data)) |m| {
             if (containsAny(store, m)) break true;
         } else false,
-        // For arrays/tuples we DO peek one level: `any[]` is unsafe.
-        .array_t, .readonly_array_t => for (store.idsOf(t.list_data)) |m| {
+        .array_t, .readonly_array_t, .tuple_t => for (store.idsOf(t.list_data)) |m| {
             if (containsAny(store, m)) break true;
         } else false,
-        .tuple_t => for (store.idsOf(t.list_data)) |m| {
+        // Walk generic type args: `Promise<any>`, `Set<any>`, etc.
+        .type_ref => for (store.idsOf(t.list_data)) |m| {
             if (containsAny(store, m)) break true;
+        } else false,
+        // Walk object properties: `{ a: any }` should report anyness.
+        .object_t => for (store.propsOf(t.object_props)) |p| {
+            if (containsAny(store, p.type_id)) break true;
         } else false,
         else => false,
     };

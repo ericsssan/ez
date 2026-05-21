@@ -1,0 +1,59 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "invalid",
+  "index": 80,
+  "name": null,
+  "options": [
+    {
+      "allowForKnownSafePromises": [
+        {
+          "from": "file",
+          "name": "SafePromise"
+        }
+      ]
+    }
+  ],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 5,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingPromiseArrayVoid",
+      "data": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 5,
+      "column": null,
+      "endLine": 5,
+      "endColumn": null,
+      "messageId": "floatingPromiseArrayVoid",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    5
+  ],
+  "oracleFixes": null,
+  "code": "\ntype SafePromise = Promise<number> & { hey?: string };\nlet foo: SafePromise = Promise.resolve(1);\nlet bar = [Promise.resolve(2), foo];\nbar;\n      ",
+  "ext": ".ts"
+}

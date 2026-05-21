@@ -1,0 +1,38 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "valid",
+  "index": 54,
+  "name": null,
+  "options": [
+    {
+      "allowForKnownSafePromises": [
+        {
+          "from": "file",
+          "name": "Foo"
+        }
+      ]
+    }
+  ],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [],
+  "oracleDiags": null,
+  "oracleLines": [],
+  "oracleFixes": null,
+  "code": "\ntype Foo<T> = Promise<T> & { hey?: string };\ndeclare const arrayOrPromiseTuple: Foo<unknown>[];\narrayOrPromiseTuple;\n      ",
+  "ext": ".ts"
+}

@@ -1,0 +1,86 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "invalid",
+  "index": 10,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 3,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 4,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 5,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 3,
+      "column": null,
+      "endLine": 3,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 4,
+      "column": null,
+      "endLine": 4,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 5,
+      "column": null,
+      "endLine": 5,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    3,
+    4,
+    5
+  ],
+  "oracleFixes": null,
+  "code": "\nasync function test() {\n  (Promise.resolve(), 123);\n  (123, Promise.resolve());\n  (123, Promise.resolve(), 123);\n}\n      ",
+  "ext": ".ts"
+}

@@ -1,0 +1,29 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "valid",
+  "index": 14,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [],
+  "oracleDiags": null,
+  "oracleLines": [],
+  "oracleFixes": null,
+  "code": "\ndeclare const intersectionPromise: Promise<number> & number;\nasync function test() {\n  await (Math.random() > 0.5 ? numberPromise : 0);\n  await (Math.random() > 0.5 ? foo : 0);\n  await (Math.random() > 0.5 ? bar : 0);\n\n  await intersectionPromise;\n}\n    ",
+  "ext": ".ts"
+}

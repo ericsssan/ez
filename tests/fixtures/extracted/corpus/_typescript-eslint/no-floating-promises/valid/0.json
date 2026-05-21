@@ -1,0 +1,29 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "valid",
+  "index": 0,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [],
+  "oracleDiags": null,
+  "oracleLines": [],
+  "oracleFixes": null,
+  "code": "\nasync function test() {\n  await Promise.resolve('value');\n  Promise.resolve('value').then(\n    () => {},\n    () => {},\n  );\n  Promise.resolve('value')\n    .then(() => {})\n    .catch(() => {});\n  Promise.resolve('value')\n    .then(() => {})\n    .catch(() => {})\n    .finally(() => {});\n  Promise.resolve('value').catch(() => {});\n  return Promise.resolve('value');\n}\n    ",
+  "ext": ".ts"
+}

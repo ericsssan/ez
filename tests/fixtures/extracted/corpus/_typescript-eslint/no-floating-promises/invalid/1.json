@@ -1,0 +1,176 @@
+{
+  "rule": "@typescript-eslint/no-floating-promises",
+  "kind": "invalid",
+  "index": 1,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 11,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 12,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 13,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 14,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 15,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 16,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 18,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "line": 21,
+      "column": null,
+      "endLine": null,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 11,
+      "column": null,
+      "endLine": 11,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 12,
+      "column": null,
+      "endLine": 12,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 13,
+      "column": null,
+      "endLine": 13,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 14,
+      "column": null,
+      "endLine": 14,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 15,
+      "column": null,
+      "endLine": 15,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 16,
+      "column": null,
+      "endLine": 16,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 18,
+      "column": null,
+      "endLine": 18,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    },
+    {
+      "rule": "@typescript-eslint/no-floating-promises",
+      "line": 21,
+      "column": null,
+      "endLine": 21,
+      "endColumn": null,
+      "messageId": "floatingVoid",
+      "data": null
+    }
+  ],
+  "oracleLines": [
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    21
+  ],
+  "oracleFixes": null,
+  "code": "\nconst doSomething = async (\n  obj1: { a?: { b?: { c?: () => Promise<void> } } },\n  obj2: { a?: { b?: { c: () => Promise<void> } } },\n  obj3: { a?: { b: { c?: () => Promise<void> } } },\n  obj4: { a: { b: { c?: () => Promise<void> } } },\n  obj5: { a?: () => { b?: { c?: () => Promise<void> } } },\n  obj6?: { a: { b: { c?: () => Promise<void> } } },\n  callback?: () => Promise<void>,\n): Promise<void> => {\n  obj1.a?.b?.c?.();\n  obj2.a?.b?.c();\n  obj3.a?.b.c?.();\n  obj4.a.b.c?.();\n  obj5.a?.().b?.c?.();\n  obj6?.a.b.c?.();\n\n  callback?.();\n};\n\ndoSomething();\n      ",
+  "ext": ".ts"
+}

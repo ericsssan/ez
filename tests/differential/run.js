@@ -979,6 +979,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-unsafe-member-access",
       "no-unsafe-return",
       "no-unsafe-argument",
+      "no-floating-promises",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
