@@ -47,6 +47,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // the built-in `Function`.  TSe treats `Function` as unsafe because
     // it accepts any args and returns any.
     const is_any = ctx.typeNodeIsAny(callee);
+    const is_error = !is_any and ctx.typeNodeIsError(callee);
     // The Function-detection path catches `const t: Function = ...; t()`
     // — TSe flags this because `Function` accepts any args.  Suppress
     // when the source defines its own `Function` type alias/interface
@@ -54,22 +55,30 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // a user interface that `extends Function` (transitively): TSe's
     // isBuiltinSymbolLike walks the inheritance graph; we approximate
     // by scanning for `interface X extends Function`.
-    var is_function = !is_any and ctx.typeNodeIsFunction(callee)
+    var is_function = !is_any and !is_error and ctx.typeNodeIsFunction(callee)
         and !fileShadowsFunctionType(ctx);
-    if (!is_any and !is_function) {
+    if (!is_any and !is_error and !is_function) {
         if (inheritsFunctionByName(callee, ctx)) is_function = true;
     }
-    if (!is_any and !is_function) return;
-    const msg = switch (ctx.nodeTag(node)) {
+    if (!is_any and !is_error and !is_function) return;
+    const msg = if (is_error)
+        switch (ctx.nodeTag(node)) {
+            .new_expr => "errorNew",
+            .tagged_template => "errorTemplateTag",
+            else => "errorCall",
+        }
+    else switch (ctx.nodeTag(node)) {
         .new_expr => "unsafeNew",
         .tagged_template => "unsafeTemplateTag",
         else => "unsafeCall",
     };
-    // typescript-eslint reports at the callee (the any-typed expression
-    // being invoked), not the whole call expression.  For `x()` the
-    // span is `x`, not `x()`.  For chained `x.a.b.c.d.e.f.g()` it's
-    // `x.a.b.c.d.e.f.g`.
-    ctx.reportSpanWithMessageId(ctx.nodeSpan(callee), msg);
+    // typescript-eslint's reporting node depends on the call shape:
+    //   CallExpression / TaggedTemplate → report at the callee/tag
+    //     (selectors `CallExpression > *.callee` and
+    //     `TaggedTemplateExpression > *.tag`).
+    //   NewExpression → report at the whole `new X(...)` expression.
+    const report_at = if (ctx.nodeTag(node) == .new_expr) node else callee;
+    ctx.reportSpanWithMessageId(ctx.nodeSpan(report_at), msg);
 }
 
 fn calleeNode(node: NodeIndex, ctx: *const LintContext) NodeIndex {

@@ -41,6 +41,10 @@ pub const TypeKind = enum(u8) {
     bigint,
     symbol,
     object_keyword, // the bare `object` keyword (non-primitive)
+    /// TS "intrinsic error type" — used when a type reference doesn't
+    /// resolve to any declared name (`let v: NotKnown`).  Rules fire
+    /// `error*` messageIds on these.
+    error_t,
 
     // ── literals ───────────────────────────────────────────
     string_literal,
@@ -152,8 +156,14 @@ pub const ID_BOOLEAN: TypeId = @enumFromInt(8);
 pub const ID_BIGINT: TypeId = @enumFromInt(9);
 pub const ID_SYMBOL: TypeId = @enumFromInt(10);
 pub const ID_OBJECT_KW: TypeId = @enumFromInt(11);
+/// "error type" — TS's representation of an unresolved or
+/// uncomputable type (e.g. `let v: NotKnown` where `NotKnown` isn't
+/// declared anywhere).  TSe's rules fire with `error*` messageIds
+/// (`errorMemberExpression`, `errorComputedMemberAccess`, `errorCall`,
+/// etc.) on these types in addition to firing on `any`.
+pub const ID_ERROR: TypeId = @enumFromInt(12);
 
-pub const SINGLETON_COUNT: u32 = 12;
+pub const SINGLETON_COUNT: u32 = 13;
 
 pub const TypeStore = struct {
     gpa: std.mem.Allocator,
@@ -182,6 +192,7 @@ pub const TypeStore = struct {
         try self.types.append(gpa, .{ .kind = .bigint });
         try self.types.append(gpa, .{ .kind = .symbol });
         try self.types.append(gpa, .{ .kind = .object_keyword });
+        try self.types.append(gpa, .{ .kind = .error_t });
         return self;
     }
 
@@ -298,6 +309,13 @@ pub fn isFunctionRef(store: *const TypeStore, id: TypeId) bool {
     const t = store.get(id);
     if (t.kind != .type_ref) return false;
     return std.mem.eql(u8, t.name, "Function");
+}
+
+/// True when the type is the "error" type — unresolved type-name
+/// reference.  TSe's rules fire `error*` messageIds on these.
+pub fn isError(store: *const TypeStore, id: TypeId) bool {
+    if (id.eq(ID_ERROR)) return true;
+    return store.get(id).kind == .error_t;
 }
 
 pub fn containsUnknown(store: *const TypeStore, id: TypeId) bool {

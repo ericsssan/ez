@@ -67,24 +67,31 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Report at the property identifier, not the whole expression — TSe
     // reports `node.property` so column data points at the offending
     // property.  For `x.a` we want the span of `a`.
+    // Distinguish error-typed receiver: TSe fires `errorMemberExpression`
+    // when the type checker couldn't resolve the receiver's type.
+    const msg = if (ctx.typeNodeIsError(obj))
+        "errorMemberExpression"
+    else
+        "unsafeMemberExpression";
     const prop_span = propertySpan(node, ctx);
-    ctx.reportSpanWithMessageId(prop_span, "unsafeMemberExpression");
+    ctx.reportSpanWithMessageId(prop_span, msg);
 }
 
 fn checkComputedKey(node: NodeIndex, allow_opt_chain: bool, ctx: *const LintContext) void {
-    // Suppress when the optional chain is `?.[key]` and the option is set.
     if (allow_opt_chain and isOptionalMemberExpr(ctx.nodeTag(node))) return;
     const key = ctx.nodeData(node).rhs;
     if (key == .none) return;
-    // Skip literal and update-expression keys (perf — types can't be any).
     switch (ctx.nodeTag(key)) {
         .string_literal, .number_literal, .boolean_literal, .null_literal,
         .bigint_literal, .regex_literal,
         .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec => return,
         else => {},
     }
-    if (!ctx.typeNodeIsAny(key)) return;
-    ctx.reportSpanWithMessageId(ctx.nodeSpan(key), "unsafeComputedMemberAccess");
+    const is_any = ctx.typeNodeIsAny(key);
+    const is_error = !is_any and ctx.typeNodeIsError(key);
+    if (!is_any and !is_error) return;
+    const msg = if (is_error) "errorComputedMemberAccess" else "unsafeComputedMemberAccess";
+    ctx.reportSpanWithMessageId(ctx.nodeSpan(key), msg);
 }
 
 fn isComputedMemberExpr(tag: Node.Tag) bool {
@@ -107,17 +114,14 @@ fn computeState(node: NodeIndex, allow_opt_chain: bool, ctx: *const LintContext)
     if (allow_opt_chain and isOptionalMemberExpr(tag)) return .chained;
     const data = ctx.nodeData(node);
     const obj = data.lhs;
-    // bare `this`: typescript-eslint suppresses (handled by a different
-    // messageId path that requires noImplicitThis; we conservatively skip).
     if (ctx.nodeTag(obj) == .this_expr) return .safe;
-    // Recurse into nested member access — if the inner one is Unsafe,
-    // we inherit Unsafe (this node will be suppressed at fire-time).
     if (isMemberExpr(ctx.nodeTag(obj))) {
         const inner = computeState(obj, allow_opt_chain, ctx);
         if (inner == .unsafe) return .unsafe;
-        // Chained or safe inner: fall through to check our own receiver.
     }
-    if (ctx.typeNodeIsAny(obj)) return .unsafe;
+    // Both `any` and TS error type fire — TSe treats both as "type
+    // is not safely resolvable" and reports the relevant variant.
+    if (ctx.typeNodeIsAny(obj) or ctx.typeNodeIsError(obj)) return .unsafe;
     return .safe;
 }
 

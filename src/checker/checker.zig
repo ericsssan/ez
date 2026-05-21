@@ -34,6 +34,11 @@ pub const Checker = struct {
     node_types: []TypeId,
     /// sym → declared TypeId (lazy).
     sym_types: []TypeId,
+    /// Set of type-name identifiers declared in the file (interfaces,
+    /// type aliases, classes, enums, type params, imports).  A type
+    /// reference to a name NOT in this set AND NOT a built-in resolves
+    /// to `error_t` — TSe's "intrinsic error type" condition.
+    known_type_names: std.StringHashMapUnmanaged(void),
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -46,20 +51,24 @@ pub const Checker = struct {
         const sym_count = semantic.symbols.scope_ids.items.len;
         const sym_types = try gpa.alloc(TypeId, sym_count);
         @memset(sym_types, TypeId.none);
-        return .{
+        var self: Checker = .{
             .gpa = gpa,
             .ast_ref = ast_ref,
             .semantic = semantic,
             .store = try TypeStore.init(gpa),
             .node_types = node_types,
             .sym_types = sym_types,
+            .known_type_names = .empty,
         };
+        try self.buildKnownTypeNames();
+        return self;
     }
 
     pub fn deinit(self: *Checker) void {
         self.store.deinit();
         self.gpa.free(self.node_types);
         self.gpa.free(self.sym_types);
+        self.known_type_names.deinit(self.gpa);
     }
 
     // ── Public queries (LintContext-facing) ───────────────
@@ -311,6 +320,76 @@ pub const Checker = struct {
         return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
     }
 
+    /// Walk the AST once and collect names declared as types.  Sources:
+    ///   * ts_type_alias_decl, ts_interface_decl, ts_enum_decl
+    ///   * class_decl (also acts as a type name)
+    ///   * ts_namespace_decl, ts_module_decl
+    ///   * import_specifier / import_default_specifier / import_namespace_specifier
+    ///   * ts_type_parameter (generic params)
+    /// We also pre-populate built-in lib type names so common imports
+    /// like `Date`, `Map`, `Promise<T>` don't get classified as errors.
+    fn buildKnownTypeNames(self: *Checker) !void {
+        const lib_types = [_][]const u8{
+            "Array", "ReadonlyArray", "Promise", "Map", "Set", "WeakMap", "WeakSet",
+            "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError",
+            "ReferenceError", "URIError", "EvalError", "AggregateError",
+            "Function", "Object", "Symbol", "BigInt", "JSON", "Math",
+            "Iterable", "AsyncIterable", "IterableIterator", "AsyncIterator",
+            "Iterator", "Generator", "AsyncGenerator", "AsyncIterableIterator",
+            "Record", "Partial", "Required", "Readonly", "Pick", "Omit",
+            "Exclude", "Extract", "Parameters", "ReturnType",
+            "ConstructorParameters", "InstanceType", "NonNullable", "Awaited",
+            "ThisType", "NoInfer", "ThisParameterType", "OmitThisParameter",
+            "Uppercase", "Lowercase", "Capitalize", "Uncapitalize",
+            "ArrayLike", "PropertyKey", "PropertyDescriptor", "PropertyDescriptorMap",
+            "TemplateStringsArray", "Buffer", "URL", "URLSearchParams",
+            "Element", "HTMLElement", "Node", "Event", "Window", "Document",
+            "console", "process",
+        };
+        for (lib_types) |name| try self.known_type_names.put(self.gpa, name, {});
+
+        const total: u32 = @intCast(self.ast_ref.nodes.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            const tag = self.ast_ref.nodeTag(ni);
+            const data = self.ast_ref.nodeData(ni);
+            switch (tag) {
+                .ts_type_alias_decl => {
+                    const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(data.lhs));
+                    try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(ad.name), {});
+                },
+                .ts_interface_decl => {
+                    const id = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
+                    try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(id.name), {});
+                },
+                .ts_enum_decl => {
+                    const ed = self.ast_ref.extraData(ast.EnumData, @intFromEnum(data.lhs));
+                    try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(ed.name), {});
+                },
+                .class_decl => {
+                    const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
+                    if (cd.name != .none) {
+                        const tok = self.ast_ref.nodeMainToken(cd.name);
+                        try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(tok), {});
+                    }
+                },
+                .ts_namespace_decl, .ts_module_decl => {
+                    if (data.lhs != .none) {
+                        const tok = self.ast_ref.nodeMainToken(data.lhs);
+                        try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(tok), {});
+                    }
+                },
+                .import_specifier, .import_default_specifier,
+                .import_namespace_specifier, .ts_type_parameter => {
+                    const tok = self.ast_ref.nodeMainToken(ni);
+                    try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(tok), {});
+                },
+                else => {},
+            }
+        }
+    }
+
     fn resolveTypeRef(self: *Checker, ty_node: NodeIndex) TypeId {
         const name_tok = self.ast_ref.nodeMainToken(ty_node);
         const name = self.ast_ref.tokenText(name_tok);
@@ -333,6 +412,13 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name, "void")) return tymod.ID_VOID;
         if (std.mem.eql(u8, name, "undefined")) return tymod.ID_UNDEFINED;
         if (std.mem.eql(u8, name, "null")) return tymod.ID_NULL;
+        // Unknown name (not built-in, not declared anywhere in the file
+        // or a known lib type) → error type.  TSe treats unresolved type
+        // refs as the intrinsic "error" type, which triggers `error*`
+        // messageIds in the unsafe-* rules.
+        if (!self.known_type_names.contains(name)) {
+            return tymod.ID_ERROR;
+        }
         // Generic args: collect for the typeRef payload.
         var args_buf: [8]TypeId = undefined;
         const args = self.collectTypeArgs(ty_node, &args_buf);

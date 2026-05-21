@@ -413,6 +413,14 @@ pub const LintContext = struct {
         return tymod.isFunctionRef(&c.store, c.typeOf(n));
     }
 
+    /// True when the inferred type at this node is the TS "error type"
+    /// — used by unsafe-* rules to fire the `error*` messageId variant
+    /// when a reference doesn't resolve to a declared type name.
+    pub fn typeNodeIsError(self: *const LintContext, n: NodeIndex) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.isError(&c.store, c.typeOf(n));
+    }
+
     /// True when the type id reaches `unknown` either directly or through
     /// a composite.  Used by unsafe-* rules to suppress on declared types
     /// like `unknown`, `unknown[]`, `Set<unknown>` — `unknown` is the safe
