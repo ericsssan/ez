@@ -416,6 +416,14 @@ pub const LintContext = struct {
         return kind == .number_literal or kind == .bigint_literal;
     }
 
+    /// If `id` is a `type_ref`, return its name; otherwise empty.
+    pub fn typeIdRefName(self: *const LintContext, id: tymod.TypeId) []const u8 {
+        const c = self.ensureChecker() orelse return &.{};
+        const t = c.store.get(id);
+        if (t.kind != .type_ref) return &.{};
+        return t.name;
+    }
+
     /// True when the type id is `Array<string>` / `ReadonlyArray<string>`
     /// / tuple of all strings.  Used by `require-array-sort-compare`'s
     /// `ignoreStringArrays` option.

@@ -1271,9 +1271,7 @@ pub const Checker = struct {
         };
         if (prop_name.len == 0) return tymod.ID_UNKNOWN;
         const obj = self.store.get(obj_ty);
-        // Array.prototype methods — common subset.  Doesn't model variance
-        // or overloads; covers the cases our rules need (shift, pop, find,
-        // at, push, length, includes, indexOf, etc.).
+        // Array.prototype methods — common subset.
         if (obj.kind == .array_t or obj.kind == .readonly_array_t or obj.kind == .tuple_t) {
             const elem: TypeId = blk: {
                 const elems = self.store.idsOf(obj.list_data);
@@ -1282,11 +1280,47 @@ pub const Checker = struct {
             };
             return self.arrayPrototypeProperty(prop_name, elem);
         }
+        // Lib type_ref methods (Promise.then/catch/finally, Array<T> proxy).
+        if (obj.kind == .type_ref) {
+            if (self.libTypeRefProperty(obj_ty, prop_name)) |ty| return ty;
+        }
         if (obj.kind != .object_t) return tymod.ID_UNKNOWN;
         for (self.store.propsOf(obj.object_props)) |p| {
             if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
         }
         return tymod.ID_UNKNOWN;
+    }
+
+    /// Look up a property on a lib type_ref (Promise / Array / Set /
+    /// Map).  Returns null when the type isn't recognised or doesn't
+    /// have the named property modeled.
+    fn libTypeRefProperty(self: *Checker, ref_ty: TypeId, name: []const u8) ?TypeId {
+        const t = self.store.get(ref_ty);
+        if (t.kind != .type_ref) return null;
+        const args = self.store.idsOf(t.list_data);
+        if (std.mem.eql(u8, t.name, "Array") or std.mem.eql(u8, t.name, "ReadonlyArray")) {
+            const elem = if (args.len > 0) args[0] else tymod.ID_UNKNOWN;
+            return self.arrayPrototypeProperty(name, elem);
+        }
+        if (std.mem.eql(u8, t.name, "Promise")) {
+            const inner = if (args.len > 0) args[0] else tymod.ID_UNKNOWN;
+            return self.promisePrototypeProperty(name, inner);
+        }
+        return null;
+    }
+
+    fn promisePrototypeProperty(self: *Checker, name: []const u8, _: TypeId) ?TypeId {
+        // The Promise<T> chain methods .then/.catch/.finally all return
+        // Promise<unknown> (loose approximation, doesn't track resolved
+        // handler return types).  Each is a function_t that propagates
+        // chains so 'promise.then(...).catch(...)' is also Promise.
+        const unknown_promise = self.store.typeRef("Promise", &.{tymod.ID_UNKNOWN}) catch return null;
+        if (std.mem.eql(u8, name, "then") or std.mem.eql(u8, name, "catch") or
+            std.mem.eql(u8, name, "finally"))
+        {
+            return self.makeNullaryFn(unknown_promise);
+        }
+        return null;
     }
 
     /// Lookup an Array.prototype method by name and return its

@@ -23,6 +23,7 @@ const parser = @import("../../../parser/root.zig");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
+const tymod = @import("../../../checker/types.zig");
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
@@ -55,9 +56,32 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // `allow` option: type names that are explicitly OK to throw.
     if (exprMatchesAllowList(arg, ctx)) return;
     if (exprIsErrorLike(arg, ctx)) return;
+    // Definitely non-Error types fire even when containsUnknown is
+    // true (e.g. `throw promise.then(...).catch(...)` types to
+    // Promise<unknown> — Promise isn't Error-like).  Also: `new X()`
+    // where X is not a known-Error-extending class — the constructor
+    // produces a concrete instance, so the unknown-bail doesn't apply.
+    const arg_tag = ctx.nodeTag(arg);
+    if (typeIsDefinitelyNonError(ctx.typeOfNode(arg), ctx) or arg_tag == .new_expr) {
+        ctx.reportWithMessageId(node, "object");
+        return;
+    }
     // Implicit-unknown allow.
     if (optionAllowThrowingUnknown(ctx) and ctx.typeIdContainsUnknown(ctx.typeOfNode(arg))) return;
     ctx.reportWithMessageId(node, "object");
+}
+
+/// True when the type is a known non-Error class/builtin (Promise, Map,
+/// Set, Date, RegExp, Array, ...) — even when its type args contain
+/// `unknown`, the value as a whole isn't Error-like.
+fn typeIsDefinitelyNonError(id: tymod.TypeId, ctx: *const LintContext) bool {
+    const name = ctx.typeIdRefName(id);
+    if (name.len == 0) return false;
+    return std.mem.eql(u8, name, "Promise") or
+        std.mem.eql(u8, name, "Map") or std.mem.eql(u8, name, "ReadonlyMap") or
+        std.mem.eql(u8, name, "Set") or std.mem.eql(u8, name, "ReadonlySet") or
+        std.mem.eql(u8, name, "Date") or std.mem.eql(u8, name, "RegExp") or
+        std.mem.eql(u8, name, "WeakMap") or std.mem.eql(u8, name, "WeakSet");
 }
 
 fn isUndefined(node: NodeIndex, ctx: *const LintContext) bool {
