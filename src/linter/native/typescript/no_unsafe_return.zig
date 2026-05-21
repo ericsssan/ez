@@ -112,6 +112,18 @@ fn reportIfUnsafeReturn(
     // we fire `unsafeReturn`; the assignability check below handles
     // the `unsafeReturnAssignment` path that fires even on "safe"
     // return-value classification.
+    // `return this;` (or `return () => this;` from an outer non-arrow
+    // function): `this` in a regular function expression / fn_decl is
+    // implicit-any unless the function has a `: this` parameter
+    // annotation.  TSe fires `unsafeReturnThis`.
+    if (returnExpressionIsThis(ret_value, ctx) and enclosingFnUntypedThis(fn_node, ctx)) {
+        // Match TSe positioning: arrow expression-body fires at the
+        // `this` keyword; a `return this` statement fires at the whole
+        // ReturnStatement (which includes the `return` keyword).
+        const report_node = if (ctx.nodeTag(report_at) == .return_stmt) report_at else ret_value;
+        ctx.reportWithMessageId(report_node, "unsafeReturnThis");
+        return;
+    }
     const ret_ty = ctx.typeOfNode(ret_value);
     var any_class = classifyAnyType(ret_ty, ctx);
     // AST-level fallback: checker may not propagate Promise<any> through
@@ -403,6 +415,47 @@ fn tsTypeIsPromiseAny(ty: NodeIndex, ctx: *const LintContext) bool {
         },
         else => return false,
     }
+}
+
+/// Detect `this` in the returned value: direct `return this;` or an
+/// inline arrow `() => this` (arrow captures outer `this`).
+fn returnExpressionIsThis(ret_value: NodeIndex, ctx: *const LintContext) bool {
+    var e = ret_value;
+    while (e != .none) {
+        const tag = ctx.nodeTag(e);
+        if (tag == .this_expr) return true;
+        if (tag == .grouping_expr or tag == .ts_non_null_expr) {
+            e = ctx.nodeData(e).lhs;
+            continue;
+        }
+        return false;
+    }
+    return false;
+}
+
+/// True when the enclosing function gives `this` its implicit any type:
+/// regular fn_decl / fn_expr / generator without a `this: T` parameter.
+/// Methods / constructors / class field initializers / arrow_fn inherit
+/// `this` from a class instance and are NOT flagged.  We approximate:
+///   * arrow_fn -> walk further up (arrow captures parent's `this`)
+///   * method_def / constructor_def / getter_def / setter_def -> typed
+///   * everything else -> implicit any
+fn enclosingFnUntypedThis(fn_node: NodeIndex, ctx: *const LintContext) bool {
+    var n = fn_node;
+    while (n != .none) {
+        switch (ctx.nodeTag(n)) {
+            .arrow_fn, .async_arrow_fn => {
+                // Walk to enclosing function — arrow inherits `this`.
+                n = enclosingFunction(n, ctx) orelse return true;
+                continue;
+            },
+            .method_def, .computed_method_def,
+            .getter_def, .setter_def, .computed_getter_def, .computed_setter_def,
+            .constructor_def => return false,
+            else => return true,
+        }
+    }
+    return true;
 }
 
 fn peelPromise(ty_node: NodeIndex, ctx: *const LintContext) ?NodeIndex {

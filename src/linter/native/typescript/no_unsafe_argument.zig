@@ -216,7 +216,10 @@ fn checkArgAgainstType(arg: NodeIndex, param_ty_node: NodeIndex, ctx: *const Lin
     if (ctx.typeIdIsAny(declared)) return; // param is `: any` opt-in
     if (ctx.typeIdContainsAny(declared)) return; // param itself contains any
     if (ctx.typeIdContainsUnknown(declared)) return; // unknown is safe target for any
-    if (!ctx.typeNodeContainsAny(arg)) return;
+    // TSe also fires for `error`-typed values (TS's unresolved-symbol
+    // sentinel) — those resolve to `any` for rule purposes.
+    const arg_is_any = ctx.typeNodeContainsAny(arg) or ctx.typeNodeIsError(arg);
+    if (!arg_is_any) return;
     if (rhsIsExplicitNonAnyCast(arg, ctx)) return;
     ctx.reportWithMessageId(arg, "unsafeArgument");
 }
