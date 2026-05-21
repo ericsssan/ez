@@ -392,7 +392,19 @@ pub const Checker = struct {
             // no-unsafe-* rules don't spuriously fire on objects /
             // functions / etc. declared via structural annotations.
             .ts_typeof_type => tymod.ID_UNKNOWN, // we don't resolve `typeof x` yet
-            .ts_keyof_type => tymod.ID_STRING, // approx
+            .ts_keyof_type => blk: {
+                // Parser also uses .ts_keyof_type as TSTypeOperator for
+                // 'readonly T[]' / 'readonly [T, U]' (TS doesn't share
+                // a distinct tag).  Detect the readonly form via the
+                // main_token and resolve to the underlying array.
+                const op_tok = self.ast_ref.nodeMainToken(ty_node);
+                const op_text = self.ast_ref.tokenText(op_tok);
+                if (std.mem.eql(u8, op_text, "readonly")) {
+                    const inner = self.ast_ref.nodeData(ty_node).lhs;
+                    break :blk self.resolveTypeNode(inner);
+                }
+                break :blk tymod.ID_STRING; // keyof default approx
+            },
             .ts_type_literal => self.resolveTypeLiteral(ty_node),
             .ts_function_type, .ts_constructor_type => self.resolveFunctionType(ty_node),
             .ts_tuple_type => self.resolveTupleType(ty_node),

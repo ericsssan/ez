@@ -34,6 +34,8 @@ const RULES = [
   "no-unsafe-unary-minus",
   "require-array-sort-compare",
   "prefer-reduce-type-parameter",
+  "no-unnecessary-boolean-literal-compare",
+  "prefer-find",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];

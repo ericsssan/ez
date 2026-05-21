@@ -416,6 +416,14 @@ pub const LintContext = struct {
         return kind == .number_literal or kind == .bigint_literal;
     }
 
+    /// True when the type id is exactly `boolean` or a boolean literal
+    /// type (`true` / `false`).  Used by no-unnecessary-boolean-literal-compare.
+    pub fn typeIdIsExactlyBoolean(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        return t.kind == .boolean or t.kind == .boolean_literal;
+    }
+
     /// If `id` is a `type_ref`, return its name; otherwise empty.
     pub fn typeIdRefName(self: *const LintContext, id: tymod.TypeId) []const u8 {
         const c = self.ensureChecker() orelse return &.{};
