@@ -889,13 +889,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 3,
+        "fn": 2,
         "fp": 2,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
+        "fn": 2,
         "fp": 8,
         "crash": 0
       }
@@ -2329,14 +2329,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 3,
+        "fn": 2,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 14,
-        "fp": 11,
+        "fp": 12,
         "crash": 0
       }
     },
@@ -21764,9 +21764,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10737,
-    "runnerCasesPerSec": 8671,
-    "nativeCasesPerSec": 72139,
+    "totalElapsedMs": 10517,
+    "runnerCasesPerSec": 8836,
+    "nativeCasesPerSec": 71999,
     "totalCases": 73100
   }
 }

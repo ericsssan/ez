@@ -160,8 +160,13 @@ for (const rule of RULES) {
     const hasJsx = /(?:^|\W)<[A-Z][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*\s*=|\s*\/>|\s*>[\s\S]*<\/)/.test(code);
     // Top-level `await` / `import` / `export` require sourceType
     // module — the upstream tests enable module mode implicitly.
-    const tlaRe = /(?:^|\n)\s*(?:await|for\s+await|import\b|export\b)/;
-    const sourceType = (code && tlaRe.test(code)) ? "module" : "script";
+    // Use a broader heuristic: `await`/`for await`/`await using`
+    // anywhere outside a function body (we can't reliably detect that
+    // here, so any `await` triggers module mode — matches what TSe's
+    // projectService does).
+    const tlaRe = /(?:^|\n)\s*(?:import\b|export\b)/;
+    const awaitRe = /\bawait\b/;
+    const sourceType = (code && (tlaRe.test(code) || awaitRe.test(code))) ? "module" : "script";
     const meta = {
       rule: `@typescript-eslint/${rule}`,
       kind,

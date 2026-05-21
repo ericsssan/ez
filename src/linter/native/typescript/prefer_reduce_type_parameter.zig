@@ -40,15 +40,26 @@ pub const needs_semantic = true;
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!ctx.hasTypeChecker()) return;
 
-    const callee = ctx.nodeData(node).lhs;
+    var callee = ctx.nodeData(node).lhs;
     if (callee == .none) return;
+    while (ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
     const cb_tag = ctx.nodeTag(callee);
-    if (cb_tag != .member_expr and cb_tag != .optional_member_expr) return;
-
-    // Property must be `reduce`.
-    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "reduce")) return;
-
-    const object = ctx.nodeData(callee).lhs;
+    var object: NodeIndex = .none;
+    if (cb_tag == .member_expr or cb_tag == .optional_member_expr) {
+        if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "reduce")) return;
+        object = ctx.nodeData(callee).lhs;
+    } else if (cb_tag == .computed_member_expr or cb_tag == .optional_computed_member_expr) {
+        // arr['reduce'](...).  Computed key must be the string literal
+        // "reduce".
+        const md = ctx.nodeData(callee);
+        if (md.rhs == .none or ctx.nodeTag(md.rhs) != .string_literal) return;
+        const span = ctx.nodeSpan(md.rhs);
+        if (span.end <= span.start + 2) return;
+        const raw = ctx.ast.source[span.start..span.end];
+        if (raw.len < 3) return;
+        if (!std.mem.eql(u8, raw[1 .. raw.len - 1], "reduce")) return;
+        object = md.lhs;
+    } else return;
     if (object == .none) return;
     const obj_ty = ctx.typeOfNode(object);
     if (ctx.typeIdIsAny(obj_ty)) return;
@@ -77,19 +88,29 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const inner = if (second_tag == .ts_as_expr) second_data.lhs else second_data.rhs;
     const asserted_type = if (second_tag == .ts_as_expr) second_data.rhs else second_data.lhs;
 
-    // Trivial-assertion gate: the asserted value should be a literal
-    // that's structurally assignable to almost any T.  Without this
-    // we'd also need a real assignability check to avoid reporting
-    // necessary assertions.
-    if (!isTrivialAssertedValue(inner, ctx)) return;
-
-    // Asserted target must be a "broad" type — array-like or a
-    // `Record<string, V>` (string index signature; `{}` is assignable).
-    // Skip narrow targets like `Record<'a' | 'b', V>` whose required
-    // keys make the assertion necessary.
-    if (!tsTypeIsArrayLike(asserted_type, ctx) and !tsTypeIsIndexRecord(asserted_type, ctx)) return;
-
-    ctx.reportWithMessageId(second, "preferTypeParameter");
+    // Two acceptance paths:
+    //   (a) Trivial-value form: literal/array_literal/object_literal/
+    //       new_expr inner combined with a broad target (T[] / Array /
+    //       Record<string,_>) — the assertion is structurally
+    //       unnecessary by construction.
+    //   (b) Assignability form: the inner expression's inferred type
+    //       is already assignable to the asserted type — the assertion
+    //       is unnecessary and a real type parameter would suffice.
+    const trivial = isTrivialAssertedValue(inner, ctx);
+    const broad_target = tsTypeIsArrayLike(asserted_type, ctx) or tsTypeIsIndexRecord(asserted_type, ctx);
+    if (trivial and broad_target) {
+        ctx.reportWithMessageId(second, "preferTypeParameter");
+        return;
+    }
+    // Assignability path: only when the inner has a concrete inferred
+    // type that's NOT any/unknown — otherwise we'd over-report.
+    const inner_ty = ctx.typeOfNode(inner);
+    if (ctx.typeIdIsAny(inner_ty) or ctx.typeIdContainsUnknown(inner_ty)) return;
+    const asserted_id = ctx.resolveTypeAnnotationNode(asserted_type);
+    if (ctx.typeIdIsAny(asserted_id) or ctx.typeIdContainsUnknown(asserted_id)) return;
+    if (ctx.typeIdAssignableTo(inner_ty, asserted_id)) {
+        ctx.reportWithMessageId(second, "preferTypeParameter");
+    }
 }
 
 fn isTrivialAssertedValue(node: NodeIndex, ctx: *const LintContext) bool {

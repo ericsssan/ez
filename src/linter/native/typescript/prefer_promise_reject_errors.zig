@@ -390,6 +390,11 @@ fn exprIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
                 const cd = ctx.extraData(ast.Conditional, @intFromEnum(data.rhs));
                 return exprIsErrorLike(cd.consequent, ctx) and exprIsErrorLike(cd.alternate, ctx);
             },
+            .await_expr => {
+                // `await E` — the awaited result is the inner of Promise<T>.
+                // If E returns Promise<ErrorLike>, the await is Error-like.
+                return awaitedIsErrorLike(ctx.nodeData(n).lhs, ctx);
+            },
             else => break,
         }
     }
@@ -560,6 +565,61 @@ fn tsTypeLiteralPropIsErrorLike(ty: NodeIndex, prop: []const u8, ctx: *const Lin
         return false;
     }
     return false;
+}
+
+fn awaitedIsErrorLike(value: NodeIndex, ctx: *const LintContext) bool {
+    // Resolve the awaited value's return-type annotation through known
+    // call shapes and look for Promise<E> where E is Error-like.
+    var v = value;
+    while (ctx.nodeTag(v) == .grouping_expr) v = ctx.nodeData(v).lhs;
+    const tag = ctx.nodeTag(v);
+    if (tag != .call_expr and tag != .optional_call_expr) return false;
+    const callee = ctx.nodeData(v).lhs;
+    if (callee == .none or ctx.nodeTag(callee) != .identifier) return false;
+    const sym = symbolForIdent(callee, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    const dtag = ctx.nodeTag(decl);
+    var return_ty: NodeIndex = .none;
+    if (dtag == .fn_decl or dtag == .ts_declare_function) {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(decl).lhs));
+        return_ty = fd.return_type;
+    } else if (dtag == .async_fn_decl) {
+        // async fn already wraps in Promise — return type IS the Promise inner.
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(decl).lhs));
+        return_ty = fd.return_type;
+        if (return_ty != .none) {
+            if (ctx.nodeTag(return_ty) == .ts_type_annotation) return_ty = ctx.nodeData(return_ty).lhs;
+            return tsTypeIsErrorLike(return_ty, ctx);
+        }
+        return false;
+    } else if (dtag == .identifier) {
+        const bd = ctx.nodeData(decl);
+        if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+        const ty = ctx.nodeData(bd.rhs).lhs;
+        if (ty == .none or ctx.nodeTag(ty) != .ts_function_type) return false;
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+        return_ty = fd.body; // ts_function_type return is in FnData.body
+    }
+    if (return_ty == .none) return false;
+    if (ctx.nodeTag(return_ty) == .ts_type_annotation) return_ty = ctx.nodeData(return_ty).lhs;
+    // Unwrap Promise<T>: walk to find Error-likeness of T.
+    return tsTypeIsPromiseOfErrorLike(return_ty, ctx);
+}
+
+fn tsTypeIsPromiseOfErrorLike(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    var t = ty;
+    if (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    if (ctx.nodeTag(t) != .ts_type_reference) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(t));
+    if (!std.mem.eql(u8, name, "Promise")) return false;
+    const rhs = ctx.nodeData(t).rhs;
+    if (rhs == .none) return false;
+    const range = ctx.extraData(ast.SubRange, @intFromEnum(rhs));
+    if (range.end <= range.start or range.end > ctx.ast.extra_data.len) return false;
+    const inner: NodeIndex = @enumFromInt(ctx.ast.extra_data[range.start]);
+    return tsTypeIsErrorLike(inner, ctx);
 }
 
 fn identifierIsExternalImport(ident: NodeIndex, ctx: *const LintContext) bool {
