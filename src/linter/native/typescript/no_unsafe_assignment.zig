@@ -76,8 +76,32 @@ fn checkAssignmentPattern(node: NodeIndex, ctx: *const LintContext) void {
         }
     }
     if (data.rhs == .none) return;
-    const sender_ty = ctx.typeOfNode(data.rhs);
+    const sender_ty = senderTypeForDestructure(data.rhs, ctx);
     checkDestructure(pat, sender_ty, ctx);
+}
+
+/// Preserve `as`-cast target types: `[x] = [1] as [any]` should walk
+/// against the cast TARGET, not the underlying value's inferred type.
+/// The checker may not propagate ts_as_expr through structural casts.
+fn senderTypeForDestructure(rhs: NodeIndex, ctx: *const LintContext) tymod.TypeId {
+    const r = unwrapGroup(rhs, ctx);
+    if (ctx.nodeTag(r) == .ts_as_expr) {
+        const target = ctx.nodeData(r).rhs;
+        if (target != .none) return ctx.resolveTypeAnnotationNode(target);
+    }
+    if (ctx.nodeTag(r) == .ts_type_assertion) {
+        const target = ctx.nodeData(r).lhs;
+        if (target != .none) return ctx.resolveTypeAnnotationNode(target);
+    }
+    return ctx.typeOfNode(rhs);
+}
+
+fn unwrapGroup(n: NodeIndex, ctx: *const LintContext) NodeIndex {
+    var cur = n;
+    while (cur != .none and ctx.nodeTag(cur) == .grouping_expr) {
+        cur = ctx.nodeData(cur).lhs;
+    }
+    return cur;
 }
 
 fn checkDeclarator(node: NodeIndex, ctx: *const LintContext) void {
@@ -90,7 +114,7 @@ fn checkDeclarator(node: NodeIndex, ctx: *const LintContext) void {
     // `const { x } = sender` checks sender.x type.  TSe fires
     // `unsafeArrayPatternFromTuple` / `unsafeObjectPattern` for these.
     if (lhs_tag == .array_pattern or lhs_tag == .object_pattern) {
-        const sender_ty = ctx.typeOfNode(data.rhs);
+        const sender_ty = senderTypeForDestructure(data.rhs, ctx);
         checkDestructure(lhs, sender_ty, ctx);
         return;
     }
@@ -114,7 +138,7 @@ fn checkAssign(node: NodeIndex, ctx: *const LintContext) void {
         // Note: ESTree assignment targets reuse array_literal /
         // object_literal node tags for destructuring assignments (vs
         // var declarations which use the pattern tags).  Walk either.
-        const sender_ty = ctx.typeOfNode(data.rhs);
+        const sender_ty = senderTypeForDestructure(data.rhs, ctx);
         checkDestructure(data.lhs, sender_ty, ctx);
         return;
     }
