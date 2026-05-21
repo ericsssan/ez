@@ -258,10 +258,14 @@ fn checkObjectDestructure(pattern: NodeIndex, sender_ty: tymod.TypeId, ctx: *con
             },
             .computed_property => {
                 value = prop_data.rhs;
-                // For `[ 'x' ]: y`, key is string_literal — read its text.
-                if (prop_data.lhs != .none and ctx.nodeTag(prop_data.lhs) == .string_literal) {
-                    const raw_str = ctx.tokenText(ctx.nodeMainToken(prop_data.lhs));
-                    if (raw_str.len >= 2) name = raw_str[1 .. raw_str.len - 1]; // strip quotes
+                // For `[ 'x' ]: y` (string_literal) / `[ `x` ]: y`
+                // (template_literal) — strip the surrounding delimiter.
+                if (prop_data.lhs != .none) {
+                    const ktag = ctx.nodeTag(prop_data.lhs);
+                    if (ktag == .string_literal or ktag == .template_literal) {
+                        const raw_str = ctx.tokenText(ctx.nodeMainToken(prop_data.lhs));
+                        if (raw_str.len >= 2) name = raw_str[1 .. raw_str.len - 1];
+                    }
                 }
             },
             else => continue,

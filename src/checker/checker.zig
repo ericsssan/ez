@@ -460,7 +460,15 @@ pub const Checker = struct {
             const name_node = member_data.lhs;
             if (name_node == .none) continue;
             const name_tok = self.ast_ref.nodeMainToken(name_node);
-            const name = self.ast_ref.tokenText(name_tok);
+            const raw_name = self.ast_ref.tokenText(name_tok);
+            // Strip quotes/backticks for string-literal / template-literal
+            // computed keys: `['x']: T` and `` [`x`]: T `` both denote a
+            // property literally named "x".
+            const name_tag = self.ast_ref.nodeTag(name_node);
+            const name = if ((name_tag == .string_literal or name_tag == .template_literal) and raw_name.len >= 2)
+                raw_name[1 .. raw_name.len - 1]
+            else
+                raw_name;
             // The type annotation is stored in rhs as a ts_type_annotation
             // wrapper (`name: Type` → the colon-wrapped type node).
             // No annotation → property type is any (TS implicit any).
