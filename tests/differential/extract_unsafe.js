@@ -27,6 +27,7 @@ const RULES = [
   "await-thenable",
   "no-for-in-array",
   "only-throw-error",
+  "prefer-promise-reject-errors",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];

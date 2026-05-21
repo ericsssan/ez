@@ -93,12 +93,7 @@ fn isErrorClassName(name: []const u8, ctx: *const LintContext) bool {
 /// but the identifier resolves to a LOCAL binding (e.g. shadowed by
 /// an `import { Error } from './class'`), treat as non-builtin.
 fn errorClassNameIsBuiltin(callee: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
-    if (isErrorClassNameStatic(name)) {
-        // Check that the reference resolves to global (no local symbol).
-        const sym = symbolForIdent(callee, ctx);
-        if (sym == null) return true; // unresolved → assume global builtin
-        return false; // local shadowing — not the global Error class
-    }
+    if (isErrorClassNameStatic(name) and ctx.isGlobalReference(callee)) return true;
     if (classExtendsError(name, ctx)) return true;
     if (classImplementsError(name, ctx)) return true;
     return false;
