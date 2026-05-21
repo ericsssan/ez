@@ -20,6 +20,7 @@
 //   * member expressions on any (that's no-unsafe-member-access)
 
 const std = @import("std");
+const parser = @import("../../../parser/root.zig");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -34,7 +35,7 @@ pub const meta = RuleMeta{
     .lang = .ts_only,
 };
 
-pub const relevant_tags = [_]Node.Tag{ .declarator, .assign, .assignment_pattern };
+pub const relevant_tags = [_]Node.Tag{ .declarator, .assign, .assignment_pattern, .jsx_attribute };
 
 pub const needs_semantic = true;
 
@@ -46,8 +47,141 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .declarator => checkDeclarator(node, ctx),
         .assign => checkAssign(node, ctx),
         .assignment_pattern => checkAssignmentPattern(node, ctx),
+        .jsx_attribute => checkJsxAttribute(node, ctx),
         else => {},
     }
+}
+
+/// JSX attribute assignment: `<Foo a={1 as any} />` flows the
+/// expression value into Foo's prop `a`.  Resolve the JSX element's
+/// tag name to its function declaration, find the props parameter,
+/// look up the attribute name in the props type, and check the value
+/// against the prop type.
+fn checkJsxAttribute(node: NodeIndex, ctx: *const LintContext) void {
+    const data = ctx.nodeData(node);
+    if (data.lhs == .none or data.rhs == .none) return;
+    // Attribute name (jsx_attribute.lhs is jsx_identifier or identifier).
+    const name_node = data.lhs;
+    const ntag = ctx.nodeTag(name_node);
+    if (ntag != .identifier and ntag != .jsx_identifier) return;
+    const attr_name = ctx.tokenText(ctx.nodeMainToken(name_node));
+    // Value: jsx_expression_container wraps the expression.
+    var value = data.rhs;
+    if (ctx.nodeTag(value) == .jsx_expression_container) {
+        value = ctx.nodeData(value).lhs;
+    }
+    if (value == .none) return;
+    // Quick filter: only proceed when the value is any-typed.
+    if (!ctx.typeNodeContainsAny(value)) return;
+    if (rhsIsExplicitNonAnyCast(value, ctx)) return;
+    // Walk to the enclosing JSX opening element to find the tag.
+    var p = ctx.parentOf(node);
+    while (p != .none) : (p = ctx.parentOf(p)) {
+        const tag = ctx.nodeTag(p);
+        if (tag == .jsx_opening_element or tag == .jsx_self_closing) break;
+    }
+    if (p == .none) return;
+    const opening = ctx.extraData(ast.JsxOpeningData, @intFromEnum(ctx.nodeData(p).lhs));
+    if (opening.name == .none) return;
+    const open_tag = ctx.nodeTag(opening.name);
+    if (open_tag != .identifier and open_tag != .jsx_identifier) return;
+    // Look up the tag's declared first-parameter type and find `attr_name`.
+    const prop_ty_node = jsxPropTypeNode(opening.name, attr_name, ctx) orelse return;
+    const prop_ty = ctx.resolveTypeAnnotationNode(prop_ty_node);
+    if (ctx.typeIdIsAny(prop_ty)) return;
+    if (ctx.typeIdContainsAny(prop_ty)) return;
+    if (ctx.typeIdContainsUnknown(prop_ty)) return;
+    ctx.reportWithMessageId(value, "anyAssignment");
+}
+
+/// Find the prop's type-annotation node for a JSX tag name and attr name.
+/// Looks for `declare function Tag(props: { attr: T; ... }): ...`.
+fn jsxPropTypeNode(tag_ident: NodeIndex, attr_name: []const u8, ctx: *const LintContext) ?NodeIndex {
+    const refs = &ctx.semantic.references;
+    const total = refs.count();
+    var sym: ?parser.symbol.SymbolId = null;
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const rid = parser.reference.ReferenceId.fromInt(i);
+        if (refs.getNode(rid) != tag_ident) continue;
+        if (!refs.isResolved(rid)) return null;
+        sym = refs.getSymbol(rid);
+        break;
+    }
+    const s = sym orelse return null;
+    const decl = ctx.semantic.symbols.getDeclNode(s);
+    if (decl == .none) return null;
+    // Walk to enclosing function declaration.
+    var fn_node: NodeIndex = decl;
+    if (ctx.nodeTag(decl) == .identifier) {
+        const p = ctx.parentOf(decl);
+        if (p == .none) return null;
+        fn_node = p;
+    }
+    var fd: ast.FnData = undefined;
+    switch (ctx.nodeTag(fn_node)) {
+        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl, .ts_declare_function => {
+            const dd = ctx.nodeData(fn_node);
+            fd = ctx.extraData(ast.FnData, @intFromEnum(dd.lhs));
+        },
+        else => return null,
+    }
+    // Read first param's type annotation.
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    if (fd.params >= fd.params_end or fd.params_end > ext_len) return null;
+    const param: NodeIndex = @enumFromInt(ctx.ast.extra_data[fd.params]);
+    var ty_node = paramAnnotationType(param, ctx);
+    if (ty_node == .none) return null;
+    // Resolve type-reference to an alias body (one hop).
+    if (ctx.nodeTag(ty_node) == .ts_type_reference) {
+        const tname = ctx.tokenText(ctx.nodeMainToken(ty_node));
+        if (resolveAliasBody(tname, ctx)) |body| ty_node = body;
+    }
+    // ty_node should now be a ts_type_literal — walk members for attr_name.
+    if (ctx.nodeTag(ty_node) != .ts_type_literal) return null;
+    const lit_data = ctx.nodeData(ty_node);
+    const s2 = @intFromEnum(lit_data.lhs);
+    const e2 = @intFromEnum(lit_data.rhs);
+    if (s2 > e2 or e2 > ext_len) return null;
+    for (ctx.ast.extra_data[s2..e2]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(m) != .ts_property_signature) continue;
+        const md = ctx.nodeData(m);
+        if (md.lhs == .none) continue;
+        const k = ctx.tokenText(ctx.nodeMainToken(md.lhs));
+        if (!std.mem.eql(u8, k, attr_name)) continue;
+        if (md.rhs == .none) return null;
+        if (ctx.nodeTag(md.rhs) != .ts_type_annotation) return null;
+        return ctx.nodeData(md.rhs).lhs;
+    }
+    return null;
+}
+
+fn paramAnnotationType(param: NodeIndex, ctx: *const LintContext) NodeIndex {
+    // Param is typically an identifier with rhs = ts_type_annotation, or
+    // an assignment_pattern wrapping an identifier with annotation.
+    var p = param;
+    if (ctx.nodeTag(p) == .assignment_pattern) p = ctx.nodeData(p).lhs;
+    if (ctx.nodeTag(p) != .identifier) return .none;
+    const bd = ctx.nodeData(p);
+    if (bd.rhs == .none) return .none;
+    if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return .none;
+    return ctx.nodeData(bd.rhs).lhs;
+}
+
+fn resolveAliasBody(name: []const u8, ctx: *const LintContext) ?NodeIndex {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
+        const dd = tree.nodeData(ni);
+        const ad = tree.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+        if (!std.mem.eql(u8, tree.tokenText(ad.name), name)) continue;
+        return ad.type_node;
+    }
+    return null;
 }
 
 /// Function-parameter default-value destructuring:
