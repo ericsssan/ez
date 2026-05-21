@@ -40,6 +40,17 @@ pub const Checker = struct {
     /// to `error_t` — TSe's "intrinsic error type" condition.
     known_type_names: std.StringHashMapUnmanaged(void),
 
+    /// Maps type names to their AST declaration node so `resolveTypeRef`
+    /// can build the structural type on demand.  Filled at init time
+    /// for interfaces and classes — type aliases use the same mechanism
+    /// when their RHS is a structural type.
+    type_decl_nodes: std.StringHashMapUnmanaged(NodeIndex),
+
+    /// Cache: type name → resolved TypeId for declared structural types.
+    /// Populated lazily by `resolveDeclaredType`.  Recursion-safe via a
+    /// sentinel (ID_UNKNOWN inserted before recursion, replaced after).
+    declared_type_cache: std.StringHashMapUnmanaged(TypeId),
+
     pub fn init(
         gpa: std.mem.Allocator,
         ast_ref: *const Ast,
@@ -59,6 +70,8 @@ pub const Checker = struct {
             .node_types = node_types,
             .sym_types = sym_types,
             .known_type_names = .empty,
+            .type_decl_nodes = .empty,
+            .declared_type_cache = .empty,
         };
         try self.buildKnownTypeNames();
         return self;
@@ -69,6 +82,8 @@ pub const Checker = struct {
         self.gpa.free(self.node_types);
         self.gpa.free(self.sym_types);
         self.known_type_names.deinit(self.gpa);
+        self.type_decl_nodes.deinit(self.gpa);
+        self.declared_type_cache.deinit(self.gpa);
     }
 
     // ── Public queries (LintContext-facing) ───────────────
@@ -104,7 +119,8 @@ pub const Checker = struct {
             .regex_literal => self.regexpRefType(),
             .template_literal => tymod.ID_STRING,
             .tagged_template => tymod.ID_UNKNOWN,
-            .this_expr, .super_expr => tymod.ID_UNKNOWN,
+            .this_expr => self.inferThis(node),
+            .super_expr => tymod.ID_UNKNOWN,
 
             .identifier => self.inferIdentifier(node),
 
@@ -164,11 +180,12 @@ pub const Checker = struct {
             .await_expr => self.inferAwait(node),
             .yield_expr, .yield_delegate => tymod.ID_UNKNOWN,
 
-            // Function and class expressions have function/constructor
-            // types in TS — never `any` by default.  Return unknown
-            // until we wire up real function-signature types.
+            // Function/arrow expressions build a function_t carrying
+            // their signature (param types + return type).  Class
+            // expressions still fall back to unknown for now.
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
-            .arrow_fn, .async_arrow_fn,
+                => self.functionTypeFromFnDecl(node),
+            .arrow_fn, .async_arrow_fn => self.functionTypeFromArrow(node),
             .class_expr => tymod.ID_UNKNOWN,
             else => tymod.ID_UNKNOWN,
         };
@@ -246,17 +263,116 @@ pub const Checker = struct {
                 if (data.rhs != .none) return self.typeOf(data.rhs);
                 return tymod.ID_UNKNOWN;
             },
-            // Function/class declarations are not `any` — they have an
-            // inferred (or declared) signature/constructor type.  We
-            // don't model these structurally yet, so return `unknown`
-            // — it's not `any`, so no-unsafe-* won't fire on calls.
+            // Function declarations: build a function_t from the
+            // FnData (params + return).  Caller-side call inference
+            // can then resolve the return type and check arg types.
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .ts_declare_function => return self.functionTypeFromFnDecl(parent),
             .class_decl => return tymod.ID_UNKNOWN,
             // Function/method/getter/setter parameter, class field, etc.
             // We don't resolve these structurally yet — return unknown
             // rather than any so unsafe-* rules don't spuriously fire.
             else => return tymod.ID_UNKNOWN,
         }
+    }
+
+    /// Build a function_t from an fn_decl / async_fn_decl / etc. node.
+    /// Params come from the FnData params SubRange; each param's
+    /// declared annotation (if any) becomes its TypeId, defaulting to
+    /// `unknown` when un-annotated.  Return type comes from the
+    /// declared annotation, else falls back to body-inference for
+    /// arrow-expression-body, else `unknown`.
+    fn functionTypeFromFnDecl(self: *Checker, fn_node: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(fn_node);
+        const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(data.lhs));
+        const is_async = switch (self.ast_ref.nodeTag(fn_node)) {
+            .async_fn_decl, .async_fn_expr, .async_generator_fn_decl,
+            .async_generator_fn_expr => true,
+            else => false,
+        };
+        return self.buildFunctionType(fd.params, fd.params_end, fd.return_type, .none, is_async);
+    }
+
+    /// Build a function_t from an arrow_fn / async_arrow_fn node.
+    fn functionTypeFromArrow(self: *Checker, arrow_node: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(arrow_node);
+        const ad = self.ast_ref.extraData(ast.ArrowData, @intFromEnum(data.lhs));
+        const is_async = self.ast_ref.nodeTag(arrow_node) == .async_arrow_fn;
+        return self.buildFunctionType(ad.params_start, ad.params_end, ad.return_type, ad.body, is_async);
+    }
+
+    fn buildFunctionType(
+        self: *Checker,
+        params_start: u32,
+        params_end: u32,
+        return_type_node: NodeIndex,
+        body_for_inference: NodeIndex,
+        is_async: bool,
+    ) TypeId {
+        // Resolve each param's type from its annotation.
+        var param_buf: [16]tymod.TypeId = undefined;
+        var count: usize = 0;
+        const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+        if (params_start <= params_end and params_end <= ext_len) {
+            const params = self.ast_ref.extra_data[params_start..params_end];
+            for (params) |raw| {
+                if (count >= param_buf.len) break;
+                const param: NodeIndex = @enumFromInt(raw);
+                param_buf[count] = self.paramDeclaredType(param);
+                count += 1;
+            }
+        }
+        // Resolve return type.  Declared annotation wins; arrow with
+        // expression body falls back to inferring from the body; else
+        // `unknown` (we don't yet infer block-body returns).
+        var ret_ty: TypeId = tymod.ID_UNKNOWN;
+        if (return_type_node != .none and
+            self.ast_ref.nodeTag(return_type_node) == .ts_type_annotation)
+        {
+            const ty_inner = self.ast_ref.nodeData(return_type_node).lhs;
+            ret_ty = self.resolveTypeNode(ty_inner);
+        } else if (body_for_inference != .none and
+            self.ast_ref.nodeTag(body_for_inference) != .block_stmt)
+        {
+            ret_ty = self.typeOf(body_for_inference);
+        }
+        const param_range = self.store.appendSignatureParams(param_buf[0..count]) catch {
+            return tymod.ID_UNKNOWN;
+        };
+        const sig: tymod.Signature = .{
+            .params_start = param_range.start,
+            .params_end = param_range.end,
+            .return_type = ret_ty,
+            .is_async = is_async,
+        };
+        return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
+    }
+
+    fn paramDeclaredType(self: *Checker, param: NodeIndex) TypeId {
+        var node = param;
+        // Peel assignment_pattern (default value) — the binding side
+        // is what carries the annotation.
+        if (self.ast_ref.nodeTag(node) == .assignment_pattern) {
+            node = self.ast_ref.nodeData(node).lhs;
+        }
+        // Peel ts_parameter_property (constructor access modifiers).
+        if (self.ast_ref.nodeTag(node) == .ts_parameter_property) {
+            node = self.ast_ref.nodeData(node).lhs;
+        }
+        if (self.ast_ref.nodeTag(node) == .rest_element) {
+            const rdata = self.ast_ref.nodeData(node);
+            if (rdata.rhs != .none and self.ast_ref.nodeTag(rdata.rhs) == .ts_type_annotation) {
+                const ty = self.ast_ref.nodeData(rdata.rhs).lhs;
+                return self.resolveTypeNode(ty);
+            }
+            return tymod.ID_UNKNOWN;
+        }
+        if (self.ast_ref.nodeTag(node) != .identifier) return tymod.ID_UNKNOWN;
+        const bd = self.ast_ref.nodeData(node);
+        if (bd.rhs == .none) return tymod.ID_UNKNOWN;
+        if (self.ast_ref.nodeTag(bd.rhs) != .ts_type_annotation) return tymod.ID_UNKNOWN;
+        const ty = self.ast_ref.nodeData(bd.rhs).lhs;
+        return self.resolveTypeNode(ty);
     }
 
     /// Map a TS type-position AST node to a TypeId.
@@ -365,7 +481,9 @@ pub const Checker = struct {
                 },
                 .ts_interface_decl => {
                     const id = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
-                    try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(id.name), {});
+                    const name = self.ast_ref.tokenText(id.name);
+                    try self.known_type_names.put(self.gpa, name, {});
+                    try self.type_decl_nodes.put(self.gpa, name, ni);
                 },
                 .ts_enum_decl => {
                     const ed = self.ast_ref.extraData(ast.EnumData, @intFromEnum(data.lhs));
@@ -375,7 +493,9 @@ pub const Checker = struct {
                     const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
                     if (cd.name != .none) {
                         const tok = self.ast_ref.nodeMainToken(cd.name);
-                        try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(tok), {});
+                        const name = self.ast_ref.tokenText(tok);
+                        try self.known_type_names.put(self.gpa, name, {});
+                        try self.type_decl_nodes.put(self.gpa, name, ni);
                     }
                 },
                 .ts_namespace_decl, .ts_module_decl => {
@@ -417,16 +537,176 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name, "undefined")) return tymod.ID_UNDEFINED;
         if (std.mem.eql(u8, name, "null")) return tymod.ID_NULL;
         // Unknown name (not built-in, not declared anywhere in the file
-        // or a known lib type) → error type.  TSe treats unresolved type
-        // refs as the intrinsic "error" type, which triggers `error*`
-        // messageIds in the unsafe-* rules.
+        // or a known lib type) → error type.
         if (!self.known_type_names.contains(name)) {
             return tymod.ID_ERROR;
         }
+        // User-declared interface or class → resolve to its structural
+        // shape (object_t with field/method ObjectProps).
+        if (self.resolveDeclaredType(name)) |resolved| return resolved;
         // Generic args: collect for the typeRef payload.
         var args_buf: [8]TypeId = undefined;
         const args = self.collectTypeArgs(ty_node, &args_buf);
         return self.store.typeRef(name, args) catch tymod.ID_ANY;
+    }
+
+    /// Resolve a declared type name (interface or class) to its structural
+    /// object_t.  Returns null when the name isn't a declared structural
+    /// type (e.g. an import or type alias to a non-structural type).
+    fn resolveDeclaredType(self: *Checker, name: []const u8) ?TypeId {
+        if (self.declared_type_cache.get(name)) |cached| {
+            // Resolved or sentinel (recursion in progress).
+            return cached;
+        }
+        const decl = self.type_decl_nodes.get(name) orelse return null;
+        // Insert sentinel to break cycles (e.g. `interface Node { children: Node[] }`).
+        self.declared_type_cache.put(self.gpa, name, tymod.ID_UNKNOWN) catch return null;
+        const result = switch (self.ast_ref.nodeTag(decl)) {
+            .ts_interface_decl => self.buildInterfaceType(decl),
+            .class_decl => self.buildClassInstanceType(decl),
+            else => return null,
+        };
+        self.declared_type_cache.put(self.gpa, name, result) catch {};
+        return result;
+    }
+
+    /// Build an object_t from an interface declaration's body.  Each
+    /// `ts_property_signature` / `ts_method_signature` becomes one
+    /// ObjectProp.  Method signatures resolve to a function_t for that
+    /// method.  Extends clauses contribute their parent's props (one
+    /// level deep — we don't yet flatten through arbitrary inheritance
+    /// chains).
+    fn buildInterfaceType(self: *Checker, decl: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(decl);
+        const id = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
+        var props: std.ArrayList(tymod.ObjectProp) = .empty;
+        defer props.deinit(self.gpa);
+        // Inherited props from `extends` clauses (one hop).
+        if (id.extends_end > id.extends_start) {
+            const extends = self.ast_ref.extra_data[id.extends_start..id.extends_end];
+            for (extends) |tok| {
+                const ext_name = self.ast_ref.tokenText(tok);
+                if (self.resolveDeclaredType(ext_name)) |ext_ty| {
+                    const t = self.store.get(ext_ty);
+                    if (t.kind == .object_t) {
+                        for (self.store.propsOf(t.object_props)) |p| {
+                            props.append(self.gpa, p) catch {};
+                        }
+                    }
+                }
+            }
+        }
+        if (id.body_end > id.body_start) {
+            const body = self.ast_ref.extra_data[id.body_start..id.body_end];
+            for (body) |raw| {
+                const member: NodeIndex = @enumFromInt(raw);
+                if (self.interfaceMemberToProp(member)) |p| {
+                    props.append(self.gpa, p) catch {};
+                }
+            }
+        }
+        const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+    }
+
+    fn interfaceMemberToProp(self: *Checker, member: NodeIndex) ?tymod.ObjectProp {
+        const tag = self.ast_ref.nodeTag(member);
+        const data = self.ast_ref.nodeData(member);
+        switch (tag) {
+            .ts_property_signature => {
+                if (data.lhs == .none) return null;
+                const name_tok = self.ast_ref.nodeMainToken(data.lhs);
+                const name = self.ast_ref.tokenText(name_tok);
+                var ty: TypeId = tymod.ID_UNKNOWN;
+                if (data.rhs != .none and self.ast_ref.nodeTag(data.rhs) == .ts_type_annotation) {
+                    const ty_node = self.ast_ref.nodeData(data.rhs).lhs;
+                    ty = self.resolveTypeNode(ty_node);
+                }
+                return .{ .name = name, .type_id = ty };
+            },
+            .ts_method_signature => {
+                const sig_data = self.ast_ref.extraData(ast.InterfaceSigData, @intFromEnum(data.lhs));
+                if (sig_data.key == .none) return null;
+                const name_tok = self.ast_ref.nodeMainToken(sig_data.key);
+                const name = self.ast_ref.tokenText(name_tok);
+                // Build a function_t for the method.
+                const fn_ty = self.buildFunctionType(
+                    sig_data.params_start,
+                    sig_data.params_end,
+                    sig_data.return_type,
+                    .none,
+                    false,
+                );
+                return .{ .name = name, .type_id = fn_ty };
+            },
+            else => return null,
+        }
+    }
+
+    /// Build the INSTANCE type of a class — a record of fields and methods.
+    /// Static members are not included (those live on the constructor).
+    fn buildClassInstanceType(self: *Checker, decl: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(decl);
+        const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
+        var props: std.ArrayList(tymod.ObjectProp) = .empty;
+        defer props.deinit(self.gpa);
+        if (cd.body == .none) return tymod.ID_UNKNOWN;
+        const body_data = self.ast_ref.nodeData(cd.body);
+        const slice = self.directRange(body_data.lhs, body_data.rhs) orelse {
+            const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
+            return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+        };
+        for (slice) |raw| {
+            const member: NodeIndex = @enumFromInt(raw);
+            if (self.classMemberToProp(member)) |p| {
+                props.append(self.gpa, p) catch {};
+            }
+        }
+        const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+    }
+
+    fn classMemberToProp(self: *Checker, member: NodeIndex) ?tymod.ObjectProp {
+        const tag = self.ast_ref.nodeTag(member);
+        const data = self.ast_ref.nodeData(member);
+        switch (tag) {
+            .property_def => {
+                // lhs = key, rhs = extra index to PropertyData
+                if (data.lhs == .none) return null;
+                if (self.ast_ref.nodeTag(data.lhs) != .identifier and
+                    self.ast_ref.nodeTag(data.lhs) != .property_ident) return null;
+                const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.lhs));
+                const pd = self.ast_ref.extraData(ast.PropertyData, @intFromEnum(data.rhs));
+                // Skip static members — they live on the constructor, not the instance.
+                var ty: TypeId = tymod.ID_UNKNOWN;
+                if (pd.type_annotation != .none and
+                    self.ast_ref.nodeTag(pd.type_annotation) == .ts_type_annotation)
+                {
+                    const ty_node = self.ast_ref.nodeData(pd.type_annotation).lhs;
+                    ty = self.resolveTypeNode(ty_node);
+                } else if (pd.value != .none) {
+                    ty = self.typeOf(pd.value);
+                }
+                return .{ .name = name, .type_id = ty };
+            },
+            .method_def, .getter_def, .setter_def => {
+                if (data.lhs == .none) return null;
+                if (self.ast_ref.nodeTag(data.lhs) != .identifier and
+                    self.ast_ref.nodeTag(data.lhs) != .property_ident) return null;
+                const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.lhs));
+                const md = self.ast_ref.extraData(ast.MethodData, @intFromEnum(data.rhs));
+                const is_async = (md.modifiers & ast.ModifierBit.@"async") != 0;
+                const fn_ty = self.buildFunctionType(
+                    md.params_start,
+                    md.params_end,
+                    md.return_type,
+                    .none,
+                    is_async,
+                );
+                return .{ .name = name, .type_id = fn_ty };
+            },
+            else => return null,
+        }
     }
 
     fn firstTypeArg(self: *Checker, ref_node: NodeIndex) NodeIndex {
@@ -551,15 +831,29 @@ pub const Checker = struct {
         return self.store.unionOf(&.{ a, b }) catch tymod.ID_ANY;
     }
 
-    /// Call/new expression return type.  TSe rule: when the callee
-    /// itself is `any`, the call returns `any` (anyness propagates
-    /// through the call).  Otherwise default to `unknown` since we
-    /// don't infer return types from function bodies.
+    /// Call/new expression return type.
+    ///   * callee is `any` → return `any` (TSe propagation)
+    ///   * callee is `function_t` with a known signature → return that
+    ///     signature's return type.  For `new`, an async/Promise return
+    ///     is treated the same — TSe semantics with full type info would
+    ///     differ for new vs call but at our resolution that's a wash.
+    ///   * otherwise → `unknown`
     fn inferCallReturn(self: *Checker, node: NodeIndex) TypeId {
         const callee = self.ast_ref.nodeData(node).lhs;
         if (callee == .none) return tymod.ID_UNKNOWN;
         const callee_ty = self.typeOf(callee);
         if (tymod.isAny(&self.store, callee_ty)) return tymod.ID_ANY;
+        const t = self.store.get(callee_ty);
+        if (t.kind == .function_t) {
+            const sigs = self.store.signaturesOf(t.signatures);
+            if (sigs.len > 0) {
+                // For async functions the return type IS already Promise<T>
+                // when declared, OR wrapped by us at signature-build time if
+                // we ever start auto-wrapping.  Currently we honor whatever
+                // was declared so the caller can peel Promise<T> explicitly.
+                return sigs[0].return_type;
+            }
+        }
         return tymod.ID_UNKNOWN;
     }
 
@@ -684,6 +978,52 @@ pub const Checker = struct {
         if (prop_name.len == 0) return tymod.ID_UNKNOWN;
         for (self.store.propsOf(obj.object_props)) |p| {
             if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
+        }
+        return tymod.ID_UNKNOWN;
+    }
+
+    /// `this` inside a class method/getter/setter/constructor resolves
+    /// to the enclosing class's instance type.  Walks parents to find
+    /// the nearest method-or-class declaration; bails (returns unknown)
+    /// for `this` in a stand-alone function (no class context) or at
+    /// module level — those cases need `noImplicitThis` compiler-options
+    /// awareness we don't track.
+    fn inferThis(self: *Checker, node: NodeIndex) TypeId {
+        const parents = self.ast_ref.parents;
+        if (parents.len == 0) return tymod.ID_UNKNOWN;
+        var p = parents[node.toInt()];
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        while (p != NONE) : (p = parents[p]) {
+            const pn: NodeIndex = @enumFromInt(p);
+            const tag = self.ast_ref.nodeTag(pn);
+            // Reaching another fn_decl/fn_expr/arrow_fn that ISN'T a
+            // method definition means we've left the class context.
+            // Arrow functions inherit `this`, so we keep walking through
+            // arrow_fn but stop at non-arrow function definitions.
+            switch (tag) {
+                .method_def, .computed_method_def, .getter_def, .setter_def,
+                .computed_getter_def, .computed_setter_def, .constructor_def => {
+                    // Walk up to the class_decl / class_expr.
+                    var q = parents[p];
+                    while (q != NONE) : (q = parents[q]) {
+                        const qn: NodeIndex = @enumFromInt(q);
+                        const qtag = self.ast_ref.nodeTag(qn);
+                        if (qtag == .class_decl) return self.buildClassInstanceType(qn);
+                        if (qtag == .class_expr) return self.buildClassInstanceType(qn);
+                        // class_body sits between method_def and class_decl/expr;
+                        // keep walking until we hit the decl/expr.
+                        if (qtag == .class_body) continue;
+                        // Other intermediate nodes (computed key wrappers?) — keep walking.
+                    }
+                    return tymod.ID_UNKNOWN;
+                },
+                // Hit a function context that owns its own `this` binding
+                // — `this` here doesn't belong to an enclosing class.
+                .fn_decl, .async_fn_decl, .generator_fn_decl,
+                .async_generator_fn_decl, .fn_expr, .async_fn_expr,
+                .generator_fn_expr, .async_generator_fn_expr => return tymod.ID_UNKNOWN,
+                else => {},
+            }
         }
         return tymod.ID_UNKNOWN;
     }

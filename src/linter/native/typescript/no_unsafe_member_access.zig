@@ -121,7 +121,10 @@ fn computeState(node: NodeIndex, allow_opt_chain: bool, ctx: *const LintContext)
     if (allow_opt_chain and isOptionalMemberExpr(tag)) return .chained;
     const data = ctx.nodeData(node);
     const obj = data.lhs;
-    if (ctx.nodeTag(obj) == .this_expr) return .safe;
+    // `this` is checked through its inferred type — when the class
+    // shape resolves to a real object_t we want member access on it
+    // to follow the usual any/error propagation.  Only suppress when
+    // we can't resolve it (which inferThis returns as unknown).
     if (isMemberExpr(ctx.nodeTag(obj))) {
         const inner = computeState(obj, allow_opt_chain, ctx);
         if (inner == .unsafe) return .unsafe;

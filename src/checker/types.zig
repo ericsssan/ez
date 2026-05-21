@@ -237,6 +237,38 @@ pub const TypeStore = struct {
         return self.object_prop_pool.items[list.start..list.end];
     }
 
+    /// Append a slice of signature param TypeIds and return a range.
+    /// Used when building a Signature's params slice in `signature_param_pool`.
+    pub fn appendSignatureParams(self: *TypeStore, params: []const TypeId) !struct { start: u32, end: u32 } {
+        const start: u32 = @intCast(self.signature_param_pool.items.len);
+        try self.signature_param_pool.appendSlice(self.gpa, params);
+        const end: u32 = @intCast(self.signature_param_pool.items.len);
+        return .{ .start = start, .end = end };
+    }
+
+    pub fn signatureParamsOf(self: *const TypeStore, sig: Signature) []const TypeId {
+        return self.signature_param_pool.items[sig.params_start..sig.params_end];
+    }
+
+    pub fn appendSignatures(self: *TypeStore, sigs: []const Signature) !SignatureList {
+        const start: u32 = @intCast(self.signature_pool.items.len);
+        try self.signature_pool.appendSlice(self.gpa, sigs);
+        const end: u32 = @intCast(self.signature_pool.items.len);
+        return .{ .start = start, .end = end };
+    }
+
+    pub fn signaturesOf(self: *const TypeStore, list: SignatureList) []const Signature {
+        return self.signature_pool.items[list.start..list.end];
+    }
+
+    /// Construct a function type from a single signature.  Caller passes
+    /// the signature struct (with params/return already loaded into the
+    /// respective pools via appendSignatureParams).
+    pub fn functionType(self: *TypeStore, sig: Signature) !TypeId {
+        const sigs = try self.appendSignatures(&.{sig});
+        return try self.add(.{ .kind = .function_t, .signatures = sigs });
+    }
+
     // ── Convenience constructors ──────────────────────────
 
     pub fn unionOf(self: *TypeStore, members: []const TypeId) !TypeId {
