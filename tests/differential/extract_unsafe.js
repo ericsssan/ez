@@ -33,6 +33,7 @@ const RULES = [
   "no-array-delete",
   "no-unsafe-unary-minus",
   "require-array-sort-compare",
+  "prefer-reduce-type-parameter",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];

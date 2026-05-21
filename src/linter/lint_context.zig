@@ -416,6 +416,31 @@ pub const LintContext = struct {
         return kind == .number_literal or kind == .bigint_literal;
     }
 
+    /// True when the type id is `Array<string>` / `ReadonlyArray<string>`
+    /// / tuple of all strings.  Used by `require-array-sort-compare`'s
+    /// `ignoreStringArrays` option.
+    pub fn typeIdIsStringArray(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const entry = c.store.get(id);
+        if (entry.kind == .array_t or entry.kind == .readonly_array_t) {
+            const elems = c.store.idsOf(entry.list_data);
+            return elems.len > 0 and elems[0].eq(tymod.ID_STRING);
+        }
+        if (entry.kind == .tuple_t) {
+            const elems = c.store.idsOf(entry.list_data);
+            if (elems.len == 0) return false;
+            for (elems) |el| if (!el.eq(tymod.ID_STRING)) return false;
+            return true;
+        }
+        if (entry.kind == .type_ref) {
+            if (std.mem.eql(u8, entry.name, "Array") or std.mem.eql(u8, entry.name, "ReadonlyArray")) {
+                const args = c.store.idsOf(entry.list_data);
+                return args.len > 0 and args[0].eq(tymod.ID_STRING);
+            }
+        }
+        return false;
+    }
+
     /// Is `src` assignable to `dst` per a TSe-flavored assignability
     /// approximation?  See `tymod.isAssignableTo` for the rules.
     pub fn typeIdAssignableTo(self: *const LintContext, src: tymod.TypeId, dst: tymod.TypeId) bool {

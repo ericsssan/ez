@@ -1005,6 +1005,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-array-delete",
       "no-unsafe-unary-minus",
       "require-array-sort-compare",
+      "prefer-reduce-type-parameter",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {

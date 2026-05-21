@@ -15,7 +15,6 @@ const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const tymod = @import("../../../checker/types.zig");
 
 pub const meta = RuleMeta{
     .name = "require-array-sort-compare",
@@ -54,11 +53,38 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Skip pure-string arrays — the default lexicographic sort matches
     // user intent.
-    if (typeIsStringArray(obj_ty, ctx)) return;
+    if (ctx.typeIdIsStringArray(obj_ty)) return;
     if (exprIsStringArray(object, ctx)) return;
+
+    // If the file shadows `Array` with a local interface, conservatively
+    // skip — the receiver may resolve to that interface (whose `.sort()`
+    // is user-defined and may not need a compareFn).
+    if (fileShadowsArray(ctx)) return;
 
     if (!ctx.typeIdIsArrayLike(obj_ty) and !exprIsArrayLike(object, ctx)) return;
     ctx.reportWithMessageId(callee, "requireCompare");
+}
+
+fn fileShadowsArray(ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        const t = tree.nodeTag(ni);
+        if (t != .ts_interface_decl) continue;
+        // For ts_interface_decl, the main token is the `interface`
+        // keyword; the name token follows.  Use extraData(InterfaceData)
+        // when available.  Conservative scan via text-of-main-token+1.
+        const main_tok = tree.nodeMainToken(ni);
+        // Tokens are sequential; the name token is main_tok+1 in most
+        // shapes ("interface X { ... }").
+        const name_tok: ast.TokenIndex = main_tok + 1;
+        if (name_tok >= tree.tokens.len) continue;
+        const name = tree.tokenText(name_tok);
+        if (std.mem.eql(u8, name, "Array")) return true;
+    }
+    return false;
 }
 
 fn callExprArgCount(node: NodeIndex, ctx: *const LintContext) usize {
@@ -75,41 +101,25 @@ fn callExprArgCount(node: NodeIndex, ctx: *const LintContext) usize {
     return end - start;
 }
 
-fn typeIsStringArray(id: tymod.TypeId, ctx: *const LintContext) bool {
-    const c = ctx.ensureChecker() orelse return false;
-    const k = c.store.get(id).kind;
-    if (k == .array_t or k == .readonly_array_t) {
-        const slot = c.store.get(id).extra_start;
-        const el: tymod.TypeId = @enumFromInt(slot);
-        return el.eq(tymod.ID_STRING);
-    }
-    if (k == .tuple_t) {
-        const entry = c.store.get(id);
-        const s = entry.extra_start;
-        const e = entry.extra_end;
-        if (e <= s) return false;
-        var i = s;
-        while (i < e) : (i += 1) {
-            const el: tymod.TypeId = @enumFromInt(c.store.extras[i]);
-            if (!el.eq(tymod.ID_STRING)) return false;
-        }
-        return true;
-    }
-    return false;
-}
-
 fn exprIsStringArray(node: NodeIndex, ctx: *const LintContext) bool {
     const tag = ctx.nodeTag(node);
     if (tag == .array_literal) {
-        // Iterate children: all string_literals?
+        // Iterate children: every element must be string_literal,
+        // template literal with no interpolation, or have an
+        // inferred string-typed value.
         const data = ctx.nodeData(node);
         const s = @intFromEnum(data.lhs);
         const e = @intFromEnum(data.rhs);
         if (s > e or e > ctx.ast.extra_data.len) return false;
-        if (e == s) return false; // empty array — not "all strings"
+        if (e == s) return false;
         for (ctx.ast.extra_data[s..e]) |raw| {
             const el: NodeIndex = @enumFromInt(raw);
-            if (ctx.nodeTag(el) != .string_literal) return false;
+            const etag = ctx.nodeTag(el);
+            if (etag == .string_literal or etag == .template_literal) continue;
+            // Fall back to the checker for non-literal elements.
+            const el_ty = ctx.typeOfNode(el);
+            if (el_ty.eq(@import("../../../checker/types.zig").ID_STRING)) continue;
+            return false;
         }
         return true;
     }
@@ -176,7 +186,12 @@ fn tsTypeIsArrayLike(ty: NodeIndex, ctx: *const LintContext) bool {
     if (tag == .ts_array_type or tag == .ts_tuple_type) return true;
     if (tag == .ts_type_reference) {
         const name = ctx.tokenText(ctx.nodeMainToken(ty));
-        return std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray");
+        // Bare `Array` without type args is suspicious — it may be a
+        // locally shadowed interface (a common test pattern).  Require
+        // explicit type arguments to fire.
+        if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+            return ctx.nodeData(ty).rhs != .none;
+        }
     }
     return false;
 }
