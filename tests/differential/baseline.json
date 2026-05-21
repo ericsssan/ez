@@ -1026,6 +1026,24 @@
         "crash": 0
       }
     },
+    "@typescript-eslint/no-array-delete": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 2,
+        "crash": 0
+      }
+    },
     "@typescript-eslint/no-dupe-class-members": {
       "runner": {
         "fn": 0,
@@ -21710,9 +21728,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10622,
-    "runnerCasesPerSec": 8752,
-    "nativeCasesPerSec": 70250,
+    "totalElapsedMs": 10624,
+    "runnerCasesPerSec": 8804,
+    "nativeCasesPerSec": 70344,
     "totalCases": 73102
   }
 }
