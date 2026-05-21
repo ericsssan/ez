@@ -502,6 +502,14 @@ pub const LintContext = struct {
         return c.store.get(id).kind == .tuple_t;
     }
 
+    /// True when the type id is array-like: array_t, readonly_array_t,
+    /// tuple_t, type_ref Array/ReadonlyArray, or a union/intersection
+    /// containing any of these.  Used by no-for-in-array.
+    pub fn typeIdIsArrayLike(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return typeIdIsArrayLikeImpl(&c.store, id);
+    }
+
     pub fn typeIdTupleLength(self: *const LintContext, id: tymod.TypeId) usize {
         const c = self.ensureChecker() orelse return 0;
         const t = c.store.get(id);
@@ -8309,6 +8317,18 @@ pub const LintContext = struct {
         }) catch {};
     }
 };
+
+fn typeIdIsArrayLikeImpl(store: *const tymod.TypeStore, id: tymod.TypeId) bool {
+    const t = store.get(id);
+    return switch (t.kind) {
+        .array_t, .readonly_array_t, .tuple_t => true,
+        .union_t, .intersection_t => for (store.idsOf(t.list_data)) |m| {
+            if (typeIdIsArrayLikeImpl(store, m)) break true;
+        } else false,
+        .type_ref => std.mem.eql(u8, t.name, "Array") or std.mem.eql(u8, t.name, "ReadonlyArray"),
+        else => false,
+    };
+}
 
 /// Shared helper: get a string field from a JSON object pointer.
 /// Conservative pattern-syntax checker for no-invalid-regexp.  Walks the
