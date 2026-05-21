@@ -130,7 +130,8 @@ fn isErrorClassNameStatic(name: []const u8) bool {
 
 fn exprIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
     var n = node;
-    // Peel grouping, non-null assertion, satisfies.
+    // Peel grouping, non-null assertion, satisfies, and short-circuit
+    // operators where the result narrows to one side.
     while (n != .none) {
         const tag = ctx.nodeTag(n);
         switch (tag) {
@@ -143,6 +144,24 @@ fn exprIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
                 const target = ctx.nodeData(n).rhs;
                 if (target != .none and tsTypeIsErrorLike(target, ctx)) return true;
                 n = ctx.nodeData(n).lhs;
+                continue;
+            },
+            .logical_and, .logical_or, .nullish_coalesce => {
+                // Conservatively: both branches must be Error-like.
+                // (TS narrows by literal truthiness; this is a safe
+                // over-approximation that matches the upstream rule's
+                // behaviour for non-narrowable lhs.)
+                const data = ctx.nodeData(n);
+                return exprIsErrorLike(data.lhs, ctx) and exprIsErrorLike(data.rhs, ctx);
+            },
+            .conditional => {
+                const data = ctx.nodeData(n);
+                const cd = ctx.extraData(ast.Conditional, @intFromEnum(data.rhs));
+                return exprIsErrorLike(cd.consequent, ctx) and exprIsErrorLike(cd.alternate, ctx);
+            },
+            .assign => {
+                // `(x = expr)` — value is `expr`.
+                n = ctx.nodeData(n).rhs;
                 continue;
             },
             else => break,
@@ -171,7 +190,10 @@ fn exprIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
             }
             if (ctx.nodeTag(callee) != .identifier) return false;
             const name = ctx.tokenText(ctx.nodeMainToken(callee));
-            return errorClassNameIsBuiltin(callee, name, ctx);
+            if (errorClassNameIsBuiltin(callee, name, ctx)) return true;
+            // Imports — we don't follow modules; treat as ambiguous so
+            // `createError()` from a library doesn't false-positive.
+            return identifierIsExternalImport(callee, ctx);
         },
         .identifier => return identifierTypeIsErrorLike(n, ctx),
         else => return false,
@@ -398,6 +420,19 @@ fn fnIsPromiseRejectionHandler(fn_node: NodeIndex, decl: NodeIndex, ctx: *const 
     return false;
 }
 
+fn identifierIsExternalImport(ident: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(ident) != .identifier) return false;
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    const dparent = ctx.parentOf(decl);
+    if (dparent == .none) return false;
+    return switch (ctx.nodeTag(dparent)) {
+        .import_specifier, .import_default_specifier, .import_namespace_specifier => true,
+        else => false,
+    };
+}
+
 fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {
     const refs = &ctx.semantic.references;
     const total = refs.count();
@@ -413,6 +448,11 @@ fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.Symb
 
 // ── Options ──
 
+// Defaults diverge from TSe's official defaults (false/false) — our
+// type checker over-approximates `any` more often than TS's full
+// checker, so applying TSe's strict defaults would produce far more
+// FPs.  Keep the relaxed defaults; users who want strict mode can
+// pass the options explicitly.
 fn optionAllowThrowingAny(ctx: *const LintContext) bool {
     return optionBool(ctx, "allowThrowingAny", true);
 }
@@ -474,6 +514,9 @@ fn exprMatchesAllowList(arg: NodeIndex, ctx: *const LintContext) bool {
             },
             .identifier => {
                 name = ctx.tokenText(ctx.nodeMainToken(n));
+                // Also try the annotation's type names — `throw err`
+                // where `err: Promise<T>` should match `allow: ['Promise']`.
+                if (identifierAnnotationMatchesAllow(n, allow, ctx)) return true;
                 break;
             },
             else => break,
@@ -481,6 +524,42 @@ fn exprMatchesAllowList(arg: NodeIndex, ctx: *const LintContext) bool {
     }
     if (name.len == 0) return false;
     return specifierListContains(allow, name);
+}
+
+/// Walk the identifier's declared annotation type names — every
+/// constituent of a union/intersection must match the allow list for
+/// the value to be allowed.
+fn identifierAnnotationMatchesAllow(ident: NodeIndex, allow: std.json.Value, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    return tsTypeNameInAllow(ctx.nodeData(bd.rhs).lhs, allow, ctx);
+}
+
+fn tsTypeNameInAllow(ty: NodeIndex, allow: std.json.Value, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return tsTypeNameInAllow(ctx.nodeData(ty).lhs, allow, ctx),
+        .ts_union_type, .ts_intersection_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s >= e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (!tsTypeNameInAllow(m, allow, ctx)) return false;
+            }
+            return true;
+        },
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            return specifierListContains(allow, name);
+        },
+        else => return false,
+    }
 }
 
 fn specifierListContains(spec: std.json.Value, name: []const u8) bool {

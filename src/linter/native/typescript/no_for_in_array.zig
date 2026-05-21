@@ -160,8 +160,11 @@ fn tsTypeIsArrayLike(ty: NodeIndex, ctx: *const LintContext) bool {
             if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) return true;
             // DOM and lib array-like types we don't model in the type store.
             if (std.mem.eql(u8, name, "HTMLCollection") or std.mem.eql(u8, name, "NodeList") or
-                std.mem.eql(u8, name, "RegExpMatchArray") or std.mem.eql(u8, name, "IArguments") or
-                std.mem.eql(u8, name, "ArrayLike")) return true;
+                std.mem.eql(u8, name, "RegExpMatchArray") or std.mem.eql(u8, name, "RegExpExecArray") or
+                std.mem.eql(u8, name, "IArguments") or
+                std.mem.eql(u8, name, "ArrayLike") or
+                std.mem.eql(u8, name, "Iterable") or std.mem.eql(u8, name, "IterableIterator") or
+                std.mem.eql(u8, name, "Generator")) return true;
             // Walk type aliases / type-parameter constraints (one hop each).
             const tree = ctx.ast;
             const total: u32 = @intCast(tree.nodes.len);

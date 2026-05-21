@@ -84,6 +84,47 @@ fn exprIsArrayLike(node: NodeIndex, ctx: *const LintContext) bool {
             }
             return tsTypeIsArrayLike(ctx.nodeData(bd.rhs).lhs, ctx);
         },
+        .call_expr, .optional_call_expr => {
+            // `f()` where f is a function with array-like return type
+            // (including `<T extends U[]>(): T` style).
+            const callee = ctx.nodeData(node).lhs;
+            if (callee == .none or ctx.nodeTag(callee) != .identifier) return false;
+            const sym = symbolForIdent(callee, ctx) orelse return false;
+            const decl = ctx.semantic.symbols.getDeclNode(sym);
+            if (decl == .none) return false;
+            const dtag = ctx.nodeTag(decl);
+            // Symbol decl may point to the identifier inside the fn
+            // signature, not the fn itself — walk up to find the
+            // enclosing function-like.
+            var fn_node = decl;
+            if (dtag == .identifier) {
+                var p = ctx.parentOf(decl);
+                while (p != .none) : (p = ctx.parentOf(p)) {
+                    const pt = ctx.nodeTag(p);
+                    if (pt == .fn_decl or pt == .async_fn_decl or pt == .ts_declare_function) {
+                        fn_node = p;
+                        break;
+                    }
+                    if (pt == .declarator) break; // not a function
+                }
+            }
+            const fn_tag = ctx.nodeTag(fn_node);
+            var return_ty: NodeIndex = .none;
+            if (fn_tag == .fn_decl or fn_tag == .async_fn_decl or fn_tag == .ts_declare_function) {
+                const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(fn_node).lhs));
+                return_ty = fd.return_type;
+            } else if (fn_tag == .identifier) {
+                const bd = ctx.nodeData(fn_node);
+                if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+                const ty = ctx.nodeData(bd.rhs).lhs;
+                if (ty == .none or ctx.nodeTag(ty) != .ts_function_type) return false;
+                const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+                return_ty = fd.body;
+            }
+            if (return_ty == .none) return false;
+            if (ctx.nodeTag(return_ty) == .ts_type_annotation) return_ty = ctx.nodeData(return_ty).lhs;
+            return tsTypeIsArrayLike(return_ty, ctx);
+        },
         .grouping_expr, .ts_non_null_expr, .ts_satisfies_expr => return exprIsArrayLike(ctx.nodeData(node).lhs, ctx),
         .ts_as_expr => {
             const target = ctx.nodeData(node).rhs;

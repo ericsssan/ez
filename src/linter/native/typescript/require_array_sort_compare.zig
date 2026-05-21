@@ -106,7 +106,8 @@ fn exprIsStringArray(node: NodeIndex, ctx: *const LintContext) bool {
     if (tag == .array_literal) {
         // Iterate children: every element must be string_literal,
         // template literal with no interpolation, or have an
-        // inferred string-typed value.
+        // inferred string-typed value (or a call to a function
+        // declared to return string).
         const data = ctx.nodeData(node);
         const s = @intFromEnum(data.lhs);
         const e = @intFromEnum(data.rhs);
@@ -116,9 +117,9 @@ fn exprIsStringArray(node: NodeIndex, ctx: *const LintContext) bool {
             const el: NodeIndex = @enumFromInt(raw);
             const etag = ctx.nodeTag(el);
             if (etag == .string_literal or etag == .template_literal) continue;
-            // Fall back to the checker for non-literal elements.
             const el_ty = ctx.typeOfNode(el);
             if (el_ty.eq(@import("../../../checker/types.zig").ID_STRING)) continue;
+            if (callReturnsString(el, ctx)) continue;
             return false;
         }
         return true;
@@ -177,6 +178,93 @@ fn exprIsArrayLike(node: NodeIndex, ctx: *const LintContext) bool {
         .grouping_expr, .ts_non_null_expr, .ts_satisfies_expr => return exprIsArrayLike(ctx.nodeData(node).lhs, ctx),
         else => return false,
     }
+}
+
+fn callReturnsString(node: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(node);
+    if (tag != .call_expr and tag != .optional_call_expr) return false;
+    const callee = ctx.nodeData(node).lhs;
+    if (callee == .none or ctx.nodeTag(callee) != .identifier) return false;
+    const sym = symbolForIdent(callee, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    const dtag = ctx.nodeTag(decl);
+    // Symbol decl may be the identifier inside the fn signature — walk up.
+    var fn_node = decl;
+    if (dtag == .identifier) {
+        var p = ctx.parentOf(decl);
+        while (p != .none) : (p = ctx.parentOf(p)) {
+            const pt = ctx.nodeTag(p);
+            if (pt == .fn_decl or pt == .async_fn_decl or pt == .ts_declare_function) {
+                fn_node = p;
+                break;
+            }
+            if (pt == .declarator) break;
+        }
+    }
+    const ft = ctx.nodeTag(fn_node);
+    var return_ty: NodeIndex = .none;
+    if (ft == .fn_decl or ft == .async_fn_decl or ft == .ts_declare_function) {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(fn_node).lhs));
+        return_ty = fd.return_type;
+    }
+    if (return_ty != .none) {
+        if (ctx.nodeTag(return_ty) == .ts_type_annotation) return_ty = ctx.nodeData(return_ty).lhs;
+        if (return_ty != .none and ctx.nodeTag(return_ty) == .ts_type_reference and
+            std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(return_ty)), "string")) return true;
+    }
+    // Inferred return type — walk the function body for return statements.
+    return fnBodyReturnsString(fn_node, ctx);
+}
+
+fn fnBodyReturnsString(fn_node: NodeIndex, ctx: *const LintContext) bool {
+    const ft = ctx.nodeTag(fn_node);
+    if (ft != .fn_decl and ft != .async_fn_decl) return false;
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(fn_node).lhs));
+    const body = fd.body;
+    if (body == .none or ctx.nodeTag(body) != .block_stmt) return false;
+    // Collect descendant return statements (stop at nested fn / class).
+    var found_any = false;
+    if (!checkReturnsStringInBlock(body, ctx, &found_any)) return false;
+    return found_any;
+}
+
+fn checkReturnsStringInBlock(block: NodeIndex, ctx: *const LintContext, found_any: *bool) bool {
+    // Walk the entire AST and find return_stmts whose enclosing
+    // fn/class is `block`'s owner.  Simpler: scan all nodes whose
+    // parent is `block` (transitively) and stop at nested fn boundaries.
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .return_stmt) continue;
+        if (!isDescendantOf(ni, block, ctx)) continue;
+        found_any.* = true;
+        const ret_arg = tree.nodeData(ni).lhs;
+        if (ret_arg == .none) return false;
+        const arg_tag = tree.nodeTag(ret_arg);
+        if (arg_tag != .string_literal and arg_tag != .template_literal) return false;
+    }
+    return true;
+}
+
+fn isDescendantOf(node: NodeIndex, ancestor: NodeIndex, ctx: *const LintContext) bool {
+    var p = ctx.parentOf(node);
+    while (p != .none) : (p = ctx.parentOf(p)) {
+        if (p == ancestor) return true;
+        const pt = ctx.nodeTag(p);
+        if (pt == .fn_decl or pt == .async_fn_decl or pt == .generator_fn_decl or
+            pt == .async_generator_fn_decl or pt == .fn_expr or pt == .async_fn_expr or
+            pt == .generator_fn_expr or pt == .async_generator_fn_expr or
+            pt == .arrow_fn or pt == .async_arrow_fn or
+            pt == .class_decl or pt == .class_expr)
+        {
+            // Crossed a fn/class boundary before reaching ancestor.
+            if (p != ancestor) return false;
+        }
+    }
+    return false;
 }
 
 fn tsTypeIsArrayLike(ty: NodeIndex, ctx: *const LintContext) bool {
