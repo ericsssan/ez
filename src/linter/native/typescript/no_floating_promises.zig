@@ -1026,10 +1026,18 @@ fn interfaceHasThenMethod(name: []const u8, ctx: *const LintContext) bool {
         for (tree.extra_data[idata.body_start..idata.body_end]) |raw| {
             const m: NodeIndex = @enumFromInt(raw);
             const mtag = tree.nodeTag(m);
-            if (mtag != .ts_method_signature and mtag != .ts_property_signature) continue;
             const md = tree.nodeData(m);
-            if (md.lhs == .none) continue;
-            const key_name = tree.tokenText(tree.nodeMainToken(md.lhs));
+            const key_node: NodeIndex = switch (mtag) {
+                // ts_method_signature stores InterfaceSigData via extra index.
+                .ts_method_signature => blk: {
+                    const sig = tree.extraData(ast.InterfaceSigData, @intFromEnum(md.lhs));
+                    break :blk sig.key;
+                },
+                .ts_property_signature => md.lhs,
+                else => continue,
+            };
+            if (key_node == .none) continue;
+            const key_name = tree.tokenText(tree.nodeMainToken(key_node));
             if (std.mem.eql(u8, key_name, "then")) return true;
         }
         return false;
@@ -1100,9 +1108,57 @@ fn isPromiseFactoryCall(call: NodeIndex, ctx: *const LintContext) bool {
 }
 
 fn calleeIsPromiseConstructor(new_expr: NodeIndex, ctx: *const LintContext) bool {
-    const callee = unwrap(ctx.nodeData(new_expr).lhs, ctx);
+    var callee = unwrap(ctx.nodeData(new_expr).lhs, ctx);
+    // `new X<T>()` parses with a ts_instantiation_expr wrapper.
+    if (ctx.nodeTag(callee) == .ts_instantiation_expr) {
+        callee = ctx.nodeData(callee).lhs;
+    }
     if (ctx.nodeTag(callee) != .identifier) return false;
-    return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "Promise");
+    const name = ctx.tokenText(ctx.nodeMainToken(callee));
+    if (std.mem.eql(u8, name, "Promise")) return true;
+    if (classExtendsPromise(name, ctx)) return true;
+    // checkThenables:true — `new X()` where X's class body declares a
+    // `.then` method counts as Promise-flavored.
+    if (optionCheckThenables(ctx) and classHasThenMethod(name, ctx)) return true;
+    return false;
+}
+
+/// Scan class_decl nodes for a matching name whose body has a `.then`
+/// method.  Used under checkThenables:true to flag user-defined
+/// thenable classes as Promise-flavored.
+fn classHasThenMethod(name: []const u8, ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .class_decl) continue;
+        const data = tree.nodeData(ni);
+        const cd = tree.extraData(ast.ClassData, @intFromEnum(data.lhs));
+        if (cd.name == .none) continue;
+        const cname = tree.tokenText(tree.nodeMainToken(cd.name));
+        if (!std.mem.eql(u8, cname, name)) continue;
+        // Class body is a class_body node whose lhs/rhs span the members.
+        const body = cd.body;
+        if (body == .none) return false;
+        const bd = tree.nodeData(body);
+        const ext_len: u32 = @intCast(tree.extra_data.len);
+        const s = @intFromEnum(bd.lhs);
+        const e = @intFromEnum(bd.rhs);
+        if (s > e or e > ext_len) return false;
+        for (tree.extra_data[s..e]) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            const mtag = tree.nodeTag(m);
+            if (mtag != .method_def and mtag != .computed_method_def and
+                mtag != .property_def and mtag != .computed_property_def) continue;
+            const md = tree.nodeData(m);
+            if (md.lhs == .none) continue;
+            const key_name = tree.tokenText(tree.nodeMainToken(md.lhs));
+            if (std.mem.eql(u8, key_name, "then")) return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 /// Detect `X.then(...)` / `X.catch(...)` / `X.finally(...)` calls.
