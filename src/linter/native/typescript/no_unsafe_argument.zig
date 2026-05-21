@@ -230,10 +230,29 @@ fn checkArgAgainstType(arg: NodeIndex, param_ty_node: NodeIndex, ctx: *const Lin
     if (ctx.typeIdContainsUnknown(declared)) return; // unknown is safe target for any
     // TSe also fires for `error`-typed values (TS's unresolved-symbol
     // sentinel) — those resolve to `any` for rule purposes.
-    const arg_is_any = ctx.typeNodeContainsAny(arg) or ctx.typeNodeContainsError(arg);
+    const arg_is_any = ctx.typeNodeContainsAny(arg) or ctx.typeNodeContainsError(arg)
+        or isUnresolvedIdent(arg, ctx);
     if (!arg_is_any) return;
     if (rhsIsExplicitNonAnyCast(arg, ctx)) return;
     ctx.reportWithMessageId(arg, "unsafeArgument");
+}
+
+/// Identifier reference that doesn't resolve to any declared symbol —
+/// TS's `error typed` sentinel (e.g. `foo(error)` where `error` was
+/// never declared).  Used in addition to the inferred-type check
+/// because our checker defaults unresolved identifiers to `unknown` to
+/// avoid cascading unsafe-* FPs on globals like `console`/`window`.
+fn isUnresolvedIdent(node: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(node) != .identifier) return false;
+    const refs = &ctx.semantic.references;
+    const total = refs.count();
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const rid = parser.reference.ReferenceId.fromInt(i);
+        if (refs.getNode(rid) != node) continue;
+        return !refs.isResolved(rid);
+    }
+    return false;
 }
 
 fn rhsIsExplicitNonAnyCast(rhs: NodeIndex, ctx: *const LintContext) bool {
