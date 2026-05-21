@@ -143,6 +143,37 @@ fn tsTypeIsArrayLike(ty: NodeIndex, ctx: *const LintContext) bool {
     switch (ctx.nodeTag(ty)) {
         .ts_parenthesized_type => return tsTypeIsArrayLike(ctx.nodeData(ty).lhs, ctx),
         .ts_array_type, .ts_tuple_type => return true,
+        .ts_type_literal => {
+            // Type literal with a numeric index signature `[key:number]: T`
+            // AND a `length` property is array-like (matches TSe's
+            // isArrayLikeType which requires both).
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s >= e or e > ext_len) return false;
+            var has_numeric_index = false;
+            var has_length = false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                const mt = ctx.nodeTag(m);
+                if (mt == .ts_index_signature) {
+                    const sig_param = ctx.nodeData(m).lhs;
+                    if (sig_param == .none or ctx.nodeTag(sig_param) != .identifier) continue;
+                    const pd = ctx.nodeData(sig_param);
+                    if (pd.rhs == .none or ctx.nodeTag(pd.rhs) != .ts_type_annotation) continue;
+                    const key_ty = ctx.nodeData(pd.rhs).lhs;
+                    if (key_ty == .none or ctx.nodeTag(key_ty) != .ts_type_reference) continue;
+                    if (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(key_ty)), "number")) {
+                        has_numeric_index = true;
+                    }
+                } else if (mt == .ts_property_signature) {
+                    const name_tok = ctx.nodeMainToken(m);
+                    if (std.mem.eql(u8, ctx.tokenText(name_tok), "length")) has_length = true;
+                }
+            }
+            return has_numeric_index and has_length;
+        },
         .ts_union_type, .ts_intersection_type => {
             const data = ctx.nodeData(ty);
             const ext_len: u32 = @intCast(ctx.ast.extra_data.len);

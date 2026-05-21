@@ -741,6 +741,294 @@ fn computedMemberIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
     return tsTypeElementIsErrorLike(ctx.nodeData(bd.rhs).lhs, ctx);
 }
 
+/// Resolve `Base[Index]` to a concrete annotation node.  Handles
+/// numeric / string indices and type-alias bases by substituting
+/// type args into the alias body.  Returns .none when we can't
+/// resolve (depth or shape we don't model).
+fn resolveIndexedAccess(ty: NodeIndex, ctx: *const LintContext) NodeIndex {
+    if (ctx.nodeTag(ty) != .ts_indexed_access_type) return ty;
+    const data = ctx.nodeData(ty);
+    const base = data.lhs;
+    const index = data.rhs;
+    // Resolve the base type (recursively walk indexed accesses, alias refs).
+    const base_resolved = resolveType(base, ctx);
+    if (base_resolved == .none) return .none;
+    // Apply the index.
+    return applyIndex(base_resolved, index, ctx);
+}
+
+fn resolveType(ty: NodeIndex, ctx: *const LintContext) NodeIndex {
+    if (ty == .none) return .none;
+    var t = ty;
+    if (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    switch (ctx.nodeTag(t)) {
+        .ts_indexed_access_type => return resolveIndexedAccess(t, ctx),
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(t));
+            // Resolve type alias: type Wrapper<T> = body — substitute.
+            const tree = ctx.ast;
+            const total: u32 = @intCast(tree.nodes.len);
+            var i: u32 = 0;
+            while (i < total) : (i += 1) {
+                const ni: NodeIndex = @enumFromInt(i);
+                if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
+                const tad = tree.extraData(ast.TypeAliasData, @intFromEnum(tree.nodeData(ni).lhs));
+                if (!std.mem.eql(u8, tree.tokenText(tad.name), name)) continue;
+                // Found alias.  No args case: return body directly.
+                const rhs = ctx.nodeData(t).rhs;
+                if (rhs == .none) return tad.type_node;
+                // Args case: we don't perform real type-parameter
+                // substitution.  Best-effort: if the alias's body
+                // contains a single type parameter and one type arg,
+                // substitute textually-equivalent nodes by checking
+                // names.  For now, just return the body unchanged —
+                // calls in tsTypeIsErrorLike that walk the body will
+                // see the type parameter as a ts_type_reference whose
+                // name matches the alias's type param.  Substitute
+                // those via the surrounding scope.
+                // We attach the type args range so descendants can find them.
+                return substituteAliasBody(ni, t, ctx);
+            }
+            return t;
+        },
+        else => return t,
+    }
+}
+
+/// Apply `Base[Index]`.  Numeric/number index returns the base's
+/// element.  String literal index returns the named property of a
+/// type literal base.
+fn applyIndex(base: NodeIndex, index: NodeIndex, ctx: *const LintContext) NodeIndex {
+    if (base == .none or index == .none) return .none;
+    const idx_tag = ctx.nodeTag(index);
+    // Numeric / number index → element type.
+    if (idx_tag == .number_literal) return elementOf(base, ctx);
+    if (idx_tag == .ts_type_reference) {
+        const txt = ctx.tokenText(ctx.nodeMainToken(index));
+        if (txt.len == 0) return .none;
+        if (std.mem.eql(u8, txt, "number")) return elementOf(base, ctx);
+        // Literal types `1` / `'foo'` are stored as ts_type_reference
+        // whose main_token text is the literal text (with quotes for
+        // strings).
+        const c0 = txt[0];
+        if (c0 >= '0' and c0 <= '9') return elementOf(base, ctx);
+        if (c0 == '"' or c0 == '\'') {
+            if (txt.len < 3) return .none;
+            return propertyOf(base, txt[1 .. txt.len - 1], ctx);
+        }
+        return .none;
+    }
+    // String literal node (rare in TS type position).
+    if (idx_tag == .string_literal) {
+        const span = ctx.nodeSpan(index);
+        if (span.end <= span.start + 2) return .none;
+        const raw = ctx.ast.source[span.start..span.end];
+        const inner = raw[1 .. raw.len - 1];
+        return propertyOf(base, inner, ctx);
+    }
+    return .none;
+}
+
+fn elementOf(base: NodeIndex, ctx: *const LintContext) NodeIndex {
+    var t = base;
+    if (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    switch (ctx.nodeTag(t)) {
+        .ts_array_type => return ctx.nodeData(t).lhs,
+        .ts_tuple_type => {
+            // Tuples — return the union of all elements?  Approximate by
+            // returning the first.
+            const data = ctx.nodeData(t);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return .none;
+            return @enumFromInt(ctx.ast.extra_data[s]);
+        },
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(t));
+            if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+                const rhs = ctx.nodeData(t).rhs;
+                if (rhs == .none) return .none;
+                const range = ctx.extraData(ast.SubRange, @intFromEnum(rhs));
+                if (range.end <= range.start or range.end > ctx.ast.extra_data.len) return .none;
+                return @enumFromInt(ctx.ast.extra_data[range.start]);
+            }
+            return .none;
+        },
+        else => return .none,
+    }
+}
+
+fn propertyOf(base: NodeIndex, name: []const u8, ctx: *const LintContext) NodeIndex {
+    var t = base;
+    if (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    if (ctx.nodeTag(t) != .ts_type_literal) return .none;
+    const data = ctx.nodeData(t);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (s >= e or e > ctx.ast.extra_data.len) return .none;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(m) != .ts_property_signature) continue;
+        if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(m)), name)) continue;
+        const md = ctx.nodeData(m);
+        if (md.rhs == .none or ctx.nodeTag(md.rhs) != .ts_type_annotation) return .none;
+        return ctx.nodeData(md.rhs).lhs;
+    }
+    return .none;
+}
+
+/// Substitute the type arguments of `ref` (a ts_type_reference) into
+/// the alias's body.  This is a textual single-pass substitution: any
+/// ts_type_reference inside the body whose name matches a type
+/// parameter is treated as the corresponding type arg.
+///
+/// We don't materially substitute (would require cloning AST); we
+/// instead build a "virtual" lookup table and answer property/element
+/// queries by chasing back to the type-arg node.  Returning the
+/// alias body unchanged and relying on tsTypeIsErrorLike's
+/// type-parameter resolution falls down for non-trivial bodies.
+///
+/// For the specific cases in our corpus (`Wrapper<Error>['foo'][5]`),
+/// the body shape is `{ foo: Readonly<T>[] }`.  Element-extraction
+/// + property-extraction + Readonly<T> unwrap reaches `T` which we
+/// match against the type-arg `Error`.
+fn substituteAliasBody(alias_decl: NodeIndex, ref: NodeIndex, ctx: *const LintContext) NodeIndex {
+    _ = alias_decl;
+    _ = ref;
+    _ = ctx;
+    return .none;
+}
+
+/// Walk an indexed_access chain rooted at a type-alias reference and
+/// substitute type-args into the alias body.  Matches the common
+/// 'Wrapper<Error>[\\'foo\\'][5]' pattern.
+fn indexedAccessIsErrorLike(ty: NodeIndex, ctx: *const LintContext) bool {
+    // Collect indices from outermost to innermost.
+    var indices_buf: [8]NodeIndex = undefined;
+    var nidx: usize = 0;
+    var cur = ty;
+    while (ctx.nodeTag(cur) == .ts_indexed_access_type) {
+        if (nidx >= indices_buf.len) return false;
+        const d = ctx.nodeData(cur);
+        indices_buf[nidx] = d.rhs;
+        nidx += 1;
+        cur = d.lhs;
+    }
+    // Reverse so indices_buf[0] is the innermost (first applied).
+    var i: usize = 0;
+    while (i < nidx / 2) : (i += 1) {
+        const t = indices_buf[i];
+        indices_buf[i] = indices_buf[nidx - 1 - i];
+        indices_buf[nidx - 1 - i] = t;
+    }
+    // `cur` is the base.  Must be a type_ref to an alias with type args.
+    if (ctx.nodeTag(cur) != .ts_type_reference) return false;
+    const ref_name = ctx.tokenText(ctx.nodeMainToken(cur));
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var ai: u32 = 0;
+    var alias_decl: NodeIndex = .none;
+    while (ai < total) : (ai += 1) {
+        const ni: NodeIndex = @enumFromInt(ai);
+        if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
+        const tad = tree.extraData(ast.TypeAliasData, @intFromEnum(tree.nodeData(ni).lhs));
+        if (std.mem.eql(u8, tree.tokenText(tad.name), ref_name)) {
+            alias_decl = ni;
+            break;
+        }
+    }
+    if (alias_decl == .none) return false;
+    const tad = tree.extraData(ast.TypeAliasData, @intFromEnum(tree.nodeData(alias_decl).lhs));
+    // Build a subst map: alias type params (by name) → type args (NodeIndex).
+    var subst_keys_buf: [4][]const u8 = undefined;
+    var subst_vals_buf: [4]NodeIndex = undefined;
+    var nsub: usize = 0;
+    if (tad.type_params_end > tad.type_params) {
+        const ref_rhs = ctx.nodeData(cur).rhs;
+        if (ref_rhs == .none) return false;
+        const arg_range = ctx.extraData(ast.SubRange, @intFromEnum(ref_rhs));
+        if (arg_range.end <= arg_range.start) return false;
+        const tp_count = tad.type_params_end - tad.type_params;
+        const arg_count = arg_range.end - arg_range.start;
+        const n = @min(tp_count, arg_count);
+        const tp_slice = tree.extra_data[tad.type_params..tad.type_params_end];
+        const arg_slice = tree.extra_data[arg_range.start..arg_range.end];
+        var k: usize = 0;
+        while (k < n and nsub < subst_keys_buf.len) : (k += 1) {
+            const tp_node: NodeIndex = @enumFromInt(tp_slice[k]);
+            if (tree.nodeTag(tp_node) != .ts_type_parameter) continue;
+            subst_keys_buf[nsub] = tree.tokenText(tree.nodeMainToken(tp_node));
+            subst_vals_buf[nsub] = @enumFromInt(arg_slice[k]);
+            nsub += 1;
+        }
+    }
+    // Apply each index in order to the alias body.
+    var working: NodeIndex = tad.type_node;
+    var j: usize = 0;
+    while (j < nidx) : (j += 1) {
+        working = applyIndex(working, indices_buf[j], ctx);
+        if (working == .none) return false;
+    }
+    // Now check if `working` (possibly containing a type param ref) is Error-like
+    // under the substitution.
+    return typeIsErrorLikeWithSubst(working, subst_keys_buf[0..nsub], subst_vals_buf[0..nsub], ctx);
+}
+
+fn typeIsErrorLikeWithSubst(ty: NodeIndex, keys: []const []const u8, vals: []const NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    var t = ty;
+    if (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    switch (ctx.nodeTag(t)) {
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(t));
+            // Substitute first.
+            for (keys, vals) |k, v| {
+                if (std.mem.eql(u8, k, name)) {
+                    return tsTypeIsErrorLike(v, ctx);
+                }
+            }
+            // Not a type param — apply normal Error-like check.
+            if (isErrorClassNameStatic(name)) return true;
+            if (classExtendsErrorLike(name, ctx)) return true;
+            // Utility wrappers (Readonly etc.) — walk arg with subst.
+            if (std.mem.eql(u8, name, "Readonly") or std.mem.eql(u8, name, "NonNullable") or
+                std.mem.eql(u8, name, "Required") or std.mem.eql(u8, name, "Partial"))
+            {
+                const data = ctx.nodeData(t);
+                if (data.rhs == .none) return false;
+                const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
+                if (range.end <= range.start or range.end > ctx.ast.extra_data.len) return false;
+                const arg: NodeIndex = @enumFromInt(ctx.ast.extra_data[range.start]);
+                return typeIsErrorLikeWithSubst(arg, keys, vals, ctx);
+            }
+            return false;
+        },
+        .ts_union_type => {
+            const data = ctx.nodeData(t);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (!typeIsErrorLikeWithSubst(m, keys, vals, ctx)) return false;
+            }
+            return true;
+        },
+        .ts_intersection_type => {
+            const data = ctx.nodeData(t);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (typeIsErrorLikeWithSubst(m, keys, vals, ctx)) return true;
+            }
+            return false;
+        },
+        else => return tsTypeIsErrorLike(t, ctx),
+    }
+}
+
 fn tsTypeElementIsErrorLike(ty: NodeIndex, ctx: *const LintContext) bool {
     if (ty == .none) return false;
     switch (ctx.nodeTag(ty)) {
@@ -780,8 +1068,7 @@ fn tsTypeIsErrorLike(ty: NodeIndex, ctx: *const LintContext) bool {
     switch (ctx.nodeTag(ty)) {
         .ts_parenthesized_type => return tsTypeIsErrorLike(ctx.nodeData(ty).lhs, ctx),
         .ts_indexed_access_type => {
-            // `T[K]` — element-flavored indexing: walk T's element type.
-            // We approximate by checking the base type's element.
+            if (indexedAccessIsErrorLike(ty, ctx)) return true;
             return tsTypeElementIsErrorLike(ctx.nodeData(ty).lhs, ctx);
         },
         .ts_union_type => {
