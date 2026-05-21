@@ -30,6 +30,7 @@ const RULES = [
   "prefer-promise-reject-errors",
   "no-meaningless-void-operator",
   "require-await",
+  "no-array-delete",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];
