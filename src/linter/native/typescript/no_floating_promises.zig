@@ -1512,13 +1512,56 @@ fn letBoundShortCircuitsRhs(op: Node.Tag, lhs: NodeIndex, ctx: *const LintContex
     if (!std.mem.eql(u8, kind_text, "let") and !std.mem.eql(u8, kind_text, "var")) return false;
     const init = unwrap(ctx.nodeData(dparent).rhs, ctx);
     if (init == .none) return false;
-    const litok = literalTruthy(init, ctx) orelse return false;
+    var litok = literalTruthy(init, ctx) orelse return false;
+    // Walk previous statements in the enclosing block looking for
+    // `lhs_name = <literal>` reassignments and update the narrowed
+    // value.  Approximates TS's flow narrowing for the simple straight-line
+    // case (no branching).
+    const name = ctx.tokenText(ctx.nodeMainToken(l));
+    if (name.len > 0) updateLitFromReassignments(l, name, &litok, ctx);
     return switch (op) {
         .logical_and => !litok.truthy,
         .logical_or => litok.truthy,
         .nullish_coalesce => !litok.nullish,
         else => false,
     };
+}
+
+/// Walk preceding sibling statements of `use_node`'s enclosing
+/// statement, looking for `<name> = <literal>` assignments.  The last
+/// such assignment wins.  Used to approximate TS narrowing through
+/// simple let-reassignment chains.
+fn updateLitFromReassignments(use_node: NodeIndex, name: []const u8, lit: *LiteralValue, ctx: *const LintContext) void {
+    // Find the use's enclosing expression_stmt.
+    var use_stmt: NodeIndex = use_node;
+    while (use_stmt != .none) : (use_stmt = ctx.parentOf(use_stmt)) {
+        if (ctx.nodeTag(use_stmt) == .expression_stmt) break;
+    }
+    if (use_stmt == .none) return;
+    const block = ctx.parentOf(use_stmt);
+    if (block == .none) return;
+    if (ctx.nodeTag(block) != .block_stmt) return;
+    // block_stmt stores statements in extra_data at data.lhs..data.rhs.
+    const bd = ctx.nodeData(block);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    const s = @intFromEnum(bd.lhs);
+    const e = @intFromEnum(bd.rhs);
+    if (s > e or e > ext_len) return;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const stmt: NodeIndex = @enumFromInt(raw);
+        if (stmt == use_stmt) break;
+        if (ctx.nodeTag(stmt) != .expression_stmt) continue;
+        const inner = ctx.nodeData(stmt).lhs;
+        if (inner == .none) continue;
+        if (ctx.nodeTag(inner) != .assign) continue;
+        const ad = ctx.nodeData(inner);
+        if (ctx.nodeTag(ad.lhs) != .identifier) continue;
+        const lhs_name = ctx.tokenText(ctx.nodeMainToken(ad.lhs));
+        if (!std.mem.eql(u8, lhs_name, name)) continue;
+        if (literalTruthy(ad.rhs, ctx)) |new_lit| {
+            lit.* = new_lit;
+        }
+    }
 }
 
 const LiteralValue = struct { truthy: bool, nullish: bool };
