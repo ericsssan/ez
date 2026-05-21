@@ -2106,6 +2106,24 @@
         "crash": 0
       }
     },
+    "@typescript-eslint/await-thenable": {
+      "runner": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 22,
+        "fp": 1,
+        "crash": 0
+      }
+    },
     "@typescript-eslint/no-loss-of-precision": {
       "runner": {
         "fn": 0,
@@ -21620,9 +21638,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 11345,
-    "runnerCasesPerSec": 8255,
-    "nativeCasesPerSec": 65725,
-    "totalCases": 73546
+    "totalElapsedMs": 10785,
+    "runnerCasesPerSec": 8682,
+    "nativeCasesPerSec": 72650,
+    "totalCases": 73667
   }
 }
