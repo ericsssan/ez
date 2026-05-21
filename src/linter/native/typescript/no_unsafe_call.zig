@@ -43,6 +43,19 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!ctx.hasTypeChecker()) return;
     const callee = calleeNode(node, ctx);
     if (callee == .none) return;
+    // `this()` / `this.method()` inside a function whose declared `this`
+    // parameter resolves to an unknown/error type: TSe fires
+    // `errorCallThis` (call on error-typed `this`).
+    if (calleeIsErrorThis(callee, ctx)) {
+        const msg = switch (ctx.nodeTag(node)) {
+            .new_expr => "errorNewThis",
+            .tagged_template => "errorTemplateTagThis",
+            else => "errorCallThis",
+        };
+        const report_at = if (ctx.nodeTag(node) == .new_expr) node else callee;
+        ctx.reportSpanWithMessageId(ctx.nodeSpan(report_at), msg);
+        return;
+    }
     // Fire on `any`-typed callee OR on a callee whose declared type is
     // the built-in `Function`.  TSe treats `Function` as unsafe because
     // it accepts any args and returns any.
@@ -159,6 +172,60 @@ fn binOpMatchesTypeofFn(left: NodeIndex, right: NodeIndex, name: []const u8, ctx
     if (raw.len < 2) return false;
     const body = raw[1 .. raw.len - 1];
     return std.mem.eql(u8, body, "function");
+}
+
+/// True when the callee is `this` or `this.<X>` inside a function whose
+/// declared `this:` parameter resolves to an error/unknown type.  TSe
+/// fires the `*This` family of error messageIds for these.
+fn calleeIsErrorThis(callee: NodeIndex, ctx: *const LintContext) bool {
+    var c = callee;
+    // Member access on `this`: this.method(), this.x?.y(), etc.
+    while (true) {
+        const tag = ctx.nodeTag(c);
+        if (tag == .member_expr or tag == .optional_member_expr or
+            tag == .computed_member_expr or tag == .optional_computed_member_expr)
+        {
+            c = ctx.nodeData(c).lhs;
+            continue;
+        }
+        break;
+    }
+    if (ctx.nodeTag(c) != .this_expr) return false;
+    // Walk up to the enclosing function-like and read its `this:` param.
+    var p = ctx.parentOf(c);
+    while (p != .none) : (p = ctx.parentOf(p)) {
+        switch (ctx.nodeTag(p)) {
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .ts_declare_function => return fnHasErrorThisParam(p, ctx),
+            .arrow_fn, .async_arrow_fn => continue, // arrows inherit
+            .method_def, .computed_method_def,
+            .getter_def, .setter_def, .computed_getter_def, .computed_setter_def,
+            .constructor_def => return false,
+            else => continue,
+        }
+    }
+    return false;
+}
+
+fn fnHasErrorThisParam(fn_node: NodeIndex, ctx: *const LintContext) bool {
+    const data = ctx.nodeData(fn_node);
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    if (fd.params >= fd.params_end or fd.params_end > ext_len) return false;
+    const params = ctx.ast.extra_data[fd.params..fd.params_end];
+    if (params.len == 0) return false;
+    // `this:` param, when present, is always the first parameter.
+    const first: NodeIndex = @enumFromInt(params[0]);
+    if (ctx.nodeTag(first) != .identifier) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(first));
+    if (!std.mem.eql(u8, name, "this")) return false;
+    const bd = ctx.nodeData(first);
+    if (bd.rhs == .none) return false;
+    if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    const ty_node = ctx.nodeData(bd.rhs).lhs;
+    const ty_id = ctx.resolveTypeAnnotationNode(ty_node);
+    return ctx.typeIdIsError(ty_id);
 }
 
 fn calleeNode(node: NodeIndex, ctx: *const LintContext) NodeIndex {

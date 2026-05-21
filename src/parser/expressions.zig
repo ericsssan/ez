@@ -6076,18 +6076,21 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
         }
     }
 
-    // TS `this` parameter: `this: Type` or `this` (contextual typing)
+    // TS `this` parameter: `this: Type` or `this` (contextual typing).
+    // Preserve the annotation in `data.rhs` so type-aware rules can read
+    // it (matches how regular binding identifiers store annotations).
     if (p.is_ts and p.peek() == .kw_this) {
         const next = p.peekAt(1);
         if (next == .colon or next == .comma or next == .r_paren) {
             const this_tok = p.advance();
+            var annotation: NodeIndex = .none;
             if (p.peek() == .colon) {
-                _ = try p.parseOptionalTypeAnnotation();
+                annotation = try p.parseOptionalTypeAnnotation();
             }
             return p.addNode(.{
                 .tag = .identifier,
                 .main_token = this_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
+                .data = .{ .lhs = .none, .rhs = annotation },
             });
         }
     }
