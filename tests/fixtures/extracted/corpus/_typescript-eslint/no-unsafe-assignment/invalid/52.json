@@ -7,7 +7,7 @@
   "sourceType": "script",
   "ecmaVersion": 2022,
   "isTypeScript": true,
-  "jsx": false,
+  "jsx": true,
   "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
   "globals": null,
   "parserOptions": {

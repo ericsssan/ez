@@ -142,6 +142,12 @@ for (const rule of RULES) {
     }
     if (typeof code !== "string") return;
     fs.writeFileSync(path.join(ruleOut, kind, `${idx}.ts`), code);
+    // Heuristic JSX detection: TSe's RuleTester accepts JSX in any
+    // TS test via its project service; the extracted source contains
+    // JSX syntax when the test file is .tsx in upstream.  Mark the
+    // fixture jsx:true when the source has '<Tag ...' / '<Tag>'
+    // patterns followed by JSX-like attributes or children.
+    const hasJsx = /(?:^|\W)<[A-Z][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*\s*=|\s*\/>|\s*>[\s\S]*<\/)/.test(code);
     const meta = {
       rule: `@typescript-eslint/${rule}`,
       kind,
@@ -151,7 +157,7 @@ for (const rule of RULES) {
       sourceType: "script",
       ecmaVersion: 2022,
       isTypeScript: true,
-      jsx: false,
+      jsx: hasJsx,
       filename: path.join(__dirname, "..", "fixtures", "extracted", "test.ts"),
       globals: null,
       parserOptions: {
