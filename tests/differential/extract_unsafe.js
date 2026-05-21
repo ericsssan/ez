@@ -42,6 +42,7 @@ const RULES = [
   "prefer-includes",
   "related-getter-setter-pairs",
   "prefer-regexp-exec",
+  "no-implied-eval",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];

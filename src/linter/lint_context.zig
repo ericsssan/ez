@@ -424,6 +424,12 @@ pub const LintContext = struct {
         return t.kind == .boolean or t.kind == .boolean_literal;
     }
 
+    /// True when the type id is a function type.
+    pub fn typeIdIsFunction(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.store.get(id).kind == .function_t;
+    }
+
     /// True when the type id is string-like: `string`, string literal
     /// type, or a union of those.
     pub fn typeIdIsStringy(self: *const LintContext, id: tymod.TypeId) bool {
