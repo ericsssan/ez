@@ -421,6 +421,12 @@ pub const LintContext = struct {
         return tymod.containsError(&c.store, c.typeOf(n));
     }
 
+    /// True when the type id IS exactly the `error` sentinel.
+    pub fn typeIdIsError(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.isError(&c.store, id);
+    }
+
     /// True when both type ids are `type_ref` types with the same outer
     /// name (`Set<X>` vs `Set<Y>`, `Promise<X>` vs `Promise<Y>`).  Used
     /// by no-unsafe-return to distinguish `unsafeReturnAssignment`

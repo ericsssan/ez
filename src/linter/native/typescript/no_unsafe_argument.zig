@@ -202,7 +202,11 @@ fn checkSpreadArg(spread: NodeIndex, params_decl: ParamDecl, arg_start: usize, c
         var i: usize = 0;
         while (i < len) : (i += 1) {
             const slot = ctx.typeIdTupleElementAt(src_ty, i);
-            if (!ctx.typeIdIsAny(slot)) continue;
+            // Both `any` and `error`-typed tuple elements are unsafe
+            // when paired with a non-any/non-error param.
+            const slot_is_any = ctx.typeIdIsAny(slot);
+            const slot_is_err = !slot_is_any and ctx.typeIdIsError(slot);
+            if (!slot_is_any and !slot_is_err) continue;
             // Paired param: same-position param accepting `any` is fine.
             const param_idx = arg_start + i;
             if (param_idx < params_decl.params.len) {
@@ -216,11 +220,76 @@ fn checkSpreadArg(spread: NodeIndex, params_decl: ParamDecl, arg_start: usize, c
             ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeTupleSpread");
             return;
         }
+        // No tuple slot was definitely-any.  The checker may not infer
+        // unresolved identifiers as `error` (defaults to `unknown` to
+        // avoid global FPs), so do an AST-level walk for `[..., error,
+        // ...] as const` patterns.
+        if (identifierInitArrayHasErrorOrAny(inner, ctx)) {
+            ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeArraySpread");
+        }
         return;
     }
     if (ctx.typeNodeContainsAny(inner) or ctx.typeNodeContainsError(inner)) {
         ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeArraySpread");
+        return;
     }
+    // AST-level fallback: when the spread source is an identifier whose
+    // declaration init is `[...] as const` containing an unresolved
+    // identifier (or `as any`), the checker may not infer the tuple
+    // shape — walk the init explicitly.
+    if (identifierInitArrayHasErrorOrAny(inner, ctx)) {
+        ctx.reportSpanWithMessageId(ctx.nodeSpan(spread), "unsafeArraySpread");
+    }
+}
+
+fn identifierInitArrayHasErrorOrAny(node: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(node) != .identifier) return false;
+    // Resolve symbol → declaration → declarator init.
+    const refs = &ctx.semantic.references;
+    const total = refs.count();
+    var sym: ?parser.symbol.SymbolId = null;
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const rid = parser.reference.ReferenceId.fromInt(i);
+        if (refs.getNode(rid) != node) continue;
+        if (!refs.isResolved(rid)) return false;
+        sym = refs.getSymbol(rid);
+        break;
+    }
+    const s = sym orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(s);
+    if (decl == .none) return false;
+    const dparent = ctx.parentOf(decl);
+    if (dparent == .none or ctx.nodeTag(dparent) != .declarator) return false;
+    var init = ctx.nodeData(dparent).rhs;
+    if (init == .none) return false;
+    // Peel `as const` / `as any` casts.
+    while (ctx.nodeTag(init) == .ts_as_expr) {
+        init = ctx.nodeData(init).lhs;
+    }
+    if (ctx.nodeTag(init) != .array_literal) return false;
+    const ad = ctx.nodeData(init);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    const ls = @intFromEnum(ad.lhs);
+    const le = @intFromEnum(ad.rhs);
+    if (ls > le or le > ext_len) return false;
+    for (ctx.ast.extra_data[ls..le]) |raw| {
+        const el: NodeIndex = @enumFromInt(raw);
+        // Unresolved identifier — TS would type as `error`.  Don't fire
+        // on inferred-any leaves (e.g. `1 as any`); the tuple branch
+        // already pairs those against params.
+        if (ctx.nodeTag(el) != .identifier) continue;
+        var j: u32 = 0;
+        var found_unresolved = true;
+        while (j < total) : (j += 1) {
+            const rid = parser.reference.ReferenceId.fromInt(j);
+            if (refs.getNode(rid) != el) continue;
+            if (refs.isResolved(rid)) found_unresolved = false;
+            break;
+        }
+        if (found_unresolved) return true;
+    }
+    return false;
 }
 
 fn checkArgAgainstType(arg: NodeIndex, param_ty_node: NodeIndex, ctx: *const LintContext) void {
