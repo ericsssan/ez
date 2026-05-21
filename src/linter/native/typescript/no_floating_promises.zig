@@ -49,12 +49,89 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (expr == .none) return;
     if (!isFloatingPromise(expr, ctx)) return;
     if (precededByAwaitKeyword(node, ctx)) return;
-    // ignoreIIFE: suppress when the statement is an immediately-invoked
-    // function expression — `(async () => {...})()` patterns.
     if (optionIgnoreIIFE(ctx) and isImmediatelyInvokedFn(expr, ctx)) return;
+    // allowForKnownSafeCalls / allowForKnownSafePromises: TSe accepts
+    // a list of TypeOrValue specifiers; we support the simple string
+    // form (`"myFn"` matches calls whose callee is an identifier with
+    // that name; matches values typed as a class with that name).
+    if (matchesAllowedSpecifier(expr, ctx)) return;
     const ignore_void = optionIgnoreVoid(ctx);
     const msg = if (ignore_void) "floatingVoid" else "floating";
     ctx.reportWithMessageId(node, msg);
+}
+
+/// Match expression against `allowForKnownSafeCalls` / `allowForKnownSafePromises`
+/// allow-lists.  TSe accepts string names AND {from, name} objects; we
+/// support both as name-only matchers (cheaper than the full TypeOrValue
+/// specifier protocol but covers the common case).
+fn matchesAllowedSpecifier(expr: NodeIndex, ctx: *const LintContext) bool {
+    const opts = ctx.rule_options orelse return false;
+    if (opts.* != .object) return false;
+    // allowForKnownSafeCalls: callee identifier name match.
+    if (opts.object.get("allowForKnownSafeCalls")) |sc| {
+        const e = unwrap(expr, ctx);
+        const tag = ctx.nodeTag(e);
+        if (tag == .call_expr or tag == .optional_call_expr or tag == .tagged_template) {
+            const callee = unwrap(ctx.nodeData(e).lhs, ctx);
+            if (ctx.nodeTag(callee) == .identifier) {
+                const name = ctx.tokenText(ctx.nodeMainToken(callee));
+                if (specifierListMatchesName(sc, name)) return true;
+            }
+        }
+    }
+    // allowForKnownSafePromises: promise type-name match.  TSe matches
+    // when the value's type is the named class.  Approximate by
+    // matching the declared annotation name on the callee's symbol.
+    if (opts.object.get("allowForKnownSafePromises")) |sp| {
+        if (calleeReturnsNamedType(expr, sp, ctx)) return true;
+    }
+    return false;
+}
+
+fn specifierListMatchesName(spec: std.json.Value, name: []const u8) bool {
+    if (spec != .array) return false;
+    for (spec.array.items) |item| {
+        switch (item) {
+            .string => |s| if (std.mem.eql(u8, s, name)) return true,
+            .object => |obj| {
+                if (obj.get("name")) |n| {
+                    if (n == .string and std.mem.eql(u8, n.string, name)) return true;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// Match the callee's declared return type's named-type name against a
+/// safe-promises spec list.  Covers `let x: () => SafePromise<T> = ...;
+/// x();` where SafePromise is in the spec list.
+fn calleeReturnsNamedType(expr: NodeIndex, spec: std.json.Value, ctx: *const LintContext) bool {
+    const e = unwrap(expr, ctx);
+    const tag = ctx.nodeTag(e);
+    if (tag != .call_expr and tag != .optional_call_expr and tag != .tagged_template) {
+        return false;
+    }
+    const callee = unwrap(ctx.nodeData(e).lhs, ctx);
+    if (ctx.nodeTag(callee) != .identifier) return false;
+    // Walk the callee's declared annotation to find the return-type name.
+    const sym = symbolForIdent(callee, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none) return false;
+    if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    const ty = ctx.nodeData(bd.rhs).lhs;
+    if (ty == .none) return false;
+    if (ctx.nodeTag(ty) != .ts_function_type) return false;
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+    const ret_ty = fd.body;
+    if (ret_ty == .none) return false;
+    if (ctx.nodeTag(ret_ty) != .ts_type_reference) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(ret_ty));
+    return specifierListMatchesName(spec, name);
 }
 
 fn optionIgnoreVoid(ctx: *const LintContext) bool {
@@ -120,16 +197,29 @@ fn unwrap(n: NodeIndex, ctx: *const LintContext) NodeIndex {
 fn isFloatingPromise(expr: NodeIndex, ctx: *const LintContext) bool {
     const e = unwrap(expr, ctx);
     const tag = ctx.nodeTag(e);
-    // `void <X>` and `await <X>` suppress entirely.
-    if (tag == .void_expr or tag == .await_expr) return false;
-    // Sequence expression `(a, b)` — TSe checks each element.  We check
-    // the LAST element since that's the value type of the sequence.
+    // `await` always suppresses; `void` suppresses only when ignoreVoid
+    // is true (the default).  When ignoreVoid:false, `void X` is still
+    // a floating promise.
+    if (tag == .await_expr) return false;
+    if (tag == .void_expr) {
+        if (optionIgnoreVoid(ctx)) return false;
+        // Recurse into the inner expression to see if it's a promise.
+        return isFloatingPromise(ctx.nodeData(e).lhs, ctx);
+    }
+    // Sequence expression `(a, b)` — start/end stored directly in
+    // lhs/rhs (parser pattern, NOT a SubRange struct in extra).
+    // TSe fires for ANY element that's a floating promise.
     if (tag == .sequence_expr) {
         const data = ctx.nodeData(e);
-        const range = ctx.extraData(ast.SubRange, @intFromEnum(data.lhs));
-        if (range.end > range.start) {
-            const last_idx = ctx.ast.extra_data[range.end - 1];
-            return isFloatingPromise(@enumFromInt(last_idx), ctx);
+        if (data.lhs == .none or data.rhs == .none) return false;
+        const r_start = @intFromEnum(data.lhs);
+        const r_end = @intFromEnum(data.rhs);
+        const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+        if (r_start > r_end or r_end > ext_len) return false;
+        const elems = ctx.ast.extra_data[r_start..r_end];
+        for (elems) |raw| {
+            const el: NodeIndex = @enumFromInt(raw);
+            if (isFloatingPromise(el, ctx)) return true;
         }
         return false;
     }
@@ -342,6 +432,14 @@ fn calleeDeclaredReturnIsPromise(call: NodeIndex, ctx: *const LintContext) bool 
     if (pidx == std.math.maxInt(u32)) return false;
     const parent: NodeIndex = @enumFromInt(pidx);
     const ptag = ctx.nodeTag(parent);
+    // Async functions implicitly return Promise — check FIRST so we
+    // catch `async function f() {}` without a declared return type.
+    if (ptag == .async_fn_decl or ptag == .async_arrow_fn or
+        ptag == .async_generator_fn_decl or ptag == .async_fn_expr or
+        ptag == .async_generator_fn_expr)
+    {
+        return true;
+    }
     const ret_node = switch (ptag) {
         .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
         .ts_declare_function => blk: {
@@ -359,10 +457,6 @@ fn calleeDeclaredReturnIsPromise(call: NodeIndex, ctx: *const LintContext) bool 
     if (ret_node == .none) return false;
     const ty_inner = ctx.nodeData(ret_node).lhs;
     if (ty_inner == .none) return false;
-    // Async functions implicitly return Promise — also check.
-    if (ptag == .async_fn_decl or ptag == .async_arrow_fn or ptag == .async_generator_fn_decl) {
-        return true;
-    }
     if (ctx.nodeTag(ty_inner) != .ts_type_reference) return false;
     return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ty_inner)), "Promise");
 }

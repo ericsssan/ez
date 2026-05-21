@@ -394,7 +394,7 @@ pub const Checker = struct {
             .ts_typeof_type => tymod.ID_UNKNOWN, // we don't resolve `typeof x` yet
             .ts_keyof_type => tymod.ID_STRING, // approx
             .ts_type_literal => self.resolveTypeLiteral(ty_node),
-            .ts_function_type, .ts_constructor_type => tymod.ID_UNKNOWN,
+            .ts_function_type, .ts_constructor_type => self.resolveFunctionType(ty_node),
             .ts_tuple_type => self.resolveTupleType(ty_node),
             .ts_indexed_access_type => tymod.ID_UNKNOWN,
             .ts_conditional_type => tymod.ID_UNKNOWN,
@@ -402,6 +402,42 @@ pub const Checker = struct {
             .ts_template_literal_type => tymod.ID_STRING,
             else => tymod.ID_UNKNOWN,
         };
+    }
+
+    /// Build a function_t from a ts_function_type / ts_constructor_type
+    /// AST node.  Params live at FnData.params..params_end; return type
+    /// lives in FnData.body (the parser reuses the field for type-position
+    /// function declarations).
+    fn resolveFunctionType(self: *Checker, ty_node: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(ty_node);
+        const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(data.lhs));
+        // Resolve params from FnData.params..params_end.
+        var param_buf: [16]TypeId = undefined;
+        var count: usize = 0;
+        const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+        if (fd.params <= fd.params_end and fd.params_end <= ext_len) {
+            const params = self.ast_ref.extra_data[fd.params..fd.params_end];
+            for (params) |raw| {
+                if (count >= param_buf.len) break;
+                const param: NodeIndex = @enumFromInt(raw);
+                param_buf[count] = self.paramDeclaredType(param);
+                count += 1;
+            }
+        }
+        // Return type is in body for ts_function_type.
+        const ret_ty = if (fd.body != .none)
+            self.resolveTypeNode(fd.body)
+        else
+            tymod.ID_UNKNOWN;
+        const param_range = self.store.appendSignatureParams(param_buf[0..count]) catch {
+            return tymod.ID_UNKNOWN;
+        };
+        const sig: tymod.Signature = .{
+            .params_start = param_range.start,
+            .params_end = param_range.end,
+            .return_type = ret_ty,
+        };
+        return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
     }
 
     /// Walk a `{ k1: T1; k2: T2; ... }` type literal and build an
