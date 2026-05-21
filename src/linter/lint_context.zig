@@ -436,6 +436,21 @@ pub const LintContext = struct {
         return tymod.isUnknown(&c.store, id);
     }
 
+    /// True when the type id IS a union type (top-level union).
+    pub fn typeIdIsUnion(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.store.get(id).kind == .union_t;
+    }
+
+    /// Member TypeIds of a union — empty slice when not a union or
+    /// when the union has no members.
+    pub fn typeIdUnionMembers(self: *const LintContext, id: tymod.TypeId) []const tymod.TypeId {
+        const c = self.ensureChecker() orelse return &.{};
+        const t = c.store.get(id);
+        if (t.kind != .union_t) return &.{};
+        return c.store.idsOf(t.list_data);
+    }
+
     /// True when both type ids are `type_ref` types with the same outer
     /// name (`Set<X>` vs `Set<Y>`, `Promise<X>` vs `Promise<Y>`).  Used
     /// by no-unsafe-return to distinguish `unsafeReturnAssignment`
