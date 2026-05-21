@@ -423,6 +423,13 @@ function lintSourceNative(source, options = {}) {
     ? LANG[options.lang] ?? LANG.js
     : options.filename ? detectLang(options.filename) : LANG.js;
 
+  // Forward sourceType — bit 7 of lang_val encodes module mode in
+  // napi.lint (mirroring parseAndLint).  Top-level await / for-await
+  // / await-using only parse in module mode.
+  const isModule = options.sourceType === "module" ||
+    (options.sourceType !== "script" && detectIsModule(options.filename));
+  const langWithFlag = lang | (isModule ? 0x80 : 0);
+
   const { buf, sourceStart, sourceLen } = _encodeSource(source);
   _ensureLintOutBuf(sourceLen);
 
@@ -433,7 +440,7 @@ function lintSourceNative(source, options = {}) {
     // Build a native config from the rules object so options (hoist, allow, etc.) are honoured.
     configBuf = buildNativeConfig({ rules: options.rules });
   }
-  const bytesWritten = b.lint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
+  const bytesWritten = b.lint(buf, sourceStart, sourceLen, langWithFlag, _lintOutBuf, configBuf);
   const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
   return _parseDiags(bytesWritten, srcBytes);
 }

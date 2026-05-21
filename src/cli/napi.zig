@@ -1444,7 +1444,12 @@ fn lintImpl(
     const raw_source = buf_ptr[source_start .. source_start + source_len];
     const bom = js_buffer.stripBom(raw_source);
     const source = bom.text;
-    const language: Language = @enumFromInt(lang_val);
+    // Bit 7 of lang_val encodes sourceType: module — mirrors napi.parse /
+    // parseAndLint.  Without this, top-level await / for-await / await
+    // using fail to parse as await_expr and rules like await-thenable
+    // miss the diagnostics.
+    const is_module: bool = (lang_val & 0x80) != 0;
+    const language: Language = @enumFromInt(lang_val & 0x7F);
 
     // Bump allocator over the AST buffer for parse data.
     var backing = js_buffer.JsBufferAllocator.init(buf_ptr, source_start);
@@ -1454,7 +1459,7 @@ fn lintImpl(
     var tokens = lex_result.tokens;
     var tree = try parser_mod.Parser.parseWithOptions(bump, source, tokens.slice(), .{
         .language = language,
-        .is_module = false,
+        .is_module = is_module,
         .emit_events = true,
     });
 

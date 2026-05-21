@@ -302,11 +302,148 @@ fn exprIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
             if (ctx.nodeTag(c) != .identifier) return false;
             const name = ctx.tokenText(ctx.nodeMainToken(c));
             if (isErrorClassNameStatic(name) and ctx.isGlobalReference(c)) return true;
-            return classExtendsErrorLike(name, ctx);
+            if (classExtendsErrorLike(name, ctx)) return true;
+            // Imports — we don't follow modules; treat as ambiguous so
+            // `createError()` from a library doesn't false-positive.
+            if (identifierIsExternalImport(c, ctx)) return true;
+            // Function declared with a return annotation we can read.
+            return callReturnTypeIsErrorLike(c, ctx);
         },
         .identifier => return identifierTypeIsErrorLike(n, ctx),
+        .computed_member_expr, .optional_computed_member_expr,
+        .member_expr, .optional_member_expr => return memberIsErrorLike(n, ctx),
         else => return false,
     }
+}
+
+fn memberIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(node);
+    if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+        if (computedMemberIsErrorLike(node, ctx)) return true;
+    }
+    // `foo().err` / `foo.err` — if the receiver is a call returning an
+    // object literal with an Error-typed property, the member is
+    // Error-like.  We approximate: walk the receiver's call return type
+    // annotation for a `ts_type_literal` matching the property name.
+    const object = ctx.nodeData(node).lhs;
+    const prop_tok = ctx.nodeMainToken(node);
+    const prop = ctx.tokenText(prop_tok);
+    if (object == .none) return false;
+    // Walk the receiver to find its return-type annotation.
+    return receiverPropertyIsErrorLike(object, prop, ctx);
+}
+
+fn receiverPropertyIsErrorLike(receiver: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(receiver);
+    switch (tag) {
+        .call_expr, .optional_call_expr => {
+            // Resolve the callee's return type annotation.
+            const callee = ctx.nodeData(receiver).lhs;
+            if (callee == .none or ctx.nodeTag(callee) != .identifier) return false;
+            const sym = symbolForIdent(callee, ctx) orelse return false;
+            const decl = ctx.semantic.symbols.getDeclNode(sym);
+            if (decl == .none) return false;
+            const dtag = ctx.nodeTag(decl);
+            var return_ty: NodeIndex = .none;
+            if (dtag == .fn_decl or dtag == .async_fn_decl or dtag == .ts_declare_function) {
+                const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(decl).lhs));
+                return_ty = fd.return_type;
+            } else if (dtag == .identifier) {
+                // `declare const fn: () => { ... }` — walk binding's
+                // ts_function_type annotation.  The return type lives
+                // in `FnData.body` for ts_function_type.
+                const bd = ctx.nodeData(decl);
+                if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+                const ty = ctx.nodeData(bd.rhs).lhs;
+                if (ty == .none or ctx.nodeTag(ty) != .ts_function_type) return false;
+                const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+                return tsTypeLiteralPropIsErrorLike(fd.body, prop, ctx);
+            }
+            return tsTypeLiteralPropIsErrorLike(return_ty, prop, ctx);
+        },
+        .identifier => {
+            const sym = symbolForIdent(receiver, ctx) orelse return false;
+            const decl = ctx.semantic.symbols.getDeclNode(sym);
+            if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+            const bd = ctx.nodeData(decl);
+            if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+            return tsTypeLiteralPropIsErrorLike(ctx.nodeData(bd.rhs).lhs, prop, ctx);
+        },
+        else => return false,
+    }
+}
+
+fn tsTypeLiteralPropIsErrorLike(ty: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    const tag = ctx.nodeTag(ty);
+    if (tag == .ts_parenthesized_type) return tsTypeLiteralPropIsErrorLike(ctx.nodeData(ty).lhs, prop, ctx);
+    if (tag != .ts_type_literal) return false;
+    // ts_type_literal members are stored as a SubRange in data.{lhs,rhs}.
+    const data = ctx.nodeData(ty);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (s >= e or e > ctx.ast.extra_data.len) return false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        // ts_property_signature: main token = name, data.lhs = extra to PropSig.
+        if (ctx.nodeTag(m) != .ts_property_signature) continue;
+        const name_tok = ctx.nodeMainToken(m);
+        if (!std.mem.eql(u8, ctx.tokenText(name_tok), prop)) continue;
+        // PropSig stores annotation; we look at its `type_node` field
+        // via the extra data.  Use a conservative read: walk known
+        // PropSig field layout — `data.rhs` is the type annotation
+        // ts_type_annotation node when present.
+        const md = ctx.nodeData(m);
+        if (md.rhs != .none and ctx.nodeTag(md.rhs) == .ts_type_annotation) {
+            return tsTypeIsErrorLike(ctx.nodeData(md.rhs).lhs, ctx);
+        }
+        return false;
+    }
+    return false;
+}
+
+fn identifierIsExternalImport(ident: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(ident) != .identifier) return false;
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    const dparent = ctx.parentOf(decl);
+    if (dparent == .none) return false;
+    return switch (ctx.nodeTag(dparent)) {
+        .import_specifier, .import_default_specifier, .import_namespace_specifier => true,
+        else => false,
+    };
+}
+
+/// True when the function identifier's declared return type
+/// (via fn_decl or `const f: () => T`) is Error-like.
+fn callReturnTypeIsErrorLike(callee: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(callee, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    const dtag = ctx.nodeTag(decl);
+    if (dtag == .fn_decl or dtag == .async_fn_decl or dtag == .ts_declare_function) {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(decl).lhs));
+        return annotationIsErrorLike(fd.return_type, ctx);
+    }
+    if (dtag == .identifier) {
+        // `declare const fn: () => Error` — walk binding annotation.
+        const bd = ctx.nodeData(decl);
+        if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+        const ty = ctx.nodeData(bd.rhs).lhs;
+        if (ty != .none and ctx.nodeTag(ty) == .ts_function_type) {
+            const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+            // ts_function_type stores return type in FnData.body.
+            return tsTypeIsErrorLike(fd.body, ctx);
+        }
+    }
+    return false;
+}
+
+fn annotationIsErrorLike(ann: NodeIndex, ctx: *const LintContext) bool {
+    if (ann == .none) return false;
+    if (ctx.nodeTag(ann) != .ts_type_annotation) return false;
+    return tsTypeIsErrorLike(ctx.nodeData(ann).lhs, ctx);
 }
 
 fn identifierTypeIsErrorLike(ident: NodeIndex, ctx: *const LintContext) bool {
@@ -327,10 +464,63 @@ fn identifierTypeIsErrorLike(ident: NodeIndex, ctx: *const LintContext) bool {
     return false;
 }
 
+/// True when `obj[idx]` yields an Error-like value — walks the
+/// declared annotation of `obj` (array element / tuple element /
+/// indexed access).
+fn computedMemberIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
+    const object = ctx.nodeData(node).lhs;
+    if (object == .none or ctx.nodeTag(object) != .identifier) return false;
+    const sym = symbolForIdent(object, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    return tsTypeElementIsErrorLike(ctx.nodeData(bd.rhs).lhs, ctx);
+}
+
+fn tsTypeElementIsErrorLike(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return tsTypeElementIsErrorLike(ctx.nodeData(ty).lhs, ctx),
+        .ts_array_type => return tsTypeIsErrorLike(ctx.nodeData(ty).lhs, ctx),
+        .ts_tuple_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s >= e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (!tsTypeIsErrorLike(m, ctx)) return false;
+            }
+            return true;
+        },
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            // Array<T> / ReadonlyArray<T> — element is the first type arg.
+            if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+                const data = ctx.nodeData(ty);
+                if (data.rhs == .none) return false;
+                const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
+                if (range.end <= range.start or range.end > ctx.ast.extra_data.len) return false;
+                const arg: NodeIndex = @enumFromInt(ctx.ast.extra_data[range.start]);
+                return tsTypeIsErrorLike(arg, ctx);
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
 fn tsTypeIsErrorLike(ty: NodeIndex, ctx: *const LintContext) bool {
     if (ty == .none) return false;
     switch (ctx.nodeTag(ty)) {
         .ts_parenthesized_type => return tsTypeIsErrorLike(ctx.nodeData(ty).lhs, ctx),
+        .ts_indexed_access_type => {
+            // `T[K]` — element-flavored indexing: walk T's element type.
+            // We approximate by checking the base type's element.
+            return tsTypeElementIsErrorLike(ctx.nodeData(ty).lhs, ctx);
+        },
         .ts_union_type => {
             const data = ctx.nodeData(ty);
             const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
