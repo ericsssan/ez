@@ -368,15 +368,23 @@ fn astReturnsPromiseAny(rhs: NodeIndex, ctx: *const LintContext) bool {
             if (ctx.nodeTag(callee) != .ts_instantiation_expr) return false;
             // ts_instantiation_expr: lhs = expression, rhs = type args SubRange.
             const inst_data = ctx.nodeData(callee);
+            // Only Promise-method calls return Promise<T>: walk the
+            // inner expression and require it to be `Promise.<method>`.
+            const inner = inst_data.lhs;
+            if (inner == .none) return false;
+            const itag = ctx.nodeTag(inner);
+            if (itag != .member_expr and itag != .optional_member_expr) return false;
+            const md = ctx.nodeData(inner);
+            if (md.lhs == .none) return false;
+            if (ctx.nodeTag(md.lhs) != .identifier) return false;
+            const obj_name = ctx.tokenText(ctx.nodeMainToken(md.lhs));
+            if (!std.mem.eql(u8, obj_name, "Promise")) return false;
             if (inst_data.rhs == .none) return false;
             const range = ctx.extraData(ast.SubRange, @intFromEnum(inst_data.rhs));
             if (range.end <= range.start) return false;
             // First type arg drives the resulting Promise<X>.
             const arg_idx = ctx.ast.extra_data[range.start];
             const arg: NodeIndex = @enumFromInt(arg_idx);
-            // For `Promise.resolve<any>(...)`, callee target arg is `any`
-            // → Promise<any>.  For `Promise.resolve<Promise<Promise<any>>>(...)`,
-            // T is `Promise<Promise<any>>` which still surfaces Promise<any>.
             if (ctx.resolveTypeAnnotationNode(arg) == tymod.ID_ANY) return true;
             return tsTypeIsPromiseAny(arg, ctx);
         },
