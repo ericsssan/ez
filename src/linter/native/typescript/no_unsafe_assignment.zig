@@ -211,7 +211,7 @@ fn checkAssignmentPattern(node: NodeIndex, ctx: *const LintContext) void {
     }
     if (data.rhs == .none) return;
     const sender_ty = senderTypeForDestructure(data.rhs, ctx);
-    checkDestructure(pat, sender_ty, ctx);
+    checkDestructureAt(pat, sender_ty, node, ctx);
 }
 
 /// Preserve `as`-cast target types: `[x] = [1] as [any]` should walk
@@ -249,7 +249,7 @@ fn checkDeclarator(node: NodeIndex, ctx: *const LintContext) void {
     // `unsafeArrayPatternFromTuple` / `unsafeObjectPattern` for these.
     if (lhs_tag == .array_pattern or lhs_tag == .object_pattern) {
         const sender_ty = senderTypeForDestructure(data.rhs, ctx);
-        checkDestructure(lhs, sender_ty, ctx);
+        checkDestructureAt(lhs, sender_ty, node, ctx);
         return;
     }
     if (lhs_tag != .identifier) return;
@@ -303,7 +303,7 @@ fn checkAssign(node: NodeIndex, ctx: *const LintContext) void {
         // object_literal node tags for destructuring assignments (vs
         // var declarations which use the pattern tags).  Walk either.
         const sender_ty = senderTypeForDestructure(data.rhs, ctx);
-        checkDestructure(data.lhs, sender_ty, ctx);
+        checkDestructureAt(data.lhs, sender_ty, node, ctx);
         return;
     }
     const lhs_ty = ctx.typeOfNode(data.lhs);
@@ -317,15 +317,23 @@ fn checkAssign(node: NodeIndex, ctx: *const LintContext) void {
 /// For each receiver position, look up the corresponding sender slot
 /// type and either fire (if any) or recurse (if nested pattern).
 fn checkDestructure(receiver: NodeIndex, sender_ty: tymod.TypeId, ctx: *const LintContext) void {
+    checkDestructureAt(receiver, sender_ty, receiver, ctx);
+}
+
+fn checkDestructureAt(receiver: NodeIndex, sender_ty: tymod.TypeId, root: NodeIndex, ctx: *const LintContext) void {
     const tag = ctx.nodeTag(receiver);
     switch (tag) {
-        .array_pattern, .array_literal => checkArrayDestructure(receiver, sender_ty, ctx),
-        .object_pattern, .object_literal => checkObjectDestructure(receiver, sender_ty, ctx),
+        .array_pattern, .array_literal => checkArrayDestructureAt(receiver, sender_ty, root, ctx),
+        .object_pattern, .object_literal => checkObjectDestructureAt(receiver, sender_ty, root, ctx),
         else => {},
     }
 }
 
 fn checkArrayDestructure(pattern: NodeIndex, sender_ty: tymod.TypeId, ctx: *const LintContext) void {
+    checkArrayDestructureAt(pattern, sender_ty, pattern, ctx);
+}
+
+fn checkArrayDestructureAt(pattern: NodeIndex, sender_ty: tymod.TypeId, root: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(pattern);
     // Pattern element range: start/end stored directly in lhs/rhs.
     if (data.lhs == .none or data.rhs == .none) return;
@@ -345,20 +353,38 @@ fn checkArrayDestructure(pattern: NodeIndex, sender_ty: tymod.TypeId, ctx: *cons
         const inner = peelAssignmentPattern(elem, ctx);
         const slot_ty = ctx.typeIdTupleElementAt(sender_ty, idx);
         if (ctx.typeIdIsAny(slot_ty)) {
-            ctx.reportSpanWithMessageId(ctx.nodeSpan(inner), "unsafeArrayPatternFromTuple");
+            // For nested patterns in an ASSIGNMENT expression (vs. a
+            // declarator), TSe fires `unsafeAssignment` at the whole
+            // assignment because there's no clean per-position pairing
+            // for an any-typed source.  Declarator-based destructures
+            // still get the per-slot `unsafeArrayPatternFromTuple`.
+            const inner_tag = ctx.nodeTag(inner);
+            const inner_is_pattern = inner_tag == .array_pattern or
+                inner_tag == .array_literal or
+                inner_tag == .object_pattern or
+                inner_tag == .object_literal;
+            if (inner_is_pattern and ctx.nodeTag(root) == .assign) {
+                ctx.reportSpanWithMessageId(ctx.nodeSpan(root), "unsafeAssignment");
+            } else {
+                ctx.reportSpanWithMessageId(ctx.nodeSpan(inner), "unsafeArrayPatternFromTuple");
+            }
             continue;
         }
-        // Nested pattern: recurse.
-        const inner_tag = ctx.nodeTag(inner);
-        if (inner_tag == .array_pattern or inner_tag == .array_literal or
-            inner_tag == .object_pattern or inner_tag == .object_literal)
+        // Nested pattern: recurse with the same root.
+        const inner_tag2 = ctx.nodeTag(inner);
+        if (inner_tag2 == .array_pattern or inner_tag2 == .array_literal or
+            inner_tag2 == .object_pattern or inner_tag2 == .object_literal)
         {
-            checkDestructure(inner, slot_ty, ctx);
+            checkDestructureAt(inner, slot_ty, root, ctx);
         }
     }
 }
 
 fn checkObjectDestructure(pattern: NodeIndex, sender_ty: tymod.TypeId, ctx: *const LintContext) void {
+    checkObjectDestructureAt(pattern, sender_ty, pattern, ctx);
+}
+
+fn checkObjectDestructureAt(pattern: NodeIndex, sender_ty: tymod.TypeId, root: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(pattern);
     if (data.lhs == .none or data.rhs == .none) return;
     const r_start = @intFromEnum(data.lhs);
@@ -407,15 +433,21 @@ fn checkObjectDestructure(pattern: NodeIndex, sender_ty: tymod.TypeId, ctx: *con
         if (value == .none) continue;
         const inner = peelAssignmentPattern(value, ctx);
         const slot_ty = ctx.typeIdObjectPropertyType(sender_ty, name);
+        const inner_tag = ctx.nodeTag(inner);
+        const inner_is_pattern = inner_tag == .array_pattern or
+            inner_tag == .array_literal or
+            inner_tag == .object_pattern or
+            inner_tag == .object_literal;
         if (ctx.typeIdIsAny(slot_ty)) {
-            ctx.reportSpanWithMessageId(ctx.nodeSpan(inner), "unsafeObjectPattern");
+            if (inner_is_pattern and ctx.nodeTag(root) == .assign) {
+                ctx.reportSpanWithMessageId(ctx.nodeSpan(root), "unsafeAssignment");
+            } else {
+                ctx.reportSpanWithMessageId(ctx.nodeSpan(inner), "unsafeObjectPattern");
+            }
             continue;
         }
-        const inner_tag = ctx.nodeTag(inner);
-        if (inner_tag == .array_pattern or inner_tag == .array_literal or
-            inner_tag == .object_pattern or inner_tag == .object_literal)
-        {
-            checkDestructure(inner, slot_ty, ctx);
+        if (inner_is_pattern) {
+            checkDestructureAt(inner, slot_ty, root, ctx);
         }
     }
 }
