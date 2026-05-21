@@ -734,6 +734,13 @@ fn unwrap(n: NodeIndex, ctx: *const LintContext) NodeIndex {
 
 /// Top-level dispatch: is this expression a floating promise?
 fn isFloatingPromise(expr: NodeIndex, ctx: *const LintContext) bool {
+    // `X as Promise<T>` / `X as Promise<T> & U`: the cast makes the
+    // expression type a Promise regardless of the underlying value.
+    // Check BEFORE unwrap (which peels ts_as_expr).
+    if (expr != .none and ctx.nodeTag(expr) == .ts_as_expr) {
+        const cast_target = ctx.nodeData(expr).rhs;
+        if (tsTypeIsPromise(cast_target, ctx)) return true;
+    }
     const e = unwrap(expr, ctx);
     if (matchesAllowedSpecifier(e, ctx)) return false;
     const tag = ctx.nodeTag(e);
@@ -862,12 +869,26 @@ fn calleeNodeReturnsPromise(callee: NodeIndex, ctx: *const LintContext) bool {
             const dtag = ctx.nodeTag(decl);
             switch (dtag) {
                 .async_fn_decl, .async_generator_fn_decl => return true,
-                .fn_decl, .generator_fn_decl => {
+                .fn_decl, .generator_fn_decl, .ts_declare_function => {
                     const dd = ctx.nodeData(decl);
                     const fd = ctx.extraData(ast.FnData, @intFromEnum(dd.lhs));
                     return returnTypeIsPromise(fd.return_type, ctx);
                 },
                 else => {},
+            }
+            // decl may be the binding identifier inside a fn_decl/ts_declare_function;
+            // check the parent.
+            const decl_parent = ctx.parentOf(decl);
+            if (decl_parent != .none) {
+                switch (ctx.nodeTag(decl_parent)) {
+                    .async_fn_decl, .async_generator_fn_decl => return true,
+                    .fn_decl, .generator_fn_decl, .ts_declare_function => {
+                        const dd = ctx.nodeData(decl_parent);
+                        const fd = ctx.extraData(ast.FnData, @intFromEnum(dd.lhs));
+                        return returnTypeIsPromise(fd.return_type, ctx);
+                    },
+                    else => {},
+                }
             }
             if (dtag == .identifier) {
                 const bd = ctx.nodeData(decl);
@@ -944,15 +965,55 @@ fn tsTypeIsPromise(ty: NodeIndex, ctx: *const LintContext) bool {
         .ts_type_reference => {
             const name = ctx.tokenText(ctx.nodeMainToken(ty));
             if (std.mem.eql(u8, name, "Promise")) return true;
-            // Class extending Promise (in this file).  PromiseLike is
-            // only promise-flavored under checkThenables:true which we
-            // don't yet support — keep it out of the default path.
-            // Also resolve one-hop type aliases.
+            // Class extending Promise (in this file).
             if (classExtendsPromise(name, ctx)) return true;
+            // `checkThenables:true` treats PromiseLike + interfaces that
+            // declare a callable `.then` as Promise-flavored.
+            if (optionCheckThenables(ctx)) {
+                if (std.mem.eql(u8, name, "PromiseLike")) return true;
+                if (interfaceHasThenMethod(name, ctx)) return true;
+            }
             return typeAliasBodyIsPromise(name, ctx);
         },
         else => return false,
     }
+}
+
+fn optionCheckThenables(ctx: *const LintContext) bool {
+    const opts = ctx.rule_options orelse return false;
+    if (opts.* != .object) return false;
+    const v = opts.object.get("checkThenables") orelse return false;
+    if (v != .bool) return false;
+    return v.bool;
+}
+
+/// Walk ts_interface_decl nodes for a matching name with a `.then`
+/// method.  Used when checkThenables:true to flag user-defined
+/// thenable interfaces as Promise-flavored.
+fn interfaceHasThenMethod(name: []const u8, ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .ts_interface_decl) continue;
+        const dd = tree.nodeData(ni);
+        const idata = tree.extraData(ast.InterfaceData, @intFromEnum(dd.lhs));
+        if (!std.mem.eql(u8, tree.tokenText(idata.name), name)) continue;
+        const ext_len: u32 = @intCast(tree.extra_data.len);
+        if (idata.body_start > idata.body_end or idata.body_end > ext_len) return false;
+        for (tree.extra_data[idata.body_start..idata.body_end]) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            const mtag = tree.nodeTag(m);
+            if (mtag != .ts_method_signature and mtag != .ts_property_signature) continue;
+            const md = tree.nodeData(m);
+            if (md.lhs == .none) continue;
+            const key_name = tree.tokenText(tree.nodeMainToken(md.lhs));
+            if (std.mem.eql(u8, key_name, "then")) return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 /// Look for `type X = ...` and check if RHS is Promise-flavored.
