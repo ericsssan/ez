@@ -17,7 +17,10 @@
         "*.tsx"
       ]
     },
-    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted",
+    "ecmaFeatures": {
+      "jsx": true
+    }
   },
   "output": null,
   "declaredErrors": [],

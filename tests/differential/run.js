@@ -424,8 +424,13 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
       config = buildNativeConfig(cfgObj);
     }
     const lang = isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
-    const sourceType = tcLanguageOptions?.sourceType || undefined;
-    const diags = ezLint(code, { config, lang, sourceType });
+    // Forward sourceType only when explicitly "module" — top-level await
+    // requires module mode in the parser.  Leaving sourceType
+    // undefined for "script"/missing lets lintSourceNative use its
+    // detection heuristic (otherwise we override its smarter default).
+    const opts = { config, lang };
+    if (tcLanguageOptions?.sourceType === "module") opts.sourceType = "module";
+    const diags = ezLint(code, opts);
     // Native diags emit only {offset, severity, ruleName}. ESLint diags
     // carry {line, column, endLine, endColumn, messageId}. To compare
     // them on the same key shape, synthesize the missing fields here:

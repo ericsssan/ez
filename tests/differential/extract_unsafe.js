@@ -168,6 +168,7 @@ for (const rule of RULES) {
       parserOptions: {
         projectService: { allowDefaultProject: ["*.ts", "*.tsx"] },
         tsconfigRootDir: path.join(__dirname, "..", "fixtures", "extracted"),
+        ...(hasJsx ? { ecmaFeatures: { jsx: true } } : {}),
       },
       output,
       declaredErrors: kind === "invalid"
