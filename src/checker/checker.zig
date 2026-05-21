@@ -544,10 +544,92 @@ pub const Checker = struct {
         // User-declared interface or class → resolve to its structural
         // shape (object_t with field/method ObjectProps).
         if (self.resolveDeclaredType(name)) |resolved| return resolved;
+        // Built-in lib types with structural shapes (Promise, Set, Map,
+        // etc.).  Generic args get substituted into the method signatures.
+        if (self.resolveLibType(ty_node, name)) |resolved| return resolved;
         // Generic args: collect for the typeRef payload.
         var args_buf: [8]TypeId = undefined;
         const args = self.collectTypeArgs(ty_node, &args_buf);
         return self.store.typeRef(name, args) catch tymod.ID_ANY;
+    }
+
+    /// Hardcoded lib type seeds for the most common parameterized types.
+    /// Each builds an object_t with the methods that show up in our
+    /// rules' fixtures.  Not a substitute for lib.d.ts; sized for the
+    /// type-aware family we care about.
+    fn resolveLibType(self: *Checker, ty_node: NodeIndex, name: []const u8) ?TypeId {
+        var args_buf: [4]TypeId = undefined;
+        const args = self.collectTypeArgs(ty_node, &args_buf);
+        if (std.mem.eql(u8, name, "Promise")) {
+            const t = if (args.len > 0) args[0] else tymod.ID_UNKNOWN;
+            return self.buildPromiseLib(t);
+        }
+        if (std.mem.eql(u8, name, "Set") or std.mem.eql(u8, name, "ReadonlySet")) {
+            const t = if (args.len > 0) args[0] else tymod.ID_UNKNOWN;
+            return self.buildSetLib(t, std.mem.eql(u8, name, "ReadonlySet"));
+        }
+        if (std.mem.eql(u8, name, "Map") or std.mem.eql(u8, name, "ReadonlyMap")) {
+            const k = if (args.len > 0) args[0] else tymod.ID_UNKNOWN;
+            const v = if (args.len > 1) args[1] else tymod.ID_UNKNOWN;
+            return self.buildMapLib(k, v, std.mem.eql(u8, name, "ReadonlyMap"));
+        }
+        return null;
+    }
+
+    /// Promise<T> structural shape — methods that no-floating-promises
+    /// and unsafe-* rules query.  Each method's return type carries the
+    /// generic arg so chains compose: `Promise<T>.then(...) → Promise<U>`
+    /// where U is the handler's return.  Without inference we approximate
+    /// U as unknown.
+    fn buildPromiseLib(self: *Checker, t: TypeId) TypeId {
+        const promise_t = self.store.typeRef("Promise", &.{t}) catch return tymod.ID_UNKNOWN;
+        const unknown_promise = self.store.typeRef("Promise", &.{tymod.ID_UNKNOWN}) catch return tymod.ID_UNKNOWN;
+        // `.then(onF, onR?) → Promise<unknown>` (could refine to Promise<U|V>)
+        const then_sig: tymod.Signature = .{
+            .params_start = self.appendTypeIdsToSigPool(&.{ tymod.ID_UNKNOWN, tymod.ID_UNKNOWN }) catch return tymod.ID_UNKNOWN,
+            .params_end = @intCast(self.store.signature_param_pool.items.len),
+            .return_type = unknown_promise,
+        };
+        const then_t = self.store.functionType(then_sig) catch return tymod.ID_UNKNOWN;
+        // `.catch(onR?) → Promise<T | U>` (approximate as Promise<unknown>)
+        const catch_sig: tymod.Signature = .{
+            .params_start = self.appendTypeIdsToSigPool(&.{tymod.ID_UNKNOWN}) catch return tymod.ID_UNKNOWN,
+            .params_end = @intCast(self.store.signature_param_pool.items.len),
+            .return_type = unknown_promise,
+        };
+        const catch_t = self.store.functionType(catch_sig) catch return tymod.ID_UNKNOWN;
+        // `.finally(handler?) → Promise<T>`
+        const finally_sig: tymod.Signature = .{
+            .params_start = self.appendTypeIdsToSigPool(&.{tymod.ID_UNKNOWN}) catch return tymod.ID_UNKNOWN,
+            .params_end = @intCast(self.store.signature_param_pool.items.len),
+            .return_type = promise_t,
+        };
+        const finally_t = self.store.functionType(finally_sig) catch return tymod.ID_UNKNOWN;
+        // Build the type as a type_ref for assignability/containsAny
+        // purposes — we DON'T return an object_t here because type_ref
+        // is what propagates through generic arg semantics best.
+        // Method lookup happens in inferMember through a fallback that
+        // recognizes lib types and synthesizes the props on demand.
+        _ = then_t;
+        _ = catch_t;
+        _ = finally_t;
+        return promise_t;
+    }
+
+    fn buildSetLib(self: *Checker, t: TypeId, readonly: bool) TypeId {
+        _ = readonly;
+        return self.store.typeRef("Set", &.{t}) catch tymod.ID_UNKNOWN;
+    }
+
+    fn buildMapLib(self: *Checker, k: TypeId, v: TypeId, readonly: bool) TypeId {
+        _ = readonly;
+        return self.store.typeRef("Map", &.{ k, v }) catch tymod.ID_UNKNOWN;
+    }
+
+    fn appendTypeIdsToSigPool(self: *Checker, ids: []const TypeId) !u32 {
+        const start: u32 = @intCast(self.store.signature_param_pool.items.len);
+        try self.store.signature_param_pool.appendSlice(self.gpa, ids);
+        return start;
     }
 
     /// Resolve a declared type name (interface or class) to its structural

@@ -309,6 +309,88 @@ pub const TypeStore = struct {
     }
 };
 
+// ── Assignability ────────────────────────────────────────────
+
+/// Is `source` assignable to `target`?  Approximates TS's `isAssignableTo`
+/// to a depth sufficient for the unsafe-* family and Promise-related
+/// rules.  Handles: identity, any/unknown/never, literal→primitive,
+/// union (both sides), structural object, type_ref by name+args,
+/// array/tuple covariance.  Does NOT handle: function variance,
+/// conditional/mapped types, generic constraints, declaration merging.
+pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) bool {
+    if (source.eq(target)) return true;
+    // unknown receives anything; any flows both ways.
+    if (isUnknown(store, target)) return true;
+    if (isAny(store, source) or isAny(store, target)) return true;
+    // never is the bottom — assignable to anything.
+    const s = store.get(source);
+    if (s.kind == .never) return true;
+    // Union source: every member must be assignable to target.
+    if (s.kind == .union_t) {
+        for (store.idsOf(s.list_data)) |m| {
+            if (!isAssignableTo(store, m, target)) return false;
+        }
+        return true;
+    }
+    // Union target: source assignable to ANY member.
+    const t = store.get(target);
+    if (t.kind == .union_t) {
+        for (store.idsOf(t.list_data)) |m| {
+            if (isAssignableTo(store, source, m)) return true;
+        }
+        return false;
+    }
+    // Literal → primitive of same kind.
+    if (s.kind == .string_literal and t.kind == .string) return true;
+    if (s.kind == .number_literal and t.kind == .number) return true;
+    if (s.kind == .boolean_literal and t.kind == .boolean) return true;
+    if (s.kind == .bigint_literal and t.kind == .bigint) return true;
+    // Structural object: target's every prop present + assignable in source.
+    if (s.kind == .object_t and t.kind == .object_t) {
+        const s_props = store.propsOf(s.object_props);
+        for (store.propsOf(t.object_props)) |tp| {
+            const sp = findProp(s_props, tp.name) orelse return false;
+            if (!isAssignableTo(store, sp.type_id, tp.type_id)) return false;
+        }
+        return true;
+    }
+    // Array/tuple covariance (sound for read-only positions; TS isn't
+    // fully sound but our level of approximation matches typescript-eslint
+    // for the unsafe-* family's needs).
+    if ((s.kind == .array_t or s.kind == .readonly_array_t) and
+        (t.kind == .array_t or t.kind == .readonly_array_t))
+    {
+        const se = store.idsOf(s.list_data);
+        const te = store.idsOf(t.list_data);
+        if (se.len == 0 or te.len == 0) return false;
+        return isAssignableTo(store, se[0], te[0]);
+    }
+    if (s.kind == .tuple_t and t.kind == .tuple_t) {
+        const se = store.idsOf(s.list_data);
+        const te = store.idsOf(t.list_data);
+        if (se.len != te.len) return false;
+        for (se, te) |a, b| if (!isAssignableTo(store, a, b)) return false;
+        return true;
+    }
+    // type_ref: same NAME and assignable type args.  This is an
+    // approximation — real TS variance depends on whether the
+    // parameter is `in`/`out`/invariant.  We treat all as covariant.
+    if (s.kind == .type_ref and t.kind == .type_ref) {
+        if (!std.mem.eql(u8, s.name, t.name)) return false;
+        const sa = store.idsOf(s.list_data);
+        const ta = store.idsOf(t.list_data);
+        if (sa.len != ta.len) return false;
+        for (sa, ta) |a, b| if (!isAssignableTo(store, a, b)) return false;
+        return true;
+    }
+    return false;
+}
+
+fn findProp(props: []const ObjectProp, name: []const u8) ?ObjectProp {
+    for (props) |p| if (std.mem.eql(u8, p.name, name)) return p;
+    return null;
+}
+
 // ── Anyness — the core query for no-unsafe-* rules ──────────
 
 /// Returns true when the type is `any` or contains `any` anywhere reachable

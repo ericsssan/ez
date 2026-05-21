@@ -405,6 +405,13 @@ pub const LintContext = struct {
         return id.eq(tymod.ID_ANY);
     }
 
+    /// Is `src` assignable to `dst` per a TSe-flavored assignability
+    /// approximation?  See `tymod.isAssignableTo` for the rules.
+    pub fn typeIdAssignableTo(self: *const LintContext, src: tymod.TypeId, dst: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return true;
+        return tymod.isAssignableTo(&c.store, src, dst);
+    }
+
     /// True when the inferred type at this node is the built-in
     /// `Function` type — used by no-unsafe-call.  Caller should also
     /// check typeNodeIsAny separately when both should fire.
