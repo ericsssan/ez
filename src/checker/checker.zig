@@ -583,8 +583,12 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name, "undefined")) return tymod.ID_UNDEFINED;
         if (std.mem.eql(u8, name, "null")) return tymod.ID_NULL;
         // Unknown name (not built-in, not declared anywhere in the file
-        // or a known lib type) → error type.
+        // or a known lib type) → error type, unless it matches a
+        // type parameter in scope — in which case resolve to its
+        // constraint (`<T extends X>(t: T)` should make `t` have
+        // type X for the unsafe-* family).
         if (!self.known_type_names.contains(name)) {
+            if (self.resolveTypeParameterConstraint(ty_node, name)) |c| return c;
             return tymod.ID_ERROR;
         }
         // User-declared interface or class → resolve to its structural
@@ -593,10 +597,92 @@ pub const Checker = struct {
         // Built-in lib types with structural shapes (Promise, Set, Map,
         // etc.).  Generic args get substituted into the method signatures.
         if (self.resolveLibType(ty_node, name)) |resolved| return resolved;
+        // Type parameter with matching name in scope?  Resolve to its
+        // constraint type (an over-approximation that lets `t: T` where
+        // `T extends Foo` behave as `t: Foo`).
+        if (self.resolveTypeParameterConstraint(ty_node, name)) |c| return c;
         // Generic args: collect for the typeRef payload.
         var args_buf: [8]TypeId = undefined;
         const args = self.collectTypeArgs(ty_node, &args_buf);
         return self.store.typeRef(name, args) catch tymod.ID_ANY;
+    }
+
+    /// Find a `ts_type_parameter` declaration named `name` enclosing
+    /// `ty_node` and return its constraint's resolved TypeId.  Falls
+    /// back to null when no such parameter is found or it has no
+    /// constraint.
+    fn resolveTypeParameterConstraint(self: *Checker, ty_node: NodeIndex, name: []const u8) ?TypeId {
+        // Walk the parent index to find an enclosing fn/class/alias
+        // scope; if one is found, look for a ts_type_parameter whose
+        // parent chain reaches the same scope (using main-token
+        // position for "before ty_node" comparison).
+        const tree = self.ast_ref;
+        const parents = tree.parents;
+        if (parents.len == 0) return null;
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        // Collect ancestors in a buffer for cheap containment checks.
+        var anc_buf: [16]u32 = undefined;
+        var nanc: usize = 0;
+        var p = parents[ty_node.toInt()];
+        while (p != NONE and nanc < anc_buf.len) : (p = parents[p]) {
+            anc_buf[nanc] = p;
+            nanc += 1;
+        }
+        // Find ts_type_parameter nodes named `name` whose ancestor chain
+        // includes a scope ancestor shared with ty_node.
+        const total: u32 = @intCast(tree.nodes.len);
+        const ty_main_tok = tree.nodeMainToken(ty_node);
+        const ty_pos = tree.tokenStart(ty_main_tok);
+        var j: u32 = 0;
+        while (j < total) : (j += 1) {
+            const ni: NodeIndex = @enumFromInt(j);
+            if (tree.nodeTag(ni) != .ts_type_parameter) continue;
+            if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
+            // Type param must appear textually before ty_node.
+            const tp_pos = tree.tokenStart(tree.nodeMainToken(ni));
+            if (tp_pos >= ty_pos) continue;
+            // Determine if some ancestor of the tp is a scope that
+            // also appears in ty_node's ancestor chain — meaning they
+            // share an enclosing scope (the alias/fn/class header).
+            // Type params parents aren't always set, so we use spans
+            // via tokenStart and compare against ty_node's ancestors.
+            // For each ancestor of ty_node, check if it's a scope
+            // node and if it textually CONTAINS the tp's main token.
+            for (anc_buf[0..nanc]) |anc_idx| {
+                const anc: NodeIndex = @enumFromInt(anc_idx);
+                const tag = tree.nodeTag(anc);
+                const is_scope = tag == .fn_decl or tag == .async_fn_decl or
+                    tag == .generator_fn_decl or tag == .async_generator_fn_decl or
+                    tag == .ts_declare_function or tag == .fn_expr or
+                    tag == .async_fn_expr or tag == .generator_fn_expr or
+                    tag == .async_generator_fn_expr or tag == .arrow_fn or
+                    tag == .async_arrow_fn or tag == .method_def or
+                    tag == .computed_method_def or tag == .class_decl or
+                    tag == .class_expr or tag == .ts_type_alias_decl or
+                    tag == .ts_interface_decl;
+                if (!is_scope) continue;
+                // Check if tp_pos lies AFTER scope's main_token (i.e.
+                // tp is structurally inside the scope's header) AND
+                // before ty_pos.  We don't have end-spans for the
+                // scope, but the main_token position is the keyword
+                // start; tp inside the same fn/class will always be
+                // after that.
+                const anc_pos = tree.tokenStart(tree.nodeMainToken(anc));
+                if (tp_pos < anc_pos) continue;
+                // Found a plausible match — same scope ancestor.
+                const constraint = tree.nodeData(ni).lhs;
+                if (constraint == .none) return null;
+                const resolved = self.resolveTypeNode(constraint);
+                // Don't substitute when the constraint is `any` — TS
+                // treats `<T extends any>` as an unconstrained type
+                // parameter, not as a value of type `any`.  Substituting
+                // would make rules like no-unsafe-call fire on `x()`
+                // where `x: T`.
+                if (tymod.isAny(&self.store, resolved)) return null;
+                return resolved;
+            }
+        }
+        return null;
     }
 
     /// Hardcoded lib type seeds for the most common parameterized types.
@@ -1175,12 +1261,8 @@ pub const Checker = struct {
         const obj_ty = self.typeOf(data.lhs);
         if (tymod.isAny(&self.store, obj_ty)) return tymod.ID_ANY;
         const tag = self.ast_ref.nodeTag(node);
-        const obj = self.store.get(obj_ty);
-        if (obj.kind != .object_t) return tymod.ID_UNKNOWN;
         const prop_name: []const u8 = switch (tag) {
             .member_expr, .optional_member_expr => blk: {
-                // .rhs is a property_ident node; main_token IS the
-                // property name token.
                 if (data.rhs == .none) break :blk &.{};
                 const t = self.ast_ref.nodeMainToken(data.rhs);
                 break :blk self.ast_ref.tokenText(t);
@@ -1188,10 +1270,78 @@ pub const Checker = struct {
             else => return tymod.ID_UNKNOWN,
         };
         if (prop_name.len == 0) return tymod.ID_UNKNOWN;
+        const obj = self.store.get(obj_ty);
+        // Array.prototype methods — common subset.  Doesn't model variance
+        // or overloads; covers the cases our rules need (shift, pop, find,
+        // at, push, length, includes, indexOf, etc.).
+        if (obj.kind == .array_t or obj.kind == .readonly_array_t or obj.kind == .tuple_t) {
+            const elem: TypeId = blk: {
+                const elems = self.store.idsOf(obj.list_data);
+                if (elems.len == 0) break :blk tymod.ID_UNKNOWN;
+                break :blk elems[0];
+            };
+            return self.arrayPrototypeProperty(prop_name, elem);
+        }
+        if (obj.kind != .object_t) return tymod.ID_UNKNOWN;
         for (self.store.propsOf(obj.object_props)) |p| {
             if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
         }
         return tymod.ID_UNKNOWN;
+    }
+
+    /// Lookup an Array.prototype method by name and return its
+    /// (function or scalar) type.  Returns ID_UNKNOWN for properties
+    /// we don't model.
+    fn arrayPrototypeProperty(self: *Checker, name: []const u8, elem: TypeId) TypeId {
+        // length / indexOf / lastIndexOf return numbers.
+        if (std.mem.eql(u8, name, "length")) return tymod.ID_NUMBER;
+        // T | undefined returners.
+        if (std.mem.eql(u8, name, "shift") or std.mem.eql(u8, name, "pop") or
+            std.mem.eql(u8, name, "at") or std.mem.eql(u8, name, "find") or
+            std.mem.eql(u8, name, "findLast"))
+        {
+            const opt = self.store.unionOf(&.{ elem, tymod.ID_UNDEFINED }) catch return tymod.ID_UNKNOWN;
+            return self.makeNullaryFn(opt);
+        }
+        // T[] returners.
+        if (std.mem.eql(u8, name, "slice") or std.mem.eql(u8, name, "concat") or
+            std.mem.eql(u8, name, "filter") or std.mem.eql(u8, name, "reverse") or
+            std.mem.eql(u8, name, "toSorted") or std.mem.eql(u8, name, "toReversed") or
+            std.mem.eql(u8, name, "splice"))
+        {
+            const arr_ty = self.store.arrayOf(elem) catch return tymod.ID_UNKNOWN;
+            return self.makeNullaryFn(arr_ty);
+        }
+        // boolean returners.
+        if (std.mem.eql(u8, name, "includes") or std.mem.eql(u8, name, "every") or
+            std.mem.eql(u8, name, "some"))
+        {
+            return self.makeNullaryFn(tymod.ID_BOOLEAN);
+        }
+        // number returners.
+        if (std.mem.eql(u8, name, "push") or std.mem.eql(u8, name, "unshift") or
+            std.mem.eql(u8, name, "indexOf") or std.mem.eql(u8, name, "lastIndexOf") or
+            std.mem.eql(u8, name, "findIndex") or std.mem.eql(u8, name, "findLastIndex"))
+        {
+            return self.makeNullaryFn(tymod.ID_NUMBER);
+        }
+        // string returners.
+        if (std.mem.eql(u8, name, "join") or std.mem.eql(u8, name, "toString") or
+            std.mem.eql(u8, name, "toLocaleString"))
+        {
+            return self.makeNullaryFn(tymod.ID_STRING);
+        }
+        return tymod.ID_UNKNOWN;
+    }
+
+    fn makeNullaryFn(self: *Checker, ret: TypeId) TypeId {
+        const param_range = self.store.appendSignatureParams(&.{}) catch return tymod.ID_UNKNOWN;
+        const sig: tymod.Signature = .{
+            .params_start = param_range.start,
+            .params_end = param_range.end,
+            .return_type = ret,
+        };
+        return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
     }
 
     /// `this` inside a class method/getter/setter/constructor resolves

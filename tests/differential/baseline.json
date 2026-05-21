@@ -1364,7 +1364,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 14,
+        "fp": 16,
         "crash": 0
       }
     },
@@ -1443,7 +1443,7 @@
     "@typescript-eslint/no-unsafe-function-type": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1454,7 +1454,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2108,9 +2108,9 @@
     },
     "@typescript-eslint/no-invalid-void-type": {
       "runner": {
-        "fn": 7,
+        "fn": 3,
         "fp": 28,
-        "crash": 7
+        "crash": 3
       },
       "native": {
         "fn": 48,
@@ -2119,7 +2119,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 7,
+        "fn": 3,
         "fp": 28,
         "crash": 0
       }
@@ -2329,14 +2329,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 14,
-        "fp": 12,
+        "fp": 14,
         "crash": 0
       }
     },
@@ -2648,7 +2648,7 @@
     },
     "jsdoc/require-param": {
       "runner": {
-        "fn": 7,
+        "fn": 4,
         "fp": 3,
         "crash": 0
       },
@@ -2659,7 +2659,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 7,
+        "fn": 4,
         "fp": 3,
         "crash": 0
       }
@@ -21764,9 +21764,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 11060,
-    "runnerCasesPerSec": 8435,
-    "nativeCasesPerSec": 69893,
+    "totalElapsedMs": 10696,
+    "runnerCasesPerSec": 8701,
+    "nativeCasesPerSec": 73353,
     "totalCases": 73100
   }
 }

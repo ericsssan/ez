@@ -42,7 +42,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     var callee = ctx.nodeData(node).lhs;
     if (callee == .none) return;
-    while (ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
+    while (ctx.nodeTag(callee) == .grouping_expr or
+        ctx.nodeTag(callee) == .ts_instantiation_expr) callee = ctx.nodeData(callee).lhs;
     const cb_tag = ctx.nodeTag(callee);
     var object: NodeIndex = .none;
     if (cb_tag == .member_expr or cb_tag == .optional_member_expr) {

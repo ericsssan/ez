@@ -4106,6 +4106,15 @@ pub const Parser = struct {
             const binding_tag = self.node_tags_ptr[binding.toInt()];
             if (binding_tag == .identifier) {
                 self.node_data_ptr[binding.toInt()].rhs = type_annotation;
+                // Patch parents[type_annotation] = binding so the chain
+                // identifier ← type_annotation ← typeref reaches the
+                // surrounding declarator/fn.  addNode set the original
+                // parent (often NONE for fresh annotation), but we
+                // mutate after the fact.
+                const ann_idx = type_annotation.toInt();
+                if (ann_idx < self.parents_buf.len) {
+                    self.parents_buf[ann_idx] = @intCast(binding.toInt());
+                }
             }
         }
 
@@ -5883,6 +5892,14 @@ pub const Parser = struct {
                 // through its typeAnnotation. Update end_tok so rules calling
                 // sourceCode.getText(param) get `name: Type`, not just `name`.
                 self.node_end_toks[binding.toInt()] = if (self.tok_i > 0) @intCast(self.tok_i - 1) else 0;
+                // Patch the parent index so the type annotation node
+                // points back to the binding identifier — addNode set
+                // the original parent (NONE for a fresh ann) and we're
+                // mutating after the fact.
+                const ann_idx = param_type_annotation.toInt();
+                if (ann_idx < self.parents_buf.len) {
+                    self.parents_buf[ann_idx] = @intCast(binding.toInt());
+                }
             }
             // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).
             if (is_optional_ts) {

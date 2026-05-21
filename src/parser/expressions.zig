@@ -6114,6 +6114,11 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
                 // through its typeAnnotation; rules call sourceCode.getText(param)
                 // and expect `name: Type`, not just `name`.
                 p.node_end_toks[node.toInt()] = if (p.tok_i > 0) @intCast(p.tok_i - 1) else 0;
+                // Patch parents[type_ann] = node so the parent chain
+                // reaches the binding identifier (addNode's initial
+                // setChildParents ran before this mutation).
+                const ann_idx = type_ann.toInt();
+                if (ann_idx < p.parents_buf.len) p.parents_buf[ann_idx] = @intCast(node.toInt());
             }
         }
         // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).
