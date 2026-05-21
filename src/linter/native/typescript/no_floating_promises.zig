@@ -168,8 +168,6 @@ fn returnsPromise(e: NodeIndex, ctx: *const LintContext) bool {
             return false;
         },
         .new_expr => return calleeIsPromiseConstructor(e, ctx),
-        // Tagged template `tag\`x\`` is a function call with the tag
-        // as callee — if the tag returns Promise, the template floats.
         .tagged_template => {
             const callee = unwrap(ctx.nodeData(e).lhs, ctx);
             return calleeNodeReturnsPromise(callee, ctx);
@@ -202,21 +200,19 @@ fn calleeNodeReturnsPromise(callee: NodeIndex, ctx: *const LintContext) bool {
             return returnTypeIsPromise(ad.return_type, ctx);
         },
         .identifier => {
-            // Resolve through declared annotation: `const tag: (...) => Promise<...>`
             if (ctx.typeNodeIsPromise(callee)) return true;
-            // Or via the symbol's declaration.
             const sym = symbolForIdent(callee, ctx) orelse return false;
             const decl = ctx.semantic.symbols.getDeclNode(sym);
             if (decl == .none) return false;
-            // Variable declared with a function-type annotation: scan
-            // the binding's annotation for `(...) => Promise<...>`.
             if (ctx.nodeTag(decl) == .identifier) {
                 const bd = ctx.nodeData(decl);
                 if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
                     const ty_node = ctx.nodeData(bd.rhs).lhs;
                     if (ty_node != .none and ctx.nodeTag(ty_node) == .ts_function_type) {
+                        // ts_function_type stores its return type in
+                        // FnData.body (the parser reuses the field).
                         const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty_node).lhs));
-                        return returnTypeIsPromise(fd.return_type, ctx);
+                        return fnTypeReturnIsPromise(fd.body, ctx);
                     }
                 }
             }
@@ -230,6 +226,17 @@ fn returnTypeIsPromise(annotation: NodeIndex, ctx: *const LintContext) bool {
     if (annotation == .none) return false;
     if (ctx.nodeTag(annotation) != .ts_type_annotation) return false;
     const ty = ctx.nodeData(annotation).lhs;
+    return tsTypeIsPromise(ty, ctx);
+}
+
+/// For ts_function_type (`(...) => Promise<X>`), the return type node
+/// is stored directly (NOT wrapped in ts_type_annotation, since the
+/// `=>` syntax doesn't need a colon).  Check directly.
+fn fnTypeReturnIsPromise(ty: NodeIndex, ctx: *const LintContext) bool {
+    return tsTypeIsPromise(ty, ctx);
+}
+
+fn tsTypeIsPromise(ty: NodeIndex, ctx: *const LintContext) bool {
     if (ty == .none) return false;
     if (ctx.nodeTag(ty) != .ts_type_reference) return false;
     return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ty)), "Promise");
