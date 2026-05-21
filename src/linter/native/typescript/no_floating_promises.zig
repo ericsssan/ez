@@ -382,6 +382,27 @@ fn tsTypeIsArrayOfPromiseArray(ty: NodeIndex, ctx: *const LintContext) bool {
             if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
                 return typeRefFirstArgIsPromiseArray(ty, ctx);
             }
+            // Resolve type aliases / type parameters one hop.
+            const tree = ctx.ast;
+            const total: u32 = @intCast(tree.nodes.len);
+            var i: u32 = 0;
+            while (i < total) : (i += 1) {
+                const ni: NodeIndex = @enumFromInt(i);
+                const ntag = tree.nodeTag(ni);
+                if (ntag == .ts_type_alias_decl) {
+                    const dd = tree.nodeData(ni);
+                    const ad = tree.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+                    if (!std.mem.eql(u8, tree.tokenText(ad.name), name)) continue;
+                    return tsTypeIsArrayOfPromiseArray(ad.type_node, ctx);
+                }
+                if (ntag == .ts_type_parameter) {
+                    const tp_name = tree.tokenText(tree.nodeMainToken(ni));
+                    if (!std.mem.eql(u8, tp_name, name)) continue;
+                    const dd = tree.nodeData(ni);
+                    if (dd.lhs == .none) continue;
+                    return tsTypeIsArrayOfPromiseArray(dd.lhs, ctx);
+                }
+            }
             return false;
         },
         else => return false,
@@ -1242,6 +1263,12 @@ fn memberExprDeclaredTypeIsPromise(m: NodeIndex, ctx: *const LintContext) bool {
     if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
         const ty = ctx.nodeData(bd.rhs).lhs;
         if (propertyTypeIsPromise(ty, prop_name, ctx)) return true;
+        // Computed numeric index on an array-typed object: `arr?.[0]`
+        // on `Array<T | Promise<T>>` yields the element type.
+        const mtag = ctx.nodeTag(m);
+        if (mtag == .computed_member_expr or mtag == .optional_computed_member_expr) {
+            if (tsTypeIsPromiseArray(ty, ctx)) return true;
+        }
     }
     // Object literal initializer: `const obj = { foo: Promise.resolve() };`
     // The declarator's binding identifier has its init wired into the
