@@ -119,11 +119,41 @@ fn checkDeclarator(node: NodeIndex, ctx: *const LintContext) void {
         return;
     }
     if (lhs_tag != .identifier) return;
+    // `const bar = this` in a non-method function: `this` is implicit
+    // any.  TSe fires `anyAssignmentThis`.
+    if (initIsImplicitThis(data.rhs, node, ctx)) {
+        ctx.reportWithMessageId(node, "anyAssignmentThis");
+        return;
+    }
     const binding_data = ctx.nodeData(lhs);
     if (binding_data.rhs == .none) return;
     if (ctx.nodeTag(binding_data.rhs) != .ts_type_annotation) return;
     const lhs_ty_node = ctx.nodeData(binding_data.rhs).lhs;
     reportIfUnsafe(node, lhs_ty_node, data.rhs, ctx);
+}
+
+/// Detect `= this` initializers where the enclosing function makes
+/// `this` implicit-any.  Mirrors no-unsafe-return's heuristic.
+fn initIsImplicitThis(init: NodeIndex, decl_node: NodeIndex, ctx: *const LintContext) bool {
+    const r = unwrapGroup(init, ctx);
+    if (ctx.nodeTag(r) != .this_expr) return false;
+    // Walk up to find the enclosing function-like.
+    var p = ctx.parentOf(decl_node);
+    while (p != .none) : (p = ctx.parentOf(p)) {
+        switch (ctx.nodeTag(p)) {
+            .arrow_fn, .async_arrow_fn => {
+                // Arrow inherits parent `this`; keep walking.
+                continue;
+            },
+            .method_def, .computed_method_def,
+            .getter_def, .setter_def, .computed_getter_def, .computed_setter_def,
+            .constructor_def => return false,
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => return true,
+            else => continue,
+        }
+    }
+    return false;
 }
 
 fn checkAssign(node: NodeIndex, ctx: *const LintContext) void {
@@ -275,9 +305,61 @@ fn reportIfUnsafe(
     // `unknown` (and unknown-flavored composites) are the safe sink for
     // any-typed values; typescript-eslint suppresses these.
     if (ctx.typeIdContainsUnknown(lhs_ty)) return;
+    // Object-literal initializer against a structural LHS: walk each
+    // property value and report at the position of any any-typed value.
+    // TSe fires anyAssignment per offending property, NOT on the whole
+    // declarator.
+    const rhs_u = unwrapGroup(rhs, ctx);
+    if (ctx.nodeTag(rhs_u) == .object_literal) {
+        if (reportObjectLiteralProperties(rhs_u, lhs_ty, ctx)) return;
+    }
     if (!ctx.typeNodeContainsAny(rhs)) return;
     if (rhsIsExplicitNonAnyCast(rhs, ctx)) return;
     ctx.reportWithMessageId(decl_node, "anyAssignment");
+}
+
+/// For `const foo: { a: T } = { a: <any-expr> }`: check each property
+/// value against the corresponding declared property type and report
+/// anyAssignment at the value's position.  Returns true when at least
+/// one any-typed value was reported (caller skips the whole-declarator
+/// fallback).
+fn reportObjectLiteralProperties(lit: NodeIndex, lhs_ty: tymod.TypeId, ctx: *const LintContext) bool {
+    const data = ctx.nodeData(lit);
+    if (data.lhs == .none or data.rhs == .none) return false;
+    const r_start = @intFromEnum(data.lhs);
+    const r_end = @intFromEnum(data.rhs);
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    if (r_start > r_end or r_end > ext_len) return false;
+    var fired = false;
+    for (ctx.ast.extra_data[r_start..r_end]) |raw| {
+        const prop: NodeIndex = @enumFromInt(raw);
+        const ptag = ctx.nodeTag(prop);
+        const pd = ctx.nodeData(prop);
+        var name: []const u8 = "";
+        var value: NodeIndex = .none;
+        switch (ptag) {
+            .shorthand_property => {
+                value = pd.lhs;
+                if (value != .none and ctx.nodeTag(value) == .identifier) {
+                    name = ctx.tokenText(ctx.nodeMainToken(value));
+                }
+            },
+            .property => {
+                value = pd.rhs;
+                if (pd.lhs != .none) name = ctx.tokenText(ctx.nodeMainToken(pd.lhs));
+            },
+            else => continue,
+        }
+        if (value == .none or name.len == 0) continue;
+        const slot_ty = ctx.typeIdObjectPropertyType(lhs_ty, name);
+        if (ctx.typeIdIsAny(slot_ty)) continue; // declared `any` slot
+        if (ctx.typeIdContainsUnknown(slot_ty)) continue;
+        if (!ctx.typeNodeContainsAny(value)) continue;
+        if (rhsIsExplicitNonAnyCast(value, ctx)) continue;
+        ctx.reportWithMessageId(value, "anyAssignment");
+        fired = true;
+    }
+    return fired;
 }
 
 fn rhsIsExplicitNonAnyCast(rhs: NodeIndex, ctx: *const LintContext) bool {

@@ -513,7 +513,9 @@ pub const Checker = struct {
             switch (tag) {
                 .ts_type_alias_decl => {
                     const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(data.lhs));
-                    try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(ad.name), {});
+                    const name = self.ast_ref.tokenText(ad.name);
+                    try self.known_type_names.put(self.gpa, name, {});
+                    try self.type_decl_nodes.put(self.gpa, name, ni);
                 },
                 .ts_interface_decl => {
                     const id = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
@@ -682,6 +684,14 @@ pub const Checker = struct {
         const result = switch (self.ast_ref.nodeTag(decl)) {
             .ts_interface_decl => self.buildInterfaceType(decl),
             .class_decl => self.buildClassInstanceType(decl),
+            .ts_type_alias_decl => blk: {
+                // `type Foo = { ... }` / `type Foo = X & Y` — resolve the
+                // alias body to its TypeId.  Recursive aliases bottom out
+                // at the sentinel `ID_UNKNOWN` from the cache above.
+                const dd = self.ast_ref.nodeData(decl);
+                const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+                break :blk self.resolveTypeNode(ad.type_node);
+            },
             else => return null,
         };
         self.declared_type_cache.put(self.gpa, name, result) catch {};
