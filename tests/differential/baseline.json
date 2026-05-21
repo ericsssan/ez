@@ -758,7 +758,7 @@
     },
     "@typescript-eslint/no-unsafe-call": {
       "runner": {
-        "fn": 20,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -812,7 +812,7 @@
     },
     "@typescript-eslint/no-unsafe-member-access": {
       "runner": {
-        "fn": 21,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1064,7 +1064,7 @@
     },
     "@typescript-eslint/no-unsafe-return": {
       "runner": {
-        "fn": 21,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1460,7 +1460,7 @@
     },
     "@typescript-eslint/no-floating-promises": {
       "runner": {
-        "fn": 144,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1604,7 +1604,7 @@
     },
     "@typescript-eslint/no-unsafe-argument": {
       "runner": {
-        "fn": 20,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1730,7 +1730,7 @@
     },
     "@typescript-eslint/no-unsafe-assignment": {
       "runner": {
-        "fn": 34,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2108,7 +2108,7 @@
     },
     "@typescript-eslint/await-thenable": {
       "runner": {
-        "fn": 22,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -21638,9 +21638,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10785,
-    "runnerCasesPerSec": 8682,
-    "nativeCasesPerSec": 72650,
-    "totalCases": 73667
+    "totalElapsedMs": 10952,
+    "runnerCasesPerSec": 8526,
+    "nativeCasesPerSec": 67337,
+    "totalCases": 73103
   }
 }
