@@ -48,14 +48,41 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const expr = ctx.nodeData(node).lhs;
     if (expr == .none) return;
     if (!isFloatingPromise(expr, ctx)) return;
-    // Top-level `await Promise.X(...)` is parsed without an await_expr
-    // wrapper in some script-mode contexts (the parser may swallow the
-    // contextual `await` keyword).  Guard against this by checking for
-    // a literal `await ` prefix in the source text before the
-    // statement's main_token.  Matches the await operator semantics
-    // without requiring AST shape compliance.
     if (precededByAwaitKeyword(node, ctx)) return;
-    ctx.reportWithMessageId(node, "floating");
+    // ignoreIIFE: suppress when the statement is an immediately-invoked
+    // function expression — `(async () => {...})()` patterns.
+    if (optionIgnoreIIFE(ctx) and isImmediatelyInvokedFn(expr, ctx)) return;
+    const ignore_void = optionIgnoreVoid(ctx);
+    const msg = if (ignore_void) "floatingVoid" else "floating";
+    ctx.reportWithMessageId(node, msg);
+}
+
+fn optionIgnoreVoid(ctx: *const LintContext) bool {
+    const opts = ctx.rule_options orelse return true;
+    if (opts.* != .object) return true;
+    const v = opts.object.get("ignoreVoid") orelse return true;
+    if (v != .bool) return true;
+    return v.bool;
+}
+
+fn optionIgnoreIIFE(ctx: *const LintContext) bool {
+    const opts = ctx.rule_options orelse return false;
+    if (opts.* != .object) return false;
+    const v = opts.object.get("ignoreIIFE") orelse return false;
+    if (v != .bool) return false;
+    return v.bool;
+}
+
+fn isImmediatelyInvokedFn(expr: NodeIndex, ctx: *const LintContext) bool {
+    const e = unwrap(expr, ctx);
+    const tag = ctx.nodeTag(e);
+    if (tag != .call_expr and tag != .optional_call_expr) return false;
+    const callee = unwrap(ctx.nodeData(e).lhs, ctx);
+    return switch (ctx.nodeTag(callee)) {
+        .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+        .arrow_fn, .async_arrow_fn => true,
+        else => false,
+    };
 }
 
 fn precededByAwaitKeyword(stmt: NodeIndex, ctx: *const LintContext) bool {
@@ -132,20 +159,80 @@ fn returnsPromise(e: NodeIndex, ctx: *const LintContext) bool {
     const tag = ctx.nodeTag(e);
     switch (tag) {
         .call_expr, .optional_call_expr => {
-            // 1. Promise.X(...) factory calls.
             if (isPromiseFactoryCall(e, ctx)) return true;
-            // 2. .then() / .catch() / .finally() return Promises.
             if (isPromiseChainMethod(e, ctx)) return true;
-            // 3. Callee is declared to return Promise<T>.
             if (calleeDeclaredReturnIsPromise(e, ctx)) return true;
+            // The checker may have resolved the call to a function_t
+            // whose return is Promise<T>.  Honor that.
+            if (ctx.typeNodeIsPromise(e)) return true;
             return false;
         },
         .new_expr => return calleeIsPromiseConstructor(e, ctx),
+        // Tagged template `tag\`x\`` is a function call with the tag
+        // as callee — if the tag returns Promise, the template floats.
+        .tagged_template => {
+            const callee = unwrap(ctx.nodeData(e).lhs, ctx);
+            return calleeNodeReturnsPromise(callee, ctx);
+        },
         .identifier => return ctx.typeNodeIsPromise(e),
         .member_expr, .computed_member_expr,
         .optional_member_expr, .optional_computed_member_expr => return ctx.typeNodeIsPromise(e),
         else => return ctx.typeNodeIsPromise(e),
     }
+}
+
+/// Used by tagged_template / IIFE inspection — given a callee node,
+/// determine whether calling it produces a Promise.  Handles inline
+/// fn/arrow expressions (async ones automatically return Promise) and
+/// identifier references resolved to fn declarations.
+fn calleeNodeReturnsPromise(callee: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(callee);
+    switch (tag) {
+        // Inline async function/arrow always returns Promise.
+        .async_fn_expr, .async_generator_fn_expr, .async_arrow_fn => return true,
+        // Inline non-async function/arrow — return type annotation may say Promise.
+        .fn_expr, .generator_fn_expr => {
+            const data = ctx.nodeData(callee);
+            const fd = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
+            return returnTypeIsPromise(fd.return_type, ctx);
+        },
+        .arrow_fn => {
+            const data = ctx.nodeData(callee);
+            const ad = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
+            return returnTypeIsPromise(ad.return_type, ctx);
+        },
+        .identifier => {
+            // Resolve through declared annotation: `const tag: (...) => Promise<...>`
+            if (ctx.typeNodeIsPromise(callee)) return true;
+            // Or via the symbol's declaration.
+            const sym = symbolForIdent(callee, ctx) orelse return false;
+            const decl = ctx.semantic.symbols.getDeclNode(sym);
+            if (decl == .none) return false;
+            // Variable declared with a function-type annotation: scan
+            // the binding's annotation for `(...) => Promise<...>`.
+            if (ctx.nodeTag(decl) == .identifier) {
+                const bd = ctx.nodeData(decl);
+                if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
+                    const ty_node = ctx.nodeData(bd.rhs).lhs;
+                    if (ty_node != .none and ctx.nodeTag(ty_node) == .ts_function_type) {
+                        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty_node).lhs));
+                        return returnTypeIsPromise(fd.return_type, ctx);
+                    }
+                }
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
+fn returnTypeIsPromise(annotation: NodeIndex, ctx: *const LintContext) bool {
+    if (annotation == .none) return false;
+    if (ctx.nodeTag(annotation) != .ts_type_annotation) return false;
+    const ty = ctx.nodeData(annotation).lhs;
+    if (ty == .none) return false;
+    if (ctx.nodeTag(ty) != .ts_type_reference) return false;
+    return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ty)), "Promise");
 }
 
 /// `Promise.resolve(...)`, `Promise.reject(...)`, `Promise.all(...)`, etc.
@@ -189,6 +276,21 @@ fn isPromiseChainMethod(call: NodeIndex, ctx: *const LintContext) bool {
 
 fn calleeDeclaredReturnIsPromise(call: NodeIndex, ctx: *const LintContext) bool {
     const callee = unwrap(ctx.nodeData(call).lhs, ctx);
+    // Inline async fn/arrow IIFE: `(async () => ...)()` etc.
+    switch (ctx.nodeTag(callee)) {
+        .async_fn_expr, .async_generator_fn_expr, .async_arrow_fn => return true,
+        .fn_expr, .generator_fn_expr => {
+            const data = ctx.nodeData(callee);
+            const fd = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
+            return returnTypeIsPromise(fd.return_type, ctx);
+        },
+        .arrow_fn => {
+            const data = ctx.nodeData(callee);
+            const ad = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
+            return returnTypeIsPromise(ad.return_type, ctx);
+        },
+        else => {},
+    }
     if (ctx.nodeTag(callee) != .identifier) return false;
     const sym = symbolForIdent(callee, ctx) orelse return false;
     const decl = ctx.semantic.symbols.getDeclNode(sym);
@@ -238,10 +340,28 @@ fn chainEndsWithRejectionHandler(e: NodeIndex, ctx: *const LintContext) bool {
     if (md.rhs == .none) return false;
     const name = ctx.tokenText(ctx.nodeMainToken(md.rhs));
     const args = callArgs(e, ctx);
-    if (std.mem.eql(u8, name, "catch") and args.len >= 1) return true;
-    if (std.mem.eql(u8, name, "finally") and args.len >= 1) return true;
-    if (std.mem.eql(u8, name, "then") and args.len >= 2) return true;
+    // .catch() / .finally() with NO arg is a useless rejection handler
+    // — TSe fires `floatingUselessRejectionHandler*` for this.  We don't
+    // distinguish the messageId but we DO want to fire, so don't
+    // suppress when args.len == 0.
+    if (std.mem.eql(u8, name, "catch") and args.len >= 1 and !isUselessHandler(args, ctx)) return true;
+    if (std.mem.eql(u8, name, "finally") and args.len >= 1 and !isUselessHandler(args, ctx)) return true;
+    if (std.mem.eql(u8, name, "then") and args.len >= 2 and !isUselessHandler(args[1..], ctx)) return true;
     return false;
+}
+
+/// A rejection handler that's `undefined`, `null`, or another non-function
+/// literal is treated as useless by TSe (`floatingUselessRejectionHandler`).
+/// We conservatively check only for `null` / `undefined` literals — other
+/// "useless" cases (variable not a function) require type info to detect.
+fn isUselessHandler(handler_args: []const u32, ctx: *const LintContext) bool {
+    if (handler_args.len == 0) return true;
+    const h: NodeIndex = @enumFromInt(handler_args[0]);
+    switch (ctx.nodeTag(h)) {
+        .null_literal => return true,
+        .identifier => return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(h)), "undefined"),
+        else => return false,
+    }
 }
 
 fn callArgs(call: NodeIndex, ctx: *const LintContext) []const u32 {
