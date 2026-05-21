@@ -1009,6 +1009,16 @@ if (fs.existsSync(ESLINT_ROOT)) {
       return ruleName;
     })();
     const _ruleHasNativeImpl = _nativeRuleSet.has(_nativeRuleName);
+    // Type-aware @typescript-eslint rules require TS's type checker
+    // (projectService) to fire correctly.  The JS runner doesn't have
+    // that available in this harness, so it produces meaningless FNs
+    // that pollute the rule-level scoreboard and the global runner
+    // total.  Skip the JS-runner pass for these rules entirely once a
+    // native implementation is present — native runs against the same
+    // oracle.
+    const _ruleIsTypeAware = ruleName.startsWith("@typescript-eslint/") &&
+      TS_AUTOROUTE_ALLOWLIST.has(ruleName.slice("@typescript-eslint/".length)) &&
+      _ruleHasNativeImpl;
     const nativeRuleConfig = nativeAvailable
       ? buildNativeConfig({ rules: { [_nativeRuleName]: "warn" } })
       : null;
@@ -1070,9 +1080,15 @@ if (fs.existsSync(ESLINT_ROOT)) {
       // --native-only: skip every JS-runner code path (runner result, A/B
       // ESLint timing, runner stats accumulation, runner fix verification).
       // Native block below still runs and is scored against the oracle.
-      const _rt0 = nativeOnly ? 0 : performance.now();
-      const runnerResult = nativeOnly ? [] : runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
-      const _rtDelta = nativeOnly ? 0 : (performance.now() - _rt0);
+      //
+      // Type-aware rules (no-unsafe-*, no-floating-promises, await-thenable)
+      // also skip the JS runner — the runner can't access TS's type
+      // checker so its scores reflect missing type-info rather than rule
+      // correctness.  Native runs against the same oracle.
+      const _skipRunner = nativeOnly || _ruleIsTypeAware;
+      const _rt0 = _skipRunner ? 0 : performance.now();
+      const runnerResult = _skipRunner ? [] : runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
+      const _rtDelta = _skipRunner ? 0 : (performance.now() - _rt0);
       runnerOnlyMs += _rtDelta;
       _ruleRunnerMs += _rtDelta;
 
@@ -1114,7 +1130,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const espreeKeys = new Set(espreeResult.map(nativeOnly ? _mkKeyLoc : _mkKey));
       let runnerNormal = [];
 
-      if (!nativeOnly) {
+      if (!_skipRunner) {
         if (runnerResult === null) { crash++; continue; }
 
         // Separate crashes from normal results
@@ -1462,6 +1478,10 @@ if (fs.existsSync(ESLINT_ROOT)) {
         const hybridStr = `hybrid ${hybridPass}/${hybridTotal}${hybridDetail ? ` (${hybridDetail})` : ""}`;
         if (nativeOnly) {
           console.log(`  ${status} ${ruleName}: ${nativeStr}`);
+        } else if (_ruleIsTypeAware) {
+          // Type-aware rules skip the JS runner; show native only and
+          // tag the rule so it's clear runner stats weren't computed.
+          console.log(`  ${status} ${ruleName} [type-aware]: ${nativeStr}`);
         } else {
           console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}  ${hybridStr}`);
         }
