@@ -367,6 +367,10 @@ fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.Symb
 fn astReturnsPromiseAny(rhs: NodeIndex, ctx: *const LintContext) bool {
     const tag = ctx.nodeTag(rhs);
     switch (tag) {
+        .identifier => {
+            // `const v: Alias<X>; return v;` where Alias extends Promise<any>.
+            return identifierTypeIsPromiseAny(rhs, ctx);
+        },
         .ts_as_expr, .ts_type_assertion => {
             const data = ctx.nodeData(rhs);
             const ty_node = if (tag == .ts_as_expr) data.rhs else data.lhs;
@@ -423,19 +427,91 @@ fn tsTypeIsPromiseAny(ty: NodeIndex, ctx: *const LintContext) bool {
         },
         .ts_type_reference => {
             const name = ctx.tokenText(ctx.nodeMainToken(ty));
-            if (!std.mem.eql(u8, name, "Promise")) return false;
-            const data = ctx.nodeData(ty);
-            if (data.rhs == .none) return false;
-            const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
-            if (range.end <= range.start) return false;
-            const arg_idx = ctx.ast.extra_data[range.start];
-            const arg: NodeIndex = @enumFromInt(arg_idx);
-            if (ctx.resolveTypeAnnotationNode(arg) == tymod.ID_ANY) return true;
-            // Nested Promise<Promise<any>> — recurse.
-            return tsTypeIsPromiseAny(arg, ctx);
+            if (std.mem.eql(u8, name, "Promise")) {
+                const data = ctx.nodeData(ty);
+                if (data.rhs == .none) return false;
+                const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
+                if (range.end <= range.start) return false;
+                const arg_idx = ctx.ast.extra_data[range.start];
+                const arg: NodeIndex = @enumFromInt(arg_idx);
+                if (ctx.resolveTypeAnnotationNode(arg) == tymod.ID_ANY) return true;
+                // Nested Promise<Promise<any>> — recurse.
+                return tsTypeIsPromiseAny(arg, ctx);
+            }
+            // Interface whose `extends` chain (one hop) reaches Promise<any>.
+            return interfaceExtendsPromiseAny(name, ctx);
         },
         else => return false,
     }
+}
+
+/// Walk ts_interface_decl nodes for a name and check whether any
+/// `extends` clause names `Promise<any>` (literally — we approximate
+/// by checking the first type-arg).  One hop only.
+fn identifierTypeIsPromiseAny(ident: NodeIndex, ctx: *const LintContext) bool {
+    const refs = &ctx.semantic.references;
+    const total = refs.count();
+    var sym: ?parser.symbol.SymbolId = null;
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const rid = parser.reference.ReferenceId.fromInt(i);
+        if (refs.getNode(rid) != ident) continue;
+        if (!refs.isResolved(rid)) return false;
+        sym = refs.getSymbol(rid);
+        break;
+    }
+    const s = sym orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(s);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    const ty = ctx.nodeData(bd.rhs).lhs;
+    return tsTypeIsPromiseAny(ty, ctx);
+}
+
+fn interfaceExtendsPromiseAny(name: []const u8, ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .ts_interface_decl) continue;
+        const dd = tree.nodeData(ni);
+        const id = tree.extraData(ast.InterfaceData, @intFromEnum(dd.lhs));
+        if (!std.mem.eql(u8, tree.tokenText(id.name), name)) continue;
+        if (id.extends_end <= id.extends_start) return false;
+        const ext_len: u32 = @intCast(tree.extra_data.len);
+        if (id.extends_end > ext_len) return false;
+        // InterfaceData stores extends entries as token indices for the
+        // bare names — we need the type-reference nodes.  Walk all
+        // children: find ts_type_reference nodes whose main_token name
+        // matches `Promise` and whose first arg is any.  As a backstop,
+        // walk every ts_type_reference in the file whose parent is
+        // *this* interface decl's heritage span.
+        var j: u32 = 0;
+        while (j < total) : (j += 1) {
+            const nj: NodeIndex = @enumFromInt(j);
+            if (tree.nodeTag(nj) != .ts_type_reference) continue;
+            // Is this reference inside the interface declaration's heritage?
+            const p = ctx.parentOf(nj);
+            if (p == .none) continue;
+            // Walk up: extends references typically live as children of
+            // the ts_interface_decl directly.
+            if (p != ni) continue;
+            const ref_name = tree.tokenText(tree.nodeMainToken(nj));
+            if (!std.mem.eql(u8, ref_name, "Promise")) continue;
+            const data = tree.nodeData(nj);
+            if (data.rhs == .none) continue;
+            const range = tree.extraData(ast.SubRange, @intFromEnum(data.rhs));
+            if (range.end <= range.start) continue;
+            const arg_idx = tree.extra_data[range.start];
+            const arg: NodeIndex = @enumFromInt(arg_idx);
+            if (ctx.resolveTypeAnnotationNode(arg) == tymod.ID_ANY) return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 /// Detect `this` in the returned value: direct `return this;` or an
