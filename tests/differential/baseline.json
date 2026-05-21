@@ -1908,6 +1908,24 @@
         "crash": 0
       }
     },
+    "@typescript-eslint/require-await": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 7,
+        "crash": 0
+      }
+    },
     "@typescript-eslint/prefer-enum-initializers": {
       "runner": {
         "fn": 0,
@@ -11857,7 +11875,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 16,
         "fp": 0,
         "crash": 0
       }
@@ -21692,9 +21710,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10924,
-    "runnerCasesPerSec": 8506,
-    "nativeCasesPerSec": 67528,
+    "totalElapsedMs": 10622,
+    "runnerCasesPerSec": 8752,
+    "nativeCasesPerSec": 70250,
     "totalCases": 73102
   }
 }
