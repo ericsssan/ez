@@ -1008,6 +1008,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "prefer-reduce-type-parameter",
       "no-unnecessary-boolean-literal-compare",
       "prefer-find",
+      "prefer-return-this-type",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
