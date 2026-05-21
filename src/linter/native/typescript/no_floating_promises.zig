@@ -47,16 +47,234 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!ctx.hasTypeChecker()) return;
     const expr = ctx.nodeData(node).lhs;
     if (expr == .none) return;
+    const ignore_void = optionIgnoreVoid(ctx);
+    // Promise array: a separate messageId — fires even with `await`
+    // (await of array doesn't actually await elements) and even with
+    // `void` when ignoreVoid is true (the result is still an array).
+    if (isFloatingPromiseArray(expr, ctx)) {
+        if (optionIgnoreIIFE(ctx) and isImmediatelyInvokedFn(expr, ctx)) return;
+        // `void X` with ignoreVoid:true suppresses regular floating but
+        // arrays are explicitly checked even when voided in ignoreVoid:false.
+        // TSe always fires PromiseArray (no `await`/`void` suppression).
+        const msg_arr = if (ignore_void) "floatingPromiseArrayVoid" else "floatingPromiseArray";
+        ctx.reportWithMessageId(node, msg_arr);
+        return;
+    }
     if (!isFloatingPromise(expr, ctx)) return;
     if (precededByAwaitKeyword(node, ctx)) return;
     if (optionIgnoreIIFE(ctx) and isImmediatelyInvokedFn(expr, ctx)) return;
-    const ignore_void = optionIgnoreVoid(ctx);
     const useless = hasUselessRejectionHandler(expr, ctx);
     const msg = if (useless)
         (if (ignore_void) "floatingUselessRejectionHandlerVoid" else "floatingUselessRejectionHandler")
     else
         (if (ignore_void) "floatingVoid" else "floating");
     ctx.reportWithMessageId(node, msg);
+}
+
+/// True when expr evaluates to an array-of-promise (or promise[]).
+fn isFloatingPromiseArray(expr: NodeIndex, ctx: *const LintContext) bool {
+    var e = unwrap(expr, ctx);
+    // `await arr` peels through (await of array does NOT await elements).
+    // `void arr` peels only when ignoreVoid:false — same semantics as
+    // the regular floating check.
+    const ignore_void = optionIgnoreVoid(ctx);
+    while (true) {
+        const t = ctx.nodeTag(e);
+        if (t == .await_expr) {
+            e = unwrap(ctx.nodeData(e).lhs, ctx);
+            continue;
+        }
+        if (t == .void_expr) {
+            if (ignore_void) return false;
+            e = unwrap(ctx.nodeData(e).lhs, ctx);
+            continue;
+        }
+        break;
+    }
+    return exprProducesPromiseArray(e, ctx);
+}
+
+fn exprProducesPromiseArray(e: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(e);
+    switch (tag) {
+        .array_literal => {
+            // Any element a Promise → array of promises.
+            const data = ctx.nodeData(e);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const en = @intFromEnum(data.rhs);
+            if (s > en or en > ext_len) return false;
+            for (ctx.ast.extra_data[s..en]) |raw| {
+                const el: NodeIndex = @enumFromInt(raw);
+                if (returnsPromise(el, ctx)) return true;
+            }
+            return false;
+        },
+        .call_expr, .optional_call_expr => {
+            // `X.map(fn)` where fn is async/promise-returning.
+            const callee = unwrap(ctx.nodeData(e).lhs, ctx);
+            const ctag = ctx.nodeTag(callee);
+            if (ctag == .member_expr or ctag == .optional_member_expr) {
+                const md = ctx.nodeData(callee);
+                if (md.rhs != .none) {
+                    const name = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+                    if (std.mem.eql(u8, name, "map")) {
+                        const args = callArgs(e, ctx);
+                        if (args.len >= 1) {
+                            const cb: NodeIndex = @enumFromInt(args[0]);
+                            if (calleeNodeReturnsPromise(cb, ctx)) return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        },
+        .identifier => return identifierDeclaredTypeIsPromiseArray(e, ctx),
+        .member_expr, .computed_member_expr,
+        .optional_member_expr, .optional_computed_member_expr => {
+            // `arr?.[0]` where `arr` is array-of-promise-array — element
+            // is itself array of promises.  Walk obj's declared annotation.
+            return memberExprDeclaredTypeIsPromiseArray(e, ctx);
+        },
+        else => return false,
+    }
+}
+
+fn identifierDeclaredTypeIsPromiseArray(ident: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    // Generic type parameter: function f<T extends Array<Promise<X>>>(a: T) — a is T.
+    if (ctx.nodeTag(decl) == .ts_type_parameter) {
+        return typeParameterConstraintIsPromiseArray(decl, ctx);
+    }
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none) return false;
+    if (ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    const ty = ctx.nodeData(bd.rhs).lhs;
+    return tsTypeIsPromiseArray(ty, ctx);
+}
+
+fn typeParameterConstraintIsPromiseArray(tp: NodeIndex, ctx: *const LintContext) bool {
+    // ts_type_parameter has constraint stored as a child; look at children.
+    // Walk node-data: in our parser, the constraint is typically in rhs.
+    const data = ctx.nodeData(tp);
+    if (data.rhs == .none) return false;
+    return tsTypeIsPromiseArray(data.rhs, ctx);
+}
+
+fn memberExprDeclaredTypeIsPromiseArray(m: NodeIndex, ctx: *const LintContext) bool {
+    const md = ctx.nodeData(m);
+    const obj = unwrap(md.lhs, ctx);
+    if (ctx.nodeTag(obj) != .identifier) return false;
+    const sym = symbolForIdent(obj, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+    const ty = ctx.nodeData(bd.rhs).lhs;
+    // For `arr?.[0]`, obj's type is something like Array<Array<Promise<X>>>.
+    // Walk one array level: the element type should itself be a promise-array.
+    return tsTypeIsArrayOfPromiseArray(ty, ctx);
+}
+
+/// True when ty is `Array<Promise<X>>` / `Promise<X>[]` / similar in
+/// any union/intersection member or alias body.
+fn tsTypeIsPromiseArray(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return tsTypeIsPromiseArray(ctx.nodeData(ty).lhs, ctx),
+        .ts_union_type, .ts_intersection_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (tsTypeIsPromiseArray(m, ctx)) return true;
+            }
+            return false;
+        },
+        .ts_array_type => {
+            // T[] — check element type T.
+            return tsTypeIsPromise(ctx.nodeData(ty).lhs, ctx);
+        },
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            // `Array<Promise<X>>` / `ReadonlyArray<Promise<X>>`.
+            if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+                return typeRefFirstArgIsPromise(ty, ctx);
+            }
+            // Resolve type aliases (one hop).
+            const tree = ctx.ast;
+            const total: u32 = @intCast(tree.nodes.len);
+            var i: u32 = 0;
+            while (i < total) : (i += 1) {
+                const ni: NodeIndex = @enumFromInt(i);
+                if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
+                const dd = tree.nodeData(ni);
+                if (dd.lhs == .none) continue;
+                const aname = tree.tokenText(tree.nodeMainToken(dd.lhs));
+                if (!std.mem.eql(u8, aname, name)) continue;
+                return tsTypeIsPromiseArray(dd.rhs, ctx);
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
+fn tsTypeIsArrayOfPromiseArray(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return tsTypeIsArrayOfPromiseArray(ctx.nodeData(ty).lhs, ctx),
+        .ts_union_type, .ts_intersection_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (tsTypeIsArrayOfPromiseArray(m, ctx)) return true;
+            }
+            return false;
+        },
+        .ts_array_type => return tsTypeIsPromiseArray(ctx.nodeData(ty).lhs, ctx),
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+                return typeRefFirstArgIsPromiseArray(ty, ctx);
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
+fn typeRefFirstArgIsPromise(ty: NodeIndex, ctx: *const LintContext) bool {
+    return firstTypeArg(ty, ctx, tsTypeIsPromise);
+}
+
+fn typeRefFirstArgIsPromiseArray(ty: NodeIndex, ctx: *const LintContext) bool {
+    return firstTypeArg(ty, ctx, tsTypeIsPromiseArray);
+}
+
+fn firstTypeArg(ty: NodeIndex, ctx: *const LintContext, check: *const fn (NodeIndex, *const LintContext) bool) bool {
+    // ts_type_reference layout: lhs = name node, rhs = extra index to
+    // SubRange of type args (or .none when no generics).
+    const data = ctx.nodeData(ty);
+    if (data.rhs == .none) return false;
+    const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
+    const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+    if (range.start > range.end or range.end > ext_len) return false;
+    const slice = ctx.ast.extra_data[range.start..range.end];
+    if (slice.len == 0) return false;
+    const arg: NodeIndex = @enumFromInt(slice[0]);
+    return check(arg, ctx);
 }
 
 /// True when the call-chain tail is a `.catch(handler)` / `.then(_, h)`
@@ -804,8 +1022,7 @@ fn memberExprDeclaredTypeIsPromise(m: NodeIndex, ctx: *const LintContext) bool {
     if (decl == .none) return false;
     if (ctx.nodeTag(decl) != .identifier) return false;
     const bd = ctx.nodeData(decl);
-    if (bd.rhs == .none) return false;
-    if (ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
+    if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
         const ty = ctx.nodeData(bd.rhs).lhs;
         if (propertyTypeIsPromise(ty, prop_name, ctx)) return true;
     }
