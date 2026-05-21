@@ -405,6 +405,17 @@ pub const LintContext = struct {
         return id.eq(tymod.ID_ANY);
     }
 
+    /// True when the type id is in {number, bigint, any, never,
+    /// number_literal, bigint_literal} — i.e. assignable to
+    /// `number | bigint` per TSe's `unaryMinus` predicate.
+    pub fn typeIdIsNumberLike(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return true;
+        if (id.eq(tymod.ID_NUMBER) or id.eq(tymod.ID_BIGINT) or
+            id.eq(tymod.ID_ANY) or id.eq(tymod.ID_NEVER)) return true;
+        const kind = c.store.get(id).kind;
+        return kind == .number_literal or kind == .bigint_literal;
+    }
+
     /// Is `src` assignable to `dst` per a TSe-flavored assignability
     /// approximation?  See `tymod.isAssignableTo` for the rules.
     pub fn typeIdAssignableTo(self: *const LintContext, src: tymod.TypeId, dst: tymod.TypeId) bool {
