@@ -686,10 +686,14 @@ pub const Checker = struct {
             .class_decl => self.buildClassInstanceType(decl),
             .ts_type_alias_decl => blk: {
                 // `type Foo = { ... }` / `type Foo = X & Y` — resolve the
-                // alias body to its TypeId.  Recursive aliases bottom out
-                // at the sentinel `ID_UNKNOWN` from the cache above.
+                // alias body to its TypeId.  ONLY resolve when the body
+                // is a plain ts_type_literal: recursive aliases bottom
+                // out at the ID_UNKNOWN sentinel which would pollute
+                // downstream "contains unknown" checks for any type
+                // that references the alias.
                 const dd = self.ast_ref.nodeData(decl);
                 const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+                if (self.ast_ref.nodeTag(ad.type_node) != .ts_type_literal) return null;
                 break :blk self.resolveTypeNode(ad.type_node);
             },
             else => return null,
