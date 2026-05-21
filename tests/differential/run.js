@@ -1001,6 +1001,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "only-throw-error",
       "prefer-promise-reject-errors",
       "no-meaningless-void-operator",
+      "require-await",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
