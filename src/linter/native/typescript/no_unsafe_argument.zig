@@ -99,35 +99,47 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
     var rest_elem_ty_node: NodeIndex = .none;
     var rest_tuple_elements: ?[]const u32 = null;
     var rest_start_arg: usize = 0;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg: NodeIndex = @enumFromInt(args[i]);
+    var arg_i: usize = 0;
+    var param_i: usize = 0;
+    while (arg_i < args.len) : (arg_i += 1) {
+        const arg: NodeIndex = @enumFromInt(args[arg_i]);
         // Spread element handling: TSe distinguishes unsafeSpread (any),
         // unsafeArraySpread (any[]), and unsafeTupleSpread (tuple with
         // any at a position whose paired param is non-any).  Pass the
         // starting param index so tuple positions can pair against
-        // params[i + slot].
+        // params[param_i + slot].
         if (ctx.nodeTag(arg) == .spread_element) {
-            checkSpreadArg(arg, params_decl, i, ctx);
+            checkSpreadArg(arg, params_decl, param_i, ctx);
             // If the spread source is a fixed-length tuple, the spread
-            // covers N param positions starting at i.  Trailing args
-            // after the spread shift forward by (N - 1) positions, so
-            // advance the cursor accordingly and keep checking.  For
-            // non-tuple spreads (array, variadic-rest tuple) we don't
-            // know the lengths — stop conservatively.
+            // covers N param positions; advance the param cursor by N
+            // and keep checking trailing args.  Non-tuple spreads
+            // (variable-length array / variadic-rest tuple) don't have
+            // a known length — stop conservatively.
             const inner = ctx.nodeData(arg).lhs;
             if (inner == .none) return;
             const src_ty = ctx.typeOfNode(inner);
             if (!ctx.typeIdIsTuple(src_ty)) return;
             const tuple_len = ctx.typeIdTupleLength(src_ty);
-            if (tuple_len > 1) i += tuple_len - 1;
+            param_i += tuple_len;
+            // If the spread covered the rest param, enter rest mode so
+            // trailing args (after the spread) get checked against the
+            // rest element type.
+            if (param_i >= params_decl.params.len and params_decl.params.len > 0) {
+                const last_idx = params_decl.params.len - 1;
+                const last_param: NodeIndex = @enumFromInt(params_decl.params[last_idx]);
+                if (ctx.nodeTag(last_param) == .rest_element) {
+                    rest_param = last_param;
+                    rest_start_arg = arg_i + 1;
+                    rest_elem_ty_node = restParamElementTypeNode(last_param, ctx);
+                }
+            }
             continue;
         }
         // If we've entered the rest region, all remaining args are
         // checked against the rest element type.
         if (rest_param) |_| {
             if (rest_tuple_elements) |tuple_elems| {
-                const ti = i - rest_start_arg;
+                const ti = arg_i - rest_start_arg;
                 if (ti < tuple_elems.len) {
                     const elem: NodeIndex = @enumFromInt(tuple_elems[ti]);
                     checkArgAgainstType(arg, elem, ctx);
@@ -137,12 +149,12 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
             }
             continue;
         }
-        if (i >= params_decl.params.len) return; // extra args; can't verify
-        const param: NodeIndex = @enumFromInt(params_decl.params[i]);
+        if (param_i >= params_decl.params.len) return; // extra args; can't verify
+        const param: NodeIndex = @enumFromInt(params_decl.params[param_i]);
         // Rest parameter: T[] declared → all remaining args check against T.
         if (ctx.nodeTag(param) == .rest_element) {
             rest_param = param;
-            rest_start_arg = i;
+            rest_start_arg = arg_i;
             // Tuple rest `...params: [T1, T2, T3]` — each arg gets its
             // matching tuple element type (variadic positional).
             if (restParamTupleElements(param, ctx)) |elems| {
@@ -160,6 +172,7 @@ fn checkArgs(args: []const u32, params_decl: ParamDecl, ctx: *const LintContext)
             continue;
         }
         const param_ty_node = paramTypeAnnotationNode(param, ctx);
+        param_i += 1;
         if (param_ty_node == .none) continue; // param has no declared type
         checkArgAgainstType(arg, param_ty_node, ctx);
     }
