@@ -412,6 +412,28 @@ pub const LintContext = struct {
         return tymod.isAssignableTo(&c.store, src, dst);
     }
 
+    /// True when both type ids are `type_ref` types with the same outer
+    /// name (`Set<X>` vs `Set<Y>`, `Promise<X>` vs `Promise<Y>`).  Used
+    /// by no-unsafe-return to distinguish `unsafeReturnAssignment`
+    /// (generic-of-any → generic-of-specific, same outer name) from
+    /// `unsafeReturn` (return value is directly any/error).
+    pub fn typeIdSameOuterRef(self: *const LintContext, a: tymod.TypeId, b: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const ta = c.store.get(a);
+        const tb = c.store.get(b);
+        if (ta.kind != .type_ref or tb.kind != .type_ref) return false;
+        return std.mem.eql(u8, ta.name, tb.name);
+    }
+
+    /// Resolve a TS function type annotation node's return-type subnode.
+    /// `ts_function_type` stores its return type in `FnData.body` (parser
+    /// reuses the field).  Callers pass the bare annotation type node
+    /// (NOT wrapped in ts_type_annotation).
+    pub fn fnTypeAnnotationReturn(self: *const LintContext, ty_node: NodeIndex) NodeIndex {
+        _ = self;
+        return ty_node; // delegated: rules read FnData.body directly
+    }
+
     /// True when the inferred type at this node is the built-in
     /// `Function` type — used by no-unsafe-call.  Caller should also
     /// check typeNodeIsAny separately when both should fire.

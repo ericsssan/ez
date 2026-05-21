@@ -913,30 +913,102 @@ pub const Checker = struct {
         return self.store.unionOf(&.{ a, b }) catch tymod.ID_ANY;
     }
 
-    /// Call/new expression return type.
-    ///   * callee is `any` → return `any` (TSe propagation)
-    ///   * callee is `function_t` with a known signature → return that
-    ///     signature's return type.  For `new`, an async/Promise return
-    ///     is treated the same — TSe semantics with full type info would
-    ///     differ for new vs call but at our resolution that's a wash.
-    ///   * otherwise → `unknown`
     fn inferCallReturn(self: *Checker, node: NodeIndex) TypeId {
-        const callee = self.ast_ref.nodeData(node).lhs;
+        const data = self.ast_ref.nodeData(node);
+        const callee = data.lhs;
         if (callee == .none) return tymod.ID_UNKNOWN;
+        if (self.ast_ref.nodeTag(node) == .new_expr or
+            self.calleeIsConstructible(callee))
+        {
+            if (self.newExprInstanceType(callee)) |ty| return ty;
+        }
         const callee_ty = self.typeOf(callee);
         if (tymod.isAny(&self.store, callee_ty)) return tymod.ID_ANY;
         const t = self.store.get(callee_ty);
         if (t.kind == .function_t) {
             const sigs = self.store.signaturesOf(t.signatures);
-            if (sigs.len > 0) {
-                // For async functions the return type IS already Promise<T>
-                // when declared, OR wrapped by us at signature-build time if
-                // we ever start auto-wrapping.  Currently we honor whatever
-                // was declared so the caller can peel Promise<T> explicitly.
-                return sigs[0].return_type;
-            }
+            if (sigs.len > 0) return sigs[0].return_type;
         }
         return tymod.ID_UNKNOWN;
+    }
+
+    /// For `new X<T>()` / `new X()`: peel ts_instantiation_expr / new_expr
+    /// / grouping wrappers to get the underlying class identifier and
+    /// its type args, then resolve to the corresponding type-ref or
+    /// declared object_t.
+    fn newExprInstanceType(self: *Checker, callee: NodeIndex) ?TypeId {
+        var c = callee;
+        // Peel grouping_expr and new_expr (when the parser shape is
+        // `call_expr(new_expr(...))` for `new X<T>()` calls).
+        while (true) {
+            const tag = self.ast_ref.nodeTag(c);
+            if (tag == .grouping_expr) { c = self.ast_ref.nodeData(c).lhs; continue; }
+            if (tag == .new_expr) { c = self.ast_ref.nodeData(c).lhs; continue; }
+            break;
+        }
+        var type_args_start: u32 = 0;
+        var type_args_end: u32 = 0;
+        if (self.ast_ref.nodeTag(c) == .ts_instantiation_expr) {
+            const idata = self.ast_ref.nodeData(c);
+            if (idata.rhs != .none) {
+                if (self.safeSubRange(idata.rhs)) |range| {
+                    type_args_start = range.start;
+                    type_args_end = range.end;
+                }
+            }
+            c = idata.lhs;
+        }
+        // Peel any leftover new_expr / grouping wrappers below the
+        // ts_instantiation_expr layer.
+        while (true) {
+            const tag = self.ast_ref.nodeTag(c);
+            if (tag == .grouping_expr or tag == .new_expr) {
+                c = self.ast_ref.nodeData(c).lhs;
+                continue;
+            }
+            break;
+        }
+        if (self.ast_ref.nodeTag(c) != .identifier) return null;
+        var args_buf: [4]TypeId = undefined;
+        const args_count = blk: {
+            if (type_args_end <= type_args_start) break :blk 0;
+            const slice = self.ast_ref.extra_data[type_args_start..type_args_end];
+            const n = @min(slice.len, args_buf.len);
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                const arg_node: NodeIndex = @enumFromInt(slice[i]);
+                args_buf[i] = self.resolveTypeNode(arg_node);
+            }
+            break :blk n;
+        };
+        return self.classOrLibInstance(c, args_buf[0..args_count]);
+    }
+
+    /// True when the callee looks constructible — a ts_instantiation_expr
+    /// over a class/lib identifier OR a new_expr child (which suggests
+    /// the parser wrapped `new X<T>()` as `call_expr(new_expr(...))`).
+    fn calleeIsConstructible(self: *Checker, callee: NodeIndex) bool {
+        var c = callee;
+        while (self.ast_ref.nodeTag(c) == .grouping_expr) c = self.ast_ref.nodeData(c).lhs;
+        return switch (self.ast_ref.nodeTag(c)) {
+            .ts_instantiation_expr, .new_expr => true,
+            else => false,
+        };
+    }
+
+    fn classOrLibInstance(self: *Checker, callee_ident: NodeIndex, args: []const TypeId) ?TypeId {
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(callee_ident));
+        // Built-in lib types — produce a type_ref carrying the args.
+        if (std.mem.eql(u8, name, "Set") or std.mem.eql(u8, name, "Map") or
+            std.mem.eql(u8, name, "Promise") or std.mem.eql(u8, name, "WeakSet") or
+            std.mem.eql(u8, name, "WeakMap") or std.mem.eql(u8, name, "Date") or
+            std.mem.eql(u8, name, "RegExp") or std.mem.eql(u8, name, "Array"))
+        {
+            return self.store.typeRef(name, args) catch null;
+        }
+        // User class — return the class instance type.
+        if (self.resolveDeclaredType(name)) |ty| return ty;
+        return null;
     }
 
     fn inferArith(self: *Checker, node: NodeIndex, tag: ast.Node.Tag) TypeId {
