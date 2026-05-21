@@ -113,12 +113,25 @@ fn reportIfUnsafeReturn(
     // the `unsafeReturnAssignment` path that fires even on "safe"
     // return-value classification.
     const ret_ty = ctx.typeOfNode(ret_value);
-    const any_class = classifyAnyType(ret_ty, ctx);
+    var any_class = classifyAnyType(ret_ty, ctx);
+    // AST-level fallback: checker may not propagate Promise<any> through
+    // `as` casts or `Promise.resolve<any>(...)` instantiation.  Detect
+    // these from the syntax.
+    if (any_class == .safe and astReturnsPromiseAny(ret_value, ctx)) {
+        any_class = .promise_any;
+    }
     const has_err = ctx.typeNodeIsError(ret_value);
 
     if (any_class != .safe or has_err) {
         if (rhsIsExplicitNonAnyCast(ret_value, ctx)) return;
         if (!fn_info.is_async and any_class == .promise_any) return;
+        // Declared return matches the any-class: `function f(): any[]`
+        // returning any[], or `: Promise<any>` returning Promise<any>.
+        // TSe treats these as opt-in (no fire).
+        if (has_effective_type) {
+            const declared_class = classifyAnyType(effective_ret_ty, ctx);
+            if (declared_class == any_class) return;
+        }
         ctx.reportWithMessageId(report_at, "unsafeReturn");
         return;
     }
@@ -323,6 +336,75 @@ fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.Symb
 /// Peels `Promise<T>` from a TS type-position AST node.  Returns the
 /// inner type node when the input is a ts_type_reference named
 /// "Promise" with at least one type arg; otherwise null.
+/// AST-level Promise<any> detector for return values.  Covers:
+///   `X as Promise<any>` / `X as Promise<any> | T` / `X as Promise<any> & T`
+///   `Promise.resolve<any>(...)` / nested Promise<Promise<any>> via instantiation
+fn astReturnsPromiseAny(rhs: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(rhs);
+    switch (tag) {
+        .ts_as_expr, .ts_type_assertion => {
+            const data = ctx.nodeData(rhs);
+            const ty_node = if (tag == .ts_as_expr) data.rhs else data.lhs;
+            return tsTypeIsPromiseAny(ty_node, ctx);
+        },
+        .grouping_expr, .ts_non_null_expr, .ts_satisfies_expr => {
+            return astReturnsPromiseAny(ctx.nodeData(rhs).lhs, ctx);
+        },
+        .call_expr, .optional_call_expr => {
+            const callee = ctx.nodeData(rhs).lhs;
+            if (callee == .none) return false;
+            if (ctx.nodeTag(callee) != .ts_instantiation_expr) return false;
+            // ts_instantiation_expr: lhs = expression, rhs = type args SubRange.
+            const inst_data = ctx.nodeData(callee);
+            if (inst_data.rhs == .none) return false;
+            const range = ctx.extraData(ast.SubRange, @intFromEnum(inst_data.rhs));
+            if (range.end <= range.start) return false;
+            // First type arg drives the resulting Promise<X>.
+            const arg_idx = ctx.ast.extra_data[range.start];
+            const arg: NodeIndex = @enumFromInt(arg_idx);
+            // For `Promise.resolve<any>(...)`, callee target arg is `any`
+            // → Promise<any>.  For `Promise.resolve<Promise<Promise<any>>>(...)`,
+            // T is `Promise<Promise<any>>` which still surfaces Promise<any>.
+            if (ctx.resolveTypeAnnotationNode(arg) == tymod.ID_ANY) return true;
+            return tsTypeIsPromiseAny(arg, ctx);
+        },
+        else => return false,
+    }
+}
+
+fn tsTypeIsPromiseAny(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    switch (ctx.nodeTag(ty)) {
+        .ts_parenthesized_type => return tsTypeIsPromiseAny(ctx.nodeData(ty).lhs, ctx),
+        .ts_union_type, .ts_intersection_type => {
+            const data = ctx.nodeData(ty);
+            const ext_len: u32 = @intCast(ctx.ast.extra_data.len);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (s > e or e > ext_len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (tsTypeIsPromiseAny(m, ctx)) return true;
+            }
+            return false;
+        },
+        .ts_type_reference => {
+            const name = ctx.tokenText(ctx.nodeMainToken(ty));
+            if (!std.mem.eql(u8, name, "Promise")) return false;
+            const data = ctx.nodeData(ty);
+            if (data.rhs == .none) return false;
+            const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
+            if (range.end <= range.start) return false;
+            const arg_idx = ctx.ast.extra_data[range.start];
+            const arg: NodeIndex = @enumFromInt(arg_idx);
+            if (ctx.resolveTypeAnnotationNode(arg) == tymod.ID_ANY) return true;
+            // Nested Promise<Promise<any>> — recurse.
+            return tsTypeIsPromiseAny(arg, ctx);
+        },
+        else => return false,
+    }
+}
+
 fn peelPromise(ty_node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     if (ty_node == .none) return null;
     if (ctx.nodeTag(ty_node) != .ts_type_reference) return null;
