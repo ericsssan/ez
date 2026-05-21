@@ -162,8 +162,10 @@ fn returnsPromise(e: NodeIndex, ctx: *const LintContext) bool {
             if (isPromiseFactoryCall(e, ctx)) return true;
             if (isPromiseChainMethod(e, ctx)) return true;
             if (calleeDeclaredReturnIsPromise(e, ctx)) return true;
-            // The checker may have resolved the call to a function_t
-            // whose return is Promise<T>.  Honor that.
+            // Identifier callee with a function-type annotation
+            // (`const x: (...) => Promise<T>; x()`).
+            const callee_node = unwrap(ctx.nodeData(e).lhs, ctx);
+            if (calleeNodeReturnsPromise(callee_node, ctx)) return true;
             if (ctx.typeNodeIsPromise(e)) return true;
             return false;
         },
@@ -239,7 +241,39 @@ fn fnTypeReturnIsPromise(ty: NodeIndex, ctx: *const LintContext) bool {
 fn tsTypeIsPromise(ty: NodeIndex, ctx: *const LintContext) bool {
     if (ty == .none) return false;
     if (ctx.nodeTag(ty) != .ts_type_reference) return false;
-    return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ty)), "Promise");
+    const name = ctx.tokenText(ctx.nodeMainToken(ty));
+    if (std.mem.eql(u8, name, "Promise")) return true;
+    // Class extending Promise (in this file).  PromiseLike is only
+    // promise-flavored under checkThenables:true which we don't yet
+    // support — keep it out of the default path to avoid FPs.
+    return classExtendsPromise(name, ctx);
+}
+
+/// Walk class_decl nodes; if any has the given name AND `extends Promise`
+/// (one hop only), treat the type as Promise-flavored.  Generic args
+/// don't matter for floating detection.
+fn classExtendsPromise(name: []const u8, ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .class_decl) continue;
+        const data = tree.nodeData(ni);
+        const cd = tree.extraData(ast.ClassData, @intFromEnum(data.lhs));
+        if (cd.name == .none) continue;
+        const cname = tree.tokenText(tree.nodeMainToken(cd.name));
+        if (!std.mem.eql(u8, cname, name)) continue;
+        if (cd.super_class == .none) return false;
+        // super_class is an expression: identifier, member_expr, or
+        // ts_instantiation_expr (`extends Promise<T>`).  Unwrap to the
+        // base identifier.
+        var sc = cd.super_class;
+        while (tree.nodeTag(sc) == .ts_instantiation_expr) sc = tree.nodeData(sc).lhs;
+        if (tree.nodeTag(sc) != .identifier) return false;
+        return std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(sc)), "Promise");
+    }
+    return false;
 }
 
 /// `Promise.resolve(...)`, `Promise.reject(...)`, `Promise.all(...)`, etc.
