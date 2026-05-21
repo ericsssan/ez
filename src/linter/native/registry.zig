@@ -291,6 +291,7 @@ const ts_no_meaningless_void_operator = @import("typescript/no_meaningless_void_
 const ts_require_await = @import("typescript/require_await.zig");
 const ts_no_array_delete = @import("typescript/no_array_delete.zig");
 const ts_no_unsafe_unary_minus = @import("typescript/no_unsafe_unary_minus.zig");
+const ts_require_array_sort_compare = @import("typescript/require_array_sort_compare.zig");
 // v0.8 TypeScript rules
 // const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
@@ -599,6 +600,7 @@ pub const all_rules = .{
     ts_require_await,
     ts_no_array_delete,
     ts_no_unsafe_unary_minus,
+    ts_require_array_sort_compare,
     // ts_no_empty_object_type, // runner >> native (runner 35, native 19, gap 16, 4 FP); fall back to JS runner
     // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
     // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner
