@@ -4,7 +4,7 @@
   "index": 15,
   "name": null,
   "options": [],
-  "sourceType": "script",
+  "sourceType": "module",
   "ecmaVersion": 2022,
   "isTypeScript": true,
   "jsx": false,

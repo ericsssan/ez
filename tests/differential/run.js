@@ -424,7 +424,8 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
       config = buildNativeConfig(cfgObj);
     }
     const lang = isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
-    const diags = ezLint(code, { config, lang });
+    const sourceType = tcLanguageOptions?.sourceType || undefined;
+    const diags = ezLint(code, { config, lang, sourceType });
     // Native diags emit only {offset, severity, ruleName}. ESLint diags
     // carry {line, column, endLine, endColumn, messageId}. To compare
     // them on the same key shape, synthesize the missing fields here:
@@ -990,6 +991,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-unsafe-return",
       "no-unsafe-argument",
       "no-floating-promises",
+      "await-thenable",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
