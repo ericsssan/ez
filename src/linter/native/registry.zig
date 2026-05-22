@@ -261,6 +261,7 @@ const ts_no_empty_interface = @import("typescript/no_empty_interface.zig");
 // v0.5 TypeScript rules
 // const ts_ban_ts_comment = @import("typescript/ban_ts_comment.zig");  // hand-written — disabled per IR-only constraint
 const ts_no_this_alias = @import("typescript/no_this_alias.zig");
+const ts_no_restricted_types = @import("typescript/no_restricted_types.zig");
 const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values.zig");
 // const ts_no_array_delete = @import("typescript/no_array_delete.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 TypeScript rules
@@ -597,6 +598,7 @@ pub const all_rules = .{
     // TypeScript v0.5 (4)
     // ts_ban_ts_comment, // runner >> native (runner 108, native 66, gap 42, 15 FP); fall back to JS runner
     ts_no_this_alias,
+    ts_no_restricted_types,
     ts_no_duplicate_enum_values,
     // ts_no_array_delete, // hand-written — disabled
     // TypeScript v0.6 (5)
