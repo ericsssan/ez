@@ -253,7 +253,7 @@ const require_number_to_fixed_digits_argument = @import("style/require_number_to
 // const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");  // hand-written — disabled per IR-only constraint
 // const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");  // hand-written — disabled per IR-only constraint
 const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
-// const ts_no_empty_interface = @import("typescript/no_empty_interface.zig");  // hand-written — disabled per IR-only constraint
+const ts_no_empty_interface = @import("typescript/no_empty_interface.zig");
 // const ts_no_namespace = @import("typescript/no_namespace.zig");  // hand-written — disabled per IR-only constraint
 // const ts_no_unnecessary_type_assertion = @import("typescript/no_unnecessary_type_assertion.zig");  // hand-written — disabled per IR-only constraint
 // const ts_prefer_interface = @import("typescript/prefer_interface.zig");  // hand-written — disabled per IR-only constraint
@@ -583,7 +583,7 @@ pub const all_rules = .{
     // ts_no_explicit_any, // hand-written — disabled
     // ts_no_non_null_assertion, // hand-written — disabled
     ts_prefer_as_const,
-    // ts_no_empty_interface, // runner >> native (runner 15, native 5, gap 10); fall back to JS runner
+    ts_no_empty_interface,
     // ts_no_namespace, // hand-written — disabled
     // ts_no_unnecessary_type_assertion, // hand-written — disabled
     // ts_prefer_interface, // hand-written — disabled
