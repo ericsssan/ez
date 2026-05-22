@@ -1030,6 +1030,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       // "no-useless-empty-export", // native 19/21 vs runner 21/21 (.d.ts detection unavailable)
       "triple-slash-reference",
       "no-extraneous-class",
+      "consistent-type-definitions",
       // "no-empty-object-type", // native 34/35 vs runner 35/35 (multi-line span mismatch)
       // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
       // "no-non-null-asserted-nullish-coalescing", // needs flow-sensitive type check to distinguish necessary `!`
