@@ -153,7 +153,7 @@ fn isZeroIsh(node: NodeIndex, ctx: *const LintContext) bool {
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     const tag = ctx.nodeTag(n);
     if (tag == .number_literal) {
-        return tokenIsZero(ctx.tokenText(ctx.nodeMainToken(n)));
+        return numberLiteralTruncatesToZero(ctx.tokenText(ctx.nodeMainToken(n)));
     }
     if (tag == .bigint_literal) {
         return tokenIsZero(ctx.tokenText(ctx.nodeMainToken(n)));
@@ -165,10 +165,13 @@ fn isZeroIsh(node: NodeIndex, ctx: *const LintContext) bool {
         const inner = raw[1 .. raw.len - 1];
         return std.mem.eql(u8, inner, "0");
     }
-    // -0 / -0n
+    // -0 / -0n / -0.5 → trunc to 0
     if (tag == .unary_minus) {
         return isZeroIsh(ctx.nodeData(n).lhs, ctx);
     }
+    // `NaN` keyword → Array.prototype.at coerces to 0.
+    if (tag == .identifier and
+        std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(n)), "NaN")) return true;
     // `const zero = 0;` — walk the binding's initializer.
     if (tag == .identifier) {
         const sym = symbolForIdent(n, ctx) orelse return false;
@@ -181,6 +184,41 @@ fn isZeroIsh(node: NodeIndex, ctx: *const LintContext) bool {
         return isZeroIsh(init, ctx);
     }
     return false;
+}
+
+/// True when the JS numeric literal's truncated integer value is 0.
+/// Accepts `0`, `0.5`, `-0.999`, `0x0`, `0e10`, etc.  Does NOT accept
+/// `Infinity` (a value coerced from out-of-range numbers, handled
+/// elsewhere) or NaN (handled at the identifier level).
+fn numberLiteralTruncatesToZero(text: []const u8) bool {
+    if (text.len == 0) return false;
+    var i: usize = 0;
+    if (text[i] == '+' or text[i] == '-') i += 1;
+    if (i >= text.len) return false;
+    // Non-decimal bases — value must be exactly zero (no fractional
+    // representation in 0x/0b/0o syntax).
+    if (text.len >= i + 2 and text[i] == '0' and (text[i + 1] == 'x' or text[i + 1] == 'X' or
+        text[i + 1] == 'b' or text[i + 1] == 'B' or text[i + 1] == 'o' or text[i + 1] == 'O'))
+    {
+        // Skip prefix.
+        i += 2;
+        while (i < text.len) : (i += 1) {
+            const c = text[i];
+            if (c == '_') continue;
+            if (c != '0') return false;
+        }
+        return true;
+    }
+    // Decimal: the integer part must be exactly '0' (single zero) or
+    // empty (`.5`), and there must be no non-zero digit before the
+    // decimal point / exponent.
+    while (i < text.len) : (i += 1) {
+        const c = text[i];
+        if (c == '_' or c == '0') continue;
+        if (c == '.' or c == 'e' or c == 'E') return true;
+        return false;
+    }
+    return true;
 }
 
 fn tokenIsZero(text: []const u8) bool {
