@@ -109,9 +109,9 @@ fn checkBracketZero(member: NodeIndex, ctx: *const LintContext) void {
 }
 
 fn isFilterCallOnArray(node: NodeIndex, ctx: *const LintContext) bool {
-    // `<obj>.filter(pred)` where obj is arrayish.  Optionally peel
-    // grouping_expr / ts_non_null wrappers, and the last expr of a
-    // sequence (`(a, b)` evaluates to `b`).
+    // `<obj>.filter(pred)` where obj is arrayish.  Peel grouping_expr,
+    // ts_non_null, and last expr of sequence; also accept conditional
+    // expressions / nested ternaries where BOTH branches qualify.
     var n = node;
     while (true) {
         const t = ctx.nodeTag(n);
@@ -120,7 +120,6 @@ fn isFilterCallOnArray(node: NodeIndex, ctx: *const LintContext) bool {
             continue;
         }
         if (t == .sequence_expr) {
-            // Last expression in a sequence is the value.
             const data = ctx.nodeData(n);
             const s = @intFromEnum(data.lhs);
             const e = @intFromEnum(data.rhs);
@@ -128,12 +127,19 @@ fn isFilterCallOnArray(node: NodeIndex, ctx: *const LintContext) bool {
             n = @enumFromInt(ctx.ast.extra_data[e - 1]);
             continue;
         }
+        if (t == .conditional) {
+            // `cond ? a : b` — both branches must be valid filter calls.
+            const data = ctx.nodeData(n);
+            if (data.rhs == .none) return false;
+            const idx = @intFromEnum(data.rhs);
+            if (idx + 1 >= ctx.ast.extra_data.len) return false;
+            const cons: NodeIndex = @enumFromInt(ctx.ast.extra_data[idx]);
+            const alt: NodeIndex = @enumFromInt(ctx.ast.extra_data[idx + 1]);
+            return isFilterCallOnArray(cons, ctx) and isFilterCallOnArray(alt, ctx);
+        }
         break;
     }
     const tag = ctx.nodeTag(n);
-    // Optional CALL `?.()` on filter — short-circuits the call itself,
-    // so replacing with `.find()` isn't safe.  Optional MEMBER access
-    // is fine (the upstream rule allows `obj?.filter(...)[0]`).
     if (tag == .optional_call_expr) return false;
     if (tag != .call_expr) return false;
     const callee = ctx.nodeData(n).lhs;
@@ -189,10 +195,12 @@ fn isZeroIsh(node: NodeIndex, ctx: *const LintContext) bool {
     if (tag == .bigint_literal) {
         return tokenIsZero(ctx.tokenText(ctx.nodeMainToken(n)));
     }
-    if (tag == .string_literal) {
+    if (tag == .string_literal or tag == .template_literal) {
         const span = ctx.nodeSpan(n);
         if (span.end <= span.start + 2) return false;
         const raw = ctx.ast.source[span.start..span.end];
+        // Template literals with substitutions don't qualify.
+        if (tag == .template_literal and std.mem.indexOf(u8, raw, "${") != null) return false;
         const inner = raw[1 .. raw.len - 1];
         return std.mem.eql(u8, inner, "0");
     }
