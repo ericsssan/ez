@@ -755,6 +755,18 @@ pub const LintContext = struct {
         return self.typeIdContainsNull(id) or self.typeIdContainsUndefined(id);
     }
 
+    /// True if the type could possibly hold a nullish value — covers
+    /// explicit null/undefined arms PLUS `any` and `unknown` (the top
+    /// types) since those can be anything.  Used by lint rules that
+    /// want to be conservative about nullability checks.
+    pub fn typeIdMaybeNullish(self: *const LintContext, id: tymod.TypeId) bool {
+        if (id.eq(tymod.ID_ANY) or id.eq(tymod.ID_UNKNOWN)) return true;
+        const c = self.ensureChecker() orelse return true;
+        const t = c.store.get(id);
+        if (t.kind == .any or t.kind == .unknown) return true;
+        return self.typeIdContainsNullish(id);
+    }
+
     /// True if the type is statically always truthy: a non-empty string
     /// literal, non-zero number literal, object literal type, function
     /// type, true literal, etc.  Returns false for union members where
