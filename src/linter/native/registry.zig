@@ -326,6 +326,7 @@ const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig
 // const ts_no_unnecessary_boolean_literal_compare = @import("typescript/no_unnecessary_boolean_literal_compare.zig");  // hand-written — disabled per IR-only constraint
 // const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");  // hand-written — disabled per IR-only constraint
 const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");
+const ts_parameter_properties = @import("typescript/parameter_properties.zig");
 const ts_no_inferrable_types = @import("typescript/no_inferrable_types.zig");
 // const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declaration_merging.zig");  // hand-written — disabled per IR-only constraint
 // const ts_explicit_function_return_type = @import("typescript/explicit_function_return_type.zig");  // hand-written — disabled per IR-only constraint
@@ -659,6 +660,7 @@ pub const all_rules = .{
     // ts_no_unnecessary_boolean_literal_compare, // native has 21 FP making hybrid 22 vs runner 21 (FP worse); fall back to JS runner
     // ts_no_dynamic_delete, // hand-written — disabled
     ts_prefer_ts_expect_error,
+    ts_parameter_properties,
     ts_no_inferrable_types,
     // ts_no_unsafe_declaration_merging, // hand-written — disabled
     // ts_explicit_function_return_type, // hand-written — disabled

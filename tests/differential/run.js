@@ -1037,6 +1037,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "prefer-enum-initializers",
       "no-non-null-assertion",
       "prefer-ts-expect-error",
+      "parameter-properties",
       // "prefer-function-type", // native 18/21 vs runner 21/21 (`this`-in-signature gets different messageId, multi-line span)
       // "no-empty-object-type", // native 34/35 vs runner 35/35 (multi-line span mismatch)
       // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
