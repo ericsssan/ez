@@ -320,7 +320,7 @@ const ts_prefer_namespace_keyword = @import("typescript/prefer_namespace_keyword
 // const ts_no_unnecessary_boolean_literal_compare = @import("typescript/no_unnecessary_boolean_literal_compare.zig");  // hand-written — disabled per IR-only constraint
 // const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");  // hand-written — disabled per IR-only constraint
 // const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");  // hand-written — disabled per IR-only constraint
-// const ts_no_inferrable_types = @import("typescript/no_inferrable_types.zig");  // hand-written — disabled per IR-only constraint
+const ts_no_inferrable_types = @import("typescript/no_inferrable_types.zig");
 // const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declaration_merging.zig");  // hand-written — disabled per IR-only constraint
 // const ts_explicit_function_return_type = @import("typescript/explicit_function_return_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_explicit_module_boundary_types = @import("typescript/explicit_module_boundary_types.zig");  // hand-written — disabled per IR-only constraint
@@ -647,7 +647,7 @@ pub const all_rules = .{
     // ts_no_unnecessary_boolean_literal_compare, // native has 21 FP making hybrid 22 vs runner 21 (FP worse); fall back to JS runner
     // ts_no_dynamic_delete, // hand-written — disabled
     // ts_prefer_ts_expect_error, // hand-written — disabled
-    // ts_no_inferrable_types, // runner >> native (runner 100, native 55, 47 FN); fall back
+    ts_no_inferrable_types,
     // ts_no_unsafe_declaration_merging, // hand-written — disabled
     // ts_explicit_function_return_type, // hand-written — disabled
     // ts_explicit_module_boundary_types, // runner >> native (runner 144, native 117, gap 27, 21 FP); fall back to JS runner
