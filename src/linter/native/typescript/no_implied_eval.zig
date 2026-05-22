@@ -73,7 +73,27 @@ fn getCalleeName(callee: NodeIndex, ctx: *const LintContext) ?[]const u8 {
         if (!is_global_obj) return null;
         return ctx.tokenText(ctx.nodeMainToken(n));
     }
+    // Computed property: `window['setTimeout']` / `globalThis["Function"]`.
+    if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+        const md = ctx.nodeData(n);
+        if (md.lhs == .none or ctx.nodeTag(md.lhs) != .identifier) return null;
+        const obj_name = ctx.tokenText(ctx.nodeMainToken(md.lhs));
+        var is_global_obj = false;
+        for (GLOBAL_CANDIDATES) |g| if (std.mem.eql(u8, g, obj_name)) { is_global_obj = true; break; };
+        if (!is_global_obj) return null;
+        // Bracket key must be a string literal.
+        if (md.rhs == .none) return null;
+        if (ctx.nodeTag(md.rhs) != .string_literal) return null;
+        return stringLiteralValue(md.rhs, ctx);
+    }
     return null;
+}
+
+fn stringLiteralValue(node: NodeIndex, ctx: *const LintContext) ?[]const u8 {
+    const tok = ctx.nodeMainToken(node);
+    const raw = ctx.tokenText(tok);
+    if (raw.len < 2) return null;
+    return raw[1 .. raw.len - 1];
 }
 
 fn isEvalLike(name: []const u8) bool {
@@ -89,9 +109,11 @@ fn calleeIsGlobalFunctionReference(callee: NodeIndex, name: []const u8, ctx: *co
         if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(n)), name)) return false;
         return ctx.isGlobalReference(n);
     }
-    if (tag == .member_expr or tag == .optional_member_expr) {
-        // `window.setTimeout` etc. — already validated by getCalleeName
-        // matching a GLOBAL_CANDIDATES object.
+    if (tag == .member_expr or tag == .optional_member_expr or
+        tag == .computed_member_expr or tag == .optional_computed_member_expr)
+    {
+        // `window.setTimeout` / `window['setTimeout']` — already
+        // validated by getCalleeName matching a GLOBAL_CANDIDATES object.
         return true;
     }
     return false;
@@ -99,7 +121,20 @@ fn calleeIsGlobalFunctionReference(callee: NodeIndex, name: []const u8, ctx: *co
 
 fn argLooksLikeFunction(arg: NodeIndex, ctx: *const LintContext) bool {
     var n = arg;
-    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    while (true) {
+        const t = ctx.nodeTag(n);
+        if (t == .grouping_expr) { n = ctx.nodeData(n).lhs; continue; }
+        // TS casts/assertions: the asserted type is decorative; check the
+        // EXPRESSION beneath, not the type.  `foo as any` should still
+        // report when foo is a string.
+        if (t == .ts_as_expr or t == .ts_satisfies_expr or t == .ts_type_assertion) {
+            n = ctx.nodeData(n).lhs;
+            continue;
+        }
+        // `!` non-null assertion.
+        if (t == .ts_non_null_expr) { n = ctx.nodeData(n).lhs; continue; }
+        break;
+    }
     const tag = ctx.nodeTag(n);
     // Direct function-shaped literals.
     if (tag == .arrow_fn or tag == .async_arrow_fn or
@@ -112,6 +147,24 @@ fn argLooksLikeFunction(arg: NodeIndex, ctx: *const LintContext) bool {
     // `undefined` identifier specifically — TS treats this as undefined value.
     if (tag == .identifier and
         std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(n)), "undefined")) return false;
+    // Conditional / logical_or / logical_nullish: both branches must
+    // look like functions for the result to qualify.
+    if (tag == .conditional) {
+        const md = ctx.nodeData(n);
+        const cons_alt = ctx.ast.extra_data;
+        if (md.rhs != .none) {
+            const idx = @intFromEnum(md.rhs);
+            if (idx + 1 < cons_alt.len) {
+                const cons: NodeIndex = @enumFromInt(cons_alt[idx]);
+                const alt: NodeIndex = @enumFromInt(cons_alt[idx + 1]);
+                return argLooksLikeFunction(cons, ctx) and argLooksLikeFunction(alt, ctx);
+            }
+        }
+    }
+    if (tag == .logical_or or tag == .nullish_coalesce) {
+        const md = ctx.nodeData(n);
+        return argLooksLikeFunction(md.lhs, ctx) and argLooksLikeFunction(md.rhs, ctx);
+    }
     // For everything else, consult the type.  function_t types are
     // OK; anything else (string/number/object/etc.) is a violation.
     const ty = ctx.typeOfNode(n);

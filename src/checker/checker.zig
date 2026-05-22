@@ -1482,7 +1482,10 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name, "Set") or std.mem.eql(u8, name, "Map") or
             std.mem.eql(u8, name, "Promise") or std.mem.eql(u8, name, "WeakSet") or
             std.mem.eql(u8, name, "WeakMap") or std.mem.eql(u8, name, "Date") or
-            std.mem.eql(u8, name, "RegExp") or std.mem.eql(u8, name, "Array"))
+            std.mem.eql(u8, name, "RegExp") or std.mem.eql(u8, name, "Array") or
+            std.mem.eql(u8, name, "String") or std.mem.eql(u8, name, "Number") or
+            std.mem.eql(u8, name, "Boolean") or std.mem.eql(u8, name, "Object") or
+            std.mem.eql(u8, name, "Symbol"))
         {
             return self.store.typeRef(name, args) catch null;
         }

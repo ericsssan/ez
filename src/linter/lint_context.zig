@@ -427,7 +427,25 @@ pub const LintContext = struct {
     /// True when the type id is a function type.
     pub fn typeIdIsFunction(self: *const LintContext, id: tymod.TypeId) bool {
         const c = self.ensureChecker() orelse return false;
-        return c.store.get(id).kind == .function_t;
+        const t = c.store.get(id);
+        if (t.kind == .function_t) return true;
+        // The literal `Function` type-ref is TS's supertype of callables.
+        if (t.kind == .type_ref and std.mem.eql(u8, t.name, "Function")) return true;
+        // Union: every member must be function-shaped.
+        if (t.kind == .union_t) {
+            const members = c.store.idsOf(t.list_data);
+            if (members.len == 0) return false;
+            for (members) |m| if (!self.typeIdIsFunction(m)) return false;
+            return true;
+        }
+        // Intersection: any member function-shaped.
+        if (t.kind == .intersection_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (self.typeIdIsFunction(m)) return true;
+            }
+            return false;
+        }
+        return false;
     }
 
     /// True when the type id is string-like: `string`, string literal
