@@ -218,7 +218,10 @@ fn checkSpread(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     if (data.lhs == .none) return;
     if (exprIsSometimesThenable(data.lhs, ctx)) {
-        ctx.reportWithMessageId(data.lhs, "spread");
+        // Report on the argument (TSe's convention) — peel grouping_expr.
+        var n = data.lhs;
+        while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+        ctx.reportWithMessageId(n, "spread");
     }
 }
 
@@ -237,12 +240,109 @@ fn checkArguments(node: NodeIndex, ctx: *const LintContext) void {
     var args_buf: [16]NodeIndex = undefined;
     const args = callArguments(node, &args_buf, ctx);
     for (args, 0..) |arg, idx| {
+        // Spread `...cbs`: check if cbs is an array of Promise-returning fns
+        // and the callee's corresponding param expects void-returning.
+        if (ctx.nodeTag(arg) == .spread_element) {
+            const expected_void = paramExpectsVoidReturningFn(callee, idx, args.len, node, ctx);
+            if (!expected_void) continue;
+            if (spreadOfPromiseReturningArray(arg, ctx)) {
+                ctx.reportWithMessageId(arg, "voidReturnArgument");
+            }
+            continue;
+        }
         const expected_void = paramExpectsVoidReturningFn(callee, idx, args.len, node, ctx);
         if (!expected_void) continue;
         if (exprIsPromiseReturningFn(arg, ctx)) {
             ctx.reportSpanWithMessageId(reportSpanForArg(arg, ctx), "voidReturnArgument");
         }
     }
+}
+
+fn spreadOfPromiseReturningArray(spread_node: NodeIndex, ctx: *const LintContext) bool {
+    const expr = ctx.nodeData(spread_node).lhs;
+    if (expr == .none) return false;
+    var e = expr;
+    while (ctx.nodeTag(e) == .grouping_expr) e = ctx.nodeData(e).lhs;
+    // Direct array literal of promise-returning fns.
+    if (ctx.nodeTag(e) == .array_literal) {
+        const arms = directRange(e, ctx) orelse return false;
+        for (arms) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            if (m == .none) continue;
+            if (exprIsPromiseReturningFn(m, ctx)) return true;
+        }
+        return false;
+    }
+    // `as const` cast on array literal.
+    if (ctx.nodeTag(e) == .ts_as_expr) {
+        return spreadOfPromiseReturningArray(_makeSpreadOf(ctx.nodeData(e).lhs), ctx);
+    }
+    // Identifier referencing an array variable.
+    if (ctx.nodeTag(e) == .identifier) {
+        return identifierIsPromiseFnArray(e, ctx);
+    }
+    return false;
+}
+
+fn _makeSpreadOf(n: NodeIndex) NodeIndex {
+    _ = n;
+    return .none;
+}
+
+fn identifierIsPromiseFnArray(ident: NodeIndex, ctx: *const LintContext) bool {
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    // Check via annotation: Array<() => Promise<X>>.
+    const bd = ctx.nodeData(decl);
+    if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
+        const ty = ctx.nodeData(bd.rhs).lhs;
+        if (arrayElemIsPromiseReturningFn(ty, ctx)) return true;
+    }
+    // Otherwise check the initializer if it's an array literal.
+    const parent = ctx.parentOf(decl);
+    if (parent != .none and ctx.nodeTag(parent) == .declarator) {
+        const init = ctx.nodeData(parent).rhs;
+        if (init != .none) {
+            var i = init;
+            while (ctx.nodeTag(i) == .grouping_expr) i = ctx.nodeData(i).lhs;
+            // `[...] as const`
+            if (ctx.nodeTag(i) == .ts_as_expr) i = ctx.nodeData(i).lhs;
+            if (ctx.nodeTag(i) == .array_literal) {
+                const arms = directRange(i, ctx) orelse return false;
+                for (arms) |raw| {
+                    const m: NodeIndex = @enumFromInt(raw);
+                    if (m == .none) continue;
+                    if (exprIsPromiseReturningFn(m, ctx)) return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn arrayElemIsPromiseReturningFn(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    var inner = ty;
+    while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+    if (ctx.nodeTag(inner) == .ts_array_type) {
+        return typeIsPromiseReturningFn(ctx.nodeData(inner).lhs, ctx);
+    }
+    if (ctx.nodeTag(inner) == .ts_type_reference) {
+        const name = ctx.tokenText(ctx.nodeMainToken(inner));
+        if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+            const args = ctx.nodeData(inner).rhs;
+            if (args == .none) return false;
+            const idx = @intFromEnum(args);
+            if (idx + 1 >= ctx.ast.extra_data.len) return false;
+            const s = ctx.ast.extra_data[idx];
+            const e = ctx.ast.extra_data[idx + 1];
+            if (s >= e or e > ctx.ast.extra_data.len) return false;
+            const first: NodeIndex = @enumFromInt(ctx.ast.extra_data[s]);
+            return typeIsPromiseReturningFn(first, ctx);
+        }
+    }
+    return false;
 }
 
 fn reportSpanForArg(arg: NodeIndex, ctx: *const LintContext) @import("../../../parser/root.zig").span.Span {
@@ -331,6 +431,27 @@ fn paramExpectsVoidReturningFn(callee: NodeIndex, index: usize, _: usize, call_n
         // `new X(...)` where X is a class with a constructor whose Nth param
         // expects void-returning.
         if (classConstructorParamIsVoidFn(c, index, ctx)) return true;
+        // Overload-aware: walk peer fn_decls / ts_declare_function signatures.
+        if (calleeOverloadParamIsVoidFn(c, index, ctx)) return true;
+    }
+    return false;
+}
+
+fn calleeOverloadParamIsVoidFn(ident: NodeIndex, index: usize, ctx: *const LintContext) bool {
+    const name = ctx.tokenText(ctx.nodeMainToken(ident));
+    if (name.len == 0) return false;
+    const total: u32 = @intCast(ctx.ast.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        const t = ctx.nodeTag(ni);
+        if (t != .fn_decl and t != .ts_declare_function and t != .generator_fn_decl and
+            t != .async_fn_decl and t != .async_generator_fn_decl) continue;
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ni).lhs));
+        if (fd.name == .none) continue;
+        const peer_name = ctx.tokenText(ctx.nodeMainToken(fd.name));
+        if (!std.mem.eql(u8, peer_name, name)) continue;
+        if (paramIsVoidFnInSubrange(fd.params, fd.params_end, index, ctx)) return true;
     }
     return false;
 }
@@ -858,7 +979,10 @@ fn checkObjectMethod(node: NodeIndex, ctx: *const LintContext) void {
     if (parent == .none or ctx.nodeTag(parent) != .object_literal) return;
     const md = ctx.extraData(ast.MethodData, @intFromEnum(ctx.nodeData(node).rhs));
     const is_async = (md.modifiers & ast.ModifierBit.@"async") != 0;
-    const ret_is_promise = annotationContainsPromise(md.return_type, ctx);
+    // Parser drops the return-type annotation for object literal methods,
+    // so detect by source-scanning between `)` and `{` for a Promise token.
+    const ret_is_promise = annotationContainsPromise(md.return_type, ctx) or
+        objectMethodSourceReturnsPromise(node, md, ctx);
     const body_returns_promise = !is_async and !ret_is_promise and bodyReturnsPromise(md.body, ctx);
     if (!is_async and !ret_is_promise and !body_returns_promise) return;
     const ann = objectLiteralContextualPropertyType(node, ctx) orelse return;
@@ -867,15 +991,73 @@ fn checkObjectMethod(node: NodeIndex, ctx: *const LintContext) void {
     if (md.return_type != .none) {
         const rt = md.return_type;
         if (ctx.nodeTag(rt) == .ts_type_annotation) {
-            // Span covers the type annotation (inner type, not `:`).
             ctx.reportWithMessageId(ctx.nodeData(rt).lhs, "voidReturnProperty");
         } else {
             ctx.reportWithMessageId(rt, "voidReturnProperty");
         }
         return;
     }
-    // Property head = method modifiers + name (up to `(`).
+    // Parser drops return-type for object methods; scan the source.
+    if (objectMethodReturnTypeSpan(node, md, ctx)) |sp| {
+        ctx.reportSpanWithMessageId(sp, "voidReturnProperty");
+        return;
+    }
     ctx.reportSpanWithMessageId(propertyHeadSpan(node, node, ctx), "voidReturnProperty");
+}
+
+/// Scan the source between `)` and `{` for the return-type annotation.
+/// Returns the span of the type (excluding the `:` and surrounding space).
+fn objectMethodReturnTypeSpan(method_node: NodeIndex, md: ast.MethodData, ctx: *const LintContext) ?@import("../../../parser/root.zig").span.Span {
+    if (md.body == .none) return null;
+    const body_start = ctx.nodeSpan(md.body).start;
+    const head = ctx.nodeSpan(method_node);
+    if (body_start <= head.start) return null;
+    const src = ctx.ast.source;
+    if (body_start > src.len) return null;
+    // Find the closing `)` of the param list before body_start.
+    var i: isize = @as(isize, @intCast(body_start)) - 1;
+    while (i > @as(isize, @intCast(head.start)) and (src[@intCast(i)] == ' ' or src[@intCast(i)] == '\t' or src[@intCast(i)] == '\n')) : (i -= 1) {}
+    // Now look backward for `:` from i.
+    var colon_pos: ?usize = null;
+    var depth: i32 = 0;
+    while (i > @as(isize, @intCast(head.start))) : (i -= 1) {
+        const c = src[@intCast(i)];
+        if (c == ')' or c == '>' or c == ']') depth += 1
+        else if (c == '(' or c == '<' or c == '[') {
+            depth -= 1;
+            if (depth < 0) return null; // before params
+        }
+        if (depth == 0 and c == ':') {
+            colon_pos = @intCast(i);
+            break;
+        }
+    }
+    const cp = colon_pos orelse return null;
+    // Walk forward from cp+1 over whitespace.
+    var start: usize = cp + 1;
+    while (start < body_start and (src[start] == ' ' or src[start] == '\t' or src[start] == '\n')) start += 1;
+    // End at body_start, trim trailing whitespace.
+    var end: usize = body_start;
+    while (end > start and (src[end - 1] == ' ' or src[end - 1] == '\t' or src[end - 1] == '\n')) end -= 1;
+    if (start >= end) return null;
+    return .{ .start = @intCast(start), .end = @intCast(end) };
+}
+
+/// The parser doesn't store the return-type annotation for object
+/// literal methods.  Inspect the source between the method head's
+/// closing `)` and the opening `{` (or `;`) for any Promise/PromiseLike/
+/// Thenable token.
+fn objectMethodSourceReturnsPromise(method_node: NodeIndex, md: ast.MethodData, ctx: *const LintContext) bool {
+    const head = ctx.nodeSpan(method_node);
+    const body_start: usize = if (md.body != .none) ctx.nodeSpan(md.body).start else head.end;
+    if (body_start <= head.start) return false;
+    const src = ctx.ast.source;
+    if (body_start > src.len) return false;
+    // Search the slice between head.start and body_start.
+    const slice = src[head.start..body_start];
+    return std.mem.indexOf(u8, slice, "Promise") != null or
+        std.mem.indexOf(u8, slice, "PromiseLike") != null or
+        std.mem.indexOf(u8, slice, "Thenable") != null;
 }
 
 fn propertyHeadSpan(prop_node: NodeIndex, value: NodeIndex, ctx: *const LintContext) @import("../../../parser/root.zig").span.Span {
@@ -1208,8 +1390,8 @@ fn checkInterfaceInheritedMethods(node: NodeIndex, ctx: *const LintContext) void
     }
 }
 
-/// Looks for a class or interface named `type_name` and checks if it has
-/// a method `member_name` with a void return type.
+/// Looks for a class, interface, or type alias named `type_name` and
+/// checks if it has a method `member_name` with a void return type.
 fn heritageMethodIsVoid(type_name: []const u8, member_name: []const u8, ctx: *const LintContext) bool {
     const total: u32 = @intCast(ctx.ast.nodes.len);
     var i: u32 = 0;
@@ -1229,6 +1411,59 @@ fn heritageMethodIsVoid(type_name: []const u8, member_name: []const u8, ctx: *co
             if (!std.mem.eql(u8, iname, type_name)) continue;
             return interfaceMethodIsVoid(id, member_name, ctx);
         }
+    }
+    // Type alias fallback: type Foo = { ... } & { ... }.
+    if (typeAliasBody(type_name, ctx)) |body| {
+        return aliasMethodIsVoid(body, member_name, ctx, 0);
+    }
+    return false;
+}
+
+fn aliasMethodIsVoid(ty: NodeIndex, member_name: []const u8, ctx: *const LintContext, depth: u8) bool {
+    if (depth > 4) return false;
+    if (ty == .none) return false;
+    var inner = ty;
+    while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+    const tag = ctx.nodeTag(inner);
+    if (tag == .ts_type_literal) {
+        const d = ctx.nodeData(inner);
+        if (d.lhs == .none or d.rhs == .none) return false;
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (s >= e or e > ctx.ast.extra_data.len) return false;
+        for (ctx.ast.extra_data[s..e]) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            const mt = ctx.nodeTag(m);
+            if (mt == .ts_method_signature) {
+                const sd = ctx.extraData(ast.InterfaceSigData, @intFromEnum(ctx.nodeData(m).lhs));
+                if (sd.key == .none or ctx.nodeTag(sd.key) != .identifier) continue;
+                const mname = ctx.tokenText(ctx.nodeMainToken(sd.key));
+                if (!std.mem.eql(u8, mname, member_name)) continue;
+                if (returnTypeIsVoid(sd.return_type, ctx)) return true;
+                if (!annotationContainsPromise(sd.return_type, ctx)) return true;
+            }
+            if (mt == .ts_property_signature) {
+                const md = ctx.nodeData(m);
+                if (md.lhs == .none or ctx.nodeTag(md.lhs) != .identifier) continue;
+                const mname = ctx.tokenText(ctx.nodeMainToken(md.lhs));
+                if (!std.mem.eql(u8, mname, member_name)) continue;
+                if (md.rhs == .none) continue;
+                if (typeIsVoidReturningFn(md.rhs, ctx)) return true;
+            }
+        }
+        return false;
+    }
+    if (tag == .ts_union_type or tag == .ts_intersection_type) {
+        const arms = directRange(inner, ctx) orelse return false;
+        for (arms) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            if (aliasMethodIsVoid(m, member_name, ctx, depth + 1)) return true;
+        }
+    }
+    if (tag == .ts_type_reference) {
+        const name = ctx.tokenText(ctx.nodeMainToken(inner));
+        if (typeAliasBody(name, ctx)) |body| return aliasMethodIsVoid(body, member_name, ctx, depth + 1);
+        if (heritageMethodIsVoid(name, member_name, ctx)) return true;
     }
     return false;
 }
@@ -1293,6 +1528,14 @@ fn classMemberFullSpan(m: NodeIndex, method_data: ast.MethodData, ctx: *const Li
     if (method_data.body != .none) {
         const body_sp = ctx.nodeSpan(method_data.body);
         if (body_sp.end > sp.end) sp.end = body_sp.end;
+    }
+    // For abstract / declared methods (no body), the parser's span may stop
+    // before the trailing closing tokens — walk forward to include them.
+    while (sp.end < src.len) {
+        const c = src[sp.end];
+        if (c == ' ' or c == '\t') { sp.end += 1; continue; }
+        if (c == '>' or c == ';' or c == ')' or c == ']') { sp.end += 1; continue; }
+        break;
     }
     return sp;
 }
@@ -1557,18 +1800,25 @@ fn identifierIsPromiseReturning(ident: NodeIndex, ctx: *const LintContext) bool 
             else => {},
         }
     }
-    // Annotated binding: `const f: () => Promise<...>`.
+    // Annotated binding: `const f: () => Promise<...>` etc.
     const dd = ctx.nodeData(decl);
     if (dd.rhs != .none and ctx.nodeTag(dd.rhs) == .ts_type_annotation) {
         const ty = ctx.nodeData(dd.rhs).lhs;
-        if (typeIsPromiseReturningFn(ty, ctx)) return true;
-        // Walk union members: `((args) => Promise<X>) | null` etc.
-        if (ctx.nodeTag(ty) == .ts_union_type) {
-            const arms = directRange(ty, ctx) orelse return false;
-            for (arms) |raw| {
-                const m: NodeIndex = @enumFromInt(raw);
-                if (typeIsPromiseReturningFn(m, ctx)) return true;
-            }
+        if (annotationIsPromiseReturningFn(ty, ctx)) return true;
+    }
+    return false;
+}
+
+fn annotationIsPromiseReturningFn(ty: NodeIndex, ctx: *const LintContext) bool {
+    if (ty == .none) return false;
+    var inner = ty;
+    while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+    if (typeIsPromiseReturningFn(inner, ctx)) return true;
+    if (ctx.nodeTag(inner) == .ts_union_type or ctx.nodeTag(inner) == .ts_intersection_type) {
+        const arms = directRange(inner, ctx) orelse return false;
+        for (arms) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            if (annotationIsPromiseReturningFn(m, ctx)) return true;
         }
     }
     return false;
