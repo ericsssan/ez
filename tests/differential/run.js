@@ -1025,6 +1025,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-unnecessary-type-constraint",
       "no-unsafe-function-type",
       "no-wrapper-object-types",
+      // "no-empty-object-type", // native 34/35 vs runner 35/35 (multi-line span mismatch)
       // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
       // "no-non-null-asserted-nullish-coalescing", // needs flow-sensitive type check to distinguish necessary `!`
       // "prefer-as-const",  // native 45/46 vs runner 46/46 on destructuring binding edge case

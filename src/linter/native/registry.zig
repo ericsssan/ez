@@ -312,7 +312,7 @@ const ts_no_unnecessary_type_constraint = @import("typescript/no_unnecessary_typ
 const ts_no_unsafe_function_type = @import("typescript/no_unsafe_function_type.zig");
 const ts_no_wrapper_object_types = @import("typescript/no_wrapper_object_types.zig");
 // v0.8 TypeScript rules
-// const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");  // hand-written — disabled per IR-only constraint
+const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");
 // const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
 // const ts_array_type = @import("typescript/array_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_prefer_namespace_keyword = @import("typescript/prefer_namespace_keyword.zig");  // hand-written — disabled per IR-only constraint
@@ -639,7 +639,7 @@ pub const all_rules = .{
     ts_no_unnecessary_type_constraint,
     ts_no_unsafe_function_type,
     ts_no_wrapper_object_types,
-    // ts_no_empty_object_type, // runner >> native (runner 35, native 19, gap 16, 4 FP); fall back to JS runner
+    ts_no_empty_object_type,
     // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
     // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner
     // ts_prefer_namespace_keyword, // hand-written — disabled
