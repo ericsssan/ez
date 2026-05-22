@@ -1020,6 +1020,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-misused-new",
       "no-import-type-side-effects",
       "ban-tslint-comment",
+      "class-literal-property-style",
       // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
       // "no-non-null-asserted-nullish-coalescing", // needs flow-sensitive type check to distinguish necessary `!`
       // "prefer-as-const",  // native 45/46 vs runner 46/46 on destructuring binding edge case
