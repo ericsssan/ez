@@ -1,0 +1,45 @@
+{
+  "rule": "@typescript-eslint/no-mixed-enums",
+  "kind": "invalid",
+  "index": 20,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "column": 11,
+      "endColumn": 14,
+      "line": 12,
+      "messageId": "mixed"
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-mixed-enums",
+      "line": 12,
+      "column": 11,
+      "endLine": 12,
+      "endColumn": 14,
+      "message": "Mixing number and string enums can be confusing.",
+      "messageId": "mixed",
+      "severity": 2,
+      "fix": null
+    }
+  ],
+  "oracleFixes": null
+}

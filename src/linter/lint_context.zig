@@ -384,6 +384,14 @@ pub const LintContext = struct {
         return c.typeContainsAny(n);
     }
 
+    /// Return whether a named enum is a string-enum or number-enum.
+    /// Returns null when no enum with this name is in scope.  Used by
+    /// no-mixed-enums and no-unsafe-enum-comparison.
+    pub fn enumKindOf(self: *const LintContext, name: []const u8) ?@import("../checker/checker.zig").EnumKind {
+        const c = self.ensureChecker() orelse return null;
+        return c.enumKindOf(name);
+    }
+
     /// Resolve a TS type-position AST node (ts_type_reference, etc.) to
     /// a TypeId.  Used by no-unsafe-* rules to look at the LHS declared
     /// type via the binding's annotation node directly.
@@ -444,6 +452,24 @@ pub const LintContext = struct {
                 if (self.typeIdIsFunction(m)) return true;
             }
             return false;
+        }
+        return false;
+    }
+
+    /// True when the type id is Promise-like — a type_ref named Promise/
+    /// PromiseLike/Thenable, or a union/intersection where any member is.
+    pub fn typeIdIsPromise(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind == .type_ref) {
+            return std.mem.eql(u8, t.name, "Promise") or
+                std.mem.eql(u8, t.name, "PromiseLike") or
+                std.mem.eql(u8, t.name, "Thenable");
+        }
+        if (t.kind == .union_t or t.kind == .intersection_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (self.typeIdIsPromise(m)) return true;
+            }
         }
         return false;
     }

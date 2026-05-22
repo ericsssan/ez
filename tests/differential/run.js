@@ -1056,6 +1056,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-redundant-type-constituents",
       "no-unnecessary-type-arguments",
       "use-unknown-in-catch-callback-variable",
+      "no-mixed-enums",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {

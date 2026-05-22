@@ -25,6 +25,8 @@ const TypeStore = tymod.TypeStore;
 const TypeId = tymod.TypeId;
 const Type = tymod.Type;
 
+pub const EnumKind = enum(u8) { number, string };
+
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     ast_ref: *const Ast,
@@ -51,6 +53,12 @@ pub const Checker = struct {
     /// sentinel (ID_UNKNOWN inserted before recursion, replaced after).
     declared_type_cache: std.StringHashMapUnmanaged(TypeId),
 
+    /// Per-enum classification: number-valued or string-valued.  TS infers
+    /// each enum as one or the other based on whether ANY member has a
+    /// string initializer.  Used by no-mixed-enums and no-unsafe-enum-
+    /// comparison.  Populated by `buildKnownTypeNames`.
+    enum_kinds: std.StringHashMapUnmanaged(EnumKind),
+
     pub fn init(
         gpa: std.mem.Allocator,
         ast_ref: *const Ast,
@@ -72,6 +80,7 @@ pub const Checker = struct {
             .known_type_names = .empty,
             .type_decl_nodes = .empty,
             .declared_type_cache = .empty,
+            .enum_kinds = .empty,
         };
         try self.buildKnownTypeNames();
         return self;
@@ -82,6 +91,7 @@ pub const Checker = struct {
         self.gpa.free(self.node_types);
         self.gpa.free(self.sym_types);
         self.known_type_names.deinit(self.gpa);
+        self.enum_kinds.deinit(self.gpa);
         self.type_decl_nodes.deinit(self.gpa);
         self.declared_type_cache.deinit(self.gpa);
     }
@@ -202,10 +212,60 @@ pub const Checker = struct {
     }
 
     fn inferIdentifier(self: *Checker, node: NodeIndex) TypeId {
-        const sym = self.symbolForIdentRef(node) orelse return tymod.ID_UNKNOWN;
-        const base = self.declaredTypeForSymbol(sym);
-        // Apply control-flow narrowing from enclosing if/&& guards.
-        return self.narrowAtUse(node, sym, base);
+        if (self.symbolForIdentRef(node)) |sym| {
+            const base = self.declaredTypeForSymbol(sym);
+            return self.narrowAtUse(node, sym, base);
+        }
+        // Fallback: semantic didn't resolve the reference (common for
+        // identifiers used in TS-specific contexts like enum member
+        // initializers).  Look up by name through the AST for a
+        // declarator with matching name.
+        const tok = self.ast_ref.nodeMainToken(node);
+        const name = self.ast_ref.tokenText(tok);
+        if (name.len == 0) return tymod.ID_UNKNOWN;
+        return self.typeOfNameByAstSearch(name) orelse tymod.ID_UNKNOWN;
+    }
+
+    /// Walk the AST looking for a top-level declarator/fn_decl/class_decl
+    /// with the given name.  Returns the declared/inferred type, or null
+    /// if not found.
+    fn typeOfNameByAstSearch(self: *Checker, name: []const u8) ?TypeId {
+        const total: u32 = @intCast(self.ast_ref.nodes.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            const t = self.ast_ref.nodeTag(ni);
+            switch (t) {
+                .declarator => {
+                    const data = self.ast_ref.nodeData(ni);
+                    if (data.lhs == .none) continue;
+                    if (self.ast_ref.nodeTag(data.lhs) != .identifier) continue;
+                    const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.lhs));
+                    if (!std.mem.eql(u8, dn, name)) continue;
+                    if (data.rhs == .none) {
+                        // Use annotation if present.
+                        const ann = self.ast_ref.nodeData(data.lhs).rhs;
+                        if (ann != .none and self.ast_ref.nodeTag(ann) == .ts_type_annotation) {
+                            return self.resolveTypeNode(self.ast_ref.nodeData(ann).lhs);
+                        }
+                        return null;
+                    }
+                    return self.typeOf(data.rhs);
+                },
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                .ts_declare_function => {
+                    const data = self.ast_ref.nodeData(ni);
+                    if (data.lhs == .none) continue;
+                    const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(data.lhs));
+                    if (fd.name == .none) continue;
+                    const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
+                    if (!std.mem.eql(u8, dn, name)) continue;
+                    return self.functionTypeFromFnDecl(ni);
+                },
+                else => {},
+            }
+        }
+        return null;
     }
 
     /// Walk parent chain looking for `if_stmt` / `logical_and` / `conditional`
@@ -883,6 +943,60 @@ pub const Checker = struct {
     ///   * ts_type_parameter (generic params)
     /// We also pre-populate built-in lib type names so common imports
     /// like `Date`, `Map`, `Promise<T>` don't get classified as errors.
+    /// True when an enum member's initializer is string-valued.  Handles
+    /// direct string/template literals and call/member expressions
+    /// whose source includes a string literal hint.
+    fn enumMemberKindIsString(self: *Checker, init_node: NodeIndex) bool {
+        var n = init_node;
+        while (self.ast_ref.nodeTag(n) == .grouping_expr) n = self.ast_ref.nodeData(n).lhs;
+        const t = self.ast_ref.nodeTag(n);
+        if (t == .string_literal) return true;
+        if (t == .template_literal) {
+            // Template without substitutions is string; with substitutions
+            // we can't tell — fall through.
+            return true;
+        }
+        // Cross-enum reference: First.A where First is a string enum.
+        if (t == .member_expr or t == .optional_member_expr) {
+            const md = self.ast_ref.nodeData(n);
+            if (md.lhs != .none and self.ast_ref.nodeTag(md.lhs) == .identifier) {
+                const obj_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.lhs));
+                if (self.enum_kinds.get(obj_name)) |k| return k == .string;
+            }
+        }
+        // Function call returning string — resolve via type checker.
+        const ty = self.typeOf(n);
+        const tt = self.store.get(ty);
+        if (tt.kind == .string or tt.kind == .string_literal) return true;
+        return false;
+    }
+
+    fn enumMemberKindIsNumber(self: *Checker, init_node: NodeIndex) bool {
+        var n = init_node;
+        while (self.ast_ref.nodeTag(n) == .grouping_expr) n = self.ast_ref.nodeData(n).lhs;
+        const t = self.ast_ref.nodeTag(n);
+        if (t == .number_literal or t == .bigint_literal) return true;
+        if (t == .unary_minus or t == .unary_plus) {
+            return self.enumMemberKindIsNumber(self.ast_ref.nodeData(n).lhs);
+        }
+        if (t == .member_expr or t == .optional_member_expr) {
+            const md = self.ast_ref.nodeData(n);
+            if (md.lhs != .none and self.ast_ref.nodeTag(md.lhs) == .identifier) {
+                const obj_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.lhs));
+                if (self.enum_kinds.get(obj_name)) |k| return k == .number;
+            }
+        }
+        const ty = self.typeOf(n);
+        const tt = self.store.get(ty);
+        if (tt.kind == .number or tt.kind == .number_literal or
+            tt.kind == .bigint or tt.kind == .bigint_literal) return true;
+        return false;
+    }
+
+    pub fn enumKindOf(self: *const Checker, name: []const u8) ?EnumKind {
+        return self.enum_kinds.get(name);
+    }
+
     fn buildKnownTypeNames(self: *Checker) !void {
         const lib_types = [_][]const u8{
             "Array", "ReadonlyArray", "Promise", "Map", "Set", "WeakMap", "WeakSet",
@@ -924,7 +1038,38 @@ pub const Checker = struct {
                 },
                 .ts_enum_decl => {
                     const ed = self.ast_ref.extraData(ast.EnumData, @intFromEnum(data.lhs));
-                    try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(ed.name), {});
+                    const enum_name = self.ast_ref.tokenText(ed.name);
+                    try self.known_type_names.put(self.gpa, enum_name, {});
+                    try self.type_decl_nodes.put(self.gpa, enum_name, ni);
+                    // Determine the ESTABLISHED member kind: the kind of
+                    // the FIRST member with a concrete value (string or
+                    // number).  This is the rule's "established" kind:
+                    // subsequent mismatches fire.  Decl merging: only set
+                    // if no prior decl with the same name already set it.
+                    if (self.enum_kinds.get(enum_name) == null) {
+                        var first_kind: ?EnumKind = null;
+                        if (ed.members_start < ed.members_end and ed.members_end <= self.ast_ref.extra_data.len) {
+                            for (self.ast_ref.extra_data[ed.members_start..ed.members_end]) |raw| {
+                                const m: NodeIndex = @enumFromInt(raw);
+                                if (self.ast_ref.nodeTag(m) != .ts_enum_member) continue;
+                                const md = self.ast_ref.nodeData(m);
+                                if (md.rhs == .none) {
+                                    // Auto-increment → number.
+                                    first_kind = .number;
+                                    break;
+                                }
+                                if (self.enumMemberKindIsString(md.rhs)) {
+                                    first_kind = .string;
+                                    break;
+                                }
+                                if (self.enumMemberKindIsNumber(md.rhs)) {
+                                    first_kind = .number;
+                                    break;
+                                }
+                            }
+                        }
+                        if (first_kind) |k| try self.enum_kinds.put(self.gpa, enum_name, k);
+                    }
                 },
                 .class_decl => {
                     const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
@@ -1748,6 +1893,11 @@ pub const Checker = struct {
         const obj_ty = self.typeOf(data.lhs);
         if (tymod.isAny(&self.store, obj_ty)) return tymod.ID_ANY;
         const tag = self.ast_ref.nodeTag(node);
+        // Computed member: `obj[idx]`.  Handles array/tuple element access
+        // and string-literal key indexing into object types.
+        if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+            return self.inferComputedMember(obj_ty, data.rhs, data.lhs);
+        }
         const prop_name: []const u8 = switch (tag) {
             .member_expr, .optional_member_expr => blk: {
                 if (data.rhs == .none) break :blk &.{};
@@ -1764,6 +1914,73 @@ pub const Checker = struct {
         // members similarly to TS (every member contributes its
         // property type, joined by union).
         return self.memberOnApparentType(obj_ty, prop_name, data.lhs);
+    }
+
+    /// Compute the type of `obj[key]` access.  For arrays/tuples returns
+    /// the element type; for objects with a static string key, returns
+    /// that property's type; otherwise unknown.
+    fn inferComputedMember(self: *Checker, obj_ty: TypeId, key_node: NodeIndex, obj_node: NodeIndex) TypeId {
+        if (key_node == .none) return tymod.ID_UNKNOWN;
+        const obj = self.store.get(obj_ty);
+        // Array element access — index by number → element type.
+        // For tuples, a numeric literal selects a specific element;
+        // otherwise return the union of all elements.
+        if (obj.kind == .array_t or obj.kind == .readonly_array_t) {
+            const elems = self.store.idsOf(obj.list_data);
+            if (elems.len == 0) return tymod.ID_UNKNOWN;
+            return elems[0];
+        }
+        if (obj.kind == .tuple_t) {
+            const elems = self.store.idsOf(obj.list_data);
+            if (elems.len == 0) return tymod.ID_UNKNOWN;
+            // Numeric literal index → specific element if in range.
+            if (self.ast_ref.nodeTag(key_node) == .number_literal) {
+                const tok = self.ast_ref.nodeMainToken(key_node);
+                const text = self.ast_ref.tokenText(tok);
+                const idx = std.fmt.parseInt(usize, text, 10) catch return tymod.ID_UNKNOWN;
+                if (idx < elems.len) return elems[idx];
+                return tymod.ID_UNDEFINED;
+            }
+            // Non-literal index → first element type (approximation).
+            return elems[0];
+        }
+        // String literal key into object — look up by name.
+        if (obj.kind == .object_t and self.ast_ref.nodeTag(key_node) == .string_literal) {
+            const tok = self.ast_ref.nodeMainToken(key_node);
+            const raw = self.ast_ref.tokenText(tok);
+            if (raw.len >= 2) {
+                const name = raw[1 .. raw.len - 1];
+                for (self.store.propsOf(obj.object_props)) |p| {
+                    if (std.mem.eql(u8, p.name, name)) return p.type_id;
+                }
+            }
+        }
+        // Type reference (Promise / Array / etc.): resolve to the
+        // underlying structural shape, then retry.
+        if (obj.kind == .type_ref) {
+            if (self.resolveDeclaredType(obj.name)) |resolved| {
+                if (!resolved.eq(obj_ty)) {
+                    return self.inferComputedMember(resolved, key_node, obj_node);
+                }
+            }
+            // `ArrayLike<T>` / `Array<T>` / `ReadonlyArray<T>`: numeric
+            // index returns the type argument.
+            if (std.mem.eql(u8, obj.name, "ArrayLike") or
+                std.mem.eql(u8, obj.name, "Array") or
+                std.mem.eql(u8, obj.name, "ReadonlyArray"))
+            {
+                const args = self.store.idsOf(obj.list_data);
+                if (args.len > 0) return args[0];
+            }
+        }
+        // Union/intersection: walk members, take first concrete result.
+        if (obj.kind == .union_t or obj.kind == .intersection_t) {
+            for (self.store.idsOf(obj.list_data)) |m| {
+                const t = self.inferComputedMember(m, key_node, obj_node);
+                if (!tymod.isUnknown(&self.store, t)) return t;
+            }
+        }
+        return tymod.ID_UNKNOWN;
     }
 
     /// Look up `prop_name` on the apparent type of `obj_ty`.  Handles:

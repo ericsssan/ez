@@ -1,0 +1,33 @@
+{
+  "rule": "@typescript-eslint/no-mixed-enums",
+  "kind": "invalid",
+  "index": 16,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "column": 15,
+      "endColumn": 16,
+      "line": 6,
+      "messageId": "mixed"
+    }
+  ],
+  "oracleDiags": [],
+  "oracleFixes": null
+}
