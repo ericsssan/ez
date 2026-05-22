@@ -981,6 +981,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "unicorn/prefer-array-flat-map": "prefer-array-flat-map",
       "unicorn/consistent-date-clone": "consistent-date-clone",
       "unicorn/require-number-to-fixed-digits-argument": "require-number-to-fixed-digits-argument",
+      // "unicorn/throw-new-error": "throw-new-error", // unicorn rule actually fires beyond throw context
     };
     // @typescript-eslint/X variants often differ from the ESLint-core rule
     // they extend (different messageIds, broader/narrower semantics, TS-only
