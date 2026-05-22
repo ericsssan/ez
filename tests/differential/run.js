@@ -1060,6 +1060,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-unsafe-enum-comparison",
       "promise-function-async",
       "no-misused-promises",
+      "no-unnecessary-type-conversion",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
