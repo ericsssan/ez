@@ -275,6 +275,7 @@ const ts_no_misused_promises = @import("typescript/no_misused_promises.zig");
 const ts_no_unnecessary_type_conversion = @import("typescript/no_unnecessary_type_conversion.zig");
 const ts_no_unsafe_type_assertion = @import("typescript/no_unsafe_type_assertion.zig");
 const ts_prefer_nullish_coalescing = @import("typescript/prefer_nullish_coalescing.zig");
+const ts_prefer_optional_chain = @import("typescript/prefer_optional_chain.zig");
 const ts_no_require_imports = @import("typescript/no_require_imports.zig");
 const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values.zig");
 // const ts_no_array_delete = @import("typescript/no_array_delete.zig");  // hand-written — disabled per IR-only constraint
@@ -629,6 +630,7 @@ pub const all_rules = .{
     ts_no_unnecessary_type_conversion,
     ts_no_unsafe_type_assertion,
     ts_prefer_nullish_coalescing,
+    ts_prefer_optional_chain,
     ts_no_duplicate_enum_values,
     // ts_no_array_delete, // hand-written — disabled
     // TypeScript v0.6 (5)
