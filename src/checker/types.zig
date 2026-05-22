@@ -354,17 +354,11 @@ pub const TypeStore = struct {
 // ── Assignability ────────────────────────────────────────────
 
 /// Is `source` assignable to `target`?  Approximates TS's `isAssignableTo`
-/// to a depth sufficient for the unsafe-* family and Promise-related
-/// rules.  Handles: identity, any/unknown/never, literal→primitive,
-/// union (both sides), structural object, type_ref by name+args,
-/// array/tuple covariance.  Does NOT handle: function variance,
-/// conditional/mapped types, generic constraints, declaration merging.
+/// to the depth needed for the type-aware rule family.
 pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) bool {
     if (source.eq(target)) return true;
-    // unknown receives anything; any flows both ways.
     if (isUnknown(store, target)) return true;
     if (isAny(store, source) or isAny(store, target)) return true;
-    // never is the bottom — assignable to anything.
     const s = store.get(source);
     if (s.kind == .never) return true;
     // Union source: every member must be assignable to target.
@@ -382,6 +376,20 @@ pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) b
         }
         return false;
     }
+    // Intersection target: source must be assignable to EVERY member.
+    if (t.kind == .intersection_t) {
+        for (store.idsOf(t.list_data)) |m| {
+            if (!isAssignableTo(store, source, m)) return false;
+        }
+        return true;
+    }
+    // Intersection source: ANY member assignable to target is enough.
+    if (s.kind == .intersection_t) {
+        for (store.idsOf(s.list_data)) |m| {
+            if (isAssignableTo(store, m, target)) return true;
+        }
+        return false;
+    }
     // Literal → primitive of same kind.
     if (s.kind == .string_literal and t.kind == .string) return true;
     if (s.kind == .number_literal and t.kind == .number) return true;
@@ -396,9 +404,7 @@ pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) b
         }
         return true;
     }
-    // Array/tuple covariance (sound for read-only positions; TS isn't
-    // fully sound but our level of approximation matches typescript-eslint
-    // for the unsafe-* family's needs).
+    // Array/tuple covariance (sound for read-only positions).
     if ((s.kind == .array_t or s.kind == .readonly_array_t) and
         (t.kind == .array_t or t.kind == .readonly_array_t))
     {
@@ -407,6 +413,7 @@ pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) b
         if (se.len == 0 or te.len == 0) return false;
         return isAssignableTo(store, se[0], te[0]);
     }
+    // Tuple ↔ tuple: element-wise covariant.
     if (s.kind == .tuple_t and t.kind == .tuple_t) {
         const se = store.idsOf(s.list_data);
         const te = store.idsOf(t.list_data);
@@ -414,9 +421,15 @@ pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) b
         for (se, te) |a, b| if (!isAssignableTo(store, a, b)) return false;
         return true;
     }
-    // type_ref: same NAME and assignable type args.  This is an
-    // approximation — real TS variance depends on whether the
-    // parameter is `in`/`out`/invariant.  We treat all as covariant.
+    // Tuple → array: tuple T1, T2, ... assignable to (T1 | T2 | ...)[].
+    if (s.kind == .tuple_t and (t.kind == .array_t or t.kind == .readonly_array_t)) {
+        const elems = store.idsOf(s.list_data);
+        const te = store.idsOf(t.list_data);
+        if (te.len == 0) return false;
+        for (elems) |e| if (!isAssignableTo(store, e, te[0])) return false;
+        return true;
+    }
+    // type_ref: same NAME and assignable type args (covariant approximation).
     if (s.kind == .type_ref and t.kind == .type_ref) {
         if (!std.mem.eql(u8, s.name, t.name)) return false;
         const sa = store.idsOf(s.list_data);
@@ -424,6 +437,28 @@ pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) b
         if (sa.len != ta.len) return false;
         for (sa, ta) |a, b| if (!isAssignableTo(store, a, b)) return false;
         return true;
+    }
+    // Function variance:
+    //   - target's param count <= source's param count (extra source
+    //     params are allowed — JS callers can ignore).
+    //   - parameters contravariant: target_param assignable to source_param.
+    //   - return covariant: source_return assignable to target_return.
+    if (s.kind == .function_t and t.kind == .function_t) {
+        const s_sigs = store.signaturesOf(s.signatures);
+        const t_sigs = store.signaturesOf(t.signatures);
+        if (s_sigs.len == 0 or t_sigs.len == 0) return false;
+        // Use the first overload of each — TSe rule family doesn't
+        // exercise overload matrix selection.
+        const ss = s_sigs[0];
+        const ts = t_sigs[0];
+        const s_params = store.signatureParamsOf(ss);
+        const t_params = store.signatureParamsOf(ts);
+        if (t_params.len > s_params.len) return false;
+        for (t_params, 0..) |tp, i| {
+            // contravariant: target_param ≤ source_param.
+            if (!isAssignableTo(store, tp, s_params[i])) return false;
+        }
+        return isAssignableTo(store, ss.return_type, ts.return_type);
     }
     return false;
 }
