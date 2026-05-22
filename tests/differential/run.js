@@ -1049,7 +1049,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-unsafe-declaration-merging",
       "prefer-function-type",
       "no-empty-object-type",
-      // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
+      "no-duplicate-enum-values",
       "no-non-null-asserted-nullish-coalescing",
       "prefer-as-const",
       "max-params",
