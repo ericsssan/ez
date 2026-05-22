@@ -173,7 +173,6 @@ fn isUnionAnnotation(ann_inner: NodeIndex, ctx: *const LintContext) bool {
 }
 
 fn bodyHasThisReturn(body: NodeIndex, class_name: []const u8, ctx: *const LintContext) bool {
-    _ = class_name;
     if (ctx.nodeTag(body) == .this_expr) return true;
     if (ctx.nodeTag(body) != .block_stmt) {
         var b = body;
@@ -198,14 +197,65 @@ fn bodyHasThisReturn(body: NodeIndex, class_name: []const u8, ctx: *const LintCo
         while (ctx.nodeTag(a) == .grouping_expr) a = ctx.nodeData(a).lhs;
         if (ctx.nodeTag(a) == .this_expr) { saw_this = true; continue; }
         if (isThisAliasIdent(a, body, ctx)) { saw_this = true; continue; }
-        // Non-this return that isn't a nullish literal: bail.  Type-
-        // checking against the union constituents would let us
-        // recognize the case-20-style "returns a value of the
-        // non-class constituent" pattern, but that requires reliable
-        // declared-type resolution we don't have.
-        if (!isNullishExpr(a, ctx)) return false;
+        if (isNullishExpr(a, ctx)) continue;
+        // Non-this return: bail unless its declared annotation can be
+        // proven not to mention the class.  We use the source text of
+        // the annotation (when the return value is an identifier with
+        // a known declaration) — the resolved TypeId for a class
+        // instance loses the name in our checker.
+        if (!returnValueIsKnownNonClass(a, class_name, ctx)) return false;
     }
     return saw_this;
+}
+
+/// True when the return value `n` has a declared type annotation
+/// that we can prove doesn't mention `class_name`.  Conservative —
+/// returns false on anything we can't statically resolve (call
+/// expressions, member access, untyped variables, etc.).
+fn returnValueIsKnownNonClass(n: NodeIndex, class_name: []const u8, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(n) != .identifier) return false;
+    const sym = symbolForIdentLocal(n, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    const ann = ctx.nodeData(decl).rhs;
+    if (ann == .none or ctx.nodeTag(ann) != .ts_type_annotation) return false;
+    // Source-text scan: ensure the class name doesn't appear in the
+    // annotation as a whole identifier.
+    const sp = ctx.nodeSpan(ann);
+    if (sp.end > ctx.ast.source.len) return false;
+    const text = ctx.ast.source[sp.start..sp.end];
+    return !textContainsIdentifier(text, class_name);
+}
+
+fn symbolForIdentLocal(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {
+    const refs = &ctx.semantic.references;
+    const total = refs.count();
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const rid = parser.reference.ReferenceId.fromInt(i);
+        if (refs.getNode(rid) != ident) continue;
+        if (!refs.isResolved(rid)) return null;
+        return refs.getSymbol(rid);
+    }
+    return null;
+}
+
+fn textContainsIdentifier(text: []const u8, name: []const u8) bool {
+    if (name.len == 0) return false;
+    var i: usize = 0;
+    while (i + name.len <= text.len) : (i += 1) {
+        // Boundary check: the previous char (if any) and next char
+        // (if any) must NOT be identifier characters.
+        const before_ok = i == 0 or !isIdentChar(text[i - 1]);
+        const after_ok = i + name.len == text.len or !isIdentChar(text[i + name.len]);
+        if (before_ok and after_ok and std.mem.eql(u8, text[i .. i + name.len], name)) return true;
+    }
+    return false;
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or c == '_' or c == '$';
 }
 
 /// Returns the constituent node referencing `class_name` if `ann_inner`
