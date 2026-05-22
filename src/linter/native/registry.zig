@@ -332,7 +332,7 @@ const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig
 const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");
 const ts_parameter_properties = @import("typescript/parameter_properties.zig");
 const ts_no_inferrable_types = @import("typescript/no_inferrable_types.zig");
-// const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declaration_merging.zig");  // hand-written — disabled per IR-only constraint
+const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declaration_merging.zig");
 // const ts_explicit_function_return_type = @import("typescript/explicit_function_return_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_explicit_module_boundary_types = @import("typescript/explicit_module_boundary_types.zig");  // hand-written — disabled per IR-only constraint
 
@@ -672,7 +672,7 @@ pub const all_rules = .{
     ts_parameter_properties,
     unicorn_throw_new_error,
     ts_no_inferrable_types,
-    // ts_no_unsafe_declaration_merging, // hand-written — disabled
+    ts_no_unsafe_declaration_merging,
     // ts_explicit_function_return_type, // hand-written — disabled
     // ts_explicit_module_boundary_types, // runner >> native (runner 144, native 117, gap 27, 21 FP); fall back to JS runner
     // Unicorn plugin (0 — both hand-written rules disabled)
