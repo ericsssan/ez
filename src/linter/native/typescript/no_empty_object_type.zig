@@ -72,15 +72,41 @@ fn checkTypeLiteral(node: NodeIndex, ctx: *const LintContext) void {
     // allowWithName — match against the enclosing alias name if any.
     if (aliasNameMatchesAllow(node, ctx)) return;
     // Span: cover the `{}` pair.  nodeSpan returns just the open
-    // brace; scan forward to the matching close.
+    // brace; scan forward through whitespace and comments to the
+    // matching close.  Empty bodies may include leading/trailing
+    // comments (e.g. `{ /* ... */ }`).
     var sp = ctx.nodeSpan(node);
     const src = ctx.ast.source;
-    if (sp.end < src.len) {
-        var i = sp.end;
-        while (i < src.len and (src[i] == ' ' or src[i] == '\t' or src[i] == '\n')) i += 1;
-        if (i < src.len and src[i] == '}') sp.end = i + 1;
+    if (sp.end < src.len and sp.end > 0 and src[sp.end - 1] == '{') {
+        sp.end = walkToCloseBrace(src, sp.end);
     }
     ctx.reportSpanWithMessageId(sp, "noEmptyObject");
+}
+
+fn walkToCloseBrace(src: []const u8, start: u32) u32 {
+    var i: usize = start;
+    while (i < src.len) {
+        const c = src[i];
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            i += 1;
+            continue;
+        }
+        // Line comment.
+        if (i + 1 < src.len and c == '/' and src[i + 1] == '/') {
+            while (i < src.len and src[i] != '\n') : (i += 1) {}
+            continue;
+        }
+        // Block comment.
+        if (i + 1 < src.len and c == '/' and src[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) : (i += 1) {}
+            if (i + 1 < src.len) i += 2;
+            continue;
+        }
+        break;
+    }
+    if (i < src.len and src[i] == '}') return @intCast(i + 1);
+    return start;
 }
 
 fn aliasNameMatchesAllow(node: NodeIndex, ctx: *const LintContext) bool {

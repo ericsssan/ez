@@ -1048,7 +1048,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-require-imports",
       "no-unsafe-declaration-merging",
       "prefer-function-type",
-      // "no-empty-object-type", // native 34/35 vs runner 35/35 (multi-line span mismatch)
+      "no-empty-object-type",
       // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
       "no-non-null-asserted-nullish-coalescing",
       "prefer-as-const",
