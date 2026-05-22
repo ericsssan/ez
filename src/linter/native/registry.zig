@@ -272,7 +272,7 @@ const ts_no_non_null_asserted_optional_chain = @import("typescript/no_non_null_a
 // v0.7 TypeScript rules
 // const ts_prefer_enum_initializers = @import("typescript/prefer_enum_initializers.zig");  // hand-written — disabled per IR-only constraint
 // const ts_ban_types = @import("typescript/ban_types.zig");  // hand-written — disabled per IR-only constraint
-// const ts_prefer_literal_enum_member = @import("typescript/prefer_literal_enum_member.zig");  // hand-written — disabled per IR-only constraint
+const ts_prefer_literal_enum_member = @import("typescript/prefer_literal_enum_member.zig");
 // const ts_no_duplicate_type_constituents = @import("typescript/no_duplicate_type_constituents.zig");  // hand-written — disabled per IR-only constraint
 // const ts_no_mixed_enums = @import("typescript/no_mixed_enums.zig");  // hand-written — disabled per IR-only constraint
 const ts_no_extra_non_null_assertion = @import("typescript/no_extra_non_null_assertion.zig");
@@ -597,7 +597,7 @@ pub const all_rules = .{
     // TypeScript v0.7 (5)
     // ts_prefer_enum_initializers, // hand-written — disabled
     // ts_ban_types, // hand-written — disabled
-    // ts_prefer_literal_enum_member, // hand-written — disabled
+    ts_prefer_literal_enum_member,
     // ts_no_duplicate_type_constituents, // native has 16 FP making hybrid 48 vs runner 34 (worse); fall back to JS runner
     // ts_no_mixed_enums, // native has 4 FP making hybrid worse than runner; fall back to JS runner
     // TypeScript v0.8 (9)
