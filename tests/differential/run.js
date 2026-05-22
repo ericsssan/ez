@@ -1052,6 +1052,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
       "no-non-null-asserted-nullish-coalescing",
       // "prefer-as-const",  // native 45/46 vs runner 46/46 on destructuring binding edge case
+      "max-params",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
@@ -1063,7 +1064,13 @@ if (fs.existsSync(ESLINT_ROOT)) {
       }
       return ruleName;
     })();
-    const _ruleHasNativeImpl = _nativeRuleSet.has(_nativeRuleName);
+    // Native rules that should ONLY be routed through their TS plugin
+    // prefix — bare-name lookups must fall back to the JS runner.
+    // Used when the native impl is TS-specific (e.g. countVoidThis) but
+    // the bare ESLint rule has different defaults/semantics.
+    const TS_ONLY_BARE_NAMES = new Set(["max-params"]);
+    const _ruleHasNativeImpl = _nativeRuleSet.has(_nativeRuleName) &&
+      !(TS_ONLY_BARE_NAMES.has(_nativeRuleName) && !ruleName.startsWith("@typescript-eslint/"));
     // Type-aware @typescript-eslint rules require TS's type checker
     // (projectService) to fire correctly.  The JS runner doesn't have
     // that available in this harness, so it produces meaningless FNs
