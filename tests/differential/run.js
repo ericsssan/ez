@@ -1042,7 +1042,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "prefer-ts-expect-error",
       // "parameter-properties", // native 59/63 vs runner 63/63 (prefer:parameter-property not implemented)
       "no-this-alias",
-      // "no-restricted-types", // native 34/39 vs runner 39/39 (tuple `[]`, implements clauses, type-args)
+      "no-restricted-types",
       "no-explicit-any",
       "no-var-requires",
       "no-require-imports",
