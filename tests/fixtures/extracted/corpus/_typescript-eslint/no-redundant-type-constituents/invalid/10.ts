@@ -1,0 +1,1 @@
+type ErrorTypes = NotKnown | 0;

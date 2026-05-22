@@ -1,0 +1,1 @@
+type T = (-1n | 1n) | bigint;

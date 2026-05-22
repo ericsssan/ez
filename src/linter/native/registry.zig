@@ -265,6 +265,7 @@ const ts_no_restricted_types = @import("typescript/no_restricted_types.zig");
 const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
 const ts_no_var_requires = @import("typescript/no_var_requires.zig");
 const ts_max_params = @import("typescript/max_params.zig");
+const ts_no_redundant_type_constituents = @import("typescript/no_redundant_type_constituents.zig");
 const ts_no_require_imports = @import("typescript/no_require_imports.zig");
 const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values.zig");
 // const ts_no_array_delete = @import("typescript/no_array_delete.zig");  // hand-written — disabled per IR-only constraint
@@ -609,6 +610,7 @@ pub const all_rules = .{
     ts_no_var_requires,
     ts_no_require_imports,
     ts_max_params,
+    ts_no_redundant_type_constituents,
     ts_no_duplicate_enum_values,
     // ts_no_array_delete, // hand-written — disabled
     // TypeScript v0.6 (5)

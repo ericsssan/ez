@@ -1,0 +1,1 @@
+type T = (2 | 'other' | 3) | number;

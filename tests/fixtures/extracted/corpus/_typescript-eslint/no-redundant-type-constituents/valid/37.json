@@ -1,0 +1,26 @@
+{
+  "rule": "@typescript-eslint/no-redundant-type-constituents",
+  "kind": "valid",
+  "index": 37,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted/test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/Users/ericsan/Development/OpenSource/Ez/tests/fixtures/extracted"
+  },
+  "output": null,
+  "declaredErrors": [],
+  "oracleLines": [],
+  "oracleFixes": null
+}
