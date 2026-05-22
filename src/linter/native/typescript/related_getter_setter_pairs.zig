@@ -122,7 +122,19 @@ fn checkPair(getter: NodeIndex, setter: NodeIndex, ctx: *const LintContext) void
     if (ctx.typeIdIsAny(set_id) or ctx.typeIdContainsUnknown(set_id)) return;
     if (ctx.typeIdAssignableTo(get_id, set_id)) return;
     // Report on the getter's return type annotation.
-    ctx.reportWithMessageId(get_ret, "mismatch");
+    // Report on the return type, trimming trailing `;` / `,` that
+    // node_max_toks sometimes pulls into the span.
+    var sp = ctx.nodeSpan(get_ret);
+    const src = ctx.ast.source;
+    while (sp.end > sp.start) {
+        const c = src[sp.end - 1];
+        if (c == ';' or c == ',' or c == ' ' or c == '\t' or c == '\n') {
+            sp.end -= 1;
+            continue;
+        }
+        break;
+    }
+    ctx.reportSpanWithMessageId(sp, "mismatch");
 }
 
 fn getterReturnType(method: NodeIndex, ctx: *const LintContext) ?NodeIndex {
