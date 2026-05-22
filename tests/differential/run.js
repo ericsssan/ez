@@ -1015,6 +1015,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "related-getter-setter-pairs",
       "prefer-regexp-exec",
       "no-implied-eval",
+      "no-confusing-non-null-assertion",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {

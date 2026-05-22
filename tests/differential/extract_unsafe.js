@@ -43,6 +43,7 @@ const RULES = [
   "related-getter-setter-pairs",
   "prefer-regexp-exec",
   "no-implied-eval",
+  "no-confusing-non-null-assertion",
   // no-unsafe-argument has fixtures via the regular extractor; leaving here for completeness:
   // "no-unsafe-argument",
 ];
