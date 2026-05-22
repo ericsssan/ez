@@ -55,8 +55,14 @@ fn argIsNonGlobalRegex(arg: NodeIndex, ctx: *const LintContext) bool {
         return !regexTextHasGlobalFlag(ctx.tokenText(ctx.nodeMainToken(n)));
     }
     // A string literal argument: TS treats it as a regex pattern with
-    // no flags — definitely no 'g'.
-    if (tag == .string_literal or tag == .template_literal) return true;
+    // no flags — definitely no 'g'.  Skip when the pattern is
+    // syntactically invalid — TSe doesn't rewrite calls that would
+    // throw at runtime.
+    if (tag == .string_literal or tag == .template_literal) {
+        const pat = stringLiteralValue(n, ctx) orelse return false;
+        if (!isValidRegexPattern(pat)) return false;
+        return true;
+    }
     // `new RegExp(pattern)` / `new RegExp(pattern, flags)`
     if (tag == .new_expr) {
         const new_callee = ctx.nodeData(n).lhs;
@@ -79,6 +85,42 @@ fn argIsNonGlobalRegex(arg: NodeIndex, ctx: *const LintContext) bool {
         return argIsNonGlobalRegex(init, ctx);
     }
     return false;
+}
+
+fn stringLiteralValue(node: NodeIndex, ctx: *const LintContext) ?[]const u8 {
+    const sp = ctx.nodeSpan(node);
+    if (sp.end <= sp.start + 2) return null;
+    const raw = ctx.ast.source[sp.start..sp.end];
+    if (raw.len < 2) return null;
+    return raw[1 .. raw.len - 1];
+}
+
+/// Cheap regex-pattern syntax check.  We don't care about full
+/// validity — only whether unmatched brackets / parens would make TS
+/// treat the construction as failing at runtime.
+fn isValidRegexPattern(pat: []const u8) bool {
+    var bracket_depth: i32 = 0;
+    var paren_depth: i32 = 0;
+    var i: usize = 0;
+    while (i < pat.len) : (i += 1) {
+        const c = pat[i];
+        if (c == '\\') {
+            if (i + 1 < pat.len) i += 1;
+            continue;
+        }
+        if (bracket_depth > 0) {
+            if (c == ']') bracket_depth -= 1;
+            continue;
+        }
+        if (c == '[') { bracket_depth += 1; continue; }
+        if (c == '(') { paren_depth += 1; continue; }
+        if (c == ')') {
+            if (paren_depth == 0) return false;
+            paren_depth -= 1;
+            continue;
+        }
+    }
+    return bracket_depth == 0 and paren_depth == 0;
 }
 
 fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {
