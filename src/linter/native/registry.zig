@@ -261,7 +261,7 @@ const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
 // v0.5 TypeScript rules
 // const ts_ban_ts_comment = @import("typescript/ban_ts_comment.zig");  // hand-written — disabled per IR-only constraint
 // const ts_no_this_alias = @import("typescript/no_this_alias.zig");  // hand-written — disabled per IR-only constraint
-// const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values.zig");  // hand-written — disabled per IR-only constraint
+const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values.zig");
 // const ts_no_array_delete = @import("typescript/no_array_delete.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 TypeScript rules
 // const ts_no_useless_empty_export = @import("typescript/no_useless_empty_export.zig");  // hand-written — disabled per IR-only constraint
@@ -583,7 +583,7 @@ pub const all_rules = .{
     // TypeScript v0.5 (4)
     // ts_ban_ts_comment, // runner >> native (runner 108, native 66, gap 42, 15 FP); fall back to JS runner
     // ts_no_this_alias, // native has FP making hybrid worse (runner 10, native 6, 1 FP); fall back to JS runner
-    // ts_no_duplicate_enum_values, // runner >> native (runner 40, native 28, 12 FN); fall back
+    ts_no_duplicate_enum_values,
     // ts_no_array_delete, // hand-written — disabled
     // TypeScript v0.6 (5)
     // ts_no_useless_empty_export, // native 5 FP (.d.ts not detectable natively); fall back
