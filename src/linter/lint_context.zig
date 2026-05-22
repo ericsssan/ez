@@ -554,6 +554,15 @@ pub const LintContext = struct {
         return c.store.get(id).kind == .intersection_t;
     }
 
+    /// True when the type id is structurally object-like: a literal
+    /// object type (object_t) or a type_ref whose declared form is one.
+    /// Used by no-unsafe-assignment to decide when the per-property
+    /// path is authoritative.
+    pub fn typeIdKindIsObjectLike(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.store.get(id).kind == .object_t;
+    }
+
     /// Member TypeIds of a union — empty slice when not a union or
     /// when the union has no members.
     pub fn typeIdUnionMembers(self: *const LintContext, id: tymod.TypeId) []const tymod.TypeId {

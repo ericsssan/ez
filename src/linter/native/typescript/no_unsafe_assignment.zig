@@ -481,6 +481,17 @@ fn reportIfUnsafe(
     // declarator.
     const rhs_u = unwrapGroup(rhs, ctx);
     if (ctx.nodeTag(rhs_u) == .object_literal) {
+        // Per-property pass owns the decision for object-literal RHS
+        // when the destination is an object/structural type: anything
+        // not flagged property-by-property is known-safe (e.g.
+        // `unknown`/`any` slots) and a whole-declarator fallback
+        // would be a false positive.  Skip only when the destination
+        // really is structural.
+        const lhs_kind = ctx.typeIdKindIsObjectLike(lhs_ty);
+        if (lhs_kind) {
+            _ = reportObjectLiteralProperties(rhs_u, lhs_ty, ctx);
+            return;
+        }
         if (reportObjectLiteralProperties(rhs_u, lhs_ty, ctx)) return;
     }
     if (!ctx.typeNodeContainsAny(rhs)) return;

@@ -1635,13 +1635,53 @@ pub const Checker = struct {
     }
 
     fn inferObjectLiteral(self: *Checker, node: NodeIndex) TypeId {
-        _ = self;
-        _ = node;
-        // Without structural typing we return `unknown`, not `any` —
-        // TS doesn't make `{ a: 1 }` an any-flavored value, it's an
-        // inferred structural type.  Returning unknown prevents
-        // false-positives on no-unsafe-*.
-        return tymod.ID_UNKNOWN;
+        // Walk the property list and build an object_t.  Spread/computed/
+        // accessor properties bail out structurally — they widen the
+        // type beyond what we can statically represent.
+        const data = self.ast_ref.nodeData(node);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+        var buf: [16]tymod.ObjectProp = undefined;
+        var n: usize = 0;
+        for (slice) |raw| {
+            if (n >= buf.len) break;
+            const p: NodeIndex = @enumFromInt(raw);
+            const pt = self.ast_ref.nodeTag(p);
+            switch (pt) {
+                .property => {
+                    const pd = self.ast_ref.nodeData(p);
+                    const key_name = self.staticPropertyKey(pd.lhs) orelse return tymod.ID_UNKNOWN;
+                    const val_ty = self.typeOf(pd.rhs);
+                    buf[n] = .{ .name = key_name, .type_id = val_ty };
+                    n += 1;
+                },
+                .shorthand_property => {
+                    const pd = self.ast_ref.nodeData(p);
+                    const key_name = self.staticPropertyKey(pd.lhs) orelse return tymod.ID_UNKNOWN;
+                    const val_ty = self.typeOf(pd.lhs);
+                    buf[n] = .{ .name = key_name, .type_id = val_ty };
+                    n += 1;
+                },
+                // Bail on spread / computed / methods / accessors —
+                // structural type would not be sound.
+                else => return tymod.ID_UNKNOWN,
+            }
+        }
+        return self.store.objectOf(buf[0..n]) catch tymod.ID_UNKNOWN;
+    }
+
+    fn staticPropertyKey(self: *Checker, key: NodeIndex) ?[]const u8 {
+        if (key == .none) return null;
+        const tag = self.ast_ref.nodeTag(key);
+        if (tag == .identifier or tag == .property_ident or tag == .property_literal) {
+            const tok = self.ast_ref.nodeMainToken(key);
+            return self.ast_ref.tokenText(tok);
+        }
+        if (tag == .string_literal) {
+            const tok = self.ast_ref.nodeMainToken(key);
+            const raw = self.ast_ref.tokenText(tok);
+            if (raw.len >= 2) return raw[1 .. raw.len - 1];
+        }
+        return null;
     }
 
     fn inferMember(self: *Checker, node: NodeIndex) TypeId {
