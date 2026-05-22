@@ -1,0 +1,56 @@
+{
+  "rule": "@typescript-eslint/no-unnecessary-type-arguments",
+  "kind": "invalid",
+  "index": 5,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": "\nclass C<T = number> {}\nclass D extends C {}\n      ",
+  "declaredErrors": [
+    {
+      "messageId": "unnecessaryTypeParameter"
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unnecessary-type-arguments",
+      "line": 3,
+      "column": 19,
+      "endLine": 3,
+      "endColumn": 25,
+      "message": "This is the default value for this type parameter, so it can be omitted.",
+      "messageId": "unnecessaryTypeParameter",
+      "severity": 2,
+      "fix": {
+        "range": [
+          41,
+          49
+        ],
+        "text": ""
+      }
+    }
+  ],
+  "oracleFixes": [
+    {
+      "range": [
+        41,
+        49
+      ],
+      "text": ""
+    }
+  ]
+}

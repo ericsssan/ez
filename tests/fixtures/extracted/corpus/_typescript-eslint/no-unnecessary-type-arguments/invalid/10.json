@@ -1,0 +1,58 @@
+{
+  "rule": "@typescript-eslint/no-unnecessary-type-arguments",
+  "kind": "invalid",
+  "index": 10,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": "\nimport { F } from './missing';\nfunction bar<T = F<string>>() {}\nbar();\n      ",
+  "declaredErrors": [
+    {
+      "column": 5,
+      "line": 4,
+      "messageId": "unnecessaryTypeParameter"
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unnecessary-type-arguments",
+      "line": 4,
+      "column": 5,
+      "endLine": 4,
+      "endColumn": 14,
+      "message": "This is the default value for this type parameter, so it can be omitted.",
+      "messageId": "unnecessaryTypeParameter",
+      "severity": 2,
+      "fix": {
+        "range": [
+          68,
+          79
+        ],
+        "text": ""
+      }
+    }
+  ],
+  "oracleFixes": [
+    {
+      "range": [
+        68,
+        79
+      ],
+      "text": ""
+    }
+  ]
+}

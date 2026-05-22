@@ -1,0 +1,4 @@
+
+interface I<T = number> {}
+class Impl implements I<number> {}
+      

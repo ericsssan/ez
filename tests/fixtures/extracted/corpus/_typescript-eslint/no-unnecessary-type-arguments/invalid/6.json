@@ -1,0 +1,56 @@
+{
+  "rule": "@typescript-eslint/no-unnecessary-type-arguments",
+  "kind": "invalid",
+  "index": 6,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": "\ninterface I<T = number> {}\nclass Impl implements I {}\n      ",
+  "declaredErrors": [
+    {
+      "messageId": "unnecessaryTypeParameter"
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/no-unnecessary-type-arguments",
+      "line": 3,
+      "column": 25,
+      "endLine": 3,
+      "endColumn": 31,
+      "message": "This is the default value for this type parameter, so it can be omitted.",
+      "messageId": "unnecessaryTypeParameter",
+      "severity": 2,
+      "fix": {
+        "range": [
+          51,
+          59
+        ],
+        "text": ""
+      }
+    }
+  ],
+  "oracleFixes": [
+    {
+      "range": [
+        51,
+        59
+      ],
+      "text": ""
+    }
+  ]
+}

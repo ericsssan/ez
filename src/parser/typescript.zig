@@ -2098,8 +2098,9 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
 /// is_construct: true for `new ()` (construct), false for `()` (call).
 fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex, is_construct: bool) Error!NodeIndex {
     // Optional type parameters
+    var sig_type_params_range = ast.SubRange{ .start = 0, .end = 0 };
     if (p.peek() == .less_than) {
-        _ = try parseTypeParameterList(p);
+        sig_type_params_range = try parseTypeParameterList(p);
     }
 
     _ = try p.expect(.l_paren);
@@ -2145,6 +2146,8 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex, is_construc
         .params_start = params_range.start,
         .params_end = params_range.end,
         .return_type = return_type,
+        .type_params = sig_type_params_range.start,
+        .type_params_end = sig_type_params_range.end,
     });
     const sig_tag: @import("ast.zig").Node.Tag = if (is_construct) .ts_construct_signature else .ts_call_signature;
     return p.addNode(.{
