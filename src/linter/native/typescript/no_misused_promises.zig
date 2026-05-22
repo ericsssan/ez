@@ -990,11 +990,8 @@ fn checkObjectMethod(node: NodeIndex, ctx: *const LintContext) void {
     // If method has explicit return type, TSe reports on the annotation.
     if (md.return_type != .none) {
         const rt = md.return_type;
-        if (ctx.nodeTag(rt) == .ts_type_annotation) {
-            ctx.reportWithMessageId(ctx.nodeData(rt).lhs, "voidReturnProperty");
-        } else {
-            ctx.reportWithMessageId(rt, "voidReturnProperty");
-        }
+        const inner = if (ctx.nodeTag(rt) == .ts_type_annotation) ctx.nodeData(rt).lhs else rt;
+        ctx.reportSpanWithMessageId(typeAnnotationSpan(inner, ctx), "voidReturnProperty");
         return;
     }
     // Parser drops return-type for object methods; scan the source.
@@ -1007,6 +1004,19 @@ fn checkObjectMethod(node: NodeIndex, ctx: *const LintContext) void {
 
 /// Scan the source between `)` and `{` for the return-type annotation.
 /// Returns the span of the type (excluding the `:` and surrounding space).
+/// Span of a type annotation node, extended to include trailing `>`/`]`
+/// that the parser sometimes drops.
+fn typeAnnotationSpan(ty: NodeIndex, ctx: *const LintContext) @import("../../../parser/root.zig").span.Span {
+    var sp = ctx.nodeSpan(ty);
+    const src = ctx.ast.source;
+    while (sp.end < src.len) {
+        const c = src[sp.end];
+        if (c == '>' or c == ']') { sp.end += 1; continue; }
+        break;
+    }
+    return sp;
+}
+
 fn objectMethodReturnTypeSpan(method_node: NodeIndex, md: ast.MethodData, ctx: *const LintContext) ?@import("../../../parser/root.zig").span.Span {
     if (md.body == .none) return null;
     const body_start = ctx.nodeSpan(md.body).start;
@@ -1114,12 +1124,8 @@ fn checkProperty(node: NodeIndex, ctx: *const LintContext) void {
     // Function literal — check for explicit return type.
     const rt = functionReturnTypeAnnotation(v, ctx);
     if (rt != .none) {
-        // Report on the inner type, not the `ts_type_annotation` wrapper.
-        if (ctx.nodeTag(rt) == .ts_type_annotation) {
-            ctx.reportWithMessageId(ctx.nodeData(rt).lhs, "voidReturnProperty");
-        } else {
-            ctx.reportWithMessageId(rt, "voidReturnProperty");
-        }
+        const inner = if (ctx.nodeTag(rt) == .ts_type_annotation) ctx.nodeData(rt).lhs else rt;
+        ctx.reportSpanWithMessageId(typeAnnotationSpan(inner, ctx), "voidReturnProperty");
         return;
     }
     ctx.reportSpanWithMessageId(propertyHeadSpan(node, value, ctx), "voidReturnProperty");
@@ -1265,11 +1271,13 @@ fn enclosingFunctionReturnAnnotation(node: NodeIndex, ctx: *const LintContext) N
             .generator_fn_decl, .generator_fn_expr,
             .async_generator_fn_decl, .async_generator_fn_expr => {
                 const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(p).lhs));
-                return fd.return_type;
+                if (fd.return_type != .none) return fd.return_type;
+                return contextualReturnTypeFromOuter(p, ctx);
             },
             .arrow_fn, .async_arrow_fn => {
                 const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ctx.nodeData(p).lhs));
-                return ad.return_type;
+                if (ad.return_type != .none) return ad.return_type;
+                return contextualReturnTypeFromOuter(p, ctx);
             },
             .method_def, .computed_method_def => {
                 const md = ctx.extraData(ast.MethodData, @intFromEnum(ctx.nodeData(p).rhs));
@@ -1279,6 +1287,30 @@ fn enclosingFunctionReturnAnnotation(node: NodeIndex, ctx: *const LintContext) N
         }
     }
     return .none;
+}
+
+/// When a function expression / arrow has no explicit return type, its
+/// CONTEXTUAL return type may come from a surrounding declarator's
+/// annotation: `const x: () => Record<...> = () => ...;`.
+fn contextualReturnTypeFromOuter(fn_node: NodeIndex, ctx: *const LintContext) NodeIndex {
+    const parent = ctx.parentOf(fn_node);
+    if (parent == .none) return .none;
+    if (ctx.nodeTag(parent) != .declarator) return .none;
+    const decl_id = ctx.nodeData(parent).lhs;
+    if (decl_id == .none or ctx.nodeTag(decl_id) != .identifier) return .none;
+    const id_data = ctx.nodeData(decl_id);
+    if (id_data.rhs == .none or ctx.nodeTag(id_data.rhs) != .ts_type_annotation) return .none;
+    var ty = ctx.nodeData(id_data.rhs).lhs;
+    while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) == .ts_type_reference) {
+        const name = ctx.tokenText(ctx.nodeMainToken(ty));
+        if (typeAliasBody(name, ctx)) |body| ty = body;
+    }
+    while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) != .ts_function_type) return .none;
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+    // ts_function_type reuses `body` for return type.
+    return fd.body;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1306,7 +1338,11 @@ fn checkInheritedMethods(node: NodeIndex, ctx: *const LintContext) void {
     const cd = ctx.extraData(ast.ClassData, @intFromEnum(data.lhs));
     const has_extends = cd.super_class != .none;
     const has_impls = cd.impls_start < cd.impls_end and cd.impls_end <= ctx.ast.extra_data.len;
-    if (!has_extends and !has_impls) return;
+    // For class expressions, the parser drops implements clause tracking;
+    // recover by source-scanning between `class` keyword and `{`.
+    var src_impls_buf: [8][]const u8 = undefined;
+    const src_impls = scanSourceImplements(node, cd, &src_impls_buf, ctx);
+    if (!has_extends and !has_impls and src_impls.len == 0) return;
     const body = cd.body;
     if (body == .none) return;
     const bd = ctx.nodeData(body);
@@ -1347,11 +1383,70 @@ fn checkInheritedMethods(node: NodeIndex, ctx: *const LintContext) void {
                     ctx.reportSpanWithMessageIdAndData(classMemberFullSpan(m, method_data, ctx), "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
                         .{ .key = "heritageTypeName", .val = heritage_name },
                     });
+                    fired = true;
                     break;
                 }
             }
         }
+        if (fired) continue;
+        for (src_impls) |heritage_name| {
+            if (heritageMethodIsVoid(heritage_name, name, ctx)) {
+                ctx.reportSpanWithMessageIdAndData(classMemberFullSpan(m, method_data, ctx), "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
+                    .{ .key = "heritageTypeName", .val = heritage_name },
+                });
+                break;
+            }
+        }
     }
+}
+
+/// Source-scan between `class` keyword and `{` for `implements X, Y` etc.
+/// Returns identifier names that follow `implements`.
+fn scanSourceImplements(class_node: NodeIndex, cd: ast.ClassData, buf: [][]const u8, ctx: *const LintContext) [][]const u8 {
+    const src = ctx.ast.source;
+    // Use the main token (the `class` keyword) as the start anchor —
+    // nodeSpan for class_expr may include surrounding context.
+    const class_tok = ctx.nodeMainToken(class_node);
+    const class_start: u32 = @intCast(ctx.ast.tokenStart(class_tok));
+    if (cd.body == .none) return buf[0..0];
+    const body_sp = ctx.nodeSpan(cd.body);
+    if (body_sp.start <= class_start) return buf[0..0];
+    const slice = src[class_start..body_sp.start];
+    const impl_idx = std.mem.indexOf(u8, slice, "implements") orelse return buf[0..0];
+    // Walk after `implements`, collect comma-separated identifiers.
+    var i: usize = impl_idx + "implements".len;
+    var count: usize = 0;
+    while (i < slice.len) {
+        // Skip whitespace and commas.
+        while (i < slice.len and (slice[i] == ' ' or slice[i] == '\t' or slice[i] == '\n' or slice[i] == ',')) i += 1;
+        if (i >= slice.len) break;
+        const c = slice[i];
+        if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$')) break;
+        const start = i;
+        while (i < slice.len) {
+            const ch = slice[i];
+            if ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+                (ch >= '0' and ch <= '9') or ch == '_' or ch == '$') i += 1
+            else break;
+        }
+        if (count < buf.len) {
+            buf[count] = slice[start..i];
+            count += 1;
+        }
+        // Skip optional type arguments `<...>`.
+        if (i < slice.len and slice[i] == '<') {
+            var depth: u32 = 1;
+            i += 1;
+            while (i < slice.len and depth > 0) : (i += 1) {
+                if (slice[i] == '<') depth += 1
+                else if (slice[i] == '>') depth -= 1;
+            }
+        }
+        // Skip whitespace.
+        while (i < slice.len and (slice[i] == ' ' or slice[i] == '\t' or slice[i] == '\n')) i += 1;
+        if (i >= slice.len or slice[i] != ',') break;
+    }
+    return buf[0..count];
 }
 
 fn checkInterfaceInheritedMethods(node: NodeIndex, ctx: *const LintContext) void {
