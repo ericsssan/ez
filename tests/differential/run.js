@@ -1036,7 +1036,6 @@ if (fs.existsSync(ESLINT_ROOT)) {
       // "no-unnecessary-parameter-property-assignment", // native 28/37 vs runner 37/37
       "prefer-enum-initializers",
       // "prefer-function-type", // native 18/21 vs runner 21/21 (`this`-in-signature gets different messageId, multi-line span)
-      // "no-useless-constructor", // native 37/41 vs runner 39/41 (super(...arguments), B.C super, public ctor edge cases)
       // "no-empty-object-type", // native 34/35 vs runner 35/35 (multi-line span mismatch)
       // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
       // "no-non-null-asserted-nullish-coalescing", // needs flow-sensitive type check to distinguish necessary `!`
