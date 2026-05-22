@@ -74,7 +74,13 @@ fn checkProperty(prop: NodeIndex, class_name: []const u8, ctx: *const LintContex
     } else {
         if (!fnExprReturnsOnlyThis(fn_expr, ctx)) return;
     }
-    ctx.reportWithMessageId(target, "useThisType");
+    // Extend span through trailing `>` so type-args (e.g. `Animal<T>`)
+    // are covered.  Our parser's `node_max_toks` pulls in the `<T` but
+    // stops short of the closing bracket.
+    var sp = ctx.nodeSpan(target);
+    const src = ctx.ast.source;
+    while (sp.end < src.len and src[sp.end] == '>') sp.end += 1;
+    ctx.reportSpanWithMessageId(sp, "useThisType");
 }
 
 fn fnExprReturnType(fn_node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
@@ -137,7 +143,13 @@ fn checkMethod(method: NodeIndex, class_name: []const u8, ctx: *const LintContex
     } else {
         if (!methodBodyReturnsOnlyThis(md.body, ctx)) return;
     }
-    ctx.reportWithMessageId(target, "useThisType");
+    // Extend span through trailing `>` so type-args (e.g. `Animal<T>`)
+    // are covered.  Our parser's `node_max_toks` pulls in the `<T` but
+    // stops short of the closing bracket.
+    var sp = ctx.nodeSpan(target);
+    const src = ctx.ast.source;
+    while (sp.end < src.len and src[sp.end] == '>') sp.end += 1;
+    ctx.reportSpanWithMessageId(sp, "useThisType");
 }
 
 fn firstParamIsThis(md: ast.MethodData, ctx: *const LintContext) bool {
