@@ -42,12 +42,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 }
 
 fn checkAtCall(call: NodeIndex, ctx: *const LintContext) void {
-    // `<obj>.at(0)` — callee is member_expr with prop "at", arg index 0.
+    // `<obj>.at(0)` / `<obj>['at'](0)` / `<obj>[`at`](0)` — callee is
+    // a static or computed member access to "at", arg index 0.
     const callee = ctx.nodeData(call).lhs;
     if (callee == .none) return;
-    const cb_tag = ctx.nodeTag(callee);
-    if (cb_tag != .member_expr) return;
-    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "at")) return;
+    if (!calleeIsAtProperty(callee, ctx)) return;
     const args = callArgs(call, ctx) orelse return;
     if (args.len != 1) return;
     const arg: NodeIndex = @enumFromInt(args[0]);
@@ -56,6 +55,42 @@ fn checkAtCall(call: NodeIndex, ctx: *const LintContext) void {
     if (object == .none) return;
     if (!isFilterCallOnArray(object, ctx)) return;
     ctx.reportWithMessageId(call, "preferFind");
+}
+
+fn calleeIsAtProperty(callee: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(callee);
+    if (tag == .member_expr or tag == .optional_member_expr) {
+        return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "at");
+    }
+    if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+        const data = ctx.nodeData(callee);
+        if (data.rhs == .none) return false;
+        return staticKeyEquals(data.rhs, "at", ctx);
+    }
+    return false;
+}
+
+fn staticKeyEquals(key: NodeIndex, want: []const u8, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(key);
+    if (tag == .string_literal) {
+        const span = ctx.nodeSpan(key);
+        if (span.end <= span.start + 2) return false;
+        const raw = ctx.ast.source[span.start..span.end];
+        if (raw.len < 3) return false;
+        return std.mem.eql(u8, raw[1 .. raw.len - 1], want);
+    }
+    if (tag == .template_literal) {
+        // Only a substitution-free template counts.  Walk the span and
+        // strip the backticks.
+        const span = ctx.nodeSpan(key);
+        if (span.end <= span.start + 2) return false;
+        const raw = ctx.ast.source[span.start..span.end];
+        if (raw.len < 3) return false;
+        // No `${` interpolation allowed.
+        if (std.mem.indexOf(u8, raw, "${") != null) return false;
+        return std.mem.eql(u8, raw[1 .. raw.len - 1], want);
+    }
+    return false;
 }
 
 fn checkBracketZero(member: NodeIndex, ctx: *const LintContext) void {
@@ -138,12 +173,8 @@ fn calleePropIsFilter(callee: NodeIndex, ctx: *const LintContext) bool {
     }
     if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
         const data = ctx.nodeData(callee);
-        if (data.rhs == .none or ctx.nodeTag(data.rhs) != .string_literal) return false;
-        const span = ctx.nodeSpan(data.rhs);
-        if (span.end <= span.start + 2) return false;
-        const raw = ctx.ast.source[span.start..span.end];
-        if (raw.len < 3) return false;
-        return std.mem.eql(u8, raw[1 .. raw.len - 1], "filter");
+        if (data.rhs == .none) return false;
+        return staticKeyEquals(data.rhs, "filter", ctx);
     }
     return false;
 }
