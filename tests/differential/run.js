@@ -1048,7 +1048,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       // "prefer-function-type", // native 18/21 vs runner 21/21 (`this`-in-signature gets different messageId, multi-line span)
       // "no-empty-object-type", // native 34/35 vs runner 35/35 (multi-line span mismatch)
       // "no-duplicate-enum-values", // native 35/40 vs runner 40/40 (string-to-number eval not supported)
-      // "no-non-null-asserted-nullish-coalescing", // needs flow-sensitive type check to distinguish necessary `!`
+      "no-non-null-asserted-nullish-coalescing",
       // "prefer-as-const",  // native 45/46 vs runner 46/46 on destructuring binding edge case
     ]);
     const _nativeRuleName = (() => {
