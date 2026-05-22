@@ -603,7 +603,7 @@ pub const Checker = struct {
             .async_generator_fn_expr => true,
             else => false,
         };
-        return self.buildFunctionType(fd.params, fd.params_end, fd.return_type, .none, is_async);
+        return self.buildFunctionType(fd.params, fd.params_end, fd.return_type, fd.body, is_async);
     }
 
     /// Build a function_t from an arrow_fn / async_arrow_fn node.
@@ -636,18 +636,22 @@ pub const Checker = struct {
             }
         }
         // Resolve return type.  Declared annotation wins; arrow with
-        // expression body falls back to inferring from the body; else
-        // `unknown` (we don't yet infer block-body returns).
+        // expression body uses its body type directly; block-body
+        // returns are inferred by walking direct `return <expr>;`
+        // statements in the body (no nested function descent).
         var ret_ty: TypeId = tymod.ID_UNKNOWN;
         if (return_type_node != .none and
             self.ast_ref.nodeTag(return_type_node) == .ts_type_annotation)
         {
             const ty_inner = self.ast_ref.nodeData(return_type_node).lhs;
             ret_ty = self.resolveTypeNode(ty_inner);
-        } else if (body_for_inference != .none and
-            self.ast_ref.nodeTag(body_for_inference) != .block_stmt)
-        {
-            ret_ty = self.typeOf(body_for_inference);
+        } else if (body_for_inference != .none) {
+            const btag = self.ast_ref.nodeTag(body_for_inference);
+            if (btag != .block_stmt) {
+                ret_ty = self.typeOf(body_for_inference);
+            } else {
+                ret_ty = self.inferBlockReturn(body_for_inference);
+            }
         }
         const param_range = self.store.appendSignatureParams(param_buf[0..count]) catch {
             return tymod.ID_UNKNOWN;
@@ -659,6 +663,61 @@ pub const Checker = struct {
             .is_async = is_async,
         };
         return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
+    }
+
+    /// Infer the return type of a block body by union-ing the types
+    /// of every `return <expr>;` whose nearest enclosing function is
+    /// this block.  Bare `return;` and missing returns contribute
+    /// `undefined`.  We approximate the "nearest enclosing function"
+    /// check via parent walk.
+    fn inferBlockReturn(self: *Checker, body: NodeIndex) TypeId {
+        const parents = self.ast_ref.parents;
+        if (parents.len == 0) return tymod.ID_UNKNOWN;
+        const body_idx = @intFromEnum(body);
+        // The body's direct parent is the function node — anything
+        // whose parent chain reaches the body BEFORE another function
+        // counts.
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        const total: u32 = @intCast(self.ast_ref.nodes.len);
+        var result: TypeId = TypeId.none;
+        var has_bare_return = false;
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            if (self.ast_ref.nodeTag(ni) != .return_stmt) continue;
+            // Walk parents up looking for body — stop if we hit
+            // another function first.
+            var p = parents[i];
+            var reached = false;
+            while (p != NONE) : (p = parents[p]) {
+                if (p == body_idx) { reached = true; break; }
+                const pt = self.ast_ref.nodeTag(@enumFromInt(p));
+                if (pt == .fn_decl or pt == .async_fn_decl or pt == .generator_fn_decl or
+                    pt == .async_generator_fn_decl or pt == .fn_expr or pt == .async_fn_expr or
+                    pt == .generator_fn_expr or pt == .async_generator_fn_expr or
+                    pt == .arrow_fn or pt == .async_arrow_fn)
+                {
+                    break;
+                }
+            }
+            if (!reached) continue;
+            const arg = self.ast_ref.nodeData(ni).lhs;
+            if (arg == .none) { has_bare_return = true; continue; }
+            const t = self.typeOf(arg);
+            if (result.eq(TypeId.none)) {
+                result = t;
+            } else if (!result.eq(t)) {
+                // Different from prior — union them.
+                const ids = [_]TypeId{ result, t };
+                result = self.store.unionOf(&ids) catch result;
+            }
+        }
+        if (result.eq(TypeId.none)) return tymod.ID_VOID;
+        if (has_bare_return) {
+            const ids = [_]TypeId{ result, tymod.ID_UNDEFINED };
+            result = self.store.unionOf(&ids) catch result;
+        }
+        return result;
     }
 
     fn paramDeclaredType(self: *Checker, param: NodeIndex) TypeId {

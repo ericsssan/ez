@@ -168,8 +168,60 @@ fn argLooksLikeFunction(arg: NodeIndex, ctx: *const LintContext) bool {
     // For everything else, consult the type.  function_t types are
     // OK; anything else (string/number/object/etc.) is a violation.
     const ty = ctx.typeOfNode(n);
+    // If the identifier's declared annotation is a union including a
+    // non-function shape (e.g. `foo: string | any`), TSe still fires
+    // even though typeOf collapses to `any`.  Walk the AST annotation
+    // directly to defeat the union-with-any collapse.
+    if (tag == .identifier and annotationCouldBeNonFunction(n, ctx)) return false;
     if (ctx.typeIdIsAny(ty) or ctx.typeIdContainsUnknown(ty)) return true; // lenient
     return ctx.typeIdIsFunction(ty);
+}
+
+fn annotationCouldBeNonFunction(ident: NodeIndex, ctx: *const LintContext) bool {
+    // Resolve identifier to its declaration; the declaration carries
+    // the type annotation in `rhs`.
+    const sym = symbolForIdent(ident, ctx) orelse return false;
+    const decl = ctx.semantic.symbols.getDeclNode(sym);
+    if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+    const ann = ctx.nodeData(decl).rhs;
+    if (ann == .none or ctx.nodeTag(ann) != .ts_type_annotation) return false;
+    var inner = ctx.nodeData(ann).lhs;
+    while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+    if (ctx.nodeTag(inner) != .ts_union_type) return false;
+    const data = ctx.nodeData(inner);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (s >= e or e > ctx.ast.extra_data.len) return false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        if (typeRefIsKnownNonFunction(m, ctx)) return true;
+    }
+    return false;
+}
+
+fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {
+    const refs = &ctx.semantic.references;
+    const total = refs.count();
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const rid = parser.reference.ReferenceId.fromInt(i);
+        if (refs.getNode(rid) != ident) continue;
+        if (!refs.isResolved(rid)) return null;
+        return refs.getSymbol(rid);
+    }
+    return null;
+}
+
+fn typeRefIsKnownNonFunction(n: NodeIndex, ctx: *const LintContext) bool {
+    var t = n;
+    while (ctx.nodeTag(t) == .ts_parenthesized_type) t = ctx.nodeData(t).lhs;
+    if (ctx.nodeTag(t) != .ts_type_reference) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(t));
+    const non_fn_names = [_][]const u8{
+        "string", "number", "boolean", "bigint", "symbol", "void", "null", "undefined", "never",
+    };
+    for (non_fn_names) |b| if (std.mem.eql(u8, name, b)) return true;
+    return false;
 }
 
 fn callArgs(call: NodeIndex, ctx: *const LintContext) ?[]const u32 {
