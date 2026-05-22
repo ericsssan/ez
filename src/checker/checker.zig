@@ -301,15 +301,80 @@ pub const Checker = struct {
             .strict_equal, .equal => {
                 return self.narrowEquality(t, sym, ty, neg);
             },
+            .instanceof_expr => return self.narrowInstanceof(t, sym, ty, neg),
+            // Truthy guard `if (x) {...}` — inside the truthy branch
+            // remove null / undefined / 0 / "" / false.  Inside falsy
+            // branch keep only those.
+            .identifier => {
+                if (self.identifierBindsToSym(t, sym)) {
+                    return self.narrowTruthy(ty, neg);
+                }
+                return ty;
+            },
+            // Logical-and chain: every conjunct narrows the use site
+            // (since all must be true for the body to run).
+            .logical_and => {
+                const data = self.ast_ref.nodeData(t);
+                const lty = self.applyNarrowing(data.lhs, sym, ty, neg);
+                return self.applyNarrowing(data.rhs, sym, lty, neg);
+            },
             else => return ty,
         }
     }
 
-    /// Narrow against `x === null` / `x !== undefined` / etc.
+    /// `x instanceof Foo` — inside truthy branch, narrow x to Foo.
+    fn narrowInstanceof(self: *Checker, cmp: NodeIndex, sym: symbol_mod.SymbolId, ty: TypeId, negate: bool) TypeId {
+        const data = self.ast_ref.nodeData(cmp);
+        if (!self.identifierBindsToSym(data.lhs, sym)) return ty;
+        const rhs = data.rhs;
+        if (self.ast_ref.nodeTag(rhs) != .identifier) return ty;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(rhs));
+        // Built-in error classes — narrow x to the class instance type.
+        // For unknown constructors, leave ty unchanged.
+        const class_t = self.store.typeRef(name, &.{}) catch return ty;
+        if (negate) {
+            // Falsy branch: keep only members NOT assignable to class_t.
+            // Approximation: don't narrow.
+            return ty;
+        }
+        // Truthy branch: replace with class_t.
+        return class_t;
+    }
+
+    /// Truthy guard: remove null / undefined from a union.  Keep
+    /// everything else as-is (we don't model literal-falsy types).
+    fn narrowTruthy(self: *Checker, ty: TypeId, negate: bool) TypeId {
+        const t = self.store.get(ty);
+        if (t.kind != .union_t) return ty;
+        var buf: [16]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.idsOf(t.list_data)) |m| {
+            const is_falsy_literal = m.eq(tymod.ID_NULL) or
+                m.eq(tymod.ID_UNDEFINED) or m.eq(tymod.ID_VOID);
+            const keep = if (negate) is_falsy_literal else !is_falsy_literal;
+            if (keep) {
+                if (n >= buf.len) return ty;
+                buf[n] = m;
+                n += 1;
+            }
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return self.store.unionOf(buf[0..n]) catch ty;
+    }
+
+    /// Narrow against `x === null` / `x !== undefined` / `typeof x === '...'` etc.
     fn narrowEquality(self: *Checker, cmp: NodeIndex, sym: symbol_mod.SymbolId, ty: TypeId, negate: bool) TypeId {
         const data = self.ast_ref.nodeData(cmp);
         const tag = self.ast_ref.nodeTag(cmp);
         const is_neq = tag == .strict_not_equal or tag == .not_equal;
+        // typeof narrowing: `typeof x === 'string'` / `typeof x !== 'function'`
+        if (self.tryTypeofNarrow(data.lhs, data.rhs, sym, is_neq, negate)) |narrowed| {
+            return self.intersectNarrow(ty, narrowed.kind, narrowed.keep_only);
+        }
+        if (self.tryTypeofNarrow(data.rhs, data.lhs, sym, is_neq, negate)) |narrowed| {
+            return self.intersectNarrow(ty, narrowed.kind, narrowed.keep_only);
+        }
         // Try `<sym> op <literal>` and `<literal> op <sym>`.
         var sym_side: NodeIndex = .none;
         var lit_side: NodeIndex = .none;
@@ -321,16 +386,68 @@ pub const Checker = struct {
             lit_side = data.lhs;
         } else return ty;
         _ = &sym_side;
-        // Determine what `lit_side` represents.
         const removed = self.narrowKindFromLiteral(lit_side);
         if (removed == .none) return ty;
-        // `x !== null` (neq=true, removed=null) inside truthy branch:
-        //   remove null from ty.
-        // `x === null` inside truthy branch:
-        //   keep only null.
-        // negate=true (else branch): invert.
         const keep_only = (!is_neq) != negate;
         return self.narrowUnion(ty, removed, keep_only);
+    }
+
+    const TypeofNarrowSpec = struct { kind: Narrowable, keep_only: bool };
+
+    /// Recognise `typeof <sym-ref> <op> <"kind">`.  Returns the narrow
+    /// spec when the typeof's operand resolves to `sym`.
+    fn tryTypeofNarrow(self: *Checker, typeof_side: NodeIndex, str_side: NodeIndex, sym: symbol_mod.SymbolId, is_neq: bool, negate: bool) ?TypeofNarrowSpec {
+        if (self.ast_ref.nodeTag(typeof_side) != .typeof_expr) return null;
+        const operand = self.ast_ref.nodeData(typeof_side).lhs;
+        if (!self.identifierBindsToSym(operand, sym)) return null;
+        const str_kind = self.typeofStringValue(str_side) orelse return null;
+        const keep_only = (!is_neq) != negate;
+        return .{ .kind = str_kind, .keep_only = keep_only };
+    }
+
+    fn typeofStringValue(self: *Checker, node: NodeIndex) ?Narrowable {
+        var n = node;
+        while (self.ast_ref.nodeTag(n) == .grouping_expr) n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) != .string_literal) return null;
+        const span = self.ast_ref.nodeSpan(n);
+        const src = self.ast_ref.source;
+        if (span.end <= span.start + 2 or span.end > src.len) return null;
+        const inner = src[span.start + 1 .. span.end - 1];
+        if (std.mem.eql(u8, inner, "string")) return .string;
+        if (std.mem.eql(u8, inner, "number")) return .number;
+        if (std.mem.eql(u8, inner, "boolean")) return .boolean;
+        if (std.mem.eql(u8, inner, "bigint")) return .bigint;
+        if (std.mem.eql(u8, inner, "undefined")) return .undefined_t;
+        return null;
+    }
+
+    /// Combine narrow spec with current type: for `typeof x === 'string'`
+    /// in truthy branch, keep_only=true → keep only string-ish from a
+    /// union (or replace primitive `ID_STRING` etc.).  For !==, drop.
+    fn intersectNarrow(self: *Checker, ty: TypeId, kind: Narrowable, keep_only: bool) TypeId {
+        // Map the narrowable to its primitive TypeId for whole-type
+        // replacement when ty isn't a union.
+        const target: TypeId = switch (kind) {
+            .string => tymod.ID_STRING,
+            .number => tymod.ID_NUMBER,
+            .boolean => tymod.ID_BOOLEAN,
+            .bigint => tymod.ID_BIGINT,
+            .undefined_t => tymod.ID_UNDEFINED,
+            .null_t => tymod.ID_NULL,
+            .void_t => tymod.ID_VOID,
+            .none => return ty,
+        };
+        const t = self.store.get(ty);
+        if (t.kind != .union_t) {
+            if (keep_only) {
+                // typeof of a non-union value that matches → keep ty;
+                // doesn't match → never.
+                if (typeIsKindOf(self.store.get(ty).kind, kind)) return ty;
+                return target;
+            }
+            return ty;
+        }
+        return self.narrowUnion(ty, kind, keep_only);
     }
 
     const Narrowable = enum(u8) { none, null_t, undefined_t, void_t, string, number, boolean, bigint };
@@ -372,15 +489,32 @@ pub const Checker = struct {
     }
 
     fn idMatchesNarrowable(self: *Checker, id: TypeId, kind: Narrowable) bool {
-        _ = self;
+        // Also accept the corresponding literal kind for typeof
+        // checks (e.g. `typeof x === 'string'` matches both `string`
+        // and `'foo'` (string_literal)).
+        const k = self.store.get(id).kind;
+        if (typeIsKindOf(k, kind)) return true;
         return switch (kind) {
             .null_t => id.eq(tymod.ID_NULL),
-            .undefined_t => id.eq(tymod.ID_UNDEFINED),
+            .undefined_t => id.eq(tymod.ID_UNDEFINED) or k == .void_t,
             .void_t => id.eq(tymod.ID_VOID),
             .string => id.eq(tymod.ID_STRING),
             .number => id.eq(tymod.ID_NUMBER),
             .boolean => id.eq(tymod.ID_BOOLEAN),
             .bigint => id.eq(tymod.ID_BIGINT),
+            .none => false,
+        };
+    }
+
+    fn typeIsKindOf(k: tymod.TypeKind, n: Narrowable) bool {
+        return switch (n) {
+            .string => k == .string or k == .string_literal,
+            .number => k == .number or k == .number_literal,
+            .boolean => k == .boolean or k == .boolean_literal,
+            .bigint => k == .bigint or k == .bigint_literal,
+            .undefined_t => k == .undefined_t or k == .void_t,
+            .null_t => k == .null_t,
+            .void_t => k == .void_t,
             .none => false,
         };
     }
