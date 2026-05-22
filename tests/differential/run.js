@@ -1028,7 +1028,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-wrapper-object-types",
       "prefer-namespace-keyword",
       "no-inferrable-types",
-      // "no-useless-empty-export", // native 19/21 vs runner 21/21 (.d.ts detection unavailable)
+      // "no-useless-empty-export", // native 19/21 vs runner 21/21 (.d.ts files need filename detection)
       "triple-slash-reference",
       "no-extraneous-class",
       "consistent-type-definitions",
