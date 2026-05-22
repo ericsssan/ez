@@ -1017,6 +1017,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-implied-eval",
       "no-confusing-non-null-assertion",
       "no-non-null-asserted-optional-chain",
+      // "no-non-null-asserted-nullish-coalescing", // needs flow-sensitive type check to distinguish necessary `!`
       // "prefer-as-const",  // native 45/46 vs runner 46/46 on destructuring binding edge case
     ]);
     const _nativeRuleName = (() => {

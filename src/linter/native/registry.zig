@@ -303,6 +303,7 @@ const ts_related_getter_setter_pairs = @import("typescript/related_getter_setter
 const ts_prefer_regexp_exec = @import("typescript/prefer_regexp_exec.zig");
 const ts_no_implied_eval = @import("typescript/no_implied_eval.zig");
 const ts_no_confusing_non_null_assertion = @import("typescript/no_confusing_non_null_assertion.zig");
+const ts_no_non_null_asserted_nullish_coalescing = @import("typescript/no_non_null_asserted_nullish_coalescing.zig");
 // v0.8 TypeScript rules
 // const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
@@ -623,6 +624,7 @@ pub const all_rules = .{
     ts_prefer_regexp_exec,
     ts_no_implied_eval,
     ts_no_confusing_non_null_assertion,
+    ts_no_non_null_asserted_nullish_coalescing,
     // ts_no_empty_object_type, // runner >> native (runner 35, native 19, gap 16, 4 FP); fall back to JS runner
     // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
     // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner
