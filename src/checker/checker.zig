@@ -605,7 +605,18 @@ pub const Checker = struct {
         }
         // User-declared interface or class → resolve to its structural
         // shape (object_t with field/method ObjectProps).
-        if (self.resolveDeclaredType(name)) |resolved| return resolved;
+        if (self.resolveDeclaredType(name)) |resolved| {
+            // Type alias instantiation: if `Foo` is a generic alias
+            // (`type Foo<T> = ...`) and the use site supplies type
+            // args, substitute them through the body.
+            const decl_opt = self.type_decl_nodes.get(name);
+            if (decl_opt) |decl| {
+                if (self.ast_ref.nodeTag(decl) == .ts_type_alias_decl) {
+                    if (self.substituteAliasArgs(decl, ty_node, resolved)) |inst| return inst;
+                }
+            }
+            return resolved;
+        }
         // Built-in lib types with structural shapes (Promise, Set, Map,
         // etc.).  Generic args get substituted into the method signatures.
         if (self.resolveLibType(ty_node, name)) |resolved| return resolved;
@@ -1262,13 +1273,6 @@ pub const Checker = struct {
     }
 
     fn inferMember(self: *Checker, node: NodeIndex) TypeId {
-        // Member access on any → any (anyness propagates).
-        // Member access on a structural object type → look up the
-        // property by name and return its declared type.  This lets
-        // `function foo(x: { a: any }) { x.a; }` correctly see `x.a`
-        // as any.  Falls back to `unknown` when the receiver type
-        // isn't structural or the property isn't declared (which
-        // catches the common `x.toString()`-on-typed-receiver pattern).
         const data = self.ast_ref.nodeData(node);
         const obj_ty = self.typeOf(data.lhs);
         if (tymod.isAny(&self.store, obj_ty)) return tymod.ID_ANY;
@@ -1282,8 +1286,47 @@ pub const Checker = struct {
             else => return tymod.ID_UNKNOWN,
         };
         if (prop_name.len == 0) return tymod.ID_UNKNOWN;
+        // Look up the property on the apparent type — TS substitutes
+        // type parameters with their constraints when accessing members
+        // (the "apparent type"), which lets `t.foo()` where `t: T
+        // extends Bar` resolve to `Bar.foo`.  We walk through union
+        // members similarly to TS (every member contributes its
+        // property type, joined by union).
+        return self.memberOnApparentType(obj_ty, prop_name, data.lhs);
+    }
+
+    /// Look up `prop_name` on the apparent type of `obj_ty`.  Handles:
+    ///   - union: every member must have the property; result is the
+    ///     union of property types (we approximate with the first
+    ///     non-unknown).
+    ///   - intersection: any member's property fires.
+    ///   - type_ref to lib (Promise / Array / etc.): synthesised methods.
+    ///   - type_ref to user alias / interface / class: look up the
+    ///     resolved declared type's members.
+    ///   - type_ref to type parameter: chase the constraint (apparent
+    ///     type) and re-do the lookup.
+    ///   - array_t / readonly_array_t / tuple_t: Array.prototype.
+    ///   - object_t: direct property lookup.
+    fn memberOnApparentType(self: *Checker, obj_ty: TypeId, prop_name: []const u8, obj_node: NodeIndex) TypeId {
         const obj = self.store.get(obj_ty);
-        // Array.prototype methods — common subset.
+        // Composite receivers: walk members.
+        if (obj.kind == .union_t) {
+            // Per TS: every union member must have the property.  We
+            // approximate by returning the first non-unknown result.
+            for (self.store.idsOf(obj.list_data)) |m| {
+                const t = self.memberOnApparentType(m, prop_name, obj_node);
+                if (!tymod.isUnknown(&self.store, t)) return t;
+            }
+            return tymod.ID_UNKNOWN;
+        }
+        if (obj.kind == .intersection_t) {
+            for (self.store.idsOf(obj.list_data)) |m| {
+                const t = self.memberOnApparentType(m, prop_name, obj_node);
+                if (!tymod.isUnknown(&self.store, t)) return t;
+            }
+            return tymod.ID_UNKNOWN;
+        }
+        // Array.prototype.
         if (obj.kind == .array_t or obj.kind == .readonly_array_t or obj.kind == .tuple_t) {
             const elem: TypeId = blk: {
                 const elems = self.store.idsOf(obj.list_data);
@@ -1292,15 +1335,154 @@ pub const Checker = struct {
             };
             return self.arrayPrototypeProperty(prop_name, elem);
         }
-        // Lib type_ref methods (Promise.then/catch/finally, Array<T> proxy).
+        // Lib type_ref methods.
         if (obj.kind == .type_ref) {
             if (self.libTypeRefProperty(obj_ty, prop_name)) |ty| return ty;
+            // User-declared types — resolve via the declared cache.
+            if (self.resolveDeclaredType(obj.name)) |resolved| {
+                if (!resolved.eq(obj_ty)) {
+                    const t = self.memberOnApparentType(resolved, prop_name, obj_node);
+                    if (!tymod.isUnknown(&self.store, t)) return t;
+                }
+            }
+            // Type parameter: chase constraint (apparent type).
+            const constraint = self.typeParameterConstraintFromName(obj.name, obj_node);
+            if (constraint) |c| {
+                if (!c.eq(obj_ty)) {
+                    return self.memberOnApparentType(c, prop_name, obj_node);
+                }
+            }
+            return tymod.ID_UNKNOWN;
         }
-        if (obj.kind != .object_t) return tymod.ID_UNKNOWN;
-        for (self.store.propsOf(obj.object_props)) |p| {
-            if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
+        if (obj.kind == .object_t) {
+            for (self.store.propsOf(obj.object_props)) |p| {
+                if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
+            }
         }
+        // Primitive apparent types: number / string / boolean have
+        // prototype methods we should model eventually.  For now we
+        // only model array / promise / object.
         return tymod.ID_UNKNOWN;
+    }
+
+    /// Walk to the enclosing scope and find a `ts_type_parameter`
+    /// named `name`, then return its constraint TypeId.
+    fn typeParameterConstraintFromName(self: *Checker, name: []const u8, at_node: NodeIndex) ?TypeId {
+        if (at_node == .none) return null;
+        return self.resolveTypeParameterConstraint(at_node, name);
+    }
+
+    /// Substitute type arguments into a generic type-alias body.
+    /// Returns null when the alias has no type parameters or the
+    /// use-site has no type args.  Otherwise returns the substituted
+    /// TypeId (cloned through the type store).
+    fn substituteAliasArgs(self: *Checker, decl: NodeIndex, ref_node: NodeIndex, alias_body: TypeId) ?TypeId {
+        const tad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(self.ast_ref.nodeData(decl).lhs));
+        if (tad.type_params_end <= tad.type_params) return null;
+        const ref_rhs = self.ast_ref.nodeData(ref_node).rhs;
+        if (ref_rhs == .none) return null;
+        const arg_range = self.ast_ref.extraData(ast.SubRange, @intFromEnum(ref_rhs));
+        if (arg_range.end <= arg_range.start) return null;
+        // Build substitution map: param name → TypeId.
+        var keys_buf: [4][]const u8 = undefined;
+        var vals_buf: [4]TypeId = undefined;
+        var nsub: usize = 0;
+        const tp_count = tad.type_params_end - tad.type_params;
+        const arg_count = arg_range.end - arg_range.start;
+        const n = @min(@min(tp_count, arg_count), keys_buf.len);
+        var i: u32 = 0;
+        while (i < n) : (i += 1) {
+            const tp: NodeIndex = @enumFromInt(self.ast_ref.extra_data[tad.type_params + i]);
+            const arg: NodeIndex = @enumFromInt(self.ast_ref.extra_data[arg_range.start + i]);
+            if (self.ast_ref.nodeTag(tp) != .ts_type_parameter) continue;
+            keys_buf[nsub] = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(tp));
+            vals_buf[nsub] = self.resolveTypeNode(arg);
+            nsub += 1;
+        }
+        if (nsub == 0) return null;
+        return self.substituteTypeId(alias_body, keys_buf[0..nsub], vals_buf[0..nsub]);
+    }
+
+    /// Walk a TypeId and replace any `type_ref` whose name matches a
+    /// substitution key.  Recurses through composites (union, intersection,
+    /// array, tuple, object props).  Returns the original id when no
+    /// substitution happened.
+    fn substituteTypeId(self: *Checker, id: TypeId, keys: []const []const u8, vals: []const TypeId) TypeId {
+        const t = self.store.get(id);
+        switch (t.kind) {
+            .type_ref => {
+                for (keys, vals) |k, v| {
+                    if (std.mem.eql(u8, k, t.name)) return v;
+                }
+                // Substitute through type args (e.g. `Promise<T>`).
+                const args = self.store.idsOf(t.list_data);
+                if (args.len == 0) return id;
+                var new_args_buf: [8]TypeId = undefined;
+                if (args.len > new_args_buf.len) return id;
+                var changed = false;
+                for (args, 0..) |a, i| {
+                    new_args_buf[i] = self.substituteTypeId(a, keys, vals);
+                    if (!new_args_buf[i].eq(a)) changed = true;
+                }
+                if (!changed) return id;
+                return self.store.typeRef(t.name, new_args_buf[0..args.len]) catch id;
+            },
+            .union_t => return self.substituteList(id, t, keys, vals, .union_t),
+            .intersection_t => return self.substituteList(id, t, keys, vals, .intersection_t),
+            .array_t, .readonly_array_t, .tuple_t => return self.substituteArrayLike(id, t, keys, vals),
+            .object_t => return self.substituteObject(id, t, keys, vals),
+            else => return id,
+        }
+    }
+
+    fn substituteList(self: *Checker, id: TypeId, t: *const tymod.Type, keys: []const []const u8, vals: []const TypeId, kind: tymod.TypeKind) TypeId {
+        const members = self.store.idsOf(t.list_data);
+        if (members.len == 0) return id;
+        var new_buf: [16]TypeId = undefined;
+        if (members.len > new_buf.len) return id;
+        var changed = false;
+        for (members, 0..) |m, i| {
+            new_buf[i] = self.substituteTypeId(m, keys, vals);
+            if (!new_buf[i].eq(m)) changed = true;
+        }
+        if (!changed) return id;
+        if (kind == .union_t) return self.store.unionOf(new_buf[0..members.len]) catch id;
+        return self.store.intersectionOf(new_buf[0..members.len]) catch id;
+    }
+
+    fn substituteArrayLike(self: *Checker, id: TypeId, t: *const tymod.Type, keys: []const []const u8, vals: []const TypeId) TypeId {
+        const elems = self.store.idsOf(t.list_data);
+        if (elems.len == 0) return id;
+        if (t.kind == .tuple_t) {
+            var new_buf: [16]TypeId = undefined;
+            if (elems.len > new_buf.len) return id;
+            var changed = false;
+            for (elems, 0..) |m, i| {
+                new_buf[i] = self.substituteTypeId(m, keys, vals);
+                if (!new_buf[i].eq(m)) changed = true;
+            }
+            if (!changed) return id;
+            return self.store.tupleOf(new_buf[0..elems.len]) catch id;
+        }
+        const new_elem = self.substituteTypeId(elems[0], keys, vals);
+        if (new_elem.eq(elems[0])) return id;
+        if (t.kind == .readonly_array_t) return self.store.readonlyArrayOf(new_elem) catch id;
+        return self.store.arrayOf(new_elem) catch id;
+    }
+
+    fn substituteObject(self: *Checker, id: TypeId, t: *const tymod.Type, keys: []const []const u8, vals: []const TypeId) TypeId {
+        const props = self.store.propsOf(t.object_props);
+        if (props.len == 0) return id;
+        var new_buf: [16]tymod.ObjectProp = undefined;
+        if (props.len > new_buf.len) return id;
+        var changed = false;
+        for (props, 0..) |p, i| {
+            const new_pty = self.substituteTypeId(p.type_id, keys, vals);
+            new_buf[i] = .{ .name = p.name, .type_id = new_pty };
+            if (!new_pty.eq(p.type_id)) changed = true;
+        }
+        if (!changed) return id;
+        return self.store.objectOf(new_buf[0..props.len]) catch id;
     }
 
     /// Look up a property on a lib type_ref (Promise / Array / Set /

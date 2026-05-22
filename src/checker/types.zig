@@ -298,6 +298,48 @@ pub const TypeStore = struct {
         return try self.add(.{ .kind = .array_t, .list_data = list });
     }
 
+    pub fn readonlyArrayOf(self: *TypeStore, elem: TypeId) !TypeId {
+        const list = try self.appendTypeIds(&.{elem});
+        return try self.add(.{ .kind = .readonly_array_t, .list_data = list });
+    }
+
+    pub fn tupleOf(self: *TypeStore, elems: []const TypeId) !TypeId {
+        const list = try self.appendTypeIds(elems);
+        return try self.add(.{ .kind = .tuple_t, .list_data = list });
+    }
+
+    pub fn intersectionOf(self: *TypeStore, members: []const TypeId) !TypeId {
+        // Flatten + dedup, mirroring unionOf.
+        var buf = std.ArrayList(TypeId).empty;
+        defer buf.deinit(self.gpa);
+        for (members) |m| {
+            const t = self.get(m);
+            if (t.kind == .intersection_t) {
+                for (self.idsOf(t.list_data)) |inner| {
+                    try addUnique(self.gpa, &buf, inner);
+                }
+            } else {
+                try addUnique(self.gpa, &buf, m);
+            }
+        }
+        if (buf.items.len == 0) return ID_NEVER;
+        if (buf.items.len == 1) return buf.items[0];
+        const list = try self.appendTypeIds(buf.items);
+        return try self.add(.{ .kind = .intersection_t, .list_data = list });
+    }
+
+    pub fn objectOf(self: *TypeStore, props: []const ObjectProp) !TypeId {
+        if (props.len == 0) return try self.add(.{ .kind = .object_t });
+        // Append props to the object prop pool.
+        const start: u32 = @intCast(self.object_prop_pool.items.len);
+        try self.object_prop_pool.appendSlice(self.gpa, props);
+        const end: u32 = @intCast(self.object_prop_pool.items.len);
+        return try self.add(.{
+            .kind = .object_t,
+            .object_props = .{ .start = start, .end = end },
+        });
+    }
+
     pub fn typeRef(self: *TypeStore, name: []const u8, args: []const TypeId) !TypeId {
         const list = if (args.len == 0) TypeIdList.empty else try self.appendTypeIds(args);
         return try self.add(.{ .kind = .type_ref, .name = name, .list_data = list });
