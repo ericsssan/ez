@@ -1118,6 +1118,41 @@ pub const Checker = struct {
 
     /// Resolve a declared type name (interface or class) to its structural
     /// object_t.  Returns null when the name isn't a declared structural
+    /// True when the AST subtree at `ty_node` contains a
+    /// `ts_type_reference` whose name matches `name`.  Used to detect
+    /// directly-recursive type aliases before attempting to resolve
+    /// their bodies.
+    fn typeNodeReferences(self: *Checker, ty_node: NodeIndex, name: []const u8) bool {
+        if (ty_node == .none) return false;
+        const tag = self.ast_ref.nodeTag(ty_node);
+        if (tag == .ts_type_reference) {
+            const tok = self.ast_ref.nodeMainToken(ty_node);
+            if (std.mem.eql(u8, self.ast_ref.tokenText(tok), name)) return true;
+        }
+        // Walk every ts_type_reference and check whether its parent
+        // chain reaches `ty_node` — needed because `nodeSpan` only
+        // covers the main token, not the subtree.
+        const parents = self.ast_ref.parents;
+        if (parents.len == 0) return false;
+        const target_idx = @intFromEnum(ty_node);
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        const total: u32 = @intCast(self.ast_ref.nodes.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            if (ni == ty_node) continue;
+            if (self.ast_ref.nodeTag(ni) != .ts_type_reference) continue;
+            const tok = self.ast_ref.nodeMainToken(ni);
+            if (!std.mem.eql(u8, self.ast_ref.tokenText(tok), name)) continue;
+            // Walk up parents looking for ty_node.
+            var p = parents[@intFromEnum(ni)];
+            while (p != NONE) : (p = parents[p]) {
+                if (p == target_idx) return true;
+            }
+        }
+        return false;
+    }
+
     /// type (e.g. an import or type alias to a non-structural type).
     fn resolveDeclaredType(self: *Checker, name: []const u8) ?TypeId {
         if (self.declared_type_cache.get(name)) |cached| {
@@ -1131,15 +1166,13 @@ pub const Checker = struct {
             .ts_interface_decl => self.buildInterfaceType(decl),
             .class_decl => self.buildClassInstanceType(decl),
             .ts_type_alias_decl => blk: {
-                // `type Foo = { ... }` / `type Foo = X & Y` — resolve the
-                // alias body to its TypeId.  ONLY resolve when the body
-                // is a plain ts_type_literal: recursive aliases bottom
-                // out at the ID_UNKNOWN sentinel which would pollute
-                // downstream "contains unknown" checks for any type
-                // that references the alias.
+                // `type Foo = ...` — resolve the alias body to its
+                // TypeId.  Skip if the body recursively references
+                // `name`: the sentinel-based recursion break leaves
+                // ID_UNKNOWN holes that confuse downstream checks.
                 const dd = self.ast_ref.nodeData(decl);
                 const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
-                if (self.ast_ref.nodeTag(ad.type_node) != .ts_type_literal) return null;
+                if (self.typeNodeReferences(ad.type_node, name)) return null;
                 break :blk self.resolveTypeNode(ad.type_node);
             },
             else => return null,
