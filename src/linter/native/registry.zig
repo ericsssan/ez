@@ -316,7 +316,7 @@ const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");
 // const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
 // const ts_array_type = @import("typescript/array_type.zig");  // hand-written — disabled per IR-only constraint
 const ts_prefer_namespace_keyword = @import("typescript/prefer_namespace_keyword.zig");
-// const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig");  // hand-written — disabled per IR-only constraint
+const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig");
 // const ts_no_unnecessary_boolean_literal_compare = @import("typescript/no_unnecessary_boolean_literal_compare.zig");  // hand-written — disabled per IR-only constraint
 // const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");  // hand-written — disabled per IR-only constraint
 // const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");  // hand-written — disabled per IR-only constraint
@@ -643,7 +643,7 @@ pub const all_rules = .{
     // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
     // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner
     ts_prefer_namespace_keyword,
-    // ts_triple_slash_reference, // native has 8 FP making hybrid 13 vs runner 21; fall back to JS runner
+    ts_triple_slash_reference,
     // ts_no_unnecessary_boolean_literal_compare, // native has 21 FP making hybrid 22 vs runner 21 (FP worse); fall back to JS runner
     // ts_no_dynamic_delete, // hand-written — disabled
     // ts_prefer_ts_expect_error, // hand-written — disabled
