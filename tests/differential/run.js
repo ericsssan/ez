@@ -1016,6 +1016,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "prefer-regexp-exec",
       "no-implied-eval",
       "no-confusing-non-null-assertion",
+      "no-non-null-asserted-optional-chain",
+      // "prefer-as-const",  // native 45/46 vs runner 46/46 on destructuring binding edge case
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {

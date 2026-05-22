@@ -27,6 +27,19 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const inner = ctx.nodeData(node).lhs;
     if (inner == .none) return;
     if (!isOptionalChain(inner, ctx)) return;
+    // The `!` must be the END of the chain — when its parent extends
+    // the access (member/computed/call), `foo?.bar!.baz` style, the
+    // outer access on the asserted result is unrelated to the chain.
+    const parent = ctx.parentOf(node);
+    if (parent != .none) {
+        const pt = ctx.nodeTag(parent);
+        switch (pt) {
+            .member_expr, .computed_member_expr, .call_expr,
+            .optional_member_expr, .optional_computed_member_expr, .optional_call_expr,
+            => return,
+            else => {},
+        }
+    }
     ctx.reportWithMessageId(node, "noNonNullOptionalChain");
 }
 
@@ -34,6 +47,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 /// for an `?.` link.  `foo?.bar.baz` and `foo.bar?.()` both qualify
 /// because the entire result is the optional-chain.
 fn isOptionalChain(n: NodeIndex, ctx: *const LintContext) bool {
+    // Walk left-leaning through member/call access only — grouping
+    // terminates the chain in TS semantics (`(foo?.bar).baz!` is not
+    // a chained access).
     var cur = n;
     while (true) {
         const tag = ctx.nodeTag(cur);
@@ -46,7 +62,6 @@ fn isOptionalChain(n: NodeIndex, ctx: *const LintContext) bool {
                 cur = ctx.nodeData(cur).lhs;
                 if (cur == .none) return false;
             },
-            .grouping_expr => cur = ctx.nodeData(cur).lhs,
             else => return false,
         }
     }

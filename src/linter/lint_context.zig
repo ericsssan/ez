@@ -3713,16 +3713,23 @@ pub const LintContext = struct {
         return .{ .start = first_start, .end = end };
     }
 
-    /// Parent node of `index`, or `.none` when semantic did not compute parents
-    /// or `index` is the program root.  Callers must ensure the active analysis
-    /// used `SemanticAnalyzer.Options.build_parents = true`.
+    /// Parent node of `index`, or `.none` when neither the semantic
+    /// analyser nor the parser populated parent indices, or when
+    /// `index` is the program root.  Falls back to the parser's
+    /// `parents_buf` when semantic didn't compute its own array.
     pub fn parentOf(self: *const LintContext, index: NodeIndex) NodeIndex {
-        const parents = self.semantic.parent_indices;
         const i = @intFromEnum(index);
-        if (i >= parents.len) return .none;
-        const p = parents[i];
-        if (p == std.math.maxInt(u32)) return .none;
-        return @enumFromInt(p);
+        const sp = self.semantic.parent_indices;
+        if (i < sp.len) {
+            const p = sp[i];
+            if (p != std.math.maxInt(u32)) return @enumFromInt(p);
+        }
+        const ap = self.ast.parents;
+        if (i < ap.len) {
+            const p = ap[i];
+            if (p != @intFromEnum(NodeIndex.none)) return @enumFromInt(p);
+        }
+        return .none;
     }
 
     // ── Semantic accessors ────────────────────────────────
