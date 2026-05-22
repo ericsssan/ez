@@ -202,14 +202,193 @@ pub const Checker = struct {
     }
 
     fn inferIdentifier(self: *Checker, node: NodeIndex) TypeId {
-        // Look up the symbol for this identifier and consult its declared
-        // type.  Identifiers that don't resolve to a user-declared binding
-        // are typically globals (console, window, etc.) — we don't have
-        // type info for them, but defaulting to `any` would cascade
-        // unsafe-* FPs on `console.log`, `window.x`, etc.  Use `unknown`
-        // so unsafe-* rules don't fire on unresolved references.
         const sym = self.symbolForIdentRef(node) orelse return tymod.ID_UNKNOWN;
-        return self.declaredTypeForSymbol(sym);
+        const base = self.declaredTypeForSymbol(sym);
+        // Apply control-flow narrowing from enclosing if/&& guards.
+        return self.narrowAtUse(node, sym, base);
+    }
+
+    /// Walk parent chain looking for `if_stmt` / `logical_and` / `conditional`
+    /// constructs whose test narrows `sym`.  Applies the narrowing to
+    /// `base` and returns the result.  Handles:
+    ///   - `if (x !== null) { ...use... }` → narrowed to non-null.
+    ///   - `if (x !== undefined) { ... }` → narrowed to non-undefined.
+    ///   - `if (typeof x === 'string') { ... }` → narrowed to string.
+    ///   - `if (x === null) { ...use... }` → narrowed to null.
+    ///   - Negated forms via `!`.
+    fn narrowAtUse(self: *Checker, node: NodeIndex, sym: symbol_mod.SymbolId, base: TypeId) TypeId {
+        if (self.ast_ref.parents.len == 0) return base;
+        var ty = base;
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        var prev = node.toInt();
+        var p = self.ast_ref.parents[prev];
+        while (p != NONE) {
+            const pn: NodeIndex = @enumFromInt(p);
+            const tag = self.ast_ref.nodeTag(pn);
+            switch (tag) {
+                .if_stmt => {
+                    // if_stmt: lhs=cond, rhs=consequent.  If `prev` is
+                    // the consequent (or descends from it), apply
+                    // narrowing.  TS also narrows the else branch with
+                    // the negated condition.
+                    const data = self.ast_ref.nodeData(pn);
+                    if (@intFromEnum(data.rhs) == prev or self.descendsFrom(node, data.rhs)) {
+                        ty = self.applyNarrowing(data.lhs, sym, ty, false);
+                    }
+                },
+                .if_else_stmt => {
+                    const data = self.ast_ref.nodeData(pn);
+                    const ifd = self.ast_ref.extraData(ast.IfData, @intFromEnum(data.rhs));
+                    if (self.descendsFrom(node, ifd.consequent)) {
+                        ty = self.applyNarrowing(data.lhs, sym, ty, false);
+                    } else if (self.descendsFrom(node, ifd.alternate)) {
+                        ty = self.applyNarrowing(data.lhs, sym, ty, true);
+                    }
+                },
+                .conditional => {
+                    // `cond ? a : b` — a is narrowed by cond, b by !cond.
+                    const data = self.ast_ref.nodeData(pn);
+                    const cd = self.ast_ref.extraData(ast.Conditional, @intFromEnum(data.rhs));
+                    if (self.descendsFrom(node, cd.consequent)) {
+                        ty = self.applyNarrowing(data.lhs, sym, ty, false);
+                    } else if (self.descendsFrom(node, cd.alternate)) {
+                        ty = self.applyNarrowing(data.lhs, sym, ty, true);
+                    }
+                },
+                .logical_and => {
+                    // `cond && use` — `use` runs only when cond is truthy.
+                    const data = self.ast_ref.nodeData(pn);
+                    if (self.descendsFrom(node, data.rhs)) {
+                        ty = self.applyNarrowing(data.lhs, sym, ty, false);
+                    }
+                },
+                else => {},
+            }
+            prev = p;
+            p = self.ast_ref.parents[p];
+        }
+        return ty;
+    }
+
+    fn descendsFrom(self: *Checker, node: NodeIndex, ancestor: NodeIndex) bool {
+        if (ancestor == .none) return false;
+        if (node == ancestor) return true;
+        if (self.ast_ref.parents.len == 0) return false;
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        var p = self.ast_ref.parents[node.toInt()];
+        const target = @intFromEnum(ancestor);
+        while (p != NONE) : (p = self.ast_ref.parents[p]) {
+            if (p == target) return true;
+        }
+        return false;
+    }
+
+    /// Apply narrowing implied by `test`.  When `negate` is true, the
+    /// narrowing comes from the else branch.
+    fn applyNarrowing(self: *Checker, test_node: NodeIndex, sym: symbol_mod.SymbolId, ty: TypeId, negate: bool) TypeId {
+        var t = test_node;
+        var neg = negate;
+        // Peel `!cond`.
+        while (self.ast_ref.nodeTag(t) == .logical_not) {
+            t = self.ast_ref.nodeData(t).lhs;
+            neg = !neg;
+        }
+        // Peel grouping.
+        while (self.ast_ref.nodeTag(t) == .grouping_expr) t = self.ast_ref.nodeData(t).lhs;
+        const tag = self.ast_ref.nodeTag(t);
+        switch (tag) {
+            .strict_not_equal, .not_equal,
+            .strict_equal, .equal => {
+                return self.narrowEquality(t, sym, ty, neg);
+            },
+            else => return ty,
+        }
+    }
+
+    /// Narrow against `x === null` / `x !== undefined` / etc.
+    fn narrowEquality(self: *Checker, cmp: NodeIndex, sym: symbol_mod.SymbolId, ty: TypeId, negate: bool) TypeId {
+        const data = self.ast_ref.nodeData(cmp);
+        const tag = self.ast_ref.nodeTag(cmp);
+        const is_neq = tag == .strict_not_equal or tag == .not_equal;
+        // Try `<sym> op <literal>` and `<literal> op <sym>`.
+        var sym_side: NodeIndex = .none;
+        var lit_side: NodeIndex = .none;
+        if (self.identifierBindsToSym(data.lhs, sym)) {
+            sym_side = data.lhs;
+            lit_side = data.rhs;
+        } else if (self.identifierBindsToSym(data.rhs, sym)) {
+            sym_side = data.rhs;
+            lit_side = data.lhs;
+        } else return ty;
+        _ = &sym_side;
+        // Determine what `lit_side` represents.
+        const removed = self.narrowKindFromLiteral(lit_side);
+        if (removed == .none) return ty;
+        // `x !== null` (neq=true, removed=null) inside truthy branch:
+        //   remove null from ty.
+        // `x === null` inside truthy branch:
+        //   keep only null.
+        // negate=true (else branch): invert.
+        const keep_only = (!is_neq) != negate;
+        return self.narrowUnion(ty, removed, keep_only);
+    }
+
+    const Narrowable = enum(u8) { none, null_t, undefined_t, void_t, string, number, boolean, bigint };
+
+    fn narrowKindFromLiteral(self: *Checker, lit: NodeIndex) Narrowable {
+        var n = lit;
+        while (self.ast_ref.nodeTag(n) == .grouping_expr) n = self.ast_ref.nodeData(n).lhs;
+        const tag = self.ast_ref.nodeTag(n);
+        if (tag == .null_literal) return .null_t;
+        if (tag == .identifier) {
+            const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+            if (std.mem.eql(u8, name, "undefined")) return .undefined_t;
+        }
+        if (tag == .void_expr) return .undefined_t;
+        return .none;
+    }
+
+    /// Remove a kind from a union, or keep only that kind.
+    fn narrowUnion(self: *Checker, ty: TypeId, kind: Narrowable, keep_only: bool) TypeId {
+        const t = self.store.get(ty);
+        if (t.kind != .union_t) {
+            const matches = self.idMatchesNarrowable(ty, kind);
+            if (keep_only) return if (matches) ty else tymod.ID_NEVER;
+            return if (matches) tymod.ID_NEVER else ty;
+        }
+        var buf: [16]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.idsOf(t.list_data)) |m| {
+            const matches = self.idMatchesNarrowable(m, kind);
+            if ((keep_only and matches) or (!keep_only and !matches)) {
+                if (n >= buf.len) return ty;
+                buf[n] = m;
+                n += 1;
+            }
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return self.store.unionOf(buf[0..n]) catch ty;
+    }
+
+    fn idMatchesNarrowable(self: *Checker, id: TypeId, kind: Narrowable) bool {
+        _ = self;
+        return switch (kind) {
+            .null_t => id.eq(tymod.ID_NULL),
+            .undefined_t => id.eq(tymod.ID_UNDEFINED),
+            .void_t => id.eq(tymod.ID_VOID),
+            .string => id.eq(tymod.ID_STRING),
+            .number => id.eq(tymod.ID_NUMBER),
+            .boolean => id.eq(tymod.ID_BOOLEAN),
+            .bigint => id.eq(tymod.ID_BIGINT),
+            .none => false,
+        };
+    }
+
+    fn identifierBindsToSym(self: *Checker, node: NodeIndex, sym: symbol_mod.SymbolId) bool {
+        if (self.ast_ref.nodeTag(node) != .identifier) return false;
+        const s = self.symbolForIdentRef(node) orelse return false;
+        return s.toInt() == sym.toInt();
     }
 
     /// Find the symbol bound to an identifier reference, if any.
