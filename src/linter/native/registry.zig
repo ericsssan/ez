@@ -270,6 +270,7 @@ const ts_consistent_type_definitions = @import("typescript/consistent_type_defin
 const ts_method_signature_style = @import("typescript/method_signature_style.zig");
 const ts_no_unnecessary_parameter_property_assignment = @import("typescript/no_unnecessary_parameter_property_assignment.zig");
 const ts_prefer_enum_initializers = @import("typescript/prefer_enum_initializers.zig");
+const ts_prefer_function_type = @import("typescript/prefer_function_type.zig");
 // const ts_prefer_optional_chain = @import("typescript/prefer_optional_chain.zig");  // hand-written — disabled per IR-only constraint
 const ts_no_non_null_asserted_optional_chain = @import("typescript/no_non_null_asserted_optional_chain.zig");
 // const ts_no_confusing_non_null_assertion = @import("typescript/no_confusing_non_null_assertion.zig");  // hand-written — disabled per IR-only constraint
@@ -603,6 +604,7 @@ pub const all_rules = .{
     ts_method_signature_style,
     ts_no_unnecessary_parameter_property_assignment,
     ts_prefer_enum_initializers,
+    ts_prefer_function_type,
     // ts_prefer_optional_chain, // hand-written — disabled
     ts_no_non_null_asserted_optional_chain,
     // ts_no_confusing_non_null_assertion, // runner >> native (runner 18, native 8, gap 10); fall back to JS runner
