@@ -68,11 +68,16 @@ fn checkDeclarator(node: NodeIndex, ctx: *const LintContext) void {
             ann = bd.rhs;
         },
         .array_pattern, .object_pattern => {
-            // Patterns store their type annotation as a sibling — the
-            // parser attaches it as the binding's rhs slot when present.
+            // Patterns may store their type annotation on the binding's
+            // rhs slot.  When the parser doesn't attach it (current
+            // behaviour for empty patterns), source-scan between the
+            // pattern's end and the `=`.
             const bd = ctx.nodeData(binding);
             if (bd.rhs != .none and ctx.nodeTag(bd.rhs) == .ts_type_annotation) {
                 ann = bd.rhs;
+            } else {
+                checkPatternAnnotationViaSource(node, binding, init, ctx);
+                return;
             }
         },
         else => return,
@@ -82,6 +87,50 @@ fn checkDeclarator(node: NodeIndex, ctx: *const LintContext) void {
     if (ty == .none) return;
     if (!literalAndTypeMatch(init, ty, ctx)) return;
     ctx.reportWithMessageId(ty, "variableConstAssertion");
+}
+
+/// Source-scan fallback for `let [pattern]: <Type> = <init>` where the
+/// parser drops the pattern's type annotation.  Reports a synthetic
+/// span over the annotation text when it matches the init literal.
+fn checkPatternAnnotationViaSource(
+    declarator: NodeIndex,
+    binding: NodeIndex,
+    init: NodeIndex,
+    ctx: *const LintContext,
+) void {
+    _ = declarator;
+    const src = ctx.ast.source;
+    const bind_span = ctx.nodeSpan(binding);
+    const init_span = ctx.nodeSpan(init);
+    if (bind_span.end >= init_span.start) return;
+    // Walk forward skipping whitespace; require ':'.
+    var i: u32 = bind_span.end;
+    while (i < init_span.start and (src[i] == ' ' or src[i] == '\t')) : (i += 1) {}
+    if (i >= init_span.start or src[i] != ':') return;
+    i += 1;
+    while (i < init_span.start and (src[i] == ' ' or src[i] == '\t')) : (i += 1) {}
+    const ty_start = i;
+    // Find `=` before init.
+    var ty_end: u32 = i;
+    while (ty_end < init_span.start and src[ty_end] != '=') : (ty_end += 1) {}
+    if (ty_end >= init_span.start) return;
+    // Trim trailing whitespace.
+    var ty_real_end: u32 = ty_end;
+    while (ty_real_end > ty_start and
+        (src[ty_real_end - 1] == ' ' or src[ty_real_end - 1] == '\t'))
+    : (ty_real_end -= 1) {}
+    if (ty_real_end <= ty_start) return;
+    const ty_text = src[ty_start..ty_real_end];
+    // Match init literal text.
+    const init_tag = ctx.nodeTag(init);
+    if (init_tag != .string_literal and init_tag != .number_literal and
+        init_tag != .bigint_literal) return;
+    const init_text = ctx.tokenText(ctx.nodeMainToken(init));
+    if (!std.mem.eql(u8, ty_text, init_text)) return;
+    ctx.reportSpanWithMessageId(
+        .{ .start = ty_start, .end = ty_real_end },
+        "variableConstAssertion",
+    );
 }
 
 fn checkProperty(node: NodeIndex, ctx: *const LintContext) void {
