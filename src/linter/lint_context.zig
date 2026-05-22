@@ -726,6 +726,121 @@ pub const LintContext = struct {
         return tymod.containsUnknown(&c.store, id);
     }
 
+    /// True if the type is `null` or a union containing `null`.
+    pub fn typeIdContainsNull(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        if (id.eq(tymod.ID_NULL)) return true;
+        const t = c.store.get(id);
+        if (t.kind == .null_t) return true;
+        if (t.kind == .union_t) {
+            for (c.store.idsOf(t.list_data)) |m| if (self.typeIdContainsNull(m)) return true;
+        }
+        return false;
+    }
+
+    /// True if the type is `undefined`/`void` or a union containing those.
+    pub fn typeIdContainsUndefined(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        if (id.eq(tymod.ID_UNDEFINED) or id.eq(tymod.ID_VOID)) return true;
+        const t = c.store.get(id);
+        if (t.kind == .undefined_t or t.kind == .void_t) return true;
+        if (t.kind == .union_t) {
+            for (c.store.idsOf(t.list_data)) |m| if (self.typeIdContainsUndefined(m)) return true;
+        }
+        return false;
+    }
+
+    /// True if the type contains either null or undefined.
+    pub fn typeIdContainsNullish(self: *const LintContext, id: tymod.TypeId) bool {
+        return self.typeIdContainsNull(id) or self.typeIdContainsUndefined(id);
+    }
+
+    /// True if the type is statically always truthy: a non-empty string
+    /// literal, non-zero number literal, object literal type, function
+    /// type, true literal, etc.  Returns false for union members where
+    /// any could be falsy.
+    pub fn typeIdIsAlwaysTruthy(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        switch (t.kind) {
+            .object_t, .function_t, .array_t, .readonly_array_t, .tuple_t, .object_keyword => return true,
+            .boolean_literal => return std.mem.eql(u8, t.name, "true"),
+            .string_literal => return t.name.len > 0 and !std.mem.eql(u8, t.name, "''") and
+                !std.mem.eql(u8, t.name, "\"\"") and !std.mem.eql(u8, t.name, "``"),
+            .number_literal, .bigint_literal => {
+                if (t.name.len == 0) return false;
+                for (t.name) |ch| if (ch != '0' and ch != '.' and ch != 'n' and ch != 'e' and ch != 'E' and ch != '+' and ch != '-') return true;
+                return false;
+            },
+            .union_t => {
+                const members = c.store.idsOf(t.list_data);
+                if (members.len == 0) return false;
+                for (members) |m| if (!self.typeIdIsAlwaysTruthy(m)) return false;
+                return true;
+            },
+            .intersection_t => {
+                for (c.store.idsOf(t.list_data)) |m| if (self.typeIdIsAlwaysTruthy(m)) return true;
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    /// True if the type is statically always falsy: null, undefined, void,
+    /// false, '', 0, 0n, or a union of only such.
+    pub fn typeIdIsAlwaysFalsy(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        switch (t.kind) {
+            .null_t, .undefined_t, .void_t, .never => return true,
+            .boolean_literal => return std.mem.eql(u8, t.name, "false"),
+            .string_literal => return t.name.len == 0 or std.mem.eql(u8, t.name, "''") or
+                std.mem.eql(u8, t.name, "\"\"") or std.mem.eql(u8, t.name, "``"),
+            .number_literal, .bigint_literal => {
+                if (t.name.len == 0) return false;
+                for (t.name) |ch| if (ch != '0' and ch != '.' and ch != 'n' and ch != '+' and ch != '-') return false;
+                return true;
+            },
+            .union_t => {
+                const members = c.store.idsOf(t.list_data);
+                if (members.len == 0) return false;
+                for (members) |m| if (!self.typeIdIsAlwaysFalsy(m)) return false;
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    /// Conservative subtype/assignability check.  Returns true when we can
+    /// PROVE `source` is assignable to `target`.  Returns false when we
+    /// can't prove it (so callers can be strict about narrowing detection).
+    pub fn typeIdIsAssignableTo(self: *const LintContext, src_id: tymod.TypeId, target: tymod.TypeId) bool {
+        if (src_id.eq(target)) return true;
+        const c = self.ensureChecker() orelse return false;
+        if (src_id.eq(tymod.ID_ANY) or target.eq(tymod.ID_ANY)) return true;
+        if (target.eq(tymod.ID_UNKNOWN)) return true;
+        if (src_id.eq(tymod.ID_NEVER)) return true;
+        const s = c.store.get(src_id);
+        const tt = c.store.get(target);
+        if (s.kind == .union_t) {
+            for (c.store.idsOf(s.list_data)) |m| if (!self.typeIdIsAssignableTo(m, target)) return false;
+            return true;
+        }
+        if (tt.kind == .union_t) {
+            for (c.store.idsOf(tt.list_data)) |m| if (self.typeIdIsAssignableTo(src_id, m)) return true;
+            return false;
+        }
+        if (s.kind == .string_literal and tt.kind == .string) return true;
+        if (s.kind == .number_literal and tt.kind == .number) return true;
+        if (s.kind == .bigint_literal and tt.kind == .bigint) return true;
+        if (s.kind == .boolean_literal and tt.kind == .boolean) return true;
+        if (s.kind == tt.kind) {
+            if (s.kind == .string or s.kind == .number or s.kind == .boolean or s.kind == .bigint) return true;
+            if (s.kind == .null_t or s.kind == .undefined_t or s.kind == .void_t) return true;
+        }
+        return false;
+    }
+
     /// Parent of `n`, skipping intermediate grouping_expr wrappers and TS
     /// instantiation-expression wrappers (`f<T>(...)` parses as
     /// new_expr → ts_instantiation_expr → callee).  Skipping the wrapper
