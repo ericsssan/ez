@@ -73,6 +73,10 @@ fn enumDeclaredKind(name: []const u8, ctx: *const LintContext) Kind {
         return switch (k) {
             .number => .number,
             .string => .string,
+            // For decl-merge purposes, treat a mixed enum as having no
+            // single established kind — this rule fires within the
+            // already-mixed decl itself.
+            .mixed => .unknown,
         };
     }
     return .unknown;
@@ -152,6 +156,7 @@ fn inferKind(init: NodeIndex, ctx: *const LintContext) Kind {
                 return switch (k) {
                     .number => .number,
                     .string => .string,
+                    .mixed => .unknown,
                 };
             }
         }

@@ -25,7 +25,7 @@ const TypeStore = tymod.TypeStore;
 const TypeId = tymod.TypeId;
 const Type = tymod.Type;
 
-pub const EnumKind = enum(u8) { number, string };
+pub const EnumKind = enum(u8) { number, string, mixed };
 
 pub const Checker = struct {
     gpa: std.mem.Allocator,
@@ -1047,28 +1047,26 @@ pub const Checker = struct {
                     // subsequent mismatches fire.  Decl merging: only set
                     // if no prior decl with the same name already set it.
                     if (self.enum_kinds.get(enum_name) == null) {
-                        var first_kind: ?EnumKind = null;
+                        var saw_number = false;
+                        var saw_string = false;
                         if (ed.members_start < ed.members_end and ed.members_end <= self.ast_ref.extra_data.len) {
                             for (self.ast_ref.extra_data[ed.members_start..ed.members_end]) |raw| {
                                 const m: NodeIndex = @enumFromInt(raw);
                                 if (self.ast_ref.nodeTag(m) != .ts_enum_member) continue;
                                 const md = self.ast_ref.nodeData(m);
                                 if (md.rhs == .none) {
-                                    // Auto-increment → number.
-                                    first_kind = .number;
-                                    break;
+                                    saw_number = true; // auto-increment is numeric
+                                    continue;
                                 }
-                                if (self.enumMemberKindIsString(md.rhs)) {
-                                    first_kind = .string;
-                                    break;
-                                }
-                                if (self.enumMemberKindIsNumber(md.rhs)) {
-                                    first_kind = .number;
-                                    break;
-                                }
+                                if (self.enumMemberKindIsString(md.rhs)) { saw_string = true; continue; }
+                                if (self.enumMemberKindIsNumber(md.rhs)) { saw_number = true; continue; }
                             }
                         }
-                        if (first_kind) |k| try self.enum_kinds.put(self.gpa, enum_name, k);
+                        const kind: ?EnumKind = if (saw_string and saw_number) .mixed
+                            else if (saw_string) .string
+                            else if (saw_number) .number
+                            else null;
+                        if (kind) |k| try self.enum_kinds.put(self.gpa, enum_name, k);
                     }
                 },
                 .class_decl => {
