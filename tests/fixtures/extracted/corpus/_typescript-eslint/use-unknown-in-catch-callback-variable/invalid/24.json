@@ -1,0 +1,100 @@
+{
+  "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+  "kind": "invalid",
+  "index": 24,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "column": 56,
+      "endColumn": 59,
+      "endLine": 6,
+      "line": 6,
+      "messageId": "useUnknown",
+      "suggestions": [
+        {
+          "messageId": "addUnknownTypeAnnotationSuggestion",
+          "output": "\ndeclare const condition: boolean;\ndeclare const maybeNullishHandler: null | ((err: any) => void);\nPromise.resolve('foo').catch(\n  condition\n    ? ((err => {}, err => {}, maybeNullishHandler) ?? ((err: unknown) => {}))\n    : (condition && (err => {})) || (err => {}),\n);\n      "
+        }
+      ]
+    },
+    {
+      "column": 22,
+      "endColumn": 25,
+      "endLine": 7,
+      "line": 7,
+      "messageId": "useUnknown",
+      "suggestions": [
+        {
+          "messageId": "addUnknownTypeAnnotationSuggestion",
+          "output": "\ndeclare const condition: boolean;\ndeclare const maybeNullishHandler: null | ((err: any) => void);\nPromise.resolve('foo').catch(\n  condition\n    ? ((err => {}, err => {}, maybeNullishHandler) ?? (err => {}))\n    : (condition && ((err: unknown) => {})) || (err => {}),\n);\n      "
+        }
+      ]
+    },
+    {
+      "column": 38,
+      "endColumn": 41,
+      "endLine": 7,
+      "line": 7,
+      "messageId": "useUnknown",
+      "suggestions": [
+        {
+          "messageId": "addUnknownTypeAnnotationSuggestion",
+          "output": "\ndeclare const condition: boolean;\ndeclare const maybeNullishHandler: null | ((err: any) => void);\nPromise.resolve('foo').catch(\n  condition\n    ? ((err => {}, err => {}, maybeNullishHandler) ?? (err => {}))\n    : (condition && (err => {})) || ((err: unknown) => {}),\n);\n      "
+        }
+      ]
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+      "line": 6,
+      "column": 56,
+      "endLine": 6,
+      "endColumn": 59,
+      "message": "Prefer the safe `: unknown` for a `catch` callback variable.",
+      "messageId": "useUnknown",
+      "severity": 2,
+      "fix": null
+    },
+    {
+      "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+      "line": 7,
+      "column": 22,
+      "endLine": 7,
+      "endColumn": 25,
+      "message": "Prefer the safe `: unknown` for a `catch` callback variable.",
+      "messageId": "useUnknown",
+      "severity": 2,
+      "fix": null
+    },
+    {
+      "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+      "line": 7,
+      "column": 38,
+      "endLine": 7,
+      "endColumn": 41,
+      "message": "Prefer the safe `: unknown` for a `catch` callback variable.",
+      "messageId": "useUnknown",
+      "severity": 2,
+      "fix": null
+    }
+  ],
+  "oracleFixes": null
+}

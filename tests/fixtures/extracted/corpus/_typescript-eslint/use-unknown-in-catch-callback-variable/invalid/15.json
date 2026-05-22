@@ -1,0 +1,44 @@
+{
+  "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+  "kind": "invalid",
+  "index": 15,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 2,
+      "messageId": "useUnknownArrayDestructuringPattern",
+      "suggestions": null
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+      "line": 2,
+      "column": 52,
+      "endLine": 2,
+      "endColumn": 68,
+      "message": "Prefer the safe `: unknown` for a `catch` callback variable. The thrown error may not be iterable.",
+      "messageId": "useUnknownArrayDestructuringPattern",
+      "severity": 2,
+      "fix": null
+    }
+  ],
+  "oracleFixes": null
+}

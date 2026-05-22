@@ -1,0 +1,49 @@
+{
+  "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+  "kind": "invalid",
+  "index": 21,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "line": 2,
+      "messageId": "useUnknown",
+      "suggestions": [
+        {
+          "messageId": "wrongRestTypeAnnotationSuggestion",
+          "output": "\nPromise.resolve().catch((...[args]: [unknown]) => {\n  console.log(args);\n});\n      "
+        }
+      ]
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+      "line": 2,
+      "column": 26,
+      "endLine": 2,
+      "endColumn": 45,
+      "message": "Prefer the safe `: unknown` for a `catch` callback variable.",
+      "messageId": "useUnknown",
+      "severity": 2,
+      "fix": null
+    }
+  ],
+  "oracleFixes": null
+}

@@ -1,0 +1,5 @@
+
+Promise.reject(new Error('I will reject!')).catch(([err]: [unknown]) => {
+  console.log(err);
+});
+      

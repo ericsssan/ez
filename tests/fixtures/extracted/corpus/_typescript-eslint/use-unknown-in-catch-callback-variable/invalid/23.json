@@ -1,0 +1,76 @@
+{
+  "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+  "kind": "invalid",
+  "index": 23,
+  "name": null,
+  "options": [],
+  "sourceType": "script",
+  "ecmaVersion": 2022,
+  "isTypeScript": true,
+  "jsx": false,
+  "filename": "test.ts",
+  "globals": null,
+  "parserOptions": {
+    "projectService": {
+      "allowDefaultProject": [
+        "*.ts",
+        "*.tsx"
+      ]
+    },
+    "tsconfigRootDir": "/tmp/extracted_test"
+  },
+  "output": null,
+  "declaredErrors": [
+    {
+      "column": 51,
+      "endColumn": 54,
+      "endLine": 3,
+      "line": 3,
+      "messageId": "useUnknown",
+      "suggestions": [
+        {
+          "messageId": "addUnknownTypeAnnotationSuggestion",
+          "output": "\ndeclare const condition: boolean;\nPromise.resolve('foo').then(() => {}, condition ? (err: unknown) => {} : err => {});\n      "
+        }
+      ]
+    },
+    {
+      "column": 63,
+      "endColumn": 66,
+      "endLine": 3,
+      "line": 3,
+      "messageId": "useUnknown",
+      "suggestions": [
+        {
+          "messageId": "addUnknownTypeAnnotationSuggestion",
+          "output": "\ndeclare const condition: boolean;\nPromise.resolve('foo').then(() => {}, condition ? err => {} : (err: unknown) => {});\n      "
+        }
+      ]
+    }
+  ],
+  "oracleDiags": [
+    {
+      "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+      "line": 3,
+      "column": 51,
+      "endLine": 3,
+      "endColumn": 54,
+      "message": "Prefer the safe `: unknown` for a `then` rejection callback variable.",
+      "messageId": "useUnknown",
+      "severity": 2,
+      "fix": null
+    },
+    {
+      "rule": "@typescript-eslint/use-unknown-in-catch-callback-variable",
+      "line": 3,
+      "column": 63,
+      "endLine": 3,
+      "endColumn": 66,
+      "message": "Prefer the safe `: unknown` for a `then` rejection callback variable.",
+      "messageId": "useUnknown",
+      "severity": 2,
+      "fix": null
+    }
+  ],
+  "oracleFixes": null
+}
