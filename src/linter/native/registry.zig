@@ -341,6 +341,7 @@ const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declarati
 // const unicorn_no_zero_fractions = @import("unicorn/no_zero_fractions.zig");  // hand-written — disabled per IR-only constraint
 const unicorn_throw_new_error = @import("unicorn/throw_new_error.zig");
 const unicorn_error_message = @import("unicorn/error_message.zig");
+const unicorn_prefer_array_some = @import("unicorn/prefer_array_some.zig");
 
 /// Tuple of all lint rule module types registered in the linter.
 pub const all_rules = .{
@@ -673,6 +674,7 @@ pub const all_rules = .{
     ts_parameter_properties,
     unicorn_throw_new_error,
     unicorn_error_message,
+    unicorn_prefer_array_some,
     ts_no_inferrable_types,
     ts_no_unsafe_declaration_merging,
     // ts_explicit_function_return_type, // hand-written — disabled

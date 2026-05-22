@@ -983,6 +983,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "unicorn/require-number-to-fixed-digits-argument": "require-number-to-fixed-digits-argument",
       // "unicorn/throw-new-error": "throw-new-error", // unicorn rule actually fires beyond throw context
       // "unicorn/error-message": "error-message", // native covers missing/empty cases; "message-is-not-a-string" needs value analysis
+      // "unicorn/prefer-array-some": "prefer-array-some", // native covers find/findLast subset only
     };
     // @typescript-eslint/X variants often differ from the ESLint-core rule
     // they extend (different messageIds, broader/narrower semantics, TS-only
