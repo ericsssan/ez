@@ -310,6 +310,7 @@ const ts_ban_tslint_comment = @import("typescript/ban_tslint_comment.zig");
 const ts_class_literal_property_style = @import("typescript/class_literal_property_style.zig");
 const ts_no_unnecessary_type_constraint = @import("typescript/no_unnecessary_type_constraint.zig");
 const ts_no_unsafe_function_type = @import("typescript/no_unsafe_function_type.zig");
+const ts_no_wrapper_object_types = @import("typescript/no_wrapper_object_types.zig");
 // v0.8 TypeScript rules
 // const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
@@ -637,6 +638,7 @@ pub const all_rules = .{
     ts_class_literal_property_style,
     ts_no_unnecessary_type_constraint,
     ts_no_unsafe_function_type,
+    ts_no_wrapper_object_types,
     // ts_no_empty_object_type, // runner >> native (runner 35, native 19, gap 16, 4 FP); fall back to JS runner
     // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
     // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner
