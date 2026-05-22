@@ -586,7 +586,7 @@ pub const all_rules = .{
     // TypeScript v0.6 (5)
     // ts_no_useless_empty_export, // native 5 FP (.d.ts not detectable natively); fall back
     // ts_prefer_optional_chain, // hand-written — disabled
-    // ts_no_non_null_asserted_optional_chain, // native has 3 FP making hybrid 13 vs runner 13 (worse quality); fall back to JS runner
+    ts_no_non_null_asserted_optional_chain,
     // ts_no_confusing_non_null_assertion, // runner >> native (runner 18, native 8, gap 10); fall back to JS runner
     // ts_no_non_null_asserted_nullish_coalescing, // hand-written — disabled
     // TypeScript v0.7 (5)
