@@ -267,6 +267,7 @@ const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values
 const ts_no_useless_empty_export = @import("typescript/no_useless_empty_export.zig");
 const ts_no_extraneous_class = @import("typescript/no_extraneous_class.zig");
 const ts_consistent_type_definitions = @import("typescript/consistent_type_definitions.zig");
+const ts_method_signature_style = @import("typescript/method_signature_style.zig");
 // const ts_prefer_optional_chain = @import("typescript/prefer_optional_chain.zig");  // hand-written — disabled per IR-only constraint
 const ts_no_non_null_asserted_optional_chain = @import("typescript/no_non_null_asserted_optional_chain.zig");
 // const ts_no_confusing_non_null_assertion = @import("typescript/no_confusing_non_null_assertion.zig");  // hand-written — disabled per IR-only constraint
@@ -597,6 +598,7 @@ pub const all_rules = .{
     ts_no_useless_empty_export,
     ts_no_extraneous_class,
     ts_consistent_type_definitions,
+    ts_method_signature_style,
     // ts_prefer_optional_chain, // hand-written — disabled
     ts_no_non_null_asserted_optional_chain,
     // ts_no_confusing_non_null_assertion, // runner >> native (runner 18, native 8, gap 10); fall back to JS runner
