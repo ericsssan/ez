@@ -725,6 +725,13 @@ pub const Checker = struct {
             .ts_conditional_type => tymod.ID_UNKNOWN,
             .ts_mapped_type => tymod.ID_UNKNOWN,
             .ts_template_literal_type => tymod.ID_STRING,
+            // Literal types in type position — parser keeps them as
+            // value-style literal nodes.
+            .string_literal => tymod.ID_STRING,
+            .number_literal => tymod.ID_NUMBER,
+            .boolean_literal => tymod.ID_BOOLEAN,
+            .bigint_literal => tymod.ID_BIGINT,
+            .null_literal => tymod.ID_NULL,
             else => tymod.ID_UNKNOWN,
         };
     }
@@ -888,6 +895,15 @@ pub const Checker = struct {
     fn resolveTypeRef(self: *Checker, ty_node: NodeIndex) TypeId {
         const name_tok = self.ast_ref.nodeMainToken(ty_node);
         const name = self.ast_ref.tokenText(name_tok);
+        // Literal types in type position end up as a ts_type_reference
+        // whose name token is the literal source — recognize the
+        // common shapes and map them to the corresponding TS keyword.
+        if (name.len > 0) switch (name[0]) {
+            '\'', '"', '`' => return tymod.ID_STRING,
+            '0'...'9' => return tymod.ID_NUMBER,
+            else => {},
+        };
+        if (std.mem.eql(u8, name, "true") or std.mem.eql(u8, name, "false")) return tymod.ID_BOOLEAN;
         // Map common built-ins to canonical types so containsAny on
         // `Array<any>` flags correctly without resolving the lib.
         if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
@@ -1320,9 +1336,16 @@ pub const Checker = struct {
     }
 
     fn resolveIntersection(self: *Checker, ty_node: NodeIndex) TypeId {
-        // For now intersections are treated like unions for the
-        // purpose of any-detection: `T & any` becomes any either way.
-        return self.resolveUnion(ty_node);
+        const data = self.ast_ref.nodeData(ty_node);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+        var buf: [16]TypeId = undefined;
+        const n = @min(slice.len, buf.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const m: NodeIndex = @enumFromInt(slice[i]);
+            buf[i] = self.resolveTypeNode(m);
+        }
+        return self.store.intersectionOf(buf[0..n]) catch tymod.ID_UNKNOWN;
     }
 
     // ── Expression helpers ────────────────────────────────

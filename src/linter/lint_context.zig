@@ -449,16 +449,24 @@ pub const LintContext = struct {
     }
 
     /// True when the type id is string-like: `string`, string literal
-    /// type, or a union of those.
+    /// type, or a union/intersection of those.
     pub fn typeIdIsStringy(self: *const LintContext, id: tymod.TypeId) bool {
         const c = self.ensureChecker() orelse return false;
         const t = c.store.get(id);
         if (t.kind == .string or t.kind == .string_literal) return true;
         if (t.kind == .union_t) {
-            for (c.store.idsOf(t.list_data)) |m| {
-                if (!self.typeIdIsStringy(m)) return false;
-            }
+            const ms = c.store.idsOf(t.list_data);
+            if (ms.len == 0) return false;
+            for (ms) |m| if (!self.typeIdIsStringy(m)) return false;
             return true;
+        }
+        // Intersection: any-member-string is enough — `string & Brand`
+        // is still assignable to string.
+        if (t.kind == .intersection_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (self.typeIdIsStringy(m)) return true;
+            }
+            return false;
         }
         return false;
     }
@@ -540,12 +548,18 @@ pub const LintContext = struct {
         return c.store.get(id).kind == .union_t;
     }
 
+    /// True when the type id IS an intersection type (top-level).
+    pub fn typeIdIsIntersection(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.store.get(id).kind == .intersection_t;
+    }
+
     /// Member TypeIds of a union — empty slice when not a union or
     /// when the union has no members.
     pub fn typeIdUnionMembers(self: *const LintContext, id: tymod.TypeId) []const tymod.TypeId {
         const c = self.ensureChecker() orelse return &.{};
         const t = c.store.get(id);
-        if (t.kind != .union_t) return &.{};
+        if (t.kind != .union_t and t.kind != .intersection_t) return &.{};
         return c.store.idsOf(t.list_data);
     }
 

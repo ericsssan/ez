@@ -64,10 +64,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (object == .none) return;
     const obj_ty = ctx.typeOfNode(object);
     if (ctx.typeIdIsAny(obj_ty)) return;
-    // Per TSe: every union/intersection branch must be array-like.  If
-    // it's a union, only fire when ALL branches are arrays.  Use the
-    // stricter `allBranches…` semantics here.
-    if (ctx.typeIdIsUnion(obj_ty)) {
+    // Per TSe: every union/intersection branch must be array-like.
+    // For intersections, requiring all-array avoids the
+    // `number[] & Reducer { reduce: ... }` trap where a non-array
+    // member contributes its own `reduce`.
+    if (ctx.typeIdIsUnion(obj_ty) or ctx.typeIdIsIntersection(obj_ty)) {
         const members = ctx.typeIdUnionMembers(obj_ty);
         if (members.len == 0) return;
         for (members) |m| if (!ctx.typeIdIsArrayLike(m)) return;

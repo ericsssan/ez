@@ -112,7 +112,12 @@ fn regexTextHasGlobalFlag(text: []const u8) bool {
 fn flagArgContainsGlobal(arg: NodeIndex, ctx: *const LintContext) bool {
     var n = arg;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
-    if (ctx.nodeTag(n) != .string_literal) {
+    const tag = ctx.nodeTag(n);
+    // `undefined`, `null`, `void 0` — no flags.
+    if (tag == .null_literal or tag == .void_expr) return false;
+    if (tag == .identifier and
+        std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(n)), "undefined")) return false;
+    if (tag != .string_literal) {
         // Can't statically determine — be conservative and assume it
         // might contain 'g' (so we won't fire).
         return true;
