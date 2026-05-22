@@ -41,9 +41,80 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     for (ctx.ast.extra_data[s..e]) |raw| {
         const m: NodeIndex = @enumFromInt(raw);
         const mt = ctx.nodeTag(m);
-        if (mt != .method_def and mt != .computed_method_def) continue;
-        checkMethod(m, class_name, ctx);
+        if (mt == .method_def or mt == .computed_method_def) {
+            checkMethod(m, class_name, ctx);
+        } else if (mt == .property_def or mt == .computed_property_def) {
+            checkProperty(m, class_name, ctx);
+        }
     }
+}
+
+fn checkProperty(prop: NodeIndex, class_name: []const u8, ctx: *const LintContext) void {
+    const pd = ctx.extraData(ast.PropertyData, @intFromEnum(ctx.nodeData(prop).rhs));
+    if (pd.value == .none) return;
+    var fn_expr = pd.value;
+    while (ctx.nodeTag(fn_expr) == .grouping_expr) fn_expr = ctx.nodeData(fn_expr).lhs;
+    const fn_tag = ctx.nodeTag(fn_expr);
+    const is_fn = fn_tag == .fn_expr or fn_tag == .async_fn_expr or
+        fn_tag == .arrow_fn or fn_tag == .async_arrow_fn;
+    if (!is_fn) return;
+    // Locate the return type annotation on the function expression.
+    const ann = fnExprReturnType(fn_expr, ctx) orelse return;
+    const ann_inner = if (ctx.nodeTag(ann) == .ts_type_annotation)
+        ctx.nodeData(ann).lhs
+    else
+        ann;
+    if (ann_inner == .none) return;
+    const target = classNameConstituent(ann_inner, class_name, ctx) orelse return;
+    const is_union = isUnionAnnotation(ann_inner, ctx);
+    if (is_union) {
+        const body = fnExprBody(fn_expr, ctx);
+        if (body == .none) return;
+        if (!bodyHasThisReturn(body, class_name, ctx)) return;
+    } else {
+        if (!fnExprReturnsOnlyThis(fn_expr, ctx)) return;
+    }
+    ctx.reportWithMessageId(target, "useThisType");
+}
+
+fn fnExprReturnType(fn_node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    const data = ctx.nodeData(fn_node);
+    if (data.lhs == .none) return null;
+    const tag = ctx.nodeTag(fn_node);
+    if (tag == .arrow_fn or tag == .async_arrow_fn) {
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
+        if (ad.return_type == .none) return null;
+        return ad.return_type;
+    }
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
+    if (fd.return_type == .none) return null;
+    return fd.return_type;
+}
+
+fn fnExprBody(fn_node: NodeIndex, ctx: *const LintContext) NodeIndex {
+    const data = ctx.nodeData(fn_node);
+    if (data.lhs == .none) return .none;
+    const tag = ctx.nodeTag(fn_node);
+    if (tag == .arrow_fn or tag == .async_arrow_fn) {
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
+        return ad.body;
+    }
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
+    return fd.body;
+}
+
+fn fnExprReturnsOnlyThis(fn_node: NodeIndex, ctx: *const LintContext) bool {
+    const body = fnExprBody(fn_node, ctx);
+    if (body == .none) return false;
+    const body_tag = ctx.nodeTag(body);
+    // Arrow with expression body: `() => this`.
+    if (body_tag == .this_expr) return true;
+    if (body_tag != .block_stmt) {
+        var b = body;
+        while (ctx.nodeTag(b) == .grouping_expr) b = ctx.nodeData(b).lhs;
+        return ctx.nodeTag(b) == .this_expr;
+    }
+    return methodBodyReturnsOnlyThis(body, ctx);
 }
 
 fn checkMethod(method: NodeIndex, class_name: []const u8, ctx: *const LintContext) void {
@@ -59,9 +130,14 @@ fn checkMethod(method: NodeIndex, class_name: []const u8, ctx: *const LintContex
     else
         md.return_type;
     if (ann_inner == .none) return;
-    if (!annotationIsClassName(ann_inner, class_name, ctx)) return;
-    if (!methodBodyReturnsOnlyThis(md.body, ctx)) return;
-    ctx.reportWithMessageId(ann_inner, "useThisType");
+    const target = classNameConstituent(ann_inner, class_name, ctx) orelse return;
+    const is_union = isUnionAnnotation(ann_inner, ctx);
+    if (is_union) {
+        if (!bodyHasThisReturn(md.body, class_name, ctx)) return;
+    } else {
+        if (!methodBodyReturnsOnlyThis(md.body, ctx)) return;
+    }
+    ctx.reportWithMessageId(target, "useThisType");
 }
 
 fn firstParamIsThis(md: ast.MethodData, ctx: *const LintContext) bool {
@@ -78,31 +154,148 @@ fn annotationIsClassName(ann_inner: NodeIndex, class_name: []const u8, ctx: *con
     return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ty)), class_name);
 }
 
-fn methodBodyReturnsOnlyThis(body: NodeIndex, ctx: *const LintContext) bool {
-    if (ctx.nodeTag(body) != .block_stmt) return false;
-    // Walk all return_stmts that descend from body (not crossing a
-    // nested function/class boundary).  Every return must have arg
-    // === `this`.  Must have at least one return.
+fn isUnionAnnotation(ann_inner: NodeIndex, ctx: *const LintContext) bool {
+    var ty = ann_inner;
+    if (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    return ctx.nodeTag(ty) == .ts_union_type;
+}
+
+fn bodyHasThisReturn(body: NodeIndex, class_name: []const u8, ctx: *const LintContext) bool {
+    _ = class_name;
+    if (ctx.nodeTag(body) == .this_expr) return true;
+    if (ctx.nodeTag(body) != .block_stmt) {
+        var b = body;
+        while (ctx.nodeTag(b) == .grouping_expr) b = ctx.nodeData(b).lhs;
+        if (ctx.nodeTag(b) == .this_expr) return true;
+        return false;
+    }
     const tree = ctx.ast;
     const body_span = ctx.nodeSpan(body);
     const total: u32 = @intCast(tree.nodes.len);
     var i: u32 = 0;
-    var saw_return = false;
+    var saw_this = false;
     while (i < total) : (i += 1) {
         const ni: NodeIndex = @enumFromInt(i);
         if (tree.nodeTag(ni) != .return_stmt) continue;
         const sp = ctx.nodeSpan(ni);
         if (sp.start < body_span.start or sp.end > body_span.end) continue;
-        // Reject returns inside a nested function/class.
         if (crossesNestedFnBoundary(ni, body, ctx)) continue;
-        saw_return = true;
         const arg = ctx.nodeData(ni).lhs;
-        if (arg == .none) return false;
+        if (arg == .none) continue;
         var a = arg;
         while (ctx.nodeTag(a) == .grouping_expr) a = ctx.nodeData(a).lhs;
-        if (ctx.nodeTag(a) != .this_expr) return false;
+        if (ctx.nodeTag(a) == .this_expr) { saw_this = true; continue; }
+        if (isThisAliasIdent(a, body, ctx)) { saw_this = true; continue; }
+        // Non-this return that isn't a nullish literal: bail.  Type-
+        // checking against the union constituents would let us
+        // recognize the case-20-style "returns a value of the
+        // non-class constituent" pattern, but that requires reliable
+        // declared-type resolution we don't have.
+        if (!isNullishExpr(a, ctx)) return false;
     }
-    return saw_return;
+    return saw_this;
+}
+
+/// Returns the constituent node referencing `class_name` if `ann_inner`
+/// is either a direct class-name reference or a union containing one.
+fn classNameConstituent(ann_inner: NodeIndex, class_name: []const u8, ctx: *const LintContext) ?NodeIndex {
+    var ty = ann_inner;
+    if (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (annotationIsClassName(ty, class_name, ctx)) return ty;
+    if (ctx.nodeTag(ty) == .ts_union_type) {
+        const d = ctx.nodeData(ty);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (s <= e and e <= ctx.ast.extra_data.len) {
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const c: NodeIndex = @enumFromInt(raw);
+                if (annotationIsClassName(c, class_name, ctx)) return c;
+            }
+        }
+    }
+    return null;
+}
+
+/// True when the expression is `undefined`, `null`, or `void <anything>`.
+fn isNullishExpr(arg: NodeIndex, ctx: *const LintContext) bool {
+    var a = arg;
+    while (ctx.nodeTag(a) == .grouping_expr) a = ctx.nodeData(a).lhs;
+    const t = ctx.nodeTag(a);
+    if (t == .null_literal) return true;
+    if (t == .identifier and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(a)), "undefined")) return true;
+    if (t == .void_expr) return true;
+    return false;
+}
+
+fn methodBodyReturnsOnlyThis(body: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(body) != .block_stmt) return false;
+    // Walk all return_stmts that descend from body (not crossing a
+    // nested function/class boundary).  Returns must be `this`, an
+    // alias for `this` declared in scope, or a nullish expression
+    // (undefined/null/void <expr>).  Must have at least one
+    // `this`-shaped return.
+    const tree = ctx.ast;
+    const body_span = ctx.nodeSpan(body);
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    var saw_this_return = false;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .return_stmt) continue;
+        const sp = ctx.nodeSpan(ni);
+        if (sp.start < body_span.start or sp.end > body_span.end) continue;
+        if (crossesNestedFnBoundary(ni, body, ctx)) continue;
+        const arg = ctx.nodeData(ni).lhs;
+        if (arg == .none) {
+            // `return;` — bare return is nullish, allowed alongside
+            // `this` returns.
+            continue;
+        }
+        var a = arg;
+        while (ctx.nodeTag(a) == .grouping_expr) a = ctx.nodeData(a).lhs;
+        if (ctx.nodeTag(a) == .this_expr) {
+            saw_this_return = true;
+            continue;
+        }
+        if (isThisAliasIdent(a, body, ctx)) {
+            saw_this_return = true;
+            continue;
+        }
+        if (isNullishExpr(a, ctx)) continue;
+        return false;
+    }
+    return saw_this_return;
+}
+
+/// True when `id` is an identifier whose binding within `body` is
+/// declared exactly once as `const X = this` (or `var X = this`).
+fn isThisAliasIdent(id: NodeIndex, body: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(id) != .identifier) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(id));
+    if (name.len == 0) return false;
+    const tree = ctx.ast;
+    const body_span = ctx.nodeSpan(body);
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .declarator) continue;
+        const sp = ctx.nodeSpan(ni);
+        if (sp.start < body_span.start or sp.end > body_span.end) continue;
+        if (crossesNestedFnBoundary(ni, body, ctx)) continue;
+        const d = ctx.nodeData(ni);
+        // lhs = binding, rhs = init (for simple declarators).
+        const binding = d.lhs;
+        if (binding == .none or ctx.nodeTag(binding) != .identifier) continue;
+        const bname = ctx.tokenText(ctx.nodeMainToken(binding));
+        if (!std.mem.eql(u8, bname, name)) continue;
+        const init_node = d.rhs;
+        if (init_node == .none) return false;
+        var v = init_node;
+        while (ctx.nodeTag(v) == .grouping_expr) v = ctx.nodeData(v).lhs;
+        return ctx.nodeTag(v) == .this_expr;
+    }
+    return false;
 }
 
 fn crossesNestedFnBoundary(node: NodeIndex, ancestor: NodeIndex, ctx: *const LintContext) bool {

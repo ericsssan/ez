@@ -471,6 +471,13 @@ pub const LintContext = struct {
         return t.name;
     }
 
+    /// True when the type id references the given type name — either
+    /// directly as a `type_ref` or as a member of a union/intersection.
+    pub fn typeIdMentionsRef(self: *const LintContext, id: tymod.TypeId, name: []const u8) bool {
+        const c = self.ensureChecker() orelse return false;
+        return mentionsRefHelper(&c.store, id, name);
+    }
+
     /// True when the type id is `Array<string>` / `ReadonlyArray<string>`
     /// / tuple of all strings.  Used by `require-array-sort-compare`'s
     /// `ignoreStringArrays` option.
@@ -8432,6 +8439,19 @@ pub const LintContext = struct {
         }) catch {};
     }
 };
+
+fn mentionsRefHelper(store: *const tymod.TypeStore, id: tymod.TypeId, name: []const u8) bool {
+    const t = store.get(id);
+    if (t.kind == .type_ref) {
+        if (std.mem.eql(u8, t.name, name)) return true;
+    }
+    if (t.kind == .union_t or t.kind == .intersection_t) {
+        for (store.idsOf(t.list_data)) |m| {
+            if (mentionsRefHelper(store, m, name)) return true;
+        }
+    }
+    return false;
+}
 
 fn typeIdIsArrayLikeImpl(store: *const tymod.TypeStore, id: tymod.TypeId) bool {
     const t = store.get(id);
