@@ -653,6 +653,123 @@ pub const LintContext = struct {
         return t.kind == .bigint or t.kind == .bigint_literal;
     }
 
+    /// Strip `null` / `undefined` / `void` from `id`.  Returns the
+    /// non-nullish part:
+    ///   - For `T | null | undefined` → `T`.
+    ///   - For `T` (no nullish) → `T` unchanged.
+    ///   - For exactly `null` / `undefined` / `void` → `never`.
+    /// Equivalent to TS's `NonNullable<T>`.
+    pub fn typeIdNonNullable(self: *const LintContext, id: tymod.TypeId) tymod.TypeId {
+        const c = self.ensureChecker() orelse return id;
+        const t = c.store.get(id);
+        if (t.kind != .union_t) {
+            if (id.eq(tymod.ID_NULL) or id.eq(tymod.ID_UNDEFINED) or id.eq(tymod.ID_VOID)) return tymod.ID_NEVER;
+            return id;
+        }
+        var buf: [16]tymod.TypeId = undefined;
+        var n: usize = 0;
+        for (c.store.idsOf(t.list_data)) |m| {
+            if (m.eq(tymod.ID_NULL) or m.eq(tymod.ID_UNDEFINED) or m.eq(tymod.ID_VOID)) continue;
+            if (n >= buf.len) return id;
+            buf[n] = m;
+            n += 1;
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return c.store.unionOf(buf[0..n]) catch id;
+    }
+
+    /// If `id` is a `Promise<T>` / `PromiseLike<T>` / `Thenable<T>` type
+    /// reference, return the awaited type `T`.  For a non-promise type,
+    /// return `id` unchanged (matches TS's `Awaited<T>` semantics).
+    pub fn typeIdAwaited(self: *const LintContext, id: tymod.TypeId) tymod.TypeId {
+        const c = self.ensureChecker() orelse return id;
+        const t = c.store.get(id);
+        if (t.kind == .type_ref) {
+            if (std.mem.eql(u8, t.name, "Promise") or
+                std.mem.eql(u8, t.name, "PromiseLike") or
+                std.mem.eql(u8, t.name, "Thenable"))
+            {
+                const args = c.store.idsOf(t.list_data);
+                if (args.len > 0) return args[0];
+            }
+            return id;
+        }
+        // Union: walk members, awaiting each.  Re-build the union if
+        // anything changed.
+        if (t.kind == .union_t) {
+            var buf: [16]tymod.TypeId = undefined;
+            var n: usize = 0;
+            var changed = false;
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (n >= buf.len) return id;
+                buf[n] = self.typeIdAwaited(m);
+                if (!buf[n].eq(m)) changed = true;
+                n += 1;
+            }
+            if (!changed) return id;
+            return c.store.unionOf(buf[0..n]) catch id;
+        }
+        return id;
+    }
+
+    /// For a function/method/constructor type, return the return type
+    /// of its first signature.  Returns `ID_UNKNOWN` for non-function
+    /// types.
+    pub fn typeIdSignatureReturnType(self: *const LintContext, id: tymod.TypeId) tymod.TypeId {
+        const c = self.ensureChecker() orelse return tymod.ID_UNKNOWN;
+        const t = c.store.get(id);
+        if (t.kind != .function_t) return tymod.ID_UNKNOWN;
+        const sigs = c.store.signaturesOf(t.signatures);
+        if (sigs.len == 0) return tymod.ID_UNKNOWN;
+        return sigs[0].return_type;
+    }
+
+    /// True when the type id is a literal type (string/number/bool/bigint
+    /// literal).  Useful for narrowness checks.
+    pub fn typeIdIsLiteral(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const k = c.store.get(id).kind;
+        return k == .string_literal or k == .number_literal or
+            k == .boolean_literal or k == .bigint_literal;
+    }
+
+    /// For a string_literal type, return its value (e.g. `'foo'` → `"foo"`).
+    /// Empty slice for non-string-literal ids.
+    pub fn typeIdStringLiteralValue(self: *const LintContext, id: tymod.TypeId) []const u8 {
+        const c = self.ensureChecker() orelse return &.{};
+        const t = c.store.get(id);
+        if (t.kind != .string_literal) return &.{};
+        return switch (t.literal_value) {
+            .string => |s| s,
+            else => &.{},
+        };
+    }
+
+    /// True when the type id is "thenable" — has a callable `then`
+    /// member (or IS one of the recognized Promise-shaped type refs).
+    /// Broader than `typeIdIsPromise` since user-defined thenables are
+    /// also valid for `await` / floating-promise detection.
+    pub fn typeIdIsThenable(self: *const LintContext, id: tymod.TypeId) bool {
+        if (self.typeIdIsPromise(id)) return true;
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind == .union_t or t.kind == .intersection_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (self.typeIdIsThenable(m)) return true;
+            }
+            return false;
+        }
+        if (t.kind == .object_t) {
+            for (c.store.propsOf(t.object_props)) |p| {
+                if (std.mem.eql(u8, p.name, "then")) {
+                    return self.typeIdIsFunction(p.type_id);
+                }
+            }
+        }
+        return false;
+    }
+
     /// For an array_t / readonly_array_t / tuple_t TypeId, return the
     /// element TypeIds.  For arrays this is a single-element slice; for
     /// tuples it's per-position.  Returns an empty slice otherwise.
