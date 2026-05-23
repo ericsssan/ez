@@ -473,21 +473,20 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
     // false — chain still needs an actual access-extension after.
     var end: usize = if (k_start == start + 2) start + 1 else start;
     var extended: bool = false;
+    var ext_count: usize = 0;
     var k: usize = k_start;
     // Presence-check phase.
     while (k < operands.len) : (k += 1) {
         const op = unwrapGrouping(operands[k], ctx);
         if (presenceCheckSubject(op, ctx)) |subj| {
             if (sameExpr(prev, subj, ctx)) {
-                // Same-depth re-check — keep walking but don't
-                // advance `end`; a chain that terminates here is
-                // just a redundant re-check, not a rewrite target.
                 continue;
             }
             if (isPrefixExtension(prev, subj, ctx)) {
                 prev = subj;
                 end = k;
                 extended = true;
+                ext_count += 1;
                 continue;
             }
         }
@@ -499,18 +498,25 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
         if (isExtensionOf(prev, op, ctx)) {
             end = k;
             extended = true;
+            ext_count += 1;
         }
     }
     if (!extended) return start;
     // Post-walk validation: when phase-1 ate a strict `!== null`
-    // (or `=== Y` / `=== undefined`) as the subrun's terminal, the
-    // rewrite to `?.` would lose semantics — reject by retreating.
-    while (end > start) {
-        const last_op = unwrapGrouping(operands[end], ctx);
-        if (!isUnsafeStrictAsChainTerminal(last_op, ctx)) return end;
-        end -= 1;
+    // (or `=== Y` / `=== undefined`) as the subrun's terminal AND
+    // the chain only has a single access-extension, the rewrite to
+    // `?.` would lose semantics — reject by retreating.  When the
+    // chain extends through MULTIPLE access steps the diagnostic
+    // is meaningful even without a safe rewrite (TSe fires no-fix).
+    if (ext_count < 2) {
+        while (end > start) {
+            const last_op = unwrapGrouping(operands[end], ctx);
+            if (!isUnsafeStrictAsChainTerminal(last_op, ctx)) return end;
+            end -= 1;
+        }
+        return start;
     }
-    return start;
+    return end;
 }
 
 /// Operand forms that confirm non-nullishness of the chain subject
