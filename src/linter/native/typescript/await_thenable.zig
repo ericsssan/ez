@@ -696,7 +696,7 @@ fn isAwaitable(node: NodeIndex, id: tymod.TypeId, ctx: *const LintContext) bool 
     // with a zero-param `then` is NOT thenable.
     if (ctx.typeNodeIsPromise(node)) return true;
     if (ctx.typeIdIsThenable(id)) return true;
-    return exprIsThenable(node, ctx) or typeIdContainsPromise(id, ctx);
+    return exprIsThenable(node, ctx);
 }
 
 /// AST-level Promise/thenable detection (mirrors no-floating-promises'
@@ -1074,17 +1074,6 @@ fn interfaceExtendsPromise(name: []const u8, ctx: *const LintContext) bool {
 
 fn classExtendsPromise(name: []const u8, ctx: *const LintContext) bool {
     return ctx.declaredTypeInheritsFrom(name, "Promise");
-}
-
-/// True when the type-id directly is or contains Promise<T> at any
-/// nested composite position.
-fn typeIdContainsPromise(id: tymod.TypeId, ctx: *const LintContext) bool {
-    _ = id;
-    _ = ctx;
-    // The checker's typeNodeIsPromise path already handles direct refs.
-    // Composite walks (Promise inside a union) are rare for awaitable
-    // values; rely on AST-level checks above.
-    return false;
 }
 
 fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {

@@ -821,6 +821,12 @@ fn isUnhandledPromiseExpr(e: NodeIndex, ctx: *const LintContext) bool {
 
 /// Heuristic Promise-return detection.
 fn returnsPromise(e: NodeIndex, ctx: *const LintContext) bool {
+    // NOTE: do NOT use `typeIdIsThenable` here.  TSe's no-floating-promises
+    // only treats user-defined thenables as Promise-like when the
+    // `checkThenables` option is on; default behaviour is "Promise"-only
+    // via `isBuiltinSymbolLike(type, 'Promise')`.  Switching this branch
+    // to thenable detection would over-fire on `MyThenable`/`{ then(...) }`
+    // shapes the corpus marks valid.
     const tag = ctx.nodeTag(e);
     switch (tag) {
         .call_expr, .optional_call_expr => {
