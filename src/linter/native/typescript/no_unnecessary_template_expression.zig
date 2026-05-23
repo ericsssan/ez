@@ -104,7 +104,7 @@ fn checkTemplateLiteral(node: NodeIndex, ctx: *const LintContext) void {
         // by the literal/fixable path above) — TSe fires for trivial
         // templates whose single interpolation has a string-like type.
         const ty = ctx.typeOfNode(expr);
-        if (ctx.typeIdIsStringy(ty)) {
+        if (ctx.typeIdIsStringy(ty) or isGlobalStringCall(expr, ctx)) {
             reportInterpolation(expr, ctx);
             return;
         }
@@ -139,6 +139,7 @@ fn checkTemplateLiteralType(node: NodeIndex, ctx: *const LintContext) void {
         // type parameters from the trivial path.
         if (ctx.typeAnnotationIsTypeParameter(expr)) return;
         if (typeNodeMentionsEnumMember(expr, ctx)) return;
+        if (typeNodeReferencesUndeclared(expr, ctx)) return;
         const ty = ctx.resolveTypeAnnotationNode(expr);
         if (ctx.typeIdIsStringy(ty)) {
             reportInterpolation(expr, ctx);
@@ -154,6 +155,56 @@ fn checkTemplateLiteralType(node: NodeIndex, ctx: *const LintContext) void {
             reportInterpolation(parts.exprs[i], ctx);
         }
     }
+}
+
+/// True when `node` is a call to the global `String(...)` — TS infers
+/// its return type as `string`, but our checker doesn't yet model
+/// global constructor return types, so this mirrors that inference
+/// at the AST level.
+fn isGlobalStringCall(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag != .call_expr and tag != .optional_call_expr) return false;
+    var callee = ctx.nodeData(n).lhs;
+    while (ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
+    if (ctx.nodeTag(callee) != .identifier) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(callee));
+    if (!std.mem.eql(u8, name, "String")) return false;
+    return ctx.isGlobalReference(callee);
+}
+
+/// True when any `ts_type_reference` in `node` names a type that
+/// isn't declared anywhere in this file (and isn't a TS keyword).
+/// TSe's type checker would resolve such a reference to an error
+/// type, which neutralises the "string-like" inference, so we mirror
+/// that bail-out conservatively.
+fn typeNodeReferencesUndeclared(node: NodeIndex, ctx: *const LintContext) bool {
+    if (node == .none) return false;
+    const tag = ctx.nodeTag(node);
+    if (tag == .ts_union_type or tag == .ts_intersection_type) {
+        const d = ctx.nodeData(node);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e > s and e <= ctx.ast.extra_data.len) {
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (typeNodeReferencesUndeclared(m, ctx)) return true;
+            }
+        }
+        return false;
+    }
+    if (tag == .ts_parenthesized_type) return typeNodeReferencesUndeclared(ctx.nodeData(node).lhs, ctx);
+    if (tag == .ts_type_reference) {
+        const name = ctx.tokenText(ctx.nodeMainToken(node));
+        if (name.len == 0) return false;
+        // Quoted / numeric literal types — these are typed directly.
+        const c0 = name[0];
+        if (c0 == '\'' or c0 == '"' or c0 == '`') return false;
+        if (c0 >= '0' and c0 <= '9') return false;
+        return !ctx.typeNameIsKnown(name);
+    }
+    return false;
 }
 
 /// True when the type-position expression mentions an enum member —

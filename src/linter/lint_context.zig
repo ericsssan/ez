@@ -406,6 +406,28 @@ pub const LintContext = struct {
         return c.enum_kinds.get(name) != null;
     }
 
+    /// True when `name` is a built-in TS type keyword (`string`, `any`,
+    /// etc.) or matches a type declaration / class / interface / enum
+    /// / import seen in this file.
+    pub fn typeNameIsKnown(self: *const LintContext, name: []const u8) bool {
+        const c = self.ensureChecker() orelse return false;
+        if (c.known_type_names.contains(name)) return true;
+        return std.mem.eql(u8, name, "any") or
+            std.mem.eql(u8, name, "unknown") or
+            std.mem.eql(u8, name, "never") or
+            std.mem.eql(u8, name, "string") or
+            std.mem.eql(u8, name, "number") or
+            std.mem.eql(u8, name, "boolean") or
+            std.mem.eql(u8, name, "bigint") or
+            std.mem.eql(u8, name, "symbol") or
+            std.mem.eql(u8, name, "object") or
+            std.mem.eql(u8, name, "void") or
+            std.mem.eql(u8, name, "undefined") or
+            std.mem.eql(u8, name, "null") or
+            std.mem.eql(u8, name, "true") or
+            std.mem.eql(u8, name, "false");
+    }
+
     /// True when `ty_node` is a `ts_type_reference` to a TS type parameter
     /// in scope (e.g. `T` inside `function f<T>(...)`).  Used by
     /// no-unsafe-type-assertion to fire the type-parameter-specific
