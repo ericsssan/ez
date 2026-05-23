@@ -780,6 +780,138 @@ pub const LintContext = struct {
         return c.store.idsOf(t.list_data);
     }
 
+    /// For an iterable type, return the element TypeId:
+    ///   - `T[]` / `readonly T[]` / `Array<T>` / `ReadonlyArray<T>` → `T`
+    ///   - `[A, B, C]` tuple → union(A, B, C)
+    ///   - `Iterable<T>` / `IterableIterator<T>` / `AsyncIterable<T>` /
+    ///     `AsyncIterableIterator<T>` / `Generator<T, ...>` /
+    ///     `AsyncGenerator<T, ...>` / `Set<T>` / `Map<K, V>` (yields [K, V])
+    ///   - `string` → `string` (each char is a string)
+    /// Returns `ID_UNKNOWN` for non-iterable types.
+    pub fn typeIdIterableElement(self: *const LintContext, id: tymod.TypeId) tymod.TypeId {
+        const c = self.ensureChecker() orelse return tymod.ID_UNKNOWN;
+        const t = c.store.get(id);
+        switch (t.kind) {
+            .array_t, .readonly_array_t => {
+                const e = c.store.idsOf(t.list_data);
+                return if (e.len > 0) e[0] else tymod.ID_UNKNOWN;
+            },
+            .tuple_t => {
+                const e = c.store.idsOf(t.list_data);
+                if (e.len == 0) return tymod.ID_UNKNOWN;
+                if (e.len == 1) return e[0];
+                return c.store.unionOf(e) catch e[0];
+            },
+            .string, .string_literal => return tymod.ID_STRING,
+            .union_t => {
+                var buf: [16]tymod.TypeId = undefined;
+                var n: usize = 0;
+                for (c.store.idsOf(t.list_data)) |m| {
+                    const elem = self.typeIdIterableElement(m);
+                    if (elem.eq(tymod.ID_UNKNOWN)) return tymod.ID_UNKNOWN;
+                    if (n >= buf.len) return tymod.ID_UNKNOWN;
+                    buf[n] = elem;
+                    n += 1;
+                }
+                if (n == 0) return tymod.ID_UNKNOWN;
+                if (n == 1) return buf[0];
+                return c.store.unionOf(buf[0..n]) catch buf[0];
+            },
+            .type_ref => {
+                const args = c.store.idsOf(t.list_data);
+                // Single-arg iterable forms: yield args[0].
+                const single_arg = [_][]const u8{
+                    "Iterable",          "IterableIterator",
+                    "AsyncIterable",     "AsyncIterableIterator",
+                    "ReadonlyArray",     "Array",
+                    "Set",               "ReadonlySet",
+                };
+                for (single_arg) |name| {
+                    if (std.mem.eql(u8, t.name, name)) {
+                        return if (args.len > 0) args[0] else tymod.ID_UNKNOWN;
+                    }
+                }
+                // Generator<T, TReturn, TNext> — first arg is yield type.
+                if (std.mem.eql(u8, t.name, "Generator") or
+                    std.mem.eql(u8, t.name, "AsyncGenerator"))
+                {
+                    return if (args.len > 0) args[0] else tymod.ID_UNKNOWN;
+                }
+                // Map<K, V> / ReadonlyMap<K, V> — iteration yields [K, V].
+                if (std.mem.eql(u8, t.name, "Map") or std.mem.eql(u8, t.name, "ReadonlyMap")) {
+                    if (args.len >= 2) {
+                        return c.store.tupleOf(&[_]tymod.TypeId{ args[0], args[1] }) catch tymod.ID_UNKNOWN;
+                    }
+                    return tymod.ID_UNKNOWN;
+                }
+                return tymod.ID_UNKNOWN;
+            },
+            else => return tymod.ID_UNKNOWN,
+        }
+    }
+
+    /// True when the type id is iterable — accepted by `for-of` /
+    /// spread.  Matches `typeIdIterableElement` returning non-unknown,
+    /// but skips the union/intersection re-walk for cheap query.
+    pub fn typeIdIsIterable(self: *const LintContext, id: tymod.TypeId) bool {
+        return !self.typeIdIterableElement(id).eq(tymod.ID_UNKNOWN);
+    }
+
+    /// True when the type id is "callable" — has at least one call
+    /// signature: a function_t, or an object_t whose member named
+    /// (anonymous) callable signature is present.  We approximate
+    /// object_t callability via the existing `typeIdIsFunction`.
+    pub fn typeIdIsCallable(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind == .function_t) return true;
+        if (self.typeIdIsFunction(id)) return true;
+        // Union: any member callable.
+        if (t.kind == .union_t or t.kind == .intersection_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (self.typeIdIsCallable(m)) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    /// True when the type id is — or contains, at the top union/
+    /// intersection level — a class/interface named `name`, OR a class
+    /// whose `extends` chain reaches `name`.  Useful for "is this
+    /// Error-like" / "is this Promise-rejected by something extending
+    /// Error" / similar inheritance checks.
+    pub fn typeIdInheritsFrom(self: *const LintContext, id: tymod.TypeId, name: []const u8) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.typeInheritsFromName(id, name);
+    }
+
+    /// True when the type id has a property named `prop`.  Walks
+    /// union/intersection composites.
+    pub fn typeIdHasProperty(self: *const LintContext, id: tymod.TypeId, prop: []const u8) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind == .object_t) {
+            for (c.store.propsOf(t.object_props)) |p| {
+                if (std.mem.eql(u8, p.name, prop)) return true;
+            }
+            return false;
+        }
+        if (t.kind == .union_t or t.kind == .intersection_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (self.typeIdHasProperty(m, prop)) return true;
+            }
+            return false;
+        }
+        if (t.kind == .type_ref) {
+            // Try declared type resolution.
+            if (c.resolveDeclaredTypePub(t.name)) |resolved| {
+                if (!resolved.eq(id)) return self.typeIdHasProperty(resolved, prop);
+            }
+        }
+        return false;
+    }
+
     /// Resolve a TS function type annotation node's return-type subnode.
     /// `ts_function_type` stores its return type in `FnData.body` (parser
     /// reuses the field).  Callers pass the bare annotation type node

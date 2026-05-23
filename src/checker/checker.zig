@@ -1409,6 +1409,89 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Public wrapper around `resolveDeclaredType` so LintContext rules can
+    /// reach in for inheritance / property walks.
+    pub fn resolveDeclaredTypePub(self: *Checker, name: []const u8) ?TypeId {
+        return self.resolveDeclaredType(name);
+    }
+
+    /// True when the TypeId reaches a class/interface named `name`
+    /// through its declaration's `extends` chain.  Walks unions/
+    /// intersections and follows declared parent classes via AST.
+    pub fn typeInheritsFromName(self: *Checker, id: TypeId, name: []const u8) bool {
+        return self.typeInheritsFromNameDepth(id, name, 0);
+    }
+
+    fn typeInheritsFromNameDepth(self: *Checker, id: TypeId, name: []const u8, depth: u8) bool {
+        if (depth > 8) return false;
+        const t = self.store.get(id);
+        if (t.kind == .type_ref) {
+            if (std.mem.eql(u8, t.name, name)) return true;
+            // Walk the declared class's extends chain.
+            const decl = self.type_decl_nodes.get(t.name) orelse return false;
+            return self.declInheritsFromName(decl, name, depth + 1);
+        }
+        // Union: EVERY constituent must inherit (otherwise the value
+        // could be a non-Error-like at runtime — matches TS's "every
+        // branch must satisfy" semantics for narrowing-on-throw).
+        if (t.kind == .union_t) {
+            const members = self.store.idsOf(t.list_data);
+            if (members.len == 0) return false;
+            for (members) |m| {
+                if (!self.typeInheritsFromNameDepth(m, name, depth + 1)) return false;
+            }
+            return true;
+        }
+        // Intersection: ANY constituent inheriting is enough — the
+        // intersection narrows to at least that shape.
+        if (t.kind == .intersection_t) {
+            for (self.store.idsOf(t.list_data)) |m| {
+                if (self.typeInheritsFromNameDepth(m, name, depth + 1)) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    /// For a class_decl / ts_interface_decl AST node, check if its
+    /// `extends` clause names `name` (transitively).
+    fn declInheritsFromName(self: *Checker, decl: NodeIndex, name: []const u8, depth: u8) bool {
+        if (depth > 8) return false;
+        const tag = self.ast_ref.nodeTag(decl);
+        if (tag == .class_decl) {
+            const data = self.ast_ref.nodeData(decl);
+            const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
+            if (cd.super_class == .none) return false;
+            var sc = cd.super_class;
+            while (self.ast_ref.nodeTag(sc) == .grouping_expr) sc = self.ast_ref.nodeData(sc).lhs;
+            if (self.ast_ref.nodeTag(sc) == .identifier) {
+                const parent_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(sc));
+                if (std.mem.eql(u8, parent_name, name)) return true;
+                // Recurse into parent class's extends.
+                if (self.type_decl_nodes.get(parent_name)) |parent_decl| {
+                    return self.declInheritsFromName(parent_decl, name, depth + 1);
+                }
+            }
+            return false;
+        }
+        if (tag == .ts_interface_decl) {
+            const data = self.ast_ref.nodeData(decl);
+            const id_data = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
+            if (id_data.extends_end <= id_data.extends_start) return false;
+            const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+            if (id_data.extends_end > ext_len) return false;
+            for (self.ast_ref.extra_data[id_data.extends_start..id_data.extends_end]) |tok| {
+                const ext_name = self.ast_ref.tokenText(tok);
+                if (std.mem.eql(u8, ext_name, name)) return true;
+                if (self.type_decl_nodes.get(ext_name)) |parent_decl| {
+                    if (self.declInheritsFromName(parent_decl, name, depth + 1)) return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
     /// type (e.g. an import or type alias to a non-structural type).
     fn resolveDeclaredType(self: *Checker, name: []const u8) ?TypeId {
         if (self.declared_type_cache.get(name)) |cached| {

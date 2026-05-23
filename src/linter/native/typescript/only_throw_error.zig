@@ -153,6 +153,10 @@ fn isErrorClassNameStatic(name: []const u8) bool {
 }
 
 fn exprIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
+    // Type-aware fast path: if the inferred type inherits from Error
+    // (transitively through class extends / interface extends), the
+    // expression is Error-like regardless of how it's constructed.
+    if (ctx.typeIdInheritsFrom(ctx.typeOfNode(node), "Error")) return true;
     var n = node;
     // Peel grouping, non-null assertion, satisfies, and short-circuit
     // operators where the result narrows to one side.

@@ -521,6 +521,8 @@ fn classExtendsErrorLike(name: []const u8, ctx: *const LintContext) bool {
 }
 
 fn exprIsErrorLike(node: NodeIndex, ctx: *const LintContext) bool {
+    // Type-aware fast path: if the inferred type extends Error, accept.
+    if (ctx.typeIdInheritsFrom(ctx.typeOfNode(node), "Error")) return true;
     var n = node;
     while (n != .none) {
         const tag = ctx.nodeTag(n);
