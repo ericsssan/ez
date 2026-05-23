@@ -76,7 +76,73 @@ fn checkMember(node: NodeIndex, ctx: *const LintContext) void {
     var rhs = od.rhs;
     while (ctx.nodeTag(rhs) == .grouping_expr) rhs = ctx.nodeData(rhs).lhs;
     if (!isEmptyObjectLiteral(rhs, ctx)) return;
+    // requireNullish option: skip when the chain is a non-nullish
+    // guard.  Fire only when any operand in the `||` chain is
+    // possibly-nullish — either the chain root has a nullish type,
+    // or an intermediate operand is a syntactic null/undefined.
+    const opts = readOptions(ctx);
+    if (opts.require_nullish and !orChainHasNullishAlternative(od.lhs, ctx)) return;
+    // Multi-step `||` chains with a non-nullish-falsy intermediate
+    // (`foo || 'a' || {}`) — the `|| {}` is unreachable since `'a'`
+    // is always truthy.  TSe doesn't fire on these.
+    if (opts.require_nullish and orChainHasNonNullishConstant(od.lhs, ctx)) return;
     ctx.reportWithMessageId(node, "preferOptionalChain");
+}
+
+/// True when an `||` / `??` chain has an intermediate operand that's
+/// a non-nullish constant (`'a'`, `0`, `true`, etc.) — that
+/// operand acts as a definite fallback and makes the outer `|| {}`
+/// unreachable.
+fn orChainHasNonNullishConstant(node: NodeIndex, ctx: *const LintContext) bool {
+    var cur = node;
+    while (true) {
+        while (ctx.nodeTag(cur) == .grouping_expr) cur = ctx.nodeData(cur).lhs;
+        const t = ctx.nodeTag(cur);
+        if (t != .logical_or and t != .nullish_coalesce) return false;
+        const d = ctx.nodeData(cur);
+        var rhs = d.rhs;
+        while (ctx.nodeTag(rhs) == .grouping_expr) rhs = ctx.nodeData(rhs).lhs;
+        const rtag = ctx.nodeTag(rhs);
+        // Non-nullish-truthy literal — guarantees the chain has a
+        // definite fallback before the trailing `|| {}`.
+        switch (rtag) {
+            .string_literal, .number_literal, .boolean_literal,
+            .bigint_literal, .regex_literal, .template_literal,
+            .array_literal,
+            => return true,
+            else => {},
+        }
+        cur = d.lhs;
+    }
+}
+
+/// True when an `||` / `??` chain contains a possibly-nullish
+/// operand — either the chain root with a nullish type, or any
+/// intermediate node that's a literal `null` / `undefined`.
+fn orChainHasNullishAlternative(node: NodeIndex, ctx: *const LintContext) bool {
+    var cur = node;
+    while (true) {
+        while (ctx.nodeTag(cur) == .grouping_expr) cur = ctx.nodeData(cur).lhs;
+        const t = ctx.nodeTag(cur);
+        if (t != .logical_or and t != .nullish_coalesce) {
+            // Chain root operand.  Check type for nullish.
+            if (isNullLiteralNode(cur, ctx) or isUndefinedNode(cur, ctx)) return true;
+            if (!ctx.hasTypeChecker()) return true; // permissive
+            const ty = ctx.typeOfNode(cur);
+            const kind = ctx.typeKind(ty);
+            switch (kind) {
+                .any, .unknown, .error_t, .type_param => return true,
+                else => {},
+            }
+            return ctx.typeIdContainsNullish(ty);
+        }
+        const d = ctx.nodeData(cur);
+        // Check RHS operand for syntactic nullish.
+        var rhs = d.rhs;
+        while (ctx.nodeTag(rhs) == .grouping_expr) rhs = ctx.nodeData(rhs).lhs;
+        if (isNullLiteralNode(rhs, ctx) or isUndefinedNode(rhs, ctx)) return true;
+        cur = d.lhs;
+    }
 }
 
 /// True if `node` is a non-nullish primitive literal: number, string,
@@ -578,10 +644,10 @@ fn classifyAndStrictRoot(node: NodeIndex, ctx: *const LintContext) OrRootKind {
     if (has_null and has_undef) return .both_halves;
     if (testing_undef) {
         if (has_undef) return .safe;
-        return .statically_false;
+        return .statically_false_undef;
     }
     if (has_null) return .safe;
-    return .statically_false;
+    return .statically_false_null;
 }
 
 /// Narrowing footprint of a chain operand: which nullish halves
@@ -783,8 +849,13 @@ fn reportAndChainSubrun(
         if (hasBrokenOptionalGrouping(unwrapGrouping(op, ctx), ctx)) return;
     }
     if (ctx.hasTypeChecker()) {
-        const ty = ctx.typeOfNode(operands[start]);
-        if (!isEligibleNullishOperand(ty, opts, ctx)) return;
+        // Strip nullish-presence-check operand to get the real
+        // subject type (`X != null` ⇒ subject = X).
+        const subj_for_ty = firstOperandSubject(unwrapGrouping(operands[start], ctx), ctx) orelse operands[start];
+        const ty = ctx.typeOfNode(subj_for_ty);
+        if (typeContainsVoid(ty, ctx)) return;
+        const ty_full = ctx.typeOfNode(operands[start]);
+        if (!isEligibleNullishOperand(ty_full, opts, ctx)) return;
     }
     const span_start = ctx.nodeSpan(operands[start]).start;
     const span_end = ctx.nodeSpan(operands[end_idx]).end;
@@ -792,6 +863,23 @@ fn reportAndChainSubrun(
         .{ .start = span_start, .end = span_end },
         "preferOptionalChain",
     );
+}
+
+/// True when the type contains a `void` constituent — TS's `void`
+/// is semantically distinct from `undefined` even though both
+/// represent "no value at runtime".  TSe doesn't rewrite chains
+/// over void-typed subjects since `?.` collapses to undefined and
+/// the void semantics may differ.
+fn typeContainsVoid(ty: tymod.TypeId, ctx: *const LintContext) bool {
+    if (ty.eq(tymod.ID_VOID)) return true;
+    const kind = ctx.typeKind(ty);
+    if (kind == .void_t) return true;
+    if (kind == .union_t) {
+        for (ctx.typeIdUnionMembers(ty)) |m| {
+            if (typeContainsVoid(m, ctx)) return true;
+        }
+    }
+    return false;
 }
 
 /// True when the operand's type meets the configured gating: no
@@ -1015,7 +1103,17 @@ fn findOrChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const L
         }
     }
     if (!extended) return start;
-    if (root_kind == .statically_false and !saw_optional_ext) return start;
+    // Statically-false `=== null` requires an optional extension
+    // AND requires the ENTIRE operand sequence to be uniform
+    // `=== null` comparisons (so the chain rewrite is a single
+    // coherent comparison).  Mixed forms (some `=== null`, others
+    // truthy) don't unify and TSe doesn't fire.
+    if (root_kind == .statically_false_null) {
+        if (!saw_optional_ext) return start;
+        for (operands) |op_n| {
+            if (!isStrictEqualNull(unwrapGrouping(op_n, ctx), ctx)) return start;
+        }
+    }
     // Post-walk: validate the chain TERMINAL operand for OR-chain
     // rewrite safety.  Only applies when the chain root is a
     // presence-negation that returns TRUE on nullish prev (`!X`,
@@ -1045,6 +1143,15 @@ fn rootMatchesOnNullish(node: NodeIndex, ctx: *const LintContext) bool {
             isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx);
     }
     return false;
+}
+
+/// True when `node` is a strict `X === null` comparison.
+fn isStrictEqualNull(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .strict_equal) return false;
+    const d = ctx.nodeData(n);
+    return isNullLiteralNode(d.rhs, ctx) or isNullLiteralNode(d.lhs, ctx);
 }
 
 /// True when an OR-chain operand is unsafe as the chain TERMINAL —
@@ -1077,10 +1184,14 @@ const OrRootKind = enum {
     /// because `?.` collapses both halves while `=== null` only
     /// matches one.
     both_halves,
-    /// Subject's type has only the OTHER half — check is statically
-    /// false.  TSe still fires when the chain has at least one
-    /// optional-access extension (suggests simplification).
-    statically_false,
+    /// Statically false: testing `=== undefined` against a subject
+    /// that can't be undefined.  TSe still fires because `?.`
+    /// collapses to undefined and the comparison aligns.
+    statically_false_undef,
+    /// Statically false: testing `=== null` against a subject that
+    /// can't be null.  TSe fires only when the chain has at least
+    /// one `?.` extension (mixed-format chain).
+    statically_false_null,
 };
 
 /// Classify a strict `X === null/undefined` chain root for OR
@@ -1116,10 +1227,10 @@ fn classifyOrStrictRoot(node: NodeIndex, ctx: *const LintContext) OrRootKind {
     if (has_null and has_undef) return .both_halves;
     if (testing_undef) {
         if (has_undef) return .safe;
-        return .statically_false;
+        return .statically_false_undef;
     }
     if (has_null) return .safe;
-    return .statically_false;
+    return .statically_false_null;
 }
 
 /// Return the extension subject of the last operand of an OR chain
