@@ -145,17 +145,23 @@ fn callArgs(call: NodeIndex, ctx: *const LintContext) []const u32 {
 }
 
 fn checkExpr(expr: NodeIndex, ty: TypeId, opts: Options, ctx: *const LintContext) void {
+    // Unwrap parens / non-null assertion before reporting: TSe reports the
+    // *inner* expression's span (e.g. `({})` reports on `{}`).
+    var inner = expr;
+    while (ctx.nodeTag(inner) == .grouping_expr or ctx.nodeTag(inner) == .ts_non_null_expr) {
+        inner = ctx.nodeData(inner).lhs;
+    }
     // Literal nodes are never object-typed at the source level.
-    const tag = ctx.nodeTag(expr);
+    const tag = ctx.nodeTag(inner);
     if (tag == .string_literal or tag == .number_literal or
         tag == .boolean_literal or tag == .bigint_literal or
         tag == .null_literal or tag == .regex_literal) return;
     // AST-level ignore check: the binding's declared type may be a
     // user-ignored type whose resolved TypeId lost the original name.
-    if (exprAnnotationMatchesIgnored(expr, opts, ctx)) return;
+    if (exprAnnotationMatchesIgnored(inner, opts, ctx)) return;
     const cert = toStringCertainty(ty, opts, ctx, 0);
     if (cert == .always) return;
-    report(expr, cert, opts, ctx, false);
+    report(inner, cert, opts, ctx, false);
 }
 
 /// Walk `expr`'s declared annotation and check whether the outermost
@@ -227,7 +233,8 @@ fn checkArrayJoin(obj: NodeIndex, ty: TypeId, opts: Options, ctx: *const LintCon
 fn hasUserStringCoercion(id: TypeId, ctx: *const LintContext) bool {
     return ctx.typeIdHasProperty(id, "toString") or
         ctx.typeIdHasProperty(id, "toLocaleString") or
-        ctx.typeIdHasProperty(id, "valueOf");
+        ctx.typeIdHasProperty(id, "valueOf") or
+        ctx.typeIdHasProperty(id, "@@toPrimitive");
 }
 
 fn toStringCertainty(id: TypeId, opts: Options, ctx: *const LintContext, depth: u8) Certainty {
@@ -305,11 +312,122 @@ fn toStringCertainty(id: TypeId, opts: Options, ctx: *const LintContext, depth: 
         if (ctx.resolveDeclaredTypeByName(ref_name)) |body| {
             if (!body.eq(id)) return toStringCertainty(body, opts, ctx, depth + 1);
         }
+        // Self-referencing alias (resolveDeclaredType returns null) —
+        // walk the alias body's AST and recurse, treating the self-ref
+        // as Always (matches TSe's `visited.has(type) → Always`).
+        if (selfRecursiveAliasBody(ref_name, ctx)) |body_node| {
+            return aliasBodyCertainty(body_node, ref_name, opts, ctx, depth + 1);
+        }
+        // Unconstrained type parameter: TSe treats as `unknown` —
+        // Sometimes when checkUnknown is on, else Always.
+        if (isUnconstrainedTypeParameter(ref_name, ctx)) {
+            return if (opts.check_unknown) .sometimes else .always;
+        }
     }
     // Object with user-defined toString-like method: always-clean.
     if (hasUserStringCoercion(id, ctx)) return .always;
     // Default Object → "[object Object]" = never.
     return .never;
+}
+
+/// For an alias name that we know is self-recursive, return the body's
+/// type-annotation AST node so callers can walk it directly.
+fn selfRecursiveAliasBody(name: []const u8, ctx: *const LintContext) ?NodeIndex {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .ts_type_alias_decl) continue;
+        const d = tree.nodeData(ni);
+        const ad = tree.extraData(ast.TypeAliasData, @intFromEnum(d.lhs));
+        const decl_name = tree.tokenText(ad.name);
+        if (!std.mem.eql(u8, decl_name, name)) continue;
+        return ad.type_node;
+    }
+    return null;
+}
+
+/// Walk an alias body's type-annotation AST, treating any reference to
+/// `self_name` as Always (TSe's visited-set behaviour for cyclic types).
+fn aliasBodyCertainty(ty: NodeIndex, self_name: []const u8, opts: Options, ctx: *const LintContext, depth: u8) Certainty {
+    if (depth > 16) return .always;
+    var n = ty;
+    while (ctx.nodeTag(n) == .ts_parenthesized_type) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .ts_type_reference) {
+        const ref_name = ctx.tokenText(ctx.nodeMainToken(n));
+        if (std.mem.eql(u8, ref_name, self_name)) return .always;
+        // Other references: resolve normally.
+        const resolved = ctx.resolveTypeAnnotationNode(n);
+        return toStringCertainty(resolved, opts, ctx, depth + 1);
+    }
+    if (tag == .ts_union_type) {
+        const d = ctx.nodeData(n);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e <= s or e > ctx.ast.extra_data.len) return .always;
+        var all_always = true;
+        var all_never = true;
+        for (ctx.ast.extra_data[s..e]) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            const c = aliasBodyCertainty(m, self_name, opts, ctx, depth + 1);
+            if (c != .always) all_always = false;
+            if (c != .never) all_never = false;
+        }
+        if (all_always) return .always;
+        if (all_never) return .never;
+        return .sometimes;
+    }
+    if (tag == .ts_intersection_type) {
+        const d = ctx.nodeData(n);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e <= s or e > ctx.ast.extra_data.len) return .always;
+        for (ctx.ast.extra_data[s..e]) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            if (aliasBodyCertainty(m, self_name, opts, ctx, depth + 1) == .always) return .always;
+        }
+        return .never;
+    }
+    if (tag == .ts_array_type) {
+        const d = ctx.nodeData(n);
+        return aliasBodyCertainty(d.lhs, self_name, opts, ctx, depth + 1);
+    }
+    if (tag == .ts_tuple_type) {
+        const d = ctx.nodeData(n);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e <= s or e > ctx.ast.extra_data.len) return .always;
+        var saw_never = false;
+        var saw_sometimes = false;
+        for (ctx.ast.extra_data[s..e]) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            const c = aliasBodyCertainty(m, self_name, opts, ctx, depth + 1);
+            if (c == .never) saw_never = true;
+            if (c == .sometimes) saw_sometimes = true;
+        }
+        if (saw_never) return .never;
+        if (saw_sometimes) return .sometimes;
+        return .always;
+    }
+    // Fall back to the type-level certainty walk.
+    return toStringCertainty(ctx.resolveTypeAnnotationNode(n), opts, ctx, depth + 1);
+}
+
+/// Returns true when `name` is a ts_type_parameter with no constraint.
+fn isUnconstrainedTypeParameter(name: []const u8, ctx: *const LintContext) bool {
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (tree.nodeTag(ni) != .ts_type_parameter) continue;
+        if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
+        // ts_type_parameter: lhs = constraint (or .none).
+        return tree.nodeData(ni).lhs == .none;
+    }
+    return false;
 }
 
 fn joinCertainty(id: TypeId, opts: Options, ctx: *const LintContext, depth: u8) Certainty {

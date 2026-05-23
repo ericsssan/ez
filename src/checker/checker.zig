@@ -929,34 +929,64 @@ pub const Checker = struct {
         for (member_node_indices) |raw| {
             if (prop_count >= props_buf.len) break;
             const member: NodeIndex = @enumFromInt(raw);
-            if (self.ast_ref.nodeTag(member) != .ts_property_signature) continue;
-            const member_data = self.ast_ref.nodeData(member);
-            const name_node = member_data.lhs;
-            if (name_node == .none) continue;
-            const name_tok = self.ast_ref.nodeMainToken(name_node);
-            const raw_name = self.ast_ref.tokenText(name_tok);
-            // Strip quotes/backticks for string-literal / template-literal
-            // computed keys: `['x']: T` and `` [`x`]: T `` both denote a
-            // property literally named "x".
-            const name_tag = self.ast_ref.nodeTag(name_node);
-            const name = if ((name_tag == .string_literal or name_tag == .template_literal) and raw_name.len >= 2)
-                raw_name[1 .. raw_name.len - 1]
-            else
-                raw_name;
-            // The type annotation is stored in rhs as a ts_type_annotation
-            // wrapper (`name: Type` → the colon-wrapped type node).
-            // No annotation → property type is any (TS implicit any).
-            var prop_ty: TypeId = tymod.ID_ANY;
-            if (member_data.rhs != .none and self.ast_ref.nodeTag(member_data.rhs) == .ts_type_annotation) {
-                const ty_inner = self.ast_ref.nodeData(member_data.rhs).lhs;
-                prop_ty = self.resolveTypeNode(ty_inner);
+            const m_tag = self.ast_ref.nodeTag(member);
+            if (m_tag != .ts_property_signature and m_tag != .ts_method_signature) continue;
+            if (m_tag == .ts_property_signature) {
+                const member_data = self.ast_ref.nodeData(member);
+                const name_node = member_data.lhs;
+                if (name_node == .none) continue;
+                const name_tok = self.ast_ref.nodeMainToken(name_node);
+                const raw_name = self.ast_ref.tokenText(name_tok);
+                const name_tag = self.ast_ref.nodeTag(name_node);
+                const name = if ((name_tag == .string_literal or name_tag == .template_literal) and raw_name.len >= 2)
+                    raw_name[1 .. raw_name.len - 1]
+                else
+                    raw_name;
+                var prop_ty: TypeId = tymod.ID_ANY;
+                if (member_data.rhs != .none and self.ast_ref.nodeTag(member_data.rhs) == .ts_type_annotation) {
+                    const ty_inner = self.ast_ref.nodeData(member_data.rhs).lhs;
+                    prop_ty = self.resolveTypeNode(ty_inner);
+                }
+                const optional = propertyHasOptionalMarker(self, name_node);
+                props_buf[prop_count] = .{ .name = name, .type_id = prop_ty, .optional = optional };
+                prop_count += 1;
+            } else {
+                // ts_method_signature: name is in InterfaceSigData.key.
+                const sig_data = self.ast_ref.extraData(ast.InterfaceSigData, @intFromEnum(self.ast_ref.nodeData(member).lhs));
+                if (sig_data.key == .none) continue;
+                const name_tag = self.ast_ref.nodeTag(sig_data.key);
+                const name = blk: {
+                    // Computed `[Symbol.toPrimitive]` key — synthesize a stable
+                    // name so consumers can detect user-defined string coercion.
+                    if (name_tag == .member_expr or name_tag == .optional_member_expr) {
+                        const kd = self.ast_ref.nodeData(sig_data.key);
+                        if (kd.lhs != .none and kd.rhs != .none and
+                            self.ast_ref.nodeTag(kd.lhs) == .identifier)
+                        {
+                            const obj = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(kd.lhs));
+                            const prop = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(kd.rhs));
+                            if (std.mem.eql(u8, obj, "Symbol") and std.mem.eql(u8, prop, "toPrimitive")) {
+                                break :blk "@@toPrimitive";
+                            }
+                        }
+                    }
+                    const name_tok = self.ast_ref.nodeMainToken(sig_data.key);
+                    const raw_name = self.ast_ref.tokenText(name_tok);
+                    break :blk if ((name_tag == .string_literal or name_tag == .template_literal) and raw_name.len >= 2)
+                        raw_name[1 .. raw_name.len - 1]
+                    else
+                        raw_name;
+                };
+                const fn_ty = self.buildFunctionType(
+                    sig_data.params_start,
+                    sig_data.params_end,
+                    sig_data.return_type,
+                    .none,
+                    false,
+                );
+                props_buf[prop_count] = .{ .name = name, .type_id = fn_ty };
+                prop_count += 1;
             }
-            // Detect the `?` optional marker by scanning between the name's
-            // end and the next significant token.  The parser eats `?`
-            // without recording it, so we recover the flag from source.
-            const optional = propertyHasOptionalMarker(self, name_node);
-            props_buf[prop_count] = .{ .name = name, .type_id = prop_ty, .optional = optional };
-            prop_count += 1;
         }
         const list = self.store.appendObjectProps(props_buf[0..prop_count]) catch return tymod.ID_UNKNOWN;
         return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
@@ -1656,7 +1686,12 @@ pub const Checker = struct {
         // Inherit instance props from the immediate superclass (one hop).
         if (cd.super_class != .none) {
             var sc = cd.super_class;
-            while (self.ast_ref.nodeTag(sc) == .grouping_expr) sc = self.ast_ref.nodeData(sc).lhs;
+            while (self.ast_ref.nodeTag(sc) == .grouping_expr or
+                self.ast_ref.nodeTag(sc) == .ts_instantiation_expr)
+            {
+                sc = self.ast_ref.nodeData(sc).lhs;
+            }
+            var inherited = false;
             if (self.ast_ref.nodeTag(sc) == .identifier) {
                 const parent_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(sc));
                 if (self.resolveDeclaredType(parent_name)) |parent_ty| {
@@ -1665,8 +1700,17 @@ pub const Checker = struct {
                         for (self.store.propsOf(pt.object_props)) |p| {
                             props.append(self.gpa, p) catch {};
                         }
+                        inherited = true;
                     }
                 }
+            }
+            // Couldn't resolve the parent's structural shape (e.g. extends a
+            // value of constructor type like `Constructable<X>`).  Be
+            // conservative and synthesize a `toString` prop so consumers
+            // treating its presence as "user-defined string coercion" don't
+            // mis-classify the instance as un-coerced.
+            if (!inherited) {
+                props.append(self.gpa, .{ .name = "toString", .type_id = tymod.ID_ANY }) catch {};
             }
         }
         if (cd.body == .none) {
