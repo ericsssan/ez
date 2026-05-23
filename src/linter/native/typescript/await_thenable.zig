@@ -690,13 +690,12 @@ fn identifierIsExternalImport(node: NodeIndex, ctx: *const LintContext) bool {
 /// True when the value at `node` (with inferred type `id`) is a
 /// Promise / Thenable / has a callable `.then` member.
 fn isAwaitable(node: NodeIndex, id: tymod.TypeId, ctx: *const LintContext) bool {
-    // Direct checker signal.
+    // Direct checker signals.  `typeIdIsThenable` now enforces TSe's
+    // signature-matching rule (the `then` property's first signature
+    // must accept a callback as its first parameter), so `class { then() {} }`
+    // with a zero-param `then` is NOT thenable.
     if (ctx.typeNodeIsPromise(node)) return true;
-    // Walk declared annotations / call return / class heritage for the
-    // common patterns the no-floating-promises rule already handles.
-    // (typeIdIsThenable would also accept `{ then() {} }` whose `then`
-    // doesn't take callbacks — TSe fires on those, so we can't use it
-    // as a positive fast-path here.)
+    if (ctx.typeIdIsThenable(id)) return true;
     return exprIsThenable(node, ctx) or typeIdContainsPromise(id, ctx);
 }
 

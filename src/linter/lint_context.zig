@@ -725,6 +725,18 @@ pub const LintContext = struct {
         return sigs[0].return_type;
     }
 
+    /// For a function/method/constructor type, return the param TypeIds
+    /// of its first signature.  Returns an empty slice for non-function
+    /// types or signatures with no params.
+    pub fn typeIdSignatureParams(self: *const LintContext, id: tymod.TypeId) []const tymod.TypeId {
+        const c = self.ensureChecker() orelse return &.{};
+        const t = c.store.get(id);
+        if (t.kind != .function_t) return &.{};
+        const sigs = c.store.signaturesOf(t.signatures);
+        if (sigs.len == 0) return &.{};
+        return c.store.signatureParamsOf(sigs[0]);
+    }
+
     /// True when the type id is a literal type (string/number/bool/bigint
     /// literal).  Useful for narrowness checks.
     pub fn typeIdIsLiteral(self: *const LintContext, id: tymod.TypeId) bool {
@@ -746,10 +758,15 @@ pub const LintContext = struct {
         };
     }
 
-    /// True when the type id is "thenable" — has a callable `then`
-    /// member (or IS one of the recognized Promise-shaped type refs).
-    /// Broader than `typeIdIsPromise` since user-defined thenables are
-    /// also valid for `await` / floating-promise detection.
+    /// True when the type id is "thenable" — has a `then` member that's
+    /// a function whose first signature accepts a callback as its first
+    /// parameter.  Mirrors TSe's tsutils.isThenableType (and TS's actual
+    /// "is this awaitable" check): structural `{ then() {} }` shapes
+    /// where `then` takes no callback are NOT thenable.
+    ///
+    /// Broader than `typeIdIsPromise` since user-defined thenables count;
+    /// stricter than a bare `has-property("then")` check because the
+    /// signature must look like `then(onFulfilled, ...)`.
     pub fn typeIdIsThenable(self: *const LintContext, id: tymod.TypeId) bool {
         if (self.typeIdIsPromise(id)) return true;
         const c = self.ensureChecker() orelse return false;
@@ -762,9 +779,22 @@ pub const LintContext = struct {
         }
         if (t.kind == .object_t) {
             for (c.store.propsOf(t.object_props)) |p| {
-                if (std.mem.eql(u8, p.name, "then")) {
-                    return self.typeIdIsFunction(p.type_id);
+                if (!std.mem.eql(u8, p.name, "then")) continue;
+                // Iterate ALL call signatures of `then` (TSe uses
+                // getCallSignatures, then checks any signature has a
+                // callback param).
+                const then_ty = c.store.get(p.type_id);
+                if (then_ty.kind != .function_t) return false;
+                for (c.store.signaturesOf(then_ty.signatures)) |sig| {
+                    const params = c.store.signatureParamsOf(sig);
+                    if (params.len == 0) continue;
+                    // First param must itself be callable (the onFulfilled
+                    // callback).  Plain `any` first-param also matches
+                    // (e.g. ts-api-utils accepts unconstrained).
+                    if (self.typeIdIsAny(params[0])) return true;
+                    if (self.typeIdIsCallable(params[0])) return true;
                 }
+                return false;
             }
         }
         return false;
