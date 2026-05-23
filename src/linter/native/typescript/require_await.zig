@@ -25,34 +25,134 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow async functions which do not return promises and have no `await` expression",
-    .lang = .ts_only,
+    .lang = .all,
 };
 
 pub const relevant_tags = [_]Node.Tag{
     .async_fn_decl, .async_generator_fn_decl,
     .async_fn_expr, .async_generator_fn_expr,
     .async_arrow_fn,
+    // method_def / computed_method_def carry an `async` modifier bit
+    // on MethodData.modifiers rather than a distinct tag.
+    .method_def, .computed_method_def,
 };
 
 pub const needs_semantic = true;
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!ctx.hasTypeChecker()) return;
+    const tag = ctx.nodeTag(node);
+    // method_def / computed_method_def: only fire when the method carries
+    // an `async` modifier bit.
+    if (tag == .method_def or tag == .computed_method_def) {
+        const md = ctx.extraData(ast.MethodData, @intFromEnum(ctx.nodeData(node).rhs));
+        const is_async = (md.modifiers & ast.ModifierBit.@"async") != 0;
+        if (!is_async) return;
+    }
     const body = functionBody(node, ctx);
     if (body == .none) return;
     if (isEmptyBody(body, ctx)) return;
-    // Generator async with at least one `yield` — TSe allows.
-    const is_gen = switch (ctx.nodeTag(node)) {
+    // Async generators never fire — ESLint core gates on `!node.generator
+    // && node.async`.  (TSe extends require-await for explicit async
+    // generators with at least one `yield`; that path is covered by the
+    // identical structural check.)
+    const is_gen = switch (tag) {
         .async_generator_fn_decl, .async_generator_fn_expr => true,
+        .method_def, .computed_method_def => blk: {
+            const md = ctx.extraData(ast.MethodData, @intFromEnum(ctx.nodeData(node).rhs));
+            break :blk (md.modifiers & ast.ModifierBit.generator) != 0;
+        },
         else => false,
     };
-    if (is_gen and bodyContainsYield(body, ctx)) return;
+    if (is_gen) {
+        if (!ctx.isTypeScript()) return; // ESLint core never fires on generators.
+        if (bodyContainsYield(body, ctx)) return;
+    }
     // Body contains an await expression?
     if (bodyContainsAwait(body, ctx)) return;
+    // `await using foo = bar();` declaration also satisfies the await
+    // requirement.
+    if (bodyContainsAwaitUsing(body, ctx)) return;
     // Type-aware allowance: every return statement returns a Promise-
     // typed value (or the body is an expression-arrow returning one).
     if (bodyReturnsArePromiseAware(body, ctx)) return;
-    ctx.reportWithMessageId(node, "missingAwait");
+    const head_span = functionHeadSpan(node, ctx);
+    ctx.reportSpanWithMessageId(head_span, "missingAwait");
+}
+
+/// Compute the "function head" span (matches ESLint core's
+/// `getFunctionHeadLoc`): the part of the source before the params.
+fn functionHeadSpan(node: NodeIndex, ctx: *const LintContext) parser.span.Span {
+    const tag = ctx.nodeTag(node);
+    const src = ctx.ast.source;
+    // For arrow functions, the head IS the `=>` token range.
+    if (tag == .async_arrow_fn) {
+        // Find `=>` in the source between node start and body start.
+        const node_span = ctx.nodeSpan(node);
+        const data = ctx.nodeData(node);
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
+        const body_start: u32 = if (ad.body != .none) ctx.nodeSpan(ad.body).start else node_span.end;
+        // Walk backward from body_start to find `=>`.
+        var i: usize = if (body_start >= 2) body_start - 2 else 0;
+        while (i + 1 < src.len) : (i -= 1) {
+            if (i < node_span.start) break;
+            if (src[i] == '=' and src[i + 1] == '>') {
+                return .{ .start = @intCast(i), .end = @intCast(i + 2) };
+            }
+            if (i == 0) break;
+        }
+        return node_span;
+    }
+    var node_span = ctx.nodeSpan(node);
+    // method_def's span may not include the preceding `async`/`static`
+    // modifiers (the node's main_token is the method name).  Walk back
+    // over whitespace and the literal "async" keyword.
+    if (tag == .method_def or tag == .computed_method_def) {
+        var k: usize = node_span.start;
+        while (k > 0 and (src[k - 1] == ' ' or src[k - 1] == '\t')) k -= 1;
+        if (k >= 5 and std.mem.eql(u8, src[k - 5 .. k], "async")) {
+            if (k == 5 or !isIdentChar(src[k - 6])) {
+                node_span.start = @intCast(k - 5);
+            }
+        }
+    }
+    // FunctionExpression inside an object Property — ESLint uses the
+    // Property's start.  Walk up via the parent index when applicable.
+    if (tag == .async_fn_expr or tag == .async_generator_fn_expr) {
+        const par = ctx.parentOf(node);
+        if (par != .none and ctx.nodeTag(par) == .property) {
+            node_span.start = ctx.nodeSpan(par).start;
+        }
+    }
+    // Scan forward from node start to the first `(` to mark the head end.
+    // ESLint uses `getOpeningParenOfParams(node).loc.start` — the column
+    // of the `(` itself, NOT trimmed.  So the span includes any space
+    // between the name and `(`.
+    var p: usize = node_span.start;
+    while (p < src.len and p < node_span.end) : (p += 1) {
+        if (src[p] == '(') {
+            return .{ .start = node_span.start, .end = @intCast(p) };
+        }
+    }
+    return node_span;
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or c == '_' or c == '$';
+}
+
+fn bodyContainsAwaitUsing(body: NodeIndex, ctx: *const LintContext) bool {
+    // No dedicated AST tag — scan the source between the body's `{` and
+    // `}` for the textual "await using" pair.  Conservative: a comment
+    // containing the exact phrase would match too, but ESLint's
+    // grammar-level detection requires the actual declaration.
+    if (body == .none) return false;
+    const sp = ctx.nodeSpan(body);
+    const src = ctx.ast.source;
+    if (sp.end <= sp.start or sp.end > src.len) return false;
+    const region = src[sp.start..sp.end];
+    return std.mem.indexOf(u8, region, "await using") != null;
 }
 
 fn functionBody(node: NodeIndex, ctx: *const LintContext) NodeIndex {
@@ -67,6 +167,10 @@ fn functionBody(node: NodeIndex, ctx: *const LintContext) NodeIndex {
         .async_arrow_fn => blk: {
             const ad = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
             break :blk ad.body;
+        },
+        .method_def, .computed_method_def => blk: {
+            const md = ctx.extraData(ast.MethodData, @intFromEnum(data.rhs));
+            break :blk md.body;
         },
         else => .none,
     };
@@ -87,7 +191,8 @@ fn bodyContainsAwait(body: NodeIndex, ctx: *const LintContext) bool {
 }
 
 fn bodyContainsYield(body: NodeIndex, ctx: *const LintContext) bool {
-    return subtreeContains(body, .yield_expr, ctx);
+    return subtreeContains(body, .yield_expr, ctx) or
+        subtreeContains(body, .yield_delegate, ctx);
 }
 
 fn subtreeContains(root: NodeIndex, needle: Node.Tag, ctx: *const LintContext) bool {

@@ -27,7 +27,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Require using Error objects as Promise rejection reasons",
-    .lang = .ts_only,
+    .lang = .all,
 };
 
 pub const relevant_tags = [_]Node.Tag{ .call_expr, .optional_call_expr, .new_expr };
@@ -84,11 +84,81 @@ fn checkRejectArg(call: NodeIndex, ctx: *const LintContext) void {
         return;
     }
     const arg: NodeIndex = @enumFromInt(args[0]);
+    // ESLint core uses a purely syntactic `couldBeError` over-approximation:
+    // any expression that might evaluate to an object (identifier, member,
+    // call, new, etc.) is accepted.  The TS-aware variant additionally
+    // consults types via `exprIsErrorLike`.
+    if (!ctx.isTypeScript()) {
+        if (couldBeError(arg, ctx)) return;
+        ctx.reportWithMessageId(call, "rejectAnError");
+        return;
+    }
     if (argMatchesAllowList(arg, ctx)) return;
     if (ctx.typeNodeIsAny(arg) and optionAllowThrowingAny(ctx)) return;
     if (ctx.typeIdContainsUnknown(ctx.typeOfNode(arg)) and optionAllowThrowingUnknown(ctx)) return;
     if (exprIsErrorLike(arg, ctx)) return;
     ctx.reportWithMessageId(call, "rejectAnError");
+}
+
+/// Mirrors ESLint core's `astUtils.couldBeError` — a syntactic over-
+/// approximation of "this expression could evaluate to an Error".
+fn couldBeError(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    switch (tag) {
+        // Identifier `undefined` literal-equivalent — NOT an error.
+        .identifier => {
+            const name = ctx.tokenText(ctx.nodeMainToken(n));
+            if (std.mem.eql(u8, name, "undefined")) return false;
+            return true;
+        },
+        .call_expr, .optional_call_expr,
+        .new_expr,
+        .member_expr, .optional_member_expr,
+        .computed_member_expr, .optional_computed_member_expr,
+        .tagged_template,
+        .yield_expr,
+        .await_expr,
+        .this_expr,
+        => return true,
+        .assign => {
+            const d = ctx.nodeData(n);
+            return couldBeError(d.rhs, ctx);
+        },
+        .logical_and_assign => {
+            const d = ctx.nodeData(n);
+            return couldBeError(d.rhs, ctx);
+        },
+        .logical_or_assign, .nullish_assign => {
+            const d = ctx.nodeData(n);
+            return couldBeError(d.lhs, ctx) or couldBeError(d.rhs, ctx);
+        },
+        .sequence_expr => {
+            const d = ctx.nodeData(n);
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (e <= s or e > ctx.ast.extra_data.len) return false;
+            const last_raw = ctx.ast.extra_data[e - 1];
+            return couldBeError(@enumFromInt(last_raw), ctx);
+        },
+        .logical_and => {
+            const d = ctx.nodeData(n);
+            return couldBeError(d.rhs, ctx);
+        },
+        .logical_or, .nullish_coalesce => {
+            const d = ctx.nodeData(n);
+            return couldBeError(d.lhs, ctx) or couldBeError(d.rhs, ctx);
+        },
+        .conditional => {
+            const d = ctx.nodeData(n);
+            const idx = @intFromEnum(d.rhs);
+            if (idx + 1 >= ctx.ast.extra_data.len) return false;
+            const cd = ctx.extraData(ast.Conditional, idx);
+            return couldBeError(cd.consequent, ctx) or couldBeError(cd.alternate, ctx);
+        },
+        else => return false,
+    }
 }
 
 fn checkPromiseExecutor(new_node: NodeIndex, ctx: *const LintContext) void {
@@ -175,10 +245,56 @@ fn isShadowedReject(use: NodeIndex, exec: NodeIndex, reject_binding: NodeIndex, 
             t == .async_generator_fn_decl or t == .fn_expr or t == .async_fn_expr or
             t == .generator_fn_expr or t == .async_generator_fn_expr or
             t == .arrow_fn or t == .async_arrow_fn or t == .method_def or t == .computed_method_def;
-        if (!is_fn) continue;
-        // Inspect this function's params; if any binding identifier
-        // matches `name` AND is not the outer reject_binding, shadowing.
-        if (functionParamShadowsName(node_id, name, reject_binding, ctx)) return true;
+        if (is_fn) {
+            if (functionParamShadowsName(node_id, name, reject_binding, ctx)) return true;
+            continue;
+        }
+        // Block-scope shadowing: scan the block for a const/let/var
+        // declaration with a same-named binding that's declared BEFORE
+        // (textually) `use`.
+        if (t == .block_stmt) {
+            if (blockShadowsName(node_id, name, use, ctx)) return true;
+        }
+    }
+    return false;
+}
+
+/// Scan a block statement for a const/let/var declaration whose binding
+/// shadows `name`, and which textually precedes `use`.
+fn blockShadowsName(block: NodeIndex, name: []const u8, use: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(block) != .block_stmt) return false;
+    const bd = ctx.nodeData(block);
+    const s = @intFromEnum(bd.lhs);
+    const e = @intFromEnum(bd.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return false;
+    const use_pos = ctx.ast.tokenStart(ctx.nodeMainToken(use));
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const stmt: NodeIndex = @enumFromInt(raw);
+        const stmt_tag = ctx.nodeTag(stmt);
+        if (stmt_tag != .const_decl and stmt_tag != .let_decl and stmt_tag != .var_decl) continue;
+        // const_decl/let_decl/var_decl: data.lhs..data.rhs are
+        // declarator NodeIndex slots in extra_data.
+        const dd = ctx.nodeData(stmt);
+        const ds = @intFromEnum(dd.lhs);
+        const de = @intFromEnum(dd.rhs);
+        if (de <= ds or de > ctx.ast.extra_data.len) continue;
+        for (ctx.ast.extra_data[ds..de]) |drow| {
+            const decl: NodeIndex = @enumFromInt(drow);
+            if (ctx.nodeTag(decl) != .declarator) continue;
+            const decl_data = ctx.nodeData(decl);
+            const b = decl_data.lhs;
+            if (b == .none) continue;
+            if (ctx.nodeTag(b) == .identifier) {
+                if (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(b)), name)) {
+                    // const/let are block-scoped — shadowing applies for
+                    // the entire block.  var is hoisted but still
+                    // shadows references in the same function.
+                    const decl_pos = ctx.ast.tokenStart(ctx.nodeMainToken(b));
+                    if (stmt_tag == .var_decl) return true;
+                    if (decl_pos < use_pos) return true;
+                }
+            }
+        }
     }
     return false;
 }
