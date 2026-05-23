@@ -228,7 +228,7 @@ const default_case_last = @import("style/default_case_last.zig");
 // const no_mixed_operators = @import("style/no_mixed_operators.zig");  // hand-written — disabled per IR-only constraint
 // const consistent_this = @import("style/consistent_this.zig");  // hand-written — disabled per IR-only constraint
 // v0.8 style rules
-// const no_empty_function = @import("style/no_empty_function.zig");  // hand-written — disabled per IR-only constraint
+const no_empty_function = @import("style/no_empty_function.zig");
 // const no_undef_init = @import("style/no_undef_init.zig");  // hand-written — disabled per IR-only constraint
 // const new_cap = @import("style/new_cap.zig");  // hand-written — disabled per IR-only constraint
 // const max_classes_per_file = @import("style/max_classes_per_file.zig");  // hand-written — disabled per IR-only constraint
@@ -581,7 +581,7 @@ pub const all_rules = .{
     // prefer_named_capture_group, // runner >> native (runner 57, native 36, gap 21); fall back to JS runner
     // max_depth, // runner >> native (runner 25, native 13, gap 12); fall back to JS runner
     // Style v0.8 (10)
-    // no_empty_function, // native has 2 FP on @typescript-eslint/no-empty-function making hybrid 14 vs runner 16; fall back to JS runner
+    no_empty_function,
     // default_case_last, // hand-written — disabled
     // max_lines, // runner >> native (runner 46, native 16, gap 30, 1 FP); fall back to JS runner
     // no_mixed_operators, // runner >> native (runner 40, native 33, 7 FN); fall back

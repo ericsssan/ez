@@ -1022,6 +1022,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-non-null-asserted-optional-chain",
       "no-misused-new",
       "no-import-type-side-effects",
+      "no-empty-function",
       "ban-tslint-comment",
       "class-literal-property-style",
       "prefer-literal-enum-member",
