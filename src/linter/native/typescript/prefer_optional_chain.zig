@@ -479,7 +479,9 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
         const op = unwrapGrouping(operands[k], ctx);
         if (presenceCheckSubject(op, ctx)) |subj| {
             if (sameExpr(prev, subj, ctx)) {
-                end = k;
+                // Same-depth re-check — keep walking but don't
+                // advance `end`; a chain that terminates here is
+                // just a redundant re-check, not a rewrite target.
                 continue;
             }
             if (isPrefixExtension(prev, subj, ctx)) {
@@ -794,7 +796,7 @@ fn findOrChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const L
         const op = unwrapGrouping(operands[k], ctx);
         if (orMiddleOperandSubject(op, ctx)) |subj| {
             if (sameExpr(prev, subj, ctx)) {
-                end = k;
+                // Same-depth re-check — don't advance `end`.
                 continue;
             }
             if (isPrefixExtension(prev, subj, ctx)) {
