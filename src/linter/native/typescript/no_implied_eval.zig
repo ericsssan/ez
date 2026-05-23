@@ -18,7 +18,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow the use of `eval()`-like functions",
-    .lang = .ts_only,
+    .lang = .all,
 };
 
 pub const relevant_tags = [_]Node.Tag{ .call_expr, .optional_call_expr, .new_expr };
@@ -28,17 +28,37 @@ pub const needs_semantic = true;
 const EVAL_LIKE_NAMES = [_][]const u8{
     "setTimeout", "setInterval", "setImmediate", "execScript",
 };
-const GLOBAL_CANDIDATES = [_][]const u8{ "global", "globalThis", "window" };
+const GLOBAL_CANDIDATES = [_][]const u8{ "global", "globalThis", "window", "self" };
+
+/// True when `name` resolves to a recognized global in the linted file's
+/// scope — either an explicit `languageOptions.globals` entry, or a
+/// commonjs-source-type built-in (`global`).  Matches ESLint core's
+/// `getVariableByName` gate so we don't fire on `window.setTimeout(...)`
+/// when `window` isn't enabled.  `globalThis` is added via the env
+/// config in modern setups, so we rely on the same explicit-enable
+/// check rather than hardcoding it.
+fn isKnownGlobalName(name: []const u8, ctx: *const LintContext) bool {
+    // `globalThis` is a built-in starting ES2020.
+    if (std.mem.eql(u8, name, "globalThis") and ctx.getEcmaVersion() >= 2020) return true;
+    // `global` is a Node.js built-in under `sourceType: "commonjs"`.
+    if (std.mem.eql(u8, name, "global")) {
+        if (ctx.getLanguageOptionString("sourceType")) |st| {
+            if (std.mem.eql(u8, st, "commonjs")) return true;
+        }
+    }
+    return ctx.globalIsExplicitlyEnabled(name);
+}
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!ctx.hasTypeChecker()) return;
+    const is_ts = ctx.isTypeScript();
     const callee_name = getCalleeName(ctx.nodeData(node).lhs, ctx) orelse return;
     const tag = ctx.nodeTag(node);
     // Function constructor: `new Function(...)` / `Function(...)`.
+    // ESLint core ignores Function-constructor — only the TSe variant flags it.
     if (std.mem.eql(u8, callee_name, "Function")) {
+        if (!is_ts) return;
         const callee = ctx.nodeData(node).lhs;
-        // Reject when the callee resolves to global Function (or
-        // unresolved — treat as global).
         var inner = callee;
         while (ctx.nodeTag(inner) == .grouping_expr) inner = ctx.nodeData(inner).lhs;
         if (ctx.nodeTag(inner) == .identifier and !ctx.isGlobalReference(inner)) return;
@@ -47,15 +67,84 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     }
     // eval-like globals.
     if (!isEvalLike(callee_name)) return;
-    // Only fire on call_expr / optional_call_expr — not new_expr.
     if (tag == .new_expr) return;
-    // Must be a reference to the global function.
     if (!calleeIsGlobalFunctionReference(ctx.nodeData(node).lhs, callee_name, ctx)) return;
     const args = callArgs(node, ctx) orelse return;
     if (args.len == 0) return;
     const handler: NodeIndex = @enumFromInt(args[0]);
-    if (argLooksLikeFunction(handler, ctx)) return;
-    ctx.reportSpanWithMessageId(ctx.nodeSpan(handler), "noImpliedEvalError");
+    if (is_ts) {
+        // TSe: fire if the arg's TYPE isn't function-shaped.
+        if (argLooksLikeFunction(handler, ctx)) return;
+        ctx.reportSpanWithMessageId(ctx.nodeSpan(handler), "noImpliedEvalError");
+    } else {
+        // ESLint core: fire only if the arg STATICALLY looks like a string
+        // (literal, template, or `+` chain with any string operand).  Bare
+        // identifiers / numbers don't qualify even if their type narrows
+        // to a string-like at runtime.
+        if (!isEvaluatedString(handler, ctx)) return;
+        const msg_id: []const u8 = if (std.mem.eql(u8, callee_name, "execScript"))
+            "execScript"
+        else
+            "impliedEval";
+        ctx.reportWithMessageId(node, msg_id);
+    }
+}
+
+/// Mirrors ESLint core's `isEvaluatedString` + the `getStaticValue`
+/// follow-on path used by `reportImpliedEvalCallExpression` — string
+/// literal, template literal, `+` BinaryExpression with one string
+/// operand, `String(...)` constructor call, or a const-bound identifier
+/// whose initializer is itself an evaluated string.
+fn isEvaluatedString(n: NodeIndex, ctx: *const LintContext) bool {
+    var cur = n;
+    while (ctx.nodeTag(cur) == .grouping_expr) cur = ctx.nodeData(cur).lhs;
+    const tag = ctx.nodeTag(cur);
+    if (tag == .string_literal or tag == .template_literal) return true;
+    if (tag == .add) {
+        const d = ctx.nodeData(cur);
+        return isEvaluatedString(d.lhs, ctx) or isEvaluatedString(d.rhs, ctx);
+    }
+    // `String('foo')` evaluates to the string 'foo'.  Conservatively
+    // accept any bare-call to the global `String` identifier.
+    if (tag == .call_expr) {
+        const d = ctx.nodeData(cur);
+        const callee = d.lhs;
+        if (ctx.nodeTag(callee) == .identifier and
+            std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "String") and
+            ctx.isGlobalReference(callee))
+        {
+            return true;
+        }
+    }
+    // Const-bound identifier with a string-evaluating initializer.
+    if (tag == .identifier) {
+        const sym = symbolForIdent(cur, ctx) orelse return false;
+        const decl = ctx.semantic.symbols.getDeclNode(sym);
+        if (decl == .none or ctx.nodeTag(decl) != .identifier) return false;
+        const parent = ctx.parentOf(decl);
+        if (parent == .none or ctx.nodeTag(parent) != .declarator) return false;
+        const init = ctx.nodeData(parent).rhs;
+        if (init == .none) return false;
+        // Walk up to the const/let declaration to confirm const.
+        const decl_parent = ctx.parentOf(parent);
+        if (decl_parent == .none) return false;
+        if (ctx.nodeTag(decl_parent) != .const_decl) return false;
+        return isEvaluatedString(init, ctx);
+    }
+    return false;
+}
+
+fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {
+    const refs = &ctx.semantic.references;
+    const total = refs.count();
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const rid = parser.reference.ReferenceId.fromInt(i);
+        if (refs.getNode(rid) != ident) continue;
+        if (!refs.isResolved(rid)) return null;
+        return refs.getSymbol(rid);
+    }
+    return null;
 }
 
 fn getCalleeName(callee: NodeIndex, ctx: *const LintContext) ?[]const u8 {
@@ -66,25 +155,83 @@ fn getCalleeName(callee: NodeIndex, ctx: *const LintContext) ?[]const u8 {
     if (tag == .identifier) return ctx.tokenText(ctx.nodeMainToken(n));
     if (tag == .member_expr or tag == .optional_member_expr) {
         const md = ctx.nodeData(n);
-        if (md.lhs == .none or ctx.nodeTag(md.lhs) != .identifier) return null;
-        const obj_name = ctx.tokenText(ctx.nodeMainToken(md.lhs));
-        var is_global_obj = false;
-        for (GLOBAL_CANDIDATES) |g| if (std.mem.eql(u8, g, obj_name)) { is_global_obj = true; break; };
-        if (!is_global_obj) return null;
+        if (!isGlobalCandidateReceiver(md.lhs, ctx)) return null;
         return ctx.tokenText(ctx.nodeMainToken(n));
     }
-    // Computed property: `window['setTimeout']` / `globalThis["Function"]`.
     if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
         const md = ctx.nodeData(n);
-        if (md.lhs == .none or ctx.nodeTag(md.lhs) != .identifier) return null;
-        const obj_name = ctx.tokenText(ctx.nodeMainToken(md.lhs));
-        var is_global_obj = false;
-        for (GLOBAL_CANDIDATES) |g| if (std.mem.eql(u8, g, obj_name)) { is_global_obj = true; break; };
-        if (!is_global_obj) return null;
-        // Bracket key must be a string literal.
+        if (!isGlobalCandidateReceiver(md.lhs, ctx)) return null;
         if (md.rhs == .none) return null;
-        if (ctx.nodeTag(md.rhs) != .string_literal) return null;
-        return stringLiteralValue(md.rhs, ctx);
+        const key_tag = ctx.nodeTag(md.rhs);
+        if (key_tag == .string_literal) return stringLiteralValue(md.rhs, ctx);
+        if (key_tag == .template_literal) return simpleTemplateValue(md.rhs, ctx);
+        return null;
+    }
+    return null;
+}
+
+/// True when `obj` is a recognized global candidate identifier or a chain
+/// of member accesses on global candidates (`window.window.window`...).
+/// Both dot and computed-with-string forms are accepted at each step.
+fn isGlobalCandidateReceiver(obj: NodeIndex, ctx: *const LintContext) bool {
+    var n = obj;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .identifier) {
+        const name = ctx.tokenText(ctx.nodeMainToken(n));
+        if (!isGlobalCandidate(name, ctx.isTypeScript())) return false;
+        if (!ctx.isGlobalReference(n)) return false;
+        if (!ctx.isTypeScript() and !isKnownGlobalName(name, ctx)) return false;
+        return true;
+    }
+    if (tag == .member_expr or tag == .optional_member_expr) {
+        const md = ctx.nodeData(n);
+        const prop = ctx.tokenText(ctx.nodeMainToken(n));
+        if (!isGlobalCandidate(prop, ctx.isTypeScript())) return false;
+        return isGlobalCandidateReceiver(md.lhs, ctx);
+    }
+    if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+        const md = ctx.nodeData(n);
+        if (md.rhs == .none) return false;
+        const key_tag = ctx.nodeTag(md.rhs);
+        var key: []const u8 = "";
+        if (key_tag == .string_literal) {
+            key = stringLiteralValue(md.rhs, ctx) orelse return false;
+        } else if (key_tag == .template_literal) {
+            key = simpleTemplateValue(md.rhs, ctx) orelse return false;
+        } else return false;
+        if (!isGlobalCandidate(key, ctx.isTypeScript())) return false;
+        return isGlobalCandidateReceiver(md.lhs, ctx);
+    }
+    return false;
+}
+
+/// TSe's GLOBAL_CANDIDATES omits `self`; ESLint core includes it.
+fn isGlobalCandidate(name: []const u8, is_ts: bool) bool {
+    if (std.mem.eql(u8, name, "global")) return true;
+    if (std.mem.eql(u8, name, "globalThis")) return true;
+    if (std.mem.eql(u8, name, "window")) return true;
+    if (!is_ts and std.mem.eql(u8, name, "self")) return true;
+    return false;
+}
+
+/// For a template literal with NO interpolation expressions (e.g.
+/// `` `setInterval` ``), return the literal text between the backticks.
+/// A no-interpolation template has exactly one entry in the parts
+/// SubRange (the single template_element).
+fn simpleTemplateValue(node: NodeIndex, ctx: *const LintContext) ?[]const u8 {
+    const data = ctx.nodeData(node);
+    const start = @intFromEnum(data.lhs);
+    const end = @intFromEnum(data.rhs);
+    if (end <= start or end > ctx.ast.extra_data.len) return null;
+    if (end - start != 1) return null; // had interpolation
+    const sp = ctx.nodeSpan(node);
+    const src = ctx.ast.source;
+    if (sp.end > sp.start + 1 and sp.end <= src.len) {
+        const raw = src[sp.start..sp.end];
+        if (raw.len >= 2 and raw[0] == '`' and raw[raw.len - 1] == '`') {
+            return raw[1 .. raw.len - 1];
+        }
     }
     return null;
 }
@@ -107,13 +254,24 @@ fn calleeIsGlobalFunctionReference(callee: NodeIndex, name: []const u8, ctx: *co
     const tag = ctx.nodeTag(n);
     if (tag == .identifier) {
         if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(n)), name)) return false;
-        return ctx.isGlobalReference(n);
+        if (!ctx.isGlobalReference(n)) return false;
+        // ESLint core requires the function name to be a KNOWN global
+        // (env or explicit).  TSe is content with the reference being
+        // free / escaping to the global scope.
+        if (!ctx.isTypeScript() and !ctx.globalIsExplicitlyEnabled(name)) return false;
+        return true;
     }
     if (tag == .member_expr or tag == .optional_member_expr or
         tag == .computed_member_expr or tag == .optional_computed_member_expr)
     {
-        // `window.setTimeout` / `window['setTimeout']` — already
-        // validated by getCalleeName matching a GLOBAL_CANDIDATES object.
+        // `window.setTimeout` etc. — `getCalleeName` already validated
+        // the receiver, including the "is the receiver a known global?"
+        // check for the JS path.  But the receiver also needs to be the
+        // BUILT-IN global, not a local binding with the same name.
+        const md = ctx.nodeData(n);
+        if (md.lhs != .none and ctx.nodeTag(md.lhs) == .identifier) {
+            if (!ctx.isGlobalReference(md.lhs)) return false;
+        }
         return true;
     }
     return false;
@@ -197,19 +355,6 @@ fn annotationCouldBeNonFunction(ident: NodeIndex, ctx: *const LintContext) bool 
         if (typeRefIsKnownNonFunction(m, ctx)) return true;
     }
     return false;
-}
-
-fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.SymbolId {
-    const refs = &ctx.semantic.references;
-    const total = refs.count();
-    var i: u32 = 0;
-    while (i < total) : (i += 1) {
-        const rid = parser.reference.ReferenceId.fromInt(i);
-        if (refs.getNode(rid) != ident) continue;
-        if (!refs.isResolved(rid)) return null;
-        return refs.getSymbol(rid);
-    }
-    return null;
 }
 
 fn typeRefIsKnownNonFunction(n: NodeIndex, ctx: *const LintContext) bool {
