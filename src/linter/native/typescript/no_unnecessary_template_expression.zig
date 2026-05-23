@@ -49,9 +49,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 /// children alternate `template_element` (quasi) and expression nodes
 /// in source order.  We rely on that ordering rather than a separate
 /// quasis/expressions split.
+const MAX_PARTS = 32;
 const Parts = struct {
-    quasis: [32]NodeIndex,
-    exprs: [32]NodeIndex,
+    quasis: [MAX_PARTS]NodeIndex,
+    exprs: [MAX_PARTS]NodeIndex,
     n_quasis: usize,
     n_exprs: usize,
 };
@@ -70,11 +71,11 @@ fn collectParts(node: NodeIndex, ctx: *const LintContext) ?Parts {
     for (ctx.ast.extra_data[s..e]) |raw| {
         const part: NodeIndex = @enumFromInt(raw);
         if (ctx.nodeTag(part) == .template_element) {
-            if (out.n_quasis >= out.quasis.len) return null;
+            if (out.n_quasis >= MAX_PARTS) return null;
             out.quasis[out.n_quasis] = part;
             out.n_quasis += 1;
         } else {
-            if (out.n_exprs >= out.exprs.len) return null;
+            if (out.n_exprs >= MAX_PARTS) return null;
             out.exprs[out.n_exprs] = part;
             out.n_exprs += 1;
         }

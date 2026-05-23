@@ -147,6 +147,7 @@ fn firstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     }
     return switch (tag) {
         .identifier, .this_expr,
+        .import_meta, .new_target,
         .member_expr, .computed_member_expr,
         .optional_member_expr, .optional_computed_member_expr,
         .call_expr, .optional_call_expr,
@@ -211,6 +212,7 @@ fn chainOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     // Plain access / identifier → confirms the value is truthy.
     return switch (tag) {
         .identifier, .this_expr,
+        .import_meta, .new_target,
         .member_expr, .computed_member_expr,
         .optional_member_expr, .optional_computed_member_expr,
         .call_expr, .optional_call_expr,
@@ -477,8 +479,18 @@ fn presenceCheckSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
         if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
         return null;
     }
+    // `typeof X !== 'undefined'` (and yoda swap) — `typeof X` is
+    // never null, so the only nullish constituent excluded is
+    // undefined; the comparison's runtime value is `false` when X
+    // is undefined, matching the AND-chain's falsy short-circuit.
+    if (tag == .strict_not_equal or tag == .not_equal) {
+        const d = ctx.nodeData(n);
+        if (typeofUndefinedSubject(d.lhs, d.rhs, ctx)) |x| return x;
+        if (typeofUndefinedSubject(d.rhs, d.lhs, ctx)) |x| return x;
+    }
     return switch (tag) {
         .identifier, .this_expr,
+        .import_meta, .new_target,
         .member_expr, .computed_member_expr,
         .optional_member_expr, .optional_computed_member_expr,
         .call_expr, .optional_call_expr,
@@ -496,6 +508,11 @@ fn reportAndChainSubrun(
 ) void {
     if (end_idx <= start) return;
     if (chainTouchesPrivateField(operands[start .. end_idx + 1], ctx)) return;
+    // Reject if any operand has the `(X?.Y).Z` pattern — that breaks
+    // optional propagation and rewriting would lose a throw.
+    for (operands[start .. end_idx + 1]) |op| {
+        if (hasBrokenOptionalGrouping(unwrapGrouping(op, ctx), ctx)) return;
+    }
     if (ctx.hasTypeChecker()) {
         const ty = ctx.typeOfNode(operands[start]);
         if (!isEligibleNullishOperand(ty, opts, ctx)) return;
@@ -665,35 +682,82 @@ fn checkOrChain(node: NodeIndex, ctx: *const LintContext) void {
         operands_buf[j] = tmp;
     }
     if (n_ops < 2) return;
-    // First operand must be a "presence-negation" — `!X`, `X == null`,
-    // or `X == undefined` — establishing that the chain proceeds
-    // only when X is non-nullish.
-    const first = operands_buf[0];
-    var prev = orFirstOperandSubject(first, ctx) orelse return;
-    if (ctx.nodeTag(prev) == .this_expr) return;
-    // Middle operands (between presence-checks and final access)
-    // can be more presence-checks at the same/extended depth.
-    var k: usize = 1;
-    while (k + 1 < n_ops) : (k += 1) {
-        const op = unwrapGrouping(operands_buf[k], ctx);
-        const subj = orMiddleOperandSubject(op, ctx) orelse return;
-        if (sameExpr(prev, subj, ctx)) continue;
-        if (!isPrefixExtension(prev, subj, ctx)) return;
-        prev = subj;
-    }
-    // Last operand: either a final access (rare for `||` chains)
-    // or a comparison whose `undefined OP X` is truthy.
-    const last_op = unwrapGrouping(operands_buf[n_ops - 1], ctx);
-    if (!isOrChainLast(prev, last_op, ctx)) return;
-    if (chainTouchesPrivateField(operands_buf[0..n_ops], ctx)) return;
-    // requireNullish / falsy-literal gating still applies — use the
-    // chain's first subject's type.
     const opts = readOptions(ctx);
+    var start: usize = 0;
+    while (start < n_ops) {
+        const end_idx = findOrChainSubrunEnd(operands_buf[0..n_ops], start, ctx);
+        if (end_idx > start) {
+            reportOrChainSubrun(operands_buf[0..n_ops], start, end_idx, opts, ctx);
+            start = end_idx + 1;
+        } else {
+            start += 1;
+        }
+    }
+}
+
+/// Find the longest valid `||`-chain subrun starting at `start`.
+/// Mirrors `findAndChainSubrunEnd` for the inverted (presence-
+/// negation) semantics of `||` chains.
+fn findOrChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const LintContext) usize {
+    const first = unwrapGrouping(operands[start], ctx);
+    if (ctx.nodeTag(first) == .this_expr) return start;
+    var prev = orFirstOperandSubject(first, ctx) orelse return start;
+    if (ctx.nodeTag(prev) == .this_expr) return start;
+    var end: usize = start;
+    var extended: bool = false;
+    var k: usize = start + 1;
+    while (k < operands.len) : (k += 1) {
+        const op = unwrapGrouping(operands[k], ctx);
+        if (orMiddleOperandSubject(op, ctx)) |subj| {
+            if (sameExpr(prev, subj, ctx)) {
+                end = k;
+                continue;
+            }
+            if (isPrefixExtension(prev, subj, ctx)) {
+                prev = subj;
+                end = k;
+                extended = true;
+                continue;
+            }
+        }
+        break;
+    }
+    if (k < operands.len) {
+        const op = unwrapGrouping(operands[k], ctx);
+        if (isOrChainLast(prev, op, ctx)) {
+            end = k;
+            extended = true;
+        }
+    }
+    if (!extended) return start;
+    return end;
+}
+
+fn reportOrChainSubrun(
+    operands: []const NodeIndex,
+    start: usize,
+    end_idx: usize,
+    opts: Options,
+    ctx: *const LintContext,
+) void {
+    if (end_idx <= start) return;
+    if (chainTouchesPrivateField(operands[start .. end_idx + 1], ctx)) return;
+    for (operands[start .. end_idx + 1]) |op| {
+        if (hasBrokenOptionalGrouping(unwrapGrouping(op, ctx), ctx)) return;
+    }
+    // Recompute the chain subject from the first operand of the
+    // subrun for type-eligibility gating.
+    const first_subj = orFirstOperandSubject(unwrapGrouping(operands[start], ctx), ctx) orelse return;
     if (ctx.hasTypeChecker()) {
-        const ty = ctx.typeOfNode(prev);
+        const ty = ctx.typeOfNode(first_subj);
         if (!isEligibleNullishOperand(ty, opts, ctx)) return;
     }
-    ctx.reportWithMessageId(node, "preferOptionalChain");
+    const span_start = ctx.nodeSpan(operands[start]).start;
+    const span_end = ctx.nodeSpan(operands[end_idx]).end;
+    ctx.reportSpanWithMessageId(
+        .{ .start = span_start, .end = span_end },
+        "preferOptionalChain",
+    );
 }
 
 /// First-operand subjects for `||` chains:
@@ -707,6 +771,7 @@ fn orFirstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
         while (ctx.nodeTag(inner) == .grouping_expr) inner = ctx.nodeData(inner).lhs;
         return switch (ctx.nodeTag(inner)) {
             .identifier, .this_expr,
+            .import_meta, .new_target,
             .member_expr, .computed_member_expr,
             .optional_member_expr, .optional_computed_member_expr,
             .call_expr, .optional_call_expr,
@@ -856,6 +921,21 @@ fn isExtensionOf(prev: NodeIndex, next: NodeIndex, ctx: *const LintContext) bool
             // analysis on the swapped side.
             .equal, .strict_equal, .not_equal, .strict_not_equal => {
                 const d = ctx.nodeData(cur);
+                // typeof X OP 'undefined' closing form — `typeof X
+                // !== 'undefined'` / `typeof X != 'undefined'` are
+                // safe AND-chain closers (the comparison evaluates
+                // to FALSE when X is undefined, matching the chain's
+                // nullish-falsy short-circuit).
+                if (typeofUndefinedSubject(d.lhs, d.rhs, ctx)) |subj| {
+                    if (isExtensionOf(prev, subj, ctx) or sameExpr(prev, subj, ctx)) {
+                        return t == .not_equal or t == .strict_not_equal;
+                    }
+                }
+                if (typeofUndefinedSubject(d.rhs, d.lhs, ctx)) |subj| {
+                    if (isExtensionOf(prev, subj, ctx) or sameExpr(prev, subj, ctx)) {
+                        return t == .not_equal or t == .strict_not_equal;
+                    }
+                }
                 const lhs_ext = isExtensionOf(prev, d.lhs, ctx);
                 const rhs_ext = isExtensionOf(prev, d.rhs, ctx);
                 // Both sides extending the chain subject means we
@@ -875,31 +955,90 @@ fn isExtensionOf(prev: NodeIndex, next: NodeIndex, ctx: *const LintContext) bool
     return false;
 }
 
+/// Collapse optional-member / optional-call variants to their plain
+/// counterpart so `sameExpr` can match across `?.` boundaries — the
+/// chain rewrite treats `foo.bar` and `foo?.bar` as the same subject.
+fn memberFamily(tag: Node.Tag) Node.Tag {
+    return switch (tag) {
+        .optional_member_expr => .member_expr,
+        .optional_computed_member_expr => .computed_member_expr,
+        .optional_call_expr => .call_expr,
+        else => tag,
+    };
+}
+
+/// True if the access chain contains a grouping_expr that wraps an
+/// optional_* node — `(foo?.a).b` forces a plain access on a
+/// potentially-undefined value, throwing on nullish.  The chain
+/// rewrite can't preserve that throw, so we treat such expressions
+/// as ineligible for unification with plain-access expressions.
+fn hasBrokenOptionalGrouping(node: NodeIndex, ctx: *const LintContext) bool {
+    var cur = node;
+    while (true) {
+        const t = ctx.nodeTag(cur);
+        switch (t) {
+            .member_expr, .computed_member_expr,
+            .optional_member_expr, .optional_computed_member_expr,
+            .call_expr, .optional_call_expr,
+            .new_expr, .ts_instantiation_expr, .ts_non_null_expr,
+            => cur = ctx.nodeData(cur).lhs,
+            .grouping_expr => {
+                var inner = ctx.nodeData(cur).lhs;
+                while (ctx.nodeTag(inner) == .grouping_expr) inner = ctx.nodeData(inner).lhs;
+                switch (ctx.nodeTag(inner)) {
+                    .optional_member_expr, .optional_computed_member_expr,
+                    .optional_call_expr,
+                    => return true,
+                    else => cur = inner,
+                }
+            },
+            else => return false,
+        }
+    }
+}
+
 fn sameExpr(a: NodeIndex, b: NodeIndex, ctx: *const LintContext) bool {
     var x = a;
     var y = b;
-    while (ctx.nodeTag(x) == .grouping_expr) x = ctx.nodeData(x).lhs;
-    while (ctx.nodeTag(y) == .grouping_expr) y = ctx.nodeData(y).lhs;
-    const xt = ctx.nodeTag(x);
-    const yt = ctx.nodeTag(y);
+    // Peel grouping AND non-null assertions — `foo!` and `foo` denote
+    // the same runtime value, just with different type narrowing.
+    while (true) {
+        const t = ctx.nodeTag(x);
+        if (t == .grouping_expr or t == .ts_non_null_expr) {
+            x = ctx.nodeData(x).lhs;
+            continue;
+        }
+        break;
+    }
+    while (true) {
+        const t = ctx.nodeTag(y);
+        if (t == .grouping_expr or t == .ts_non_null_expr) {
+            y = ctx.nodeData(y).lhs;
+            continue;
+        }
+        break;
+    }
+    const xt = memberFamily(ctx.nodeTag(x));
+    const yt = memberFamily(ctx.nodeTag(y));
     if (xt != yt) return false;
     if (xt == .identifier) {
         return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(x)), ctx.tokenText(ctx.nodeMainToken(y)));
     }
     if (xt == .this_expr) return true;
-    if (xt == .member_expr or xt == .optional_member_expr) {
+    if (xt == .import_meta or xt == .new_target) return true;
+    if (xt == .member_expr) {
         const xd = ctx.nodeData(x);
         const yd = ctx.nodeData(y);
         if (!sameExpr(xd.lhs, yd.lhs, ctx)) return false;
         return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(xd.rhs)), ctx.tokenText(ctx.nodeMainToken(yd.rhs)));
     }
-    if (xt == .computed_member_expr or xt == .optional_computed_member_expr) {
+    if (xt == .computed_member_expr) {
         const xd = ctx.nodeData(x);
         const yd = ctx.nodeData(y);
         if (!sameExpr(xd.lhs, yd.lhs, ctx)) return false;
         return sameExpr(xd.rhs, yd.rhs, ctx);
     }
-    if (xt == .call_expr or xt == .optional_call_expr) {
+    if (xt == .call_expr) {
         const xd = ctx.nodeData(x);
         const yd = ctx.nodeData(y);
         if (!sameExpr(xd.lhs, yd.lhs, ctx)) return false;
@@ -946,6 +1085,7 @@ fn isSideEffectFreeExpr(node: NodeIndex, ctx: *const LintContext) bool {
         switch (ctx.nodeTag(n)) {
             // Pure expressions.
             .identifier, .this_expr, .super_expr,
+            .import_meta, .new_target,
             .number_literal, .string_literal, .bigint_literal,
             .boolean_literal, .null_literal, .regex_literal,
             .property_ident,
