@@ -459,7 +459,15 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
         }
     }
     if (!extended) return start;
-    return end;
+    // Post-walk validation: when phase-1 ate a strict `!== null`
+    // (or `=== Y` / `=== undefined`) as the subrun's terminal, the
+    // rewrite to `?.` would lose semantics — reject by retreating.
+    while (end > start) {
+        const last_op = unwrapGrouping(operands[end], ctx);
+        if (!isUnsafeStrictAsChainTerminal(last_op, ctx)) return end;
+        end -= 1;
+    }
+    return start;
 }
 
 /// Operand forms that confirm non-nullishness of the chain subject
@@ -479,14 +487,22 @@ fn presenceCheckSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
         if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
         return null;
     }
-    // `typeof X !== 'undefined'` (and yoda swap) — `typeof X` is
-    // never null, so the only nullish constituent excluded is
-    // undefined; the comparison's runtime value is `false` when X
-    // is undefined, matching the AND-chain's falsy short-circuit.
-    if (tag == .strict_not_equal or tag == .not_equal) {
+    if (tag == .strict_not_equal) {
         const d = ctx.nodeData(n);
+        // `typeof X !== 'undefined'` (and yoda swap) — `typeof X` is
+        // never null, so the only nullish constituent excluded is
+        // undefined; the comparison's runtime value is `false` when X
+        // is undefined, matching the AND-chain's falsy short-circuit.
         if (typeofUndefinedSubject(d.lhs, d.rhs, ctx)) |x| return x;
         if (typeofUndefinedSubject(d.rhs, d.lhs, ctx)) |x| return x;
+        // Plain strict `X !== null` / `X !== undefined` — accepted as
+        // a chain-CONTINUING operand only.  The chain must extend
+        // past this operand (later operands deepen or close safely);
+        // a strict `!== null` as the chain's terminal isn't a safe
+        // rewrite and is rejected post-walk.
+        if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
+        if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
+        return null;
     }
     return switch (tag) {
         .identifier, .this_expr,
@@ -497,6 +513,35 @@ fn presenceCheckSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
         => n,
         else => null,
     };
+}
+
+/// True if `node` is a closing comparison form that's NOT safe to
+/// be the chain's terminal — strict `!== null` (leaves undefined)
+/// and `=== Y` without safe RHS.  Used to reject subruns whose
+/// last operand wouldn't rewrite to an equivalent expression.
+fn isUnsafeStrictAsChainTerminal(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag != .strict_not_equal and tag != .strict_equal) return false;
+    const d = ctx.nodeData(n);
+    // typeof X OP 'undefined' is handled separately; only `!== 'undefined'`
+    // is safe terminal.  Skip — typeof handled by `isExtensionOf` path
+    // through `typeofUndefinedSubject` which gates correctly.
+    if (typeofUndefinedSubject(d.lhs, d.rhs, ctx) != null or
+        typeofUndefinedSubject(d.rhs, d.lhs, ctx) != null)
+    {
+        // typeof X !== 'undefined' is safe; typeof X === 'undefined' isn't.
+        return tag == .strict_equal;
+    }
+    // Plain strict — undefined RHS is the only safe `!==` terminal.
+    if (tag == .strict_not_equal) {
+        if (isUndefinedNode(d.rhs, ctx) or isUndefinedNode(d.lhs, ctx)) return false;
+        return true; // strict !== null (or anything else) is unsafe terminal
+    }
+    // strict === Y safe only when Y is NOT undefined (per comparisonRhsAllowed).
+    if (isUndefinedNode(d.rhs, ctx) or isUndefinedNode(d.lhs, ctx)) return true;
+    return false;
 }
 
 fn reportAndChainSubrun(
