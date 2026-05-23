@@ -126,9 +126,9 @@ fn isNullLiteralNode(node: NodeIndex, ctx: *const LintContext) bool {
 /// own qualify:
 ///   * bare identifier / member access (truthy → non-nullish)
 ///   * loose `X != null` / `X != undefined` (excludes both)
-/// Strict `!==` checks and `typeof X !== 'undefined'` alone don't
-/// qualify because they leave one half of the nullish union still
-/// possible.
+///   * strict `X !== null` when X's type doesn't include undefined
+///     (and the reverse) — the strict check covers all nullish
+///     constituents present in the actual type.
 fn firstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     var n = node;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
@@ -139,6 +139,12 @@ fn firstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
         if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
         return null;
     }
+    if (tag == .strict_not_equal) {
+        const d = ctx.nodeData(n);
+        if (strictNullishCheckSafe(d.lhs, d.rhs, ctx)) return d.lhs;
+        if (strictNullishCheckSafe(d.rhs, d.lhs, ctx)) return d.rhs;
+        return null;
+    }
     return switch (tag) {
         .identifier, .this_expr,
         .member_expr, .computed_member_expr,
@@ -147,6 +153,36 @@ fn firstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
         => n,
         else => null,
     };
+}
+
+/// True when `X !== <nullish>` (`literal_node` carries the nullish
+/// half) excludes every nullish case in `subject_expr`'s actual
+/// type — i.e. either `null` or `undefined` is the only nullish
+/// constituent.  Needs the type checker.
+/// True when `X !== <nullish>` reliably excludes every nullish
+/// case in `subject_expr`'s actual type — needs the type checker
+/// to confirm both null AND undefined narrowing.  When the checker
+/// can't see a union at all (no type info or single-side type),
+/// we require the typed-side to ALSO see the other nullish kind
+/// to play it safe.
+fn strictNullishCheckSafe(subject_expr: NodeIndex, literal_node: NodeIndex, ctx: *const LintContext) bool {
+    if (!ctx.hasTypeChecker()) return false;
+    const is_undef = isUndefinedNode(literal_node, ctx);
+    const is_null = isNullLiteralNode(literal_node, ctx);
+    if (!is_undef and !is_null) return false;
+    const ty = ctx.typeOfNode(subject_expr);
+    // Need to confirm BOTH:
+    //   * the nullish half we're testing IS present in the type
+    //     (otherwise the check is a no-op, not a real chain
+    //     guard — TSe wouldn't fire), AND
+    //   * the OTHER nullish half is NOT present in the type
+    //     (otherwise the rewrite leaks past it).
+    if (is_null) {
+        if (!ctx.typeIdContainsNull(ty)) return false;
+        return !ctx.typeIdContainsUndefined(ty);
+    }
+    if (!ctx.typeIdContainsUndefined(ty)) return false;
+    return !ctx.typeIdContainsNull(ty);
 }
 
 /// Return the expression a chain-operand (other than the first)
@@ -257,14 +293,41 @@ fn isKnownConstantValue(node: NodeIndex, ctx: *const LintContext) bool {
     };
 }
 
+/// True when `node`'s type is a concrete literal type that the
+/// type checker can resolve (e.g. `foo: { three: 3 }` makes
+/// `foo.three` carry the literal type `3`).  Lets the comparison
+/// gate accept member-access RHS whose runtime value is statically
+/// known via the type system even though it isn't a syntactic
+/// literal.
+fn isTypeKnownLiteral(node: NodeIndex, ctx: *const LintContext) bool {
+    if (!ctx.hasTypeChecker()) return false;
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const ty = ctx.typeOfNode(n);
+    return ctx.typeIdIsLiteral(ty);
+}
+
 /// Decide whether `comparison_op X` would yield a falsy value when
 /// applied to `undefined` — matches the gate TSe uses to allow
 /// rewriting `foo && foo.bar OP X` into `foo?.bar OP X`.  Requires
-/// X to be a known constant so we can reason about it statically.
+/// X to be statically knowable: either a syntactic constant or an
+/// expression whose type the checker has reduced to a literal /
+/// undefined / null type.
 fn comparisonRhsAllowed(op: Node.Tag, x_node: NodeIndex, ctx: *const LintContext) bool {
-    if (!isKnownConstantValue(x_node, ctx)) return false;
-    const is_undef = isUndefinedNode(x_node, ctx);
-    const is_null = isNullLiteralNode(x_node, ctx);
+    var is_undef = isUndefinedNode(x_node, ctx);
+    var is_null = isNullLiteralNode(x_node, ctx);
+    const syntactic = isKnownConstantValue(x_node, ctx);
+    if (!syntactic) {
+        if (!ctx.hasTypeChecker()) return false;
+        const ty = ctx.typeOfNode(x_node);
+        const kind = ctx.typeKind(ty);
+        switch (kind) {
+            .undefined_t, .void_t => is_undef = true,
+            .null_t => is_null = true,
+            .number_literal, .string_literal, .bigint_literal, .boolean_literal => {},
+            else => return false,
+        }
+    }
     return switch (op) {
         .strict_equal => !is_undef,
         .strict_not_equal => is_undef,
@@ -551,6 +614,11 @@ fn orFirstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
         if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
         if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
     }
+    if (ctx.nodeTag(n) == .strict_equal) {
+        const d = ctx.nodeData(n);
+        if (strictNullishCheckSafe(d.lhs, d.rhs, ctx)) return d.lhs;
+        if (strictNullishCheckSafe(d.rhs, d.lhs, ctx)) return d.rhs;
+    }
     return null;
 }
 
@@ -585,8 +653,11 @@ fn isOrChainLast(prev: NodeIndex, last: NodeIndex, ctx: *const LintContext) bool
     const t = ctx.nodeTag(cur);
     if (t != .equal and t != .strict_equal and t != .not_equal and t != .strict_not_equal) return false;
     const d = ctx.nodeData(cur);
-    if (isExtensionOf(prev, d.rhs, ctx) and orComparisonRhsAllowed(t, d.lhs, ctx)) return true;
-    if (isExtensionOf(prev, d.lhs, ctx) and orComparisonRhsAllowed(t, d.rhs, ctx)) return true;
+    const lhs_ext = isExtensionOf(prev, d.lhs, ctx);
+    const rhs_ext = isExtensionOf(prev, d.rhs, ctx);
+    if (lhs_ext and rhs_ext) return false;
+    if (rhs_ext and orComparisonRhsAllowed(t, d.lhs, ctx)) return true;
+    if (lhs_ext and orComparisonRhsAllowed(t, d.rhs, ctx)) return true;
     return false;
 }
 
@@ -596,9 +667,20 @@ fn isOrChainLast(prev: NodeIndex, last: NodeIndex, ctx: *const LintContext) bool
 ///   * `== <nullish>`            — true
 ///   * `!= <non-nullish>`        — true
 fn orComparisonRhsAllowed(op: Node.Tag, x_node: NodeIndex, ctx: *const LintContext) bool {
-    if (!isKnownConstantValue(x_node, ctx)) return false;
-    const is_undef = isUndefinedNode(x_node, ctx);
-    const is_null = isNullLiteralNode(x_node, ctx);
+    var is_undef = isUndefinedNode(x_node, ctx);
+    var is_null = isNullLiteralNode(x_node, ctx);
+    const syntactic = isKnownConstantValue(x_node, ctx);
+    if (!syntactic) {
+        if (!ctx.hasTypeChecker()) return false;
+        const ty = ctx.typeOfNode(x_node);
+        const kind = ctx.typeKind(ty);
+        switch (kind) {
+            .undefined_t, .void_t => is_undef = true,
+            .null_t => is_null = true,
+            .number_literal, .string_literal, .bigint_literal, .boolean_literal => {},
+            else => return false,
+        }
+    }
     return switch (op) {
         .strict_equal => is_undef,
         .strict_not_equal => !is_undef,
@@ -647,12 +729,16 @@ fn isExtensionOf(prev: NodeIndex, next: NodeIndex, ctx: *const LintContext) bool
             // analysis on the swapped side.
             .equal, .strict_equal, .not_equal, .strict_not_equal => {
                 const d = ctx.nodeData(cur);
-                if (isExtensionOf(prev, d.rhs, ctx)) {
-                    if (comparisonRhsAllowed(t, d.lhs, ctx)) return true;
-                }
-                if (isExtensionOf(prev, d.lhs, ctx)) {
-                    if (comparisonRhsAllowed(t, d.rhs, ctx)) return true;
-                }
+                const lhs_ext = isExtensionOf(prev, d.lhs, ctx);
+                const rhs_ext = isExtensionOf(prev, d.rhs, ctx);
+                // Both sides extending the chain subject means we
+                // can't safely rewrite — the chain rewrite leaves
+                // one side as `?.`-accessed but the other untouched,
+                // and TSe declines to fix expressions like
+                // `foo != null && foo.bar != foo.baz`.
+                if (lhs_ext and rhs_ext) return false;
+                if (rhs_ext and comparisonRhsAllowed(t, d.lhs, ctx)) return true;
+                if (lhs_ext and comparisonRhsAllowed(t, d.rhs, ctx)) return true;
                 return false;
             },
             else => break,
