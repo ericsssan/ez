@@ -411,7 +411,7 @@ fn findDeclWithFilter(name: []const u8, use_ctx: UseContext, ctx: *const LintCon
     }
     const total: u32 = @intCast(ctx.ast.nodes.len);
     var defaults_buf: [16]TypeParamDefault = undefined;
-    var slot_disabled: [16]bool = [_]bool{false} ** 16;
+    var slot_disabled: [16]bool = @splat(false);
     var defaults_len: usize = 0;
     var found_any = false;
     var i: u32 = 0;

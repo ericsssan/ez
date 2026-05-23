@@ -2117,7 +2117,11 @@ fn walkDirPosix(
         if (std.mem.eql(u8, raw_name, "node_modules")) continue;
 
         const joined = std.fs.path.join(alloc, &.{ dir_path_z, raw_name }) catch continue;
-        const child_z: [:0]u8 = alloc.dupeZ(u8, joined) catch continue;
+        const child_z = blk: {
+            const buf = alloc.allocSentinel(u8, joined.len, 0) catch continue;
+            @memcpy(buf, joined);
+            break :blk buf;
+        };
 
         const dt = entry.@"type";
         if (dt == std.c.DT.DIR) {
@@ -2146,7 +2150,11 @@ fn walkDirPosix(
 
 /// Add a single root path (file or directory) into `list`.
 fn discoverRoot(root: []const u8, list: *std.ArrayList(FileEntry), alloc: std.mem.Allocator) void {
-    const root_z: [:0]u8 = alloc.dupeZ(u8, root) catch return;
+    const root_z = blk: {
+        const buf = alloc.allocSentinel(u8, root.len, 0) catch return;
+        @memcpy(buf, root);
+        break :blk buf;
+    };
 
     var st: std.c.Stat = undefined;
     if (!statPath(root_z, &st)) return;

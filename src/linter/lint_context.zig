@@ -744,6 +744,14 @@ pub const LintContext = struct {
     /// For a function/method/constructor type, return the return type
     /// of its first signature.  Returns `ID_UNKNOWN` for non-function
     /// types.
+    /// Raw `TypeKind` of an id.  Falls back to `.any` when the checker
+    /// isn't available so callers can fold the result into kind-based
+    /// dispatch without an extra optional layer.
+    pub fn typeKind(self: *const LintContext, id: tymod.TypeId) tymod.TypeKind {
+        const c = self.ensureChecker() orelse return .any;
+        return c.store.get(id).kind;
+    }
+
     pub fn typeIdSignatureReturnType(self: *const LintContext, id: tymod.TypeId) tymod.TypeId {
         const c = self.ensureChecker() orelse return tymod.ID_UNKNOWN;
         const t = c.store.get(id);
