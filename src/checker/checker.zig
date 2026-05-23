@@ -850,7 +850,7 @@ pub const Checker = struct {
             .ts_tuple_type => self.resolveTupleType(ty_node),
             .ts_indexed_access_type => tymod.ID_UNKNOWN,
             .ts_conditional_type => tymod.ID_UNKNOWN,
-            .ts_mapped_type => tymod.ID_UNKNOWN,
+            .ts_mapped_type => self.resolveMappedType(ty_node),
             .ts_template_literal_type => tymod.ID_STRING,
             // Literal types in type position — parser keeps them as
             // value-style literal nodes.
@@ -990,6 +990,114 @@ pub const Checker = struct {
         }
         const list = self.store.appendObjectProps(props_buf[0..prop_count]) catch return tymod.ID_UNKNOWN;
         return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+    }
+
+    /// Evaluate a `ts_mapped_type` AST node into an `object_t` whose
+    /// props are the keys named by the constraint, each typed by the
+    /// value-type expression.  Only handles cases where the constraint
+    /// is a closed set of string-literal types (the form rules care
+    /// about, e.g. `{ [K in 'toString' | 'valueOf']: ... }`).
+    fn resolveMappedType(self: *Checker, ty_node: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(ty_node);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+        // SubRange layout for ts_mapped_type: [key_param, constraint, as_type, value_type]
+        if (slice.len < 4) return tymod.ID_UNKNOWN;
+        const constraint: NodeIndex = @enumFromInt(slice[1]);
+        const as_type: NodeIndex = @enumFromInt(slice[2]);
+        const value_type: NodeIndex = @enumFromInt(slice[3]);
+        if (constraint == .none or value_type == .none) return tymod.ID_UNKNOWN;
+        // `as` clause not modelled — bail to keep semantics safe.
+        if (as_type != .none) return tymod.ID_UNKNOWN;
+
+        var keys_buf: [16][]const u8 = undefined;
+        const key_count = self.collectStringLiteralKeys(constraint, &keys_buf, 0) orelse return tymod.ID_UNKNOWN;
+        if (key_count == 0) return tymod.ID_UNKNOWN;
+
+        const val_ty = self.resolveTypeNode(value_type);
+        var props_buf: [16]tymod.ObjectProp = undefined;
+        var prop_count: usize = 0;
+        var i: usize = 0;
+        while (i < key_count) : (i += 1) {
+            const name = keys_buf[i];
+            // TypeScript synthesises mapped-type properties without a real
+            // declaration node — TSe's `no-base-to-string` (and similar
+            // rules) intentionally treat these as if the default Object
+            // method applies, so a mapped `toString` / `toLocaleString` /
+            // `valueOf` key does NOT count as user-defined coercion.
+            // Skipping the prop keeps `hasUserStringCoercion`-style checks
+            // honest while still producing a real object_t for the type.
+            if (std.mem.eql(u8, name, "toString") or
+                std.mem.eql(u8, name, "toLocaleString") or
+                std.mem.eql(u8, name, "valueOf"))
+            {
+                continue;
+            }
+            props_buf[prop_count] = .{ .name = name, .type_id = val_ty };
+            prop_count += 1;
+        }
+        const list = self.store.appendObjectProps(props_buf[0..prop_count]) catch return tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+    }
+
+    /// Walk `node` collecting any string-literal type members it
+    /// represents.  Handles plain `string_literal`, parenthesised
+    /// wrappers, unions of string literals, and aliases that
+    /// resolve to the same.  Returns the count written, or null if
+    /// any member can't be reduced to a known string key.
+    fn collectStringLiteralKeys(
+        self: *Checker,
+        node: NodeIndex,
+        out: *[16][]const u8,
+        start: usize,
+    ) ?usize {
+        var n = node;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        const tag = self.ast_ref.nodeTag(n);
+        if (tag == .string_literal) {
+            if (start >= out.len) return null;
+            const tok = self.ast_ref.nodeMainToken(n);
+            const raw = self.ast_ref.tokenText(tok);
+            const name = if (raw.len >= 2) raw[1 .. raw.len - 1] else raw;
+            out[start] = name;
+            return start + 1;
+        }
+        // TS parses `'foo'` in type position as ts_type_reference whose
+        // main_token is the quoted literal text — peel the quotes.
+        if (tag == .ts_type_reference) {
+            const tok = self.ast_ref.nodeMainToken(n);
+            const raw = self.ast_ref.tokenText(tok);
+            if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"' or raw[0] == '`')) {
+                if (start >= out.len) return null;
+                out[start] = raw[1 .. raw.len - 1];
+                return start + 1;
+            }
+            const name = raw;
+            const decl = self.type_decl_nodes.get(name) orelse return null;
+            if (self.ast_ref.nodeTag(decl) != .ts_type_alias_decl) return null;
+            const dd = self.ast_ref.nodeData(decl);
+            const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+            return self.collectStringLiteralKeys(ad.type_node, out, start);
+        }
+        if (tag == .ts_union_type) {
+            const d = self.ast_ref.nodeData(n);
+            const members = self.directRange(d.lhs, d.rhs) orelse return null;
+            var pos = start;
+            for (members) |raw_idx| {
+                const member: NodeIndex = @enumFromInt(raw_idx);
+                pos = self.collectStringLiteralKeys(member, out, pos) orelse return null;
+            }
+            return pos;
+        }
+        if (tag == .identifier) {
+            const tok = self.ast_ref.nodeMainToken(n);
+            const name = self.ast_ref.tokenText(tok);
+            const decl = self.type_decl_nodes.get(name) orelse return null;
+            if (self.ast_ref.nodeTag(decl) != .ts_type_alias_decl) return null;
+            const dd = self.ast_ref.nodeData(decl);
+            const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+            return self.collectStringLiteralKeys(ad.type_node, out, start);
+        }
+        return null;
     }
 
     /// Walk the AST once and collect names declared as types.  Sources:
