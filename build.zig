@@ -25,34 +25,12 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run ez");
     run_step.dependOn(&run_cmd.step);
 
-    // ── zbc (Layer 1 annotation linter + Layer 2 escape analyzer) ──
-    // Phase 45: consumed as a build.zig.zon dependency rather than a
-    // direct path reference.  Current entry is `.path = "zbc"` (in-tree);
-    // flip to `.url + .hash` once zbc moves to its own repo — no
-    // build.zig change needed at the consumer.
-    const zbc_dep = b.dependency("zbc", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const borrow_check_exe = zbc_dep.artifact("zbc");
-
-    const borrow_check_run = b.addRunArtifact(borrow_check_exe);
-    if (b.args) |args| borrow_check_run.addArgs(args);
-    const borrow_check_step = b.step("borrow-check", "Run Layer-1 annotation-hygiene checks");
-    borrow_check_step.dependOn(&borrow_check_run.step);
-
-    // borrow-check-ci is wired from the Makefile (uses `find` to glob —
-    // build.zig at 0.16-dev can't enumerate files without an Io handle
-    // we don't have at configure time).
-
-    // Run zbc's test suite from ez.  Builds a test artifact over
-    // zbc's public lib module — lib.zig refAllDecls all submodules
-    // so this covers the entire zbc test corpus.
-    const zbc_mod = zbc_dep.module("zbc");
-    const borrow_check_tests = b.addTest(.{ .root_module = zbc_mod });
-    const run_borrow_check_tests = b.addRunArtifact(borrow_check_tests);
-    const borrow_check_test_step = b.step("test-borrow-check", "Test the borrow-check rules");
-    borrow_check_test_step.dependOn(&run_borrow_check_tests.step);
+    // zbc (the borrow-check / escape analyzer) lives in its own
+    // repo and gets invoked as a standalone CLI against ez's
+    // sources.  It is NOT compiled in here — pulling it in
+    // transitively dragged ZLS into every `zig build` for no
+    // build-time benefit.  Run `zbc <path>` directly when you
+    // need the borrow check.
 
     // ── Unit tests ───────────────────────────────────────────
     const test_mod = b.createModule(.{
