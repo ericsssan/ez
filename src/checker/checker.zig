@@ -828,12 +828,20 @@ pub const Checker = struct {
                 // Parser also uses .ts_keyof_type as TSTypeOperator for
                 // 'readonly T[]' / 'readonly [T, U]' (TS doesn't share
                 // a distinct tag).  Detect the readonly form via the
-                // main_token and resolve to the underlying array.
+                // main_token and resolve to the underlying array,
+                // converting array_t to readonly_array_t so assignability
+                // checks distinguish writable from readonly forms.
                 const op_tok = self.ast_ref.nodeMainToken(ty_node);
                 const op_text = self.ast_ref.tokenText(op_tok);
                 if (std.mem.eql(u8, op_text, "readonly")) {
                     const inner = self.ast_ref.nodeData(ty_node).lhs;
-                    break :blk self.resolveTypeNode(inner);
+                    const inner_ty = self.resolveTypeNode(inner);
+                    const it = self.store.get(inner_ty);
+                    if (it.kind == .array_t) {
+                        const elems = self.store.idsOf(it.list_data);
+                        if (elems.len > 0) break :blk self.store.readonlyArrayOf(elems[0]) catch inner_ty;
+                    }
+                    break :blk inner_ty;
                 }
                 break :blk tymod.ID_STRING; // keyof default approx
             },
@@ -1120,15 +1128,38 @@ pub const Checker = struct {
         // whose name token is the literal source — recognize the
         // common shapes and map them to the corresponding TS keyword.
         if (name.len > 0) switch (name[0]) {
-            '\'', '"', '`' => return tymod.ID_STRING,
-            // Numeric literal types: `0n` (bigint), `0`/`1.5` (number).
+            // Quoted string literal in type position → string_literal type
+            // carrying the unquoted value.  Subset of `string` for
+            // assignability purposes.
+            '\'', '"', '`' => {
+                const inner: []const u8 = if (name.len >= 2) name[1 .. name.len - 1] else "";
+                return self.store.add(.{
+                    .kind = .string_literal,
+                    .literal_value = .{ .string = inner },
+                }) catch tymod.ID_STRING;
+            },
+            // Numeric literal types: `0n` (bigint_literal), `0`/`1.5`
+            // (number_literal).
             '0'...'9' => {
-                if (name[name.len - 1] == 'n') return tymod.ID_BIGINT;
-                return tymod.ID_NUMBER;
+                if (name[name.len - 1] == 'n') {
+                    return self.store.add(.{
+                        .kind = .bigint_literal,
+                        .literal_value = .{ .bigint = name[0 .. name.len - 1] },
+                    }) catch tymod.ID_BIGINT;
+                }
+                return self.store.add(.{
+                    .kind = .number_literal,
+                    .literal_value = .{ .number = std.fmt.parseFloat(f64, name) catch 0 },
+                }) catch tymod.ID_NUMBER;
             },
             else => {},
         };
-        if (std.mem.eql(u8, name, "true") or std.mem.eql(u8, name, "false")) return tymod.ID_BOOLEAN;
+        if (std.mem.eql(u8, name, "true")) {
+            return self.store.add(.{ .kind = .boolean_literal, .literal_value = .{ .boolean = true } }) catch tymod.ID_BOOLEAN;
+        }
+        if (std.mem.eql(u8, name, "false")) {
+            return self.store.add(.{ .kind = .boolean_literal, .literal_value = .{ .boolean = false } }) catch tymod.ID_BOOLEAN;
+        }
         // Map common built-ins to canonical types so containsAny on
         // `Array<any>` flags correctly without resolving the lib.
         if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
@@ -1481,12 +1512,33 @@ pub const Checker = struct {
 
     /// Build the INSTANCE type of a class — a record of fields and methods.
     /// Static members are not included (those live on the constructor).
+    /// `extends ParentClass` contributes the parent's instance props so
+    /// structural assignability (subclass → superclass) holds.
     fn buildClassInstanceType(self: *Checker, decl: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(decl);
         const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
         var props: std.ArrayList(tymod.ObjectProp) = .empty;
         defer props.deinit(self.gpa);
-        if (cd.body == .none) return tymod.ID_UNKNOWN;
+        // Inherit instance props from the immediate superclass (one hop).
+        if (cd.super_class != .none) {
+            var sc = cd.super_class;
+            while (self.ast_ref.nodeTag(sc) == .grouping_expr) sc = self.ast_ref.nodeData(sc).lhs;
+            if (self.ast_ref.nodeTag(sc) == .identifier) {
+                const parent_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(sc));
+                if (self.resolveDeclaredType(parent_name)) |parent_ty| {
+                    const pt = self.store.get(parent_ty);
+                    if (pt.kind == .object_t) {
+                        for (self.store.propsOf(pt.object_props)) |p| {
+                            props.append(self.gpa, p) catch {};
+                        }
+                    }
+                }
+            }
+        }
+        if (cd.body == .none) {
+            const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
+            return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+        }
         const body_data = self.ast_ref.nodeData(cd.body);
         const slice = self.directRange(body_data.lhs, body_data.rhs) orelse {
             const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
@@ -1495,6 +1547,15 @@ pub const Checker = struct {
         for (slice) |raw| {
             const member: NodeIndex = @enumFromInt(raw);
             if (self.classMemberToProp(member)) |p| {
+                // Inherited prop with the same name is overridden by the
+                // subclass definition — remove the prior entry.
+                var k: usize = 0;
+                while (k < props.items.len) : (k += 1) {
+                    if (std.mem.eql(u8, props.items[k].name, p.name)) {
+                        _ = props.orderedRemove(k);
+                        break;
+                    }
+                }
                 props.append(self.gpa, p) catch {};
             }
         }
@@ -2179,6 +2240,74 @@ pub const Checker = struct {
     fn typeParameterConstraintFromName(self: *Checker, name: []const u8, at_node: NodeIndex) ?TypeId {
         if (at_node == .none) return null;
         return self.resolveTypeParameterConstraint(at_node, name);
+    }
+
+    /// True when `ty_node` is a `ts_type_reference` whose name resolves
+    /// to a TS type parameter declared in enclosing scope.
+    pub fn typeAnnotationIsTypeParameter(self: *Checker, ty_node: NodeIndex) bool {
+        var n = ty_node;
+        if (n == .none) return false;
+        if (self.ast_ref.nodeTag(n) == .ts_type_annotation) n = self.ast_ref.nodeData(n).lhs;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) != .ts_type_reference) return false;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+        return self.findTypeParameterDecl(n, name) != null;
+    }
+
+    /// For a `ts_type_reference` to a type parameter, return its constraint
+    /// TypeId (or `ID_UNKNOWN` if unconstrained).  Returns null when the
+    /// node is not a type-parameter reference.
+    pub fn typeParameterConstraintOf(self: *Checker, ty_node: NodeIndex) ?TypeId {
+        var n = ty_node;
+        if (n == .none) return null;
+        if (self.ast_ref.nodeTag(n) == .ts_type_annotation) n = self.ast_ref.nodeData(n).lhs;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) != .ts_type_reference) return null;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+        const tp = self.findTypeParameterDecl(n, name) orelse return null;
+        // ts_type_parameter encodes: main_token = name, lhs = constraint
+        // (or .none), rhs = default (or .none).
+        const tp_data = self.ast_ref.nodeData(tp);
+        if (tp_data.lhs == .none) return tymod.ID_UNKNOWN;
+        return self.resolveTypeNode(tp_data.lhs);
+    }
+
+    /// Find a `ts_type_parameter` AST node whose name matches and is
+    /// declared in an enclosing scope of `ref_node`.
+    fn findTypeParameterDecl(self: *Checker, ref_node: NodeIndex, name: []const u8) ?NodeIndex {
+        const tree = self.ast_ref;
+        const parents = tree.parents;
+        if (parents.len == 0) return null;
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        var anc_buf: [16]u32 = undefined;
+        var nanc: usize = 0;
+        var p = parents[ref_node.toInt()];
+        while (p != NONE and nanc < anc_buf.len) : (p = parents[p]) {
+            anc_buf[nanc] = p;
+            nanc += 1;
+        }
+        const total: u32 = @intCast(tree.nodes.len);
+        const ref_main_tok = tree.nodeMainToken(ref_node);
+        const ref_pos = tree.tokenStart(ref_main_tok);
+        var j: u32 = 0;
+        while (j < total) : (j += 1) {
+            const ni: NodeIndex = @enumFromInt(j);
+            if (tree.nodeTag(ni) != .ts_type_parameter) continue;
+            if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
+            const tp_pos = tree.tokenStart(tree.nodeMainToken(ni));
+            if (tp_pos >= ref_pos) continue;
+            // Ensure the tp is in scope of ref_node: walk tp's parents
+            // and check any ancestor is shared with ref_node's ancestors.
+            const tp_parent = parents[j];
+            if (tp_parent == NONE) continue;
+            var tp_p = tp_parent;
+            while (tp_p != NONE) : (tp_p = parents[tp_p]) {
+                for (anc_buf[0..nanc]) |anc| {
+                    if (anc == tp_p) return ni;
+                }
+            }
+        }
+        return null;
     }
 
     /// Substitute type arguments into a generic type-alias body.

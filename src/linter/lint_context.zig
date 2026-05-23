@@ -400,6 +400,24 @@ pub const LintContext = struct {
         return c.resolveTypeNode(ty_node);
     }
 
+    /// True when `ty_node` is a `ts_type_reference` to a TS type parameter
+    /// in scope (e.g. `T` inside `function f<T>(...)`).  Used by
+    /// no-unsafe-type-assertion to fire the type-parameter-specific
+    /// messages.
+    pub fn typeAnnotationIsTypeParameter(self: *const LintContext, ty_node: NodeIndex) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.typeAnnotationIsTypeParameter(ty_node);
+    }
+
+    /// For a `ts_type_reference` to a type parameter, return its
+    /// declared constraint TypeId.  Returns `null` if the node is not a
+    /// type-parameter reference, or `tymod.ID_UNKNOWN` if the
+    /// parameter has no constraint.
+    pub fn typeParameterConstraintOf(self: *const LintContext, ty_node: NodeIndex) ?tymod.TypeId {
+        const c = self.ensureChecker() orelse return null;
+        return c.typeParameterConstraintOf(ty_node);
+    }
+
     /// True when the type id reaches `any` either directly or through a
     /// composite (union/intersection/array/tuple).
     pub fn typeIdContainsAny(self: *const LintContext, id: tymod.TypeId) bool {
@@ -609,6 +627,40 @@ pub const LintContext = struct {
         const tb = c.store.get(b);
         if (ta.kind != .type_ref or tb.kind != .type_ref) return false;
         return std.mem.eql(u8, ta.name, tb.name);
+    }
+
+    /// For a `type_ref` type id, return the slice of type-argument
+    /// TypeIds (e.g. `Promise<X, Y>` → `[X, Y]`).  Returns an empty
+    /// slice for non-type_ref ids.
+    pub fn typeIdRefArgs(self: *const LintContext, id: tymod.TypeId) []const tymod.TypeId {
+        const c = self.ensureChecker() orelse return &.{};
+        const t = c.store.get(id);
+        if (t.kind != .type_ref) return &.{};
+        return c.store.idsOf(t.list_data);
+    }
+
+    /// True when the type id is `number` or a `number_literal`.
+    pub fn typeIdIsExactlyNumber(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        return t.kind == .number or t.kind == .number_literal;
+    }
+
+    /// True when the type id is `bigint` or a `bigint_literal`.
+    pub fn typeIdIsExactlyBigint(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        return t.kind == .bigint or t.kind == .bigint_literal;
+    }
+
+    /// For an array_t / readonly_array_t / tuple_t TypeId, return the
+    /// element TypeIds.  For arrays this is a single-element slice; for
+    /// tuples it's per-position.  Returns an empty slice otherwise.
+    pub fn typeIdArrayLikeElems(self: *const LintContext, id: tymod.TypeId) []const tymod.TypeId {
+        const c = self.ensureChecker() orelse return &.{};
+        const t = c.store.get(id);
+        if (t.kind != .array_t and t.kind != .readonly_array_t and t.kind != .tuple_t) return &.{};
+        return c.store.idsOf(t.list_data);
     }
 
     /// Resolve a TS function type annotation node's return-type subnode.
@@ -3437,6 +3489,13 @@ pub const LintContext = struct {
         const open_close: ?[2]u8 = switch (tag) {
             .array_literal, .array_pattern => [2]u8{ '[', ']' },
             .object_literal, .object_pattern, .block_stmt, .class_body, .static_block => [2]u8{ '{', '}' },
+            // ts_array_type's main_token is `[` but `]` isn't anyone's
+            // main_token so it never propagates into max_toks.
+            // ts_tuple_type's main_token is also `[`; same shape.
+            .ts_array_type, .ts_tuple_type => [2]u8{ '[', ']' },
+            // ts_type_literal `{ ... }`: main_token is `{`, closing `}`
+            // is no child's token.
+            .ts_type_literal, .ts_mapped_type => [2]u8{ '{', '}' },
             else => null,
         };
         if (open_close) |oc| {
@@ -3496,6 +3555,51 @@ pub const LintContext = struct {
             var p: usize = end;
             while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\r' or src[p] == '\n')) p += 1;
             if (p < src.len and src[p] == ')') end = @intCast(p + 1);
+            return .{ .start = first_start, .end = end };
+        }
+        // ts_union_type / ts_intersection_type: main_token is the token
+        // AFTER the union (parser stores `p.tokIdx()` post-consume) — its
+        // children live in a SubRange (lhs/rhs hold the extra_data range).
+        // Use the rightmost member's span end instead of the main_token.
+        if (tag == .ts_union_type or tag == .ts_intersection_type) {
+            const data = self.nodeData(index);
+            const s = @intFromEnum(data.lhs);
+            const e = @intFromEnum(data.rhs);
+            if (e > s and e <= self.ast.extra_data.len) {
+                const last_raw = self.ast.extra_data[e - 1];
+                const last_member: NodeIndex = @enumFromInt(last_raw);
+                const member_span = self.nodeSpan(last_member);
+                end = member_span.end;
+                // The first member's span_start may be smaller than first_start
+                // (set from min_tok which also uses the post-consume main).
+                const first_raw = self.ast.extra_data[s];
+                const first_member: NodeIndex = @enumFromInt(first_raw);
+                const first_span = self.nodeSpan(first_member);
+                if (first_span.start < first_start) first_start = first_span.start;
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // ts_type_reference with type args (`Foo<T, U>`): the type args
+        // are children but the closing `>` is no child's token.  If the
+        // span ends inside `<...>`, scan forward for the matching `>`.
+        if (tag == .ts_type_reference) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                var depth: i32 = 0;
+                var p: usize = self.ast.tokenStart(main_tok);
+                // Find the `<` after the identifier.
+                while (p < src.len and src[p] != '<') p += 1;
+                if (p < src.len and src[p] == '<') {
+                    depth = 1;
+                    p += 1;
+                    while (p < src.len and depth > 0) : (p += 1) {
+                        const c = src[p];
+                        if (c == '<') depth += 1
+                        else if (c == '>') depth -= 1;
+                    }
+                    if (depth == 0 and @as(u32, @intCast(p)) > end) end = @intCast(p);
+                }
+            }
             return .{ .start = first_start, .end = end };
         }
         // Statements that include their trailing `;` in ESTree's `range` —

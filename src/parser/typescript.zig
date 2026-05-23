@@ -188,9 +188,14 @@ pub fn parseNonConditionalType(p: *Parser) Error!NodeIndex {
     const members = p.scratchSlice(scratch_top);
     const range = try p.addSlice(members);
 
+    // Use the first member's main_token as the union's main_token so
+    // lint span computation (which propagates min/max through children)
+    // correctly bounds the union at [first member start, last member end].
+    // Using the post-consume token (e.g. `;`) would push max_tok past
+    // the union into the following statement terminator.
     return p.addNode(.{
         .tag = .ts_union_type,
-        .main_token = p.tokIdx(),
+        .main_token = p.nodes.items(.main_token)[first.toInt()],
         .data = .{ .lhs = NodeIndex.fromInt(range.start), .rhs = NodeIndex.fromInt(range.end) },
     });
 }

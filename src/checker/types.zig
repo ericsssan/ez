@@ -395,11 +395,30 @@ pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) b
     if (s.kind == .number_literal and t.kind == .number) return true;
     if (s.kind == .boolean_literal and t.kind == .boolean) return true;
     if (s.kind == .bigint_literal and t.kind == .bigint) return true;
+    // Literal → same-value literal of the same kind.
+    if (s.kind == .string_literal and t.kind == .string_literal) {
+        return std.mem.eql(u8, s.literal_value.string, t.literal_value.string);
+    }
+    if (s.kind == .number_literal and t.kind == .number_literal) {
+        return s.literal_value.number == t.literal_value.number;
+    }
+    if (s.kind == .boolean_literal and t.kind == .boolean_literal) {
+        return s.literal_value.boolean == t.literal_value.boolean;
+    }
+    if (s.kind == .bigint_literal and t.kind == .bigint_literal) {
+        return std.mem.eql(u8, s.literal_value.bigint, t.literal_value.bigint);
+    }
     // Structural object: target's every prop present + assignable in source.
     if (s.kind == .object_t and t.kind == .object_t) {
         const s_props = store.propsOf(s.object_props);
         for (store.propsOf(t.object_props)) |tp| {
-            const sp = findProp(s_props, tp.name) orelse return false;
+            const sp = findProp(s_props, tp.name) orelse {
+                // Missing prop: only ok if the target prop is optional.
+                if (tp.optional) continue;
+                return false;
+            };
+            // Optional source + required target: source may not have a value.
+            if (sp.optional and !tp.optional) return false;
             if (!isAssignableTo(store, sp.type_id, tp.type_id)) return false;
         }
         return true;
@@ -408,6 +427,9 @@ pub fn isAssignableTo(store: *const TypeStore, source: TypeId, target: TypeId) b
     if ((s.kind == .array_t or s.kind == .readonly_array_t) and
         (t.kind == .array_t or t.kind == .readonly_array_t))
     {
+        // `readonly T[]` is NOT assignable to `T[]` (the mutable form
+        // permits writes the readonly type forbids).
+        if (s.kind == .readonly_array_t and t.kind == .array_t) return false;
         const se = store.idsOf(s.list_data);
         const te = store.idsOf(t.list_data);
         if (se.len == 0 or te.len == 0) return false;

@@ -113,12 +113,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const e = @intFromEnum(data.rhs);
             if (e <= ctx.ast.extra_data.len and s == e) {
                 if (lookupMatch(types, "[]")) |id| {
-                    // Span starts at `[`; extend through `]`.
-                    var end: u32 = @intCast(sp.end);
-                    const src = ctx.ast.source;
-                    while (end < src.len and (src[end] == ' ' or src[end] == '\t')) end += 1;
-                    if (end < src.len and src[end] == ']') end += 1;
-                    ctx.reportSpanWithMessageId(.{ .start = sp.start, .end = end }, id);
+                    // nodeSpan already covers `[` through `]` for empty
+                    // tuples — no manual extension needed.
+                    ctx.reportSpanWithMessageId(sp, id);
                 }
             }
         },
@@ -128,13 +125,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const s = @intFromEnum(data.lhs);
             const e = @intFromEnum(data.rhs);
             if (e <= ctx.ast.extra_data.len and s == e) {
-                // Empty `{}` — synthetic key.
                 if (lookupMatch(types, "{}")) |id| {
-                    var end: u32 = @intCast(sp.end);
-                    const src = ctx.ast.source;
-                    while (end < src.len and (src[end] == ' ' or src[end] == '\t')) end += 1;
-                    if (end < src.len and src[end] == '}') end += 1;
-                    ctx.reportSpanWithMessageId(.{ .start = sp.start, .end = end }, id);
+                    // nodeSpan already covers `{` through `}` for empty
+                    // type literals — no manual extension needed.
+                    ctx.reportSpanWithMessageId(sp, id);
                 }
             }
         },

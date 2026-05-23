@@ -451,8 +451,8 @@ fn typeIdMatchesIgnoredFlag(ty: TypeId, cfg: Config, ctx: *const LintContext) bo
     // both `string` and `string_literal`.
     if (cfg.ignore_strings and ctx.typeIdIsStringy(ty)) return true;
     if (cfg.ignore_booleans and ctx.typeIdIsExactlyBoolean(ty)) return true;
-    if (cfg.ignore_numbers and ty.eq(tymod.ID_NUMBER)) return true;
-    if (cfg.ignore_bigints and ty.eq(tymod.ID_BIGINT)) return true;
+    if (cfg.ignore_numbers and ctx.typeIdIsExactlyNumber(ty)) return true;
+    if (cfg.ignore_bigints and ctx.typeIdIsExactlyBigint(ty)) return true;
     // Enum type_ref — number-enum counts as NumberLike, string-enum as StringLike.
     const ref_name = ctx.typeIdRefName(ty);
     if (ref_name.len != 0) {
