@@ -428,11 +428,28 @@ fn checkAndChain(node: NodeIndex, ctx: *const LintContext) void {
 fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const LintContext) usize {
     const first = unwrapGrouping(operands[start], ctx);
     if (ctx.nodeTag(first) == .this_expr) return start;
-    var prev = firstOperandSubject(first, ctx) orelse return start;
+    var prev_opt = firstOperandSubject(first, ctx);
+    // Compound strict pair: when operand[start] is a strict
+    // `X !== <nullish>` that doesn't pass `strictNullishCheckSafe`
+    // alone (because the OTHER nullish half is still possible) but
+    // operand[start+1] is a complementary strict check on the same
+    // subject (excludes the missing half), the two together form a
+    // valid chain ROOT confirming X is non-nullish.
+    var k_start: usize = start + 1;
+    if (prev_opt == null and start + 1 < operands.len) {
+        if (compoundStrictPairSubject(first, unwrapGrouping(operands[start + 1], ctx), ctx)) |s| {
+            prev_opt = s;
+            k_start = start + 2;
+        }
+    }
+    var prev = prev_opt orelse return start;
     if (ctx.nodeTag(prev) == .this_expr) return start;
-    var end: usize = start;
+    // After a compound strict pair (consumed two operands without
+    // deepening), `end` is the second op but `extended` remains
+    // false — chain still needs an actual access-extension after.
+    var end: usize = if (k_start == start + 2) start + 1 else start;
     var extended: bool = false;
-    var k: usize = start + 1;
+    var k: usize = k_start;
     // Presence-check phase.
     while (k < operands.len) : (k += 1) {
         const op = unwrapGrouping(operands[k], ctx);
@@ -515,33 +532,31 @@ fn presenceCheckSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     };
 }
 
-/// True if `node` is a closing comparison form that's NOT safe to
-/// be the chain's terminal — strict `!== null` (leaves undefined)
-/// and `=== Y` without safe RHS.  Used to reject subruns whose
-/// last operand wouldn't rewrite to an equivalent expression.
+/// True if `node` is a comparison form whose `undefined OP RHS`
+/// evaluates to a TRUTHY value — would break the AND-chain rewrite
+/// because the rewrite produces TRUE when the chain root is nullish
+/// (instead of the original chain's nullish/falsy short-circuit).
+/// Delegates the RHS-safety analysis to `comparisonRhsAllowed`, which
+/// already covers syntactic literals AND checker-resolved literal /
+/// undefined / null types (e.g. `foo.three` declared `undefined`).
 fn isUnsafeStrictAsChainTerminal(node: NodeIndex, ctx: *const LintContext) bool {
     var n = node;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     const tag = ctx.nodeTag(n);
-    if (tag != .strict_not_equal and tag != .strict_equal) return false;
+    if (tag != .strict_not_equal and tag != .strict_equal and
+        tag != .not_equal and tag != .equal) return false;
     const d = ctx.nodeData(n);
-    // typeof X OP 'undefined' is handled separately; only `!== 'undefined'`
-    // is safe terminal.  Skip — typeof handled by `isExtensionOf` path
-    // through `typeofUndefinedSubject` which gates correctly.
+    // typeof X OP 'undefined' — `!==` / `!=` safe, `===` / `==` unsafe.
     if (typeofUndefinedSubject(d.lhs, d.rhs, ctx) != null or
         typeofUndefinedSubject(d.rhs, d.lhs, ctx) != null)
     {
-        // typeof X !== 'undefined' is safe; typeof X === 'undefined' isn't.
-        return tag == .strict_equal;
+        return tag == .strict_equal or tag == .equal;
     }
-    // Plain strict — undefined RHS is the only safe `!==` terminal.
-    if (tag == .strict_not_equal) {
-        if (isUndefinedNode(d.rhs, ctx) or isUndefinedNode(d.lhs, ctx)) return false;
-        return true; // strict !== null (or anything else) is unsafe terminal
-    }
-    // strict === Y safe only when Y is NOT undefined (per comparisonRhsAllowed).
-    if (isUndefinedNode(d.rhs, ctx) or isUndefinedNode(d.lhs, ctx)) return true;
-    return false;
+    // Safe iff either side passes comparisonRhsAllowed (one side is
+    // the chain subject, the other is the RHS being checked).
+    if (comparisonRhsAllowed(tag, d.rhs, ctx)) return false;
+    if (comparisonRhsAllowed(tag, d.lhs, ctx)) return false;
+    return true;
 }
 
 fn reportAndChainSubrun(
@@ -1010,6 +1025,49 @@ fn memberFamily(tag: Node.Tag) Node.Tag {
         .optional_call_expr => .call_expr,
         else => tag,
     };
+}
+
+/// Two strict `X !== <nullish>` operands on the same subject that
+/// together exclude BOTH nullish constituents (`X !== null` paired
+/// with `X !== undefined`).  Returns the subject `X` when matched.
+fn compoundStrictPairSubject(a: NodeIndex, b: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    const StrictHalf = struct {
+        subj: NodeIndex,
+        excludes_null: bool,
+        excludes_undef: bool,
+    };
+    const half = struct {
+        fn classify(node: NodeIndex, c: *const LintContext) ?StrictHalf {
+            var n = node;
+            while (c.nodeTag(n) == .grouping_expr) n = c.nodeData(n).lhs;
+            if (c.nodeTag(n) != .strict_not_equal) return null;
+            const d = c.nodeData(n);
+            const rhs_undef = isUndefinedNode(d.rhs, c);
+            const rhs_null = isNullLiteralNode(d.rhs, c);
+            const lhs_undef = isUndefinedNode(d.lhs, c);
+            const lhs_null = isNullLiteralNode(d.lhs, c);
+            if (rhs_undef or rhs_null) return .{
+                .subj = d.lhs,
+                .excludes_null = rhs_null,
+                .excludes_undef = rhs_undef,
+            };
+            if (lhs_undef or lhs_null) return .{
+                .subj = d.rhs,
+                .excludes_null = lhs_null,
+                .excludes_undef = lhs_undef,
+            };
+            return null;
+        }
+    };
+    const ha = half.classify(a, ctx) orelse return null;
+    const hb = half.classify(b, ctx) orelse return null;
+    if (!sameExpr(ha.subj, hb.subj, ctx)) return null;
+    if ((ha.excludes_null and hb.excludes_undef) or
+        (ha.excludes_undef and hb.excludes_null))
+    {
+        return ha.subj;
+    }
+    return null;
 }
 
 /// True if the access chain contains a grouping_expr that wraps an
