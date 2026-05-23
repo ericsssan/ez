@@ -873,8 +873,8 @@ pub const Checker = struct {
             .ts_type_literal => self.resolveTypeLiteral(ty_node),
             .ts_function_type, .ts_constructor_type => self.resolveFunctionType(ty_node),
             .ts_tuple_type => self.resolveTupleType(ty_node),
-            .ts_indexed_access_type => tymod.ID_UNKNOWN,
-            .ts_conditional_type => tymod.ID_UNKNOWN,
+            .ts_indexed_access_type => self.resolveIndexedAccess(ty_node),
+            .ts_conditional_type => self.resolveConditionalType(ty_node),
             .ts_mapped_type => self.resolveMappedType(ty_node),
             .ts_template_literal_type => tymod.ID_STRING,
             // Literal types in type position — parser keeps them as
@@ -1022,6 +1022,148 @@ pub const Checker = struct {
     /// value-type expression.  Only handles cases where the constraint
     /// is a closed set of string-literal types (the form rules care
     /// about, e.g. `{ [K in 'toString' | 'valueOf']: ... }`).
+    /// Evaluate `T extends U ? A : B`.  We support only the cases
+    /// where the relation is decidable from the type representations
+    /// available — primitive vs primitive, literal vs base type, void
+    /// vs void.  When undecidable we union the two branches so
+    /// downstream rules don't pick a wrong arm.
+    fn resolveConditionalType(self: *Checker, ty_node: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(ty_node);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+        if (slice.len < 4) return tymod.ID_UNKNOWN;
+        const check_node: NodeIndex = @enumFromInt(slice[0]);
+        const extends_node: NodeIndex = @enumFromInt(slice[1]);
+        const true_node: NodeIndex = @enumFromInt(slice[2]);
+        const false_node: NodeIndex = @enumFromInt(slice[3]);
+        const check_ty = self.resolveTypeNode(check_node);
+        const extends_ty = self.resolveTypeNode(extends_node);
+        switch (self.simpleAssignable(check_ty, extends_ty)) {
+            .yes => return self.resolveTypeNode(true_node),
+            .no => return self.resolveTypeNode(false_node),
+            .unknown => {
+                const a = self.resolveTypeNode(true_node);
+                const b = self.resolveTypeNode(false_node);
+                return self.store.unionOf(&.{ a, b }) catch tymod.ID_UNKNOWN;
+            },
+        }
+    }
+
+    /// Three-valued assignability check for the cases we can decide
+    /// without a full TypeScript-style relation algebra.  Returns
+    /// `.unknown` when either side is `any`/`unknown` or the
+    /// relation depends on machinery we don't implement.
+    const AssignResult = enum { yes, no, unknown };
+    fn simpleAssignable(self: *Checker, source: TypeId, target: TypeId) AssignResult {
+        if (source.eq(target)) return .yes;
+        if (target.eq(tymod.ID_ANY) or source.eq(tymod.ID_ANY)) return .yes;
+        if (target.eq(tymod.ID_UNKNOWN)) return .yes;
+        const s = self.store.get(source);
+        const t = self.store.get(target);
+        // Primitive kind match.
+        if (s.kind == t.kind) {
+            switch (s.kind) {
+                .number, .string, .boolean, .bigint, .symbol,
+                .null_t, .undefined_t, .void_t, .object_keyword,
+                => return .yes,
+                else => {},
+            }
+        }
+        // Literal types assign to their base.
+        if (t.kind == .number and s.kind == .number_literal) return .yes;
+        if (t.kind == .string and s.kind == .string_literal) return .yes;
+        if (t.kind == .boolean and s.kind == .boolean_literal) return .yes;
+        if (t.kind == .bigint and s.kind == .bigint_literal) return .yes;
+        // Union targets: assignable if assignable to any member.
+        if (t.kind == .union_t) {
+            var any_unknown = false;
+            for (self.store.idsOf(t.list_data)) |m| {
+                switch (self.simpleAssignable(source, m)) {
+                    .yes => return .yes,
+                    .unknown => any_unknown = true,
+                    .no => {},
+                }
+            }
+            return if (any_unknown) .unknown else .no;
+        }
+        // Union sources: assignable if EVERY member is assignable.
+        if (s.kind == .union_t) {
+            var any_unknown = false;
+            for (self.store.idsOf(s.list_data)) |m| {
+                switch (self.simpleAssignable(m, target)) {
+                    .yes => {},
+                    .no => return .no,
+                    .unknown => any_unknown = true,
+                }
+            }
+            return if (any_unknown) .unknown else .yes;
+        }
+        return .unknown;
+    }
+
+    /// Evaluate a `ts_indexed_access_type` (`T[K]`) when both sides
+    /// are statically resolvable: object types looked up by a string-
+    /// literal key, array/tuple types indexed by `number` or a numeric
+    /// literal, and unions distribute member-wise.
+    fn resolveIndexedAccess(self: *Checker, ty_node: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(ty_node);
+        if (data.lhs == .none or data.rhs == .none) return tymod.ID_UNKNOWN;
+        const obj_ty = self.resolveTypeNode(data.lhs);
+        // Collect candidate string keys from the index type.  We accept
+        // string literal types directly and unions of them.
+        var key_buf: [16][]const u8 = undefined;
+        const key_count = self.collectStringLiteralKeys(data.rhs, &key_buf, 0) orelse {
+            // `keyof T` / `number` index → return any prop's union; for
+            // arrays index = number → element type.
+            const idx_tag = self.ast_ref.nodeTag(data.rhs);
+            if (idx_tag == .ts_type_reference) {
+                const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.rhs));
+                if (std.mem.eql(u8, name, "number")) {
+                    const ot = self.store.get(obj_ty);
+                    if (ot.kind == .array_t or ot.kind == .readonly_array_t or ot.kind == .tuple_t) {
+                        const elems = self.store.idsOf(ot.list_data);
+                        if (ot.kind == .tuple_t and elems.len > 0) {
+                            return self.store.unionOf(elems) catch tymod.ID_UNKNOWN;
+                        }
+                        if (elems.len > 0) return elems[0];
+                    }
+                }
+            }
+            return tymod.ID_UNKNOWN;
+        };
+        if (key_count == 0) return tymod.ID_UNKNOWN;
+        var member_buf: [16]TypeId = undefined;
+        var member_n: usize = 0;
+        var i: usize = 0;
+        while (i < key_count) : (i += 1) {
+            const t = self.propertyTypeOfTypeId(obj_ty, key_buf[i]) orelse continue;
+            if (member_n < member_buf.len) {
+                member_buf[member_n] = t;
+                member_n += 1;
+            }
+        }
+        if (member_n == 0) return tymod.ID_UNKNOWN;
+        if (member_n == 1) return member_buf[0];
+        return self.store.unionOf(member_buf[0..member_n]) catch tymod.ID_UNKNOWN;
+    }
+
+    /// Look up `key` in `obj_ty`'s structural shape, walking unions/
+    /// intersections.  Returns the prop's TypeId when found.
+    fn propertyTypeOfTypeId(self: *Checker, obj_ty: TypeId, key: []const u8) ?TypeId {
+        const t = self.store.get(obj_ty);
+        if (t.kind == .object_t) {
+            for (self.store.propsOf(t.object_props)) |p| {
+                if (std.mem.eql(u8, p.name, key)) return p.type_id;
+            }
+            return null;
+        }
+        if (t.kind == .union_t or t.kind == .intersection_t) {
+            for (self.store.idsOf(t.list_data)) |m| {
+                if (self.propertyTypeOfTypeId(m, key)) |r| return r;
+            }
+        }
+        return null;
+    }
+
     fn resolveMappedType(self: *Checker, ty_node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(ty_node);
         const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
