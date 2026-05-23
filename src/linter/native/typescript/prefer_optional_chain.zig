@@ -141,6 +141,18 @@ fn firstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     }
     if (tag == .strict_not_equal) {
         const d = ctx.nodeData(n);
+        // `typeof X !== 'undefined'` (and yoda swap) — typeof never
+        // returns null, so the only nullish excluded is undefined.
+        // Accept only when X's type carries undefined (otherwise the
+        // comparison is statically true and the chain would be no-op).
+        if (typeofUndefinedSubject(d.lhs, d.rhs, ctx)) |x| {
+            if (subjectTypeCarriesUndefined(x, ctx)) return x;
+            return null;
+        }
+        if (typeofUndefinedSubject(d.rhs, d.lhs, ctx)) |x| {
+            if (subjectTypeCarriesUndefined(x, ctx)) return x;
+            return null;
+        }
         if (strictNullishCheckSafe(d.lhs, d.rhs, ctx)) return d.lhs;
         if (strictNullishCheckSafe(d.rhs, d.lhs, ctx)) return d.rhs;
         return null;
@@ -154,6 +166,18 @@ fn firstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
         => n,
         else => null,
     };
+}
+
+/// True when the chain subject's type EXPLICITLY includes
+/// `undefined` — gating heuristic so chains over always-defined
+/// globals (top-level `globalThis`, etc.) don't fire spuriously.
+/// `any` / `unknown` / `error` are rejected because the
+/// subject's nullability is unknown and the safer choice is to
+/// skip rather than spam diagnostics on always-defined globals.
+fn subjectTypeCarriesUndefined(node: NodeIndex, ctx: *const LintContext) bool {
+    if (!ctx.hasTypeChecker()) return false;
+    const ty = ctx.typeOfNode(node);
+    return ctx.typeIdContainsUndefined(ty);
 }
 
 /// True when `X !== <nullish>` (`literal_node` carries the nullish
