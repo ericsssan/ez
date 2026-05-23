@@ -4116,7 +4116,7 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     _ = try p.parseOptionalTypeParameters();
     const async_method_scope_ev = try p.emitScopeOpen(.function, .none);
     const params_range = try parseFormalParameters(p);
-    _ = try p.parseOptionalTypeAnnotation();
+    const async_method_return_type = try p.parseOptionalTypeAnnotation();
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
     try p.emitScopeClose(.none);
 
@@ -4124,6 +4124,7 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
         .params_start = params_range.start,
         .params_end = params_range.end,
         .body = body,
+        .return_type = async_method_return_type,
         .modifiers = ast.ModifierBit.@"async" | (if (is_generator) ast.ModifierBit.generator else 0),
     });
     const async_method_node = try p.addNode(.{
@@ -4164,7 +4165,7 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     const gen_method_scope_ev = try p.emitScopeOpen(.function, .none);
     const params_range = try parseFormalParameters(p);
     p.in_return_type = true;
-    _ = try p.parseOptionalTypeAnnotation(); // TS return type
+    const gen_method_return_type = try p.parseOptionalTypeAnnotation(); // TS return type
     p.in_return_type = false;
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
     try p.emitScopeClose(.none);
@@ -4173,6 +4174,7 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
         .params_start = params_range.start,
         .params_end = params_range.end,
         .body = body,
+        .return_type = gen_method_return_type,
         .modifiers = ast.ModifierBit.generator,
     });
     const gen_method_node = try p.addNode(.{
@@ -4213,7 +4215,7 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
         const comp_method_scope_ev = try p.emitScopeOpen(.function, .none);
         const params_range = try parseFormalParameters(p);
         p.in_return_type = true;
-        _ = try p.parseOptionalTypeAnnotation(); // TS return type
+        const comp_method_return_type = try p.parseOptionalTypeAnnotation(); // TS return type
         p.in_return_type = false;
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         try p.emitScopeClose(.none);
@@ -4221,6 +4223,7 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
             .params_start = params_range.start,
             .params_end = params_range.end,
             .body = body,
+            .return_type = comp_method_return_type,
         });
         const comp_method_node = try p.addNode(.{
             .tag = .computed_method_def,
@@ -4301,7 +4304,7 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         const method_scope_ev = try p.emitScopeOpen(.function, .none);
         const params_range = try parseFormalParameters(p);
         p.in_return_type = true;
-        _ = try p.parseOptionalTypeAnnotation();
+        const obj_method_return_type = try p.parseOptionalTypeAnnotation();
         p.in_return_type = false;
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         try p.emitScopeClose(.none);
@@ -4309,6 +4312,7 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
             .params_start = params_range.start,
             .params_end = params_range.end,
             .body = body,
+            .return_type = obj_method_return_type,
         });
         const method_node = try p.addNode(.{
             .tag = .method_def,

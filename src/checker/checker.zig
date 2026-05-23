@@ -59,6 +59,14 @@ pub const Checker = struct {
     /// comparison.  Populated by `buildKnownTypeNames`.
     enum_kinds: std.StringHashMapUnmanaged(EnumKind),
 
+    /// Built-in global *values* (`console`, `Math`, `JSON`, ...).  Maps
+    /// the identifier name → structural TypeId.  Acts as a minimal
+    /// stand-in for the lib.d.ts shapes TSC loads at startup.  When
+    /// `inferIdentifier` can't find a local symbol or AST declaration
+    /// it falls back to this map — letting `console.log()` resolve to
+    /// `void` without modelling the full Window / globalThis chain.
+    global_value_types: std.StringHashMapUnmanaged(TypeId),
+
     pub fn init(
         gpa: std.mem.Allocator,
         ast_ref: *const Ast,
@@ -81,8 +89,10 @@ pub const Checker = struct {
             .type_decl_nodes = .empty,
             .declared_type_cache = .empty,
             .enum_kinds = .empty,
+            .global_value_types = .empty,
         };
         try self.buildKnownTypeNames();
+        try self.buildGlobalValueTypes();
         return self;
     }
 
@@ -94,6 +104,7 @@ pub const Checker = struct {
         self.enum_kinds.deinit(self.gpa);
         self.type_decl_nodes.deinit(self.gpa);
         self.declared_type_cache.deinit(self.gpa);
+        self.global_value_types.deinit(self.gpa);
     }
 
     // ── Public queries (LintContext-facing) ───────────────
@@ -214,6 +225,15 @@ pub const Checker = struct {
     fn inferIdentifier(self: *Checker, node: NodeIndex) TypeId {
         if (self.symbolForIdentRef(node)) |sym| {
             const base = self.declaredTypeForSymbol(sym);
+            if (!base.eq(tymod.ID_UNKNOWN)) return self.narrowAtUse(node, sym, base);
+            // Symbol resolves but has no declared type — likely an
+            // implicit global.  Try the curated lib globals next.
+            const decl_node = self.semantic.symbols.getDeclNode(sym);
+            if (decl_node == .none) {
+                const tok2 = self.ast_ref.nodeMainToken(node);
+                const name2 = self.ast_ref.tokenText(tok2);
+                if (self.global_value_types.get(name2)) |t| return t;
+            }
             return self.narrowAtUse(node, sym, base);
         }
         // Fallback: semantic didn't resolve the reference (common for
@@ -223,7 +243,12 @@ pub const Checker = struct {
         const tok = self.ast_ref.nodeMainToken(node);
         const name = self.ast_ref.tokenText(tok);
         if (name.len == 0) return tymod.ID_UNKNOWN;
-        return self.typeOfNameByAstSearch(name) orelse tymod.ID_UNKNOWN;
+        if (self.typeOfNameByAstSearch(name)) |t| return t;
+        // Built-in global values (`console`, `Math`, `JSON`, ...) — fall
+        // back to the curated lib shapes so member access / calls type
+        // correctly without modelling the full lib.d.ts.
+        if (self.global_value_types.get(name)) |t| return t;
+        return tymod.ID_UNKNOWN;
     }
 
     /// Walk the AST looking for a top-level declarator/fn_decl/class_decl
@@ -1160,6 +1185,144 @@ pub const Checker = struct {
 
     pub fn enumKindOf(self: *const Checker, name: []const u8) ?EnumKind {
         return self.enum_kinds.get(name);
+    }
+
+    /// Populate `global_value_types` with structural shapes for the
+    /// well-known JS globals that lint rules care about.  This is a
+    /// hand-curated subset of TSC's lib.es5/lib.dom — enough to type
+    /// `console.log()` as `void`, `JSON.parse()` as `any`,
+    /// `Math.random()` as `number`, etc.  Expand as rules need more.
+    fn buildGlobalValueTypes(self: *Checker) !void {
+        // ── helpers ───────────────────────────────────────────
+        const Helper = struct {
+            checker: *Checker,
+            fn fnType(h: @This(), ret: TypeId) !TypeId {
+                const sig = tymod.Signature{
+                    .params_start = 0,
+                    .params_end = 0,
+                    .return_type = ret,
+                };
+                return try h.checker.store.functionType(sig);
+            }
+            fn fnTypeWithParams(h: @This(), params: []const TypeId, ret: TypeId) !TypeId {
+                const pr = try h.checker.store.appendSignatureParams(params);
+                const sig = tymod.Signature{
+                    .params_start = pr.start,
+                    .params_end = pr.end,
+                    .return_type = ret,
+                };
+                return try h.checker.store.functionType(sig);
+            }
+            fn objType(h: @This(), props: []const tymod.ObjectProp) !TypeId {
+                const list = try h.checker.store.appendObjectProps(props);
+                return try h.checker.store.add(.{ .kind = .object_t, .object_props = list });
+            }
+        };
+        const h = Helper{ .checker = self };
+
+        // Console — every method returns void.
+        const void_fn = try h.fnType(tymod.ID_VOID);
+        const console_methods = [_][]const u8{
+            "log", "error", "warn", "info", "debug", "trace",
+            "dir", "dirxml", "table", "group", "groupEnd",
+            "groupCollapsed", "time", "timeEnd", "timeLog",
+            "count", "countReset", "clear", "assert", "profile",
+            "profileEnd", "timeStamp",
+        };
+        var console_props: [console_methods.len]tymod.ObjectProp = undefined;
+        for (console_methods, 0..) |name, i| {
+            console_props[i] = .{ .name = name, .type_id = void_fn };
+        }
+        const console_ty = try h.objType(&console_props);
+        try self.global_value_types.put(self.gpa, "console", console_ty);
+
+        // Math — selection of common methods returning number.
+        const num_fn = try h.fnType(tymod.ID_NUMBER);
+        const math_methods = [_][]const u8{
+            "random", "floor", "ceil", "round", "trunc", "abs",
+            "min", "max", "sign", "sqrt", "cbrt", "pow", "exp",
+            "log", "log2", "log10", "log1p", "expm1", "hypot",
+            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+            "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+            "fround", "clz32", "imul",
+        };
+        var math_props_buf: [math_methods.len + 8]tymod.ObjectProp = undefined;
+        var math_n: usize = 0;
+        for (math_methods) |name| {
+            math_props_buf[math_n] = .{ .name = name, .type_id = num_fn };
+            math_n += 1;
+        }
+        // Math constants — number-typed.
+        const math_constants = [_][]const u8{ "E", "LN10", "LN2", "LOG10E", "LOG2E", "PI", "SQRT1_2", "SQRT2" };
+        for (math_constants) |name| {
+            math_props_buf[math_n] = .{ .name = name, .type_id = tymod.ID_NUMBER };
+            math_n += 1;
+        }
+        const math_ty = try h.objType(math_props_buf[0..math_n]);
+        try self.global_value_types.put(self.gpa, "Math", math_ty);
+
+        // JSON — parse: any, stringify: string.
+        const any_fn = try h.fnType(tymod.ID_ANY);
+        const str_fn = try h.fnType(tymod.ID_STRING);
+        const json_props = [_]tymod.ObjectProp{
+            .{ .name = "parse", .type_id = any_fn },
+            .{ .name = "stringify", .type_id = str_fn },
+        };
+        const json_ty = try h.objType(&json_props);
+        try self.global_value_types.put(self.gpa, "JSON", json_ty);
+
+        // Number — global constructor + utilities; calling it returns number.
+        const number_props = [_]tymod.ObjectProp{
+            .{ .name = "isFinite", .type_id = try h.fnType(tymod.ID_BOOLEAN) },
+            .{ .name = "isInteger", .type_id = try h.fnType(tymod.ID_BOOLEAN) },
+            .{ .name = "isNaN", .type_id = try h.fnType(tymod.ID_BOOLEAN) },
+            .{ .name = "isSafeInteger", .type_id = try h.fnType(tymod.ID_BOOLEAN) },
+            .{ .name = "parseFloat", .type_id = try h.fnType(tymod.ID_NUMBER) },
+            .{ .name = "parseInt", .type_id = try h.fnType(tymod.ID_NUMBER) },
+            .{ .name = "EPSILON", .type_id = tymod.ID_NUMBER },
+            .{ .name = "MAX_SAFE_INTEGER", .type_id = tymod.ID_NUMBER },
+            .{ .name = "MIN_SAFE_INTEGER", .type_id = tymod.ID_NUMBER },
+            .{ .name = "MAX_VALUE", .type_id = tymod.ID_NUMBER },
+            .{ .name = "MIN_VALUE", .type_id = tymod.ID_NUMBER },
+            .{ .name = "NaN", .type_id = tymod.ID_NUMBER },
+            .{ .name = "NEGATIVE_INFINITY", .type_id = tymod.ID_NUMBER },
+            .{ .name = "POSITIVE_INFINITY", .type_id = tymod.ID_NUMBER },
+        };
+        // The global Number is also callable: `Number(x)` → number.
+        const number_callable = try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_NUMBER);
+        // Stash it on `Number` itself via the same TypeId — at the
+        // value site we look up `Number` and read its .signatures when
+        // present.  For simplicity expose Number as the function type
+        // and attach static methods via a parallel namespace name.
+        try self.global_value_types.put(self.gpa, "Number", number_callable);
+        const number_static_ty = try h.objType(&number_props);
+        // (No standard way to merge call sigs + props yet — rules that
+        // need both go through `Number.isFinite` lookups: register the
+        // namespace under a second key the member-access path can use.)
+        try self.global_value_types.put(self.gpa, "__Number_static", number_static_ty);
+
+        // String — global constructor returning string.
+        try self.global_value_types.put(self.gpa, "String", try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_STRING));
+        // Boolean — global constructor returning boolean.
+        try self.global_value_types.put(self.gpa, "Boolean", try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_BOOLEAN));
+        // parseInt / parseFloat / isNaN / isFinite — global functions.
+        try self.global_value_types.put(self.gpa, "parseInt", try h.fnTypeWithParams(&.{tymod.ID_STRING}, tymod.ID_NUMBER));
+        try self.global_value_types.put(self.gpa, "parseFloat", try h.fnTypeWithParams(&.{tymod.ID_STRING}, tymod.ID_NUMBER));
+        try self.global_value_types.put(self.gpa, "isNaN", try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_BOOLEAN));
+        try self.global_value_types.put(self.gpa, "isFinite", try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_BOOLEAN));
+        // `void`-like literals exposed as values.
+        try self.global_value_types.put(self.gpa, "undefined", tymod.ID_UNDEFINED);
+        try self.global_value_types.put(self.gpa, "NaN", tymod.ID_NUMBER);
+        try self.global_value_types.put(self.gpa, "Infinity", tymod.ID_NUMBER);
+
+        // Process / globalThis — keep as `any` so member access on
+        // `process.cwd()` doesn't trip strict rules but doesn't
+        // hallucinate types we haven't modelled.
+        try self.global_value_types.put(self.gpa, "process", tymod.ID_ANY);
+        try self.global_value_types.put(self.gpa, "globalThis", tymod.ID_ANY);
+        try self.global_value_types.put(self.gpa, "window", tymod.ID_ANY);
+        try self.global_value_types.put(self.gpa, "document", tymod.ID_ANY);
+        try self.global_value_types.put(self.gpa, "self", tymod.ID_ANY);
     }
 
     fn buildKnownTypeNames(self: *Checker) !void {

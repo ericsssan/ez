@@ -968,6 +968,39 @@ pub const LintContext = struct {
         return c.resolveDeclaredTypePub(name);
     }
 
+    /// For a type-alias or interface name declared in this file,
+    /// return an AST node that callers can walk to inspect the
+    /// structural shape.  For type aliases this is the RHS type
+    /// expression; for interfaces we synthesise a `ts_type_literal`-
+    /// shaped view by returning the interface decl node itself, and
+    /// the caller distinguishes the two via `nodeTag`.  Returns
+    /// `.none` for names that aren't declared in this file.
+    pub fn typeAliasBodyNode(self: *const LintContext, name: []const u8) NodeIndex {
+        const c = self.ensureChecker() orelse return .none;
+        const decl = c.type_decl_nodes.get(name) orelse return .none;
+        const dtag = c.ast_ref.nodeTag(decl);
+        if (dtag == .ts_type_alias_decl) {
+            const d = c.ast_ref.nodeData(decl);
+            const ad = c.ast_ref.extraData(ast_mod.TypeAliasData, @intFromEnum(d.lhs));
+            return ad.type_node;
+        }
+        // Interface declarations expose their members directly; callers
+        // can walk `interfaceDeclMembers` via the same APIs we use for
+        // type literals.
+        if (dtag == .ts_interface_decl) return decl;
+        return .none;
+    }
+
+    /// For a `ts_interface_decl` node, return the SubRange of member
+    /// node indices in `extra_data` (or null when not an interface).
+    pub fn interfaceDeclMembers(self: *const LintContext, decl: NodeIndex) ?struct { start: u32, end: u32 } {
+        const c = self.ensureChecker() orelse return null;
+        if (c.ast_ref.nodeTag(decl) != .ts_interface_decl) return null;
+        const d = c.ast_ref.nodeData(decl);
+        const id = c.ast_ref.extraData(ast_mod.InterfaceData, @intFromEnum(d.lhs));
+        return .{ .start = id.body_start, .end = id.body_end };
+    }
+
     /// True when the type id has a property named `prop`.  Walks
     /// union/intersection composites.
     pub fn typeIdHasProperty(self: *const LintContext, id: tymod.TypeId, prop: []const u8) bool {
