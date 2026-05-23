@@ -1555,21 +1555,59 @@ fn checkInheritedMethods(node: NodeIndex, ctx: *const LintContext) void {
     for (ctx.ast.extra_data[bs..be]) |raw| {
         const m: NodeIndex = @enumFromInt(raw);
         const mt = ctx.nodeTag(m);
-        if (mt != .method_def and mt != .computed_method_def) continue;
-        const md_data = ctx.nodeData(m);
-        if (md_data.lhs == .none or ctx.nodeTag(md_data.lhs) != .identifier) continue;
-        const name = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
-        const method_data = ctx.extraData(ast.MethodData, @intFromEnum(md_data.rhs));
-        if ((method_data.modifiers & ast.ModifierBit.@"static") != 0) continue;
-        const is_async = (method_data.modifiers & ast.ModifierBit.@"async") != 0;
-        const ret_is_promise = annotationContainsPromise(method_data.return_type, ctx);
+        // Method definitions and accessor / regular property fields
+        // that hold a function-typed value or annotation.
+        var name: []const u8 = "";
+        var method_span_helper: ast.MethodData = std.mem.zeroes(ast.MethodData);
+        var is_async = false;
+        var ret_is_promise = false;
+        var is_field = false;
+        if (mt == .method_def or mt == .computed_method_def) {
+            const md_data = ctx.nodeData(m);
+            if (md_data.lhs == .none or ctx.nodeTag(md_data.lhs) != .identifier) continue;
+            name = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
+            method_span_helper = ctx.extraData(ast.MethodData, @intFromEnum(md_data.rhs));
+            if ((method_span_helper.modifiers & ast.ModifierBit.@"static") != 0) continue;
+            is_async = (method_span_helper.modifiers & ast.ModifierBit.@"async") != 0;
+            ret_is_promise = annotationContainsPromise(method_span_helper.return_type, ctx);
+        } else if (mt == .property_def or mt == .computed_property_def) {
+            is_field = true;
+            const pd_data = ctx.nodeData(m);
+            if (pd_data.lhs == .none or ctx.nodeTag(pd_data.lhs) != .identifier) continue;
+            name = ctx.tokenText(ctx.nodeMainToken(pd_data.lhs));
+            // Skip static fields — they don't override an instance member.
+            if (fieldIsStatic(m, ctx)) continue;
+            const pd = ctx.extraData(ast.PropertyData, @intFromEnum(pd_data.rhs));
+            // Property initializer is an async/arrow returning a Promise?
+            if (pd.value != .none) {
+                const vt = ctx.nodeTag(pd.value);
+                if (vt == .async_arrow_fn) {
+                    is_async = true;
+                }
+                if (vt == .arrow_fn or vt == .async_arrow_fn) {
+                    const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ctx.nodeData(pd.value).lhs));
+                    ret_is_promise = annotationContainsPromise(ad.return_type, ctx);
+                } else if (vt == .fn_expr or vt == .async_fn_expr) {
+                    const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(pd.value).lhs));
+                    if (vt == .async_fn_expr) is_async = true;
+                    ret_is_promise = annotationContainsPromise(fd.return_type, ctx);
+                }
+            }
+            // Explicit annotation on the field: `accessor setThing: () => Promise<void>`.
+            if (!ret_is_promise and pd.type_annotation != .none) {
+                ret_is_promise = annotationFunctionReturnsPromise(pd.type_annotation, ctx);
+            }
+        } else {
+            continue;
+        }
         if (!is_async and !ret_is_promise) continue;
         // Check the extends clause first, then implements.
+        const report_span = if (is_field) fieldFullSpan(m, ctx) else classMemberFullSpan(m, method_span_helper, ctx);
         var fired = false;
         if (has_extends) {
             if (supeRefName(cd.super_class, ctx)) |super_name| {
                 if (superclassMethodIsVoid(cd.super_class, name, ctx)) {
-                    ctx.reportSpanWithMessageIdAndData(classMemberFullSpan(m, method_data, ctx), "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
+                    ctx.reportSpanWithMessageIdAndData(report_span, "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
                         .{ .key = "heritageTypeName", .val = super_name },
                     });
                     fired = true;
@@ -1583,7 +1621,7 @@ fn checkInheritedMethods(node: NodeIndex, ctx: *const LintContext) void {
                 const tok: ast.TokenIndex = raw_tok;
                 const heritage_name = ctx.tokenText(tok);
                 if (heritageMethodIsVoid(heritage_name, name, ctx)) {
-                    ctx.reportSpanWithMessageIdAndData(classMemberFullSpan(m, method_data, ctx), "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
+                    ctx.reportSpanWithMessageIdAndData(report_span, "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
                         .{ .key = "heritageTypeName", .val = heritage_name },
                     });
                     fired = true;
@@ -1594,13 +1632,93 @@ fn checkInheritedMethods(node: NodeIndex, ctx: *const LintContext) void {
         if (fired) continue;
         for (src_impls) |heritage_name| {
             if (heritageMethodIsVoid(heritage_name, name, ctx)) {
-                ctx.reportSpanWithMessageIdAndData(classMemberFullSpan(m, method_data, ctx), "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
+                ctx.reportSpanWithMessageIdAndData(report_span, "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
                     .{ .key = "heritageTypeName", .val = heritage_name },
                 });
                 break;
             }
         }
     }
+}
+
+/// Report span for a class field — extend backward through
+/// `abstract` / `accessor` / `readonly` / access-modifier keywords
+/// that appear immediately before the field's name on the same line
+/// so the diagnostic span matches TSe's report node (the full
+/// MethodDefinition / PropertyDefinition).
+fn fieldFullSpan(m: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+    const Span = @import("../../../parser/span.zig").Span;
+    const base = ctx.nodeSpan(m);
+    const src = ctx.ast.source;
+    if (base.start == 0 or base.start > src.len) return base;
+    // Extend forward to include a trailing `;` so the diagnostic
+    // span lines up with TSe's report node.
+    var end: u32 = base.end;
+    // Skip past closing type-arg brackets and the field's terminating
+    // `;`.  Bounded scan keeps the span on the same line.
+    while (end < src.len) : (end += 1) {
+        const ch = src[end];
+        if (ch == '>') continue;
+        if (ch == ';') { end += 1; break; }
+        if (ch == ' ' or ch == '\t') continue;
+        break;
+    }
+    // Find start of the line containing `base.start`.
+    var i: usize = base.start;
+    while (i > 0 and src[i - 1] != '\n') i -= 1;
+    const line = src[i..base.start];
+    var ws: usize = 0;
+    while (ws < line.len and (line[ws] == ' ' or line[ws] == '\t')) ws += 1;
+    const trimmed = line[ws..];
+    const modifiers = [_][]const u8{ "public", "private", "protected", "abstract", "readonly", "accessor", "override", "declare", "static" };
+    for (modifiers) |kw| {
+        if (trimmed.len >= kw.len + 1 and std.mem.eql(u8, trimmed[0..kw.len], kw)) {
+            return Span{ .start = @intCast(i + ws), .end = end };
+        }
+    }
+    return Span{ .start = base.start, .end = end };
+}
+
+/// True when a class field is declared `static` — we scan the
+/// source between the class body's `{` and the field's start
+/// because the AST stores modifier flags only for methods.
+fn fieldIsStatic(m: NodeIndex, ctx: *const LintContext) bool {
+    const sp = ctx.nodeSpan(m);
+    const src = ctx.ast.source;
+    if (sp.start == 0 or sp.start > src.len) return false;
+    // Look back for the keyword `static` immediately before the
+    // field's name (skipping `public` / `private` / `protected` /
+    // `accessor` / `readonly` and whitespace).  This avoids the need
+    // for a parser-side modifier map.
+    const slice = src[0..sp.start];
+    // Walk back, splitting on whitespace.  Bound the scan to the
+    // current line to avoid stepping into prior fields.
+    var i: usize = slice.len;
+    while (i > 0 and slice[i - 1] != '\n') i -= 1;
+    const line = slice[i..];
+    return std.mem.indexOf(u8, line, "static") != null;
+}
+
+/// True when an annotation describes a function type returning a
+/// Promise-like.  Peels ts_type_annotation and recurses through
+/// union arms.
+fn annotationFunctionReturnsPromise(ann: NodeIndex, ctx: *const LintContext) bool {
+    var ty = ann;
+    if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
+    while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) == .ts_union_type or ctx.nodeTag(ty) == .ts_intersection_type) {
+        const arms = directRange(ty, ctx) orelse return false;
+        for (arms) |raw| {
+            const a: NodeIndex = @enumFromInt(raw);
+            if (annotationFunctionReturnsPromise(a, ctx)) return true;
+        }
+        return false;
+    }
+    if (ctx.nodeTag(ty) == .ts_function_type) {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+        return typeContainsPromiseInner(fd.body, ctx);
+    }
+    return false;
 }
 
 /// Source-scan between `class` keyword and `{` for `implements X, Y` etc.
@@ -1916,21 +2034,84 @@ fn superclassMethodIsVoid(super_ref: NodeIndex, name: []const u8, ctx: *const Li
         for (ctx.ast.extra_data[bs..be]) |raw| {
             const m: NodeIndex = @enumFromInt(raw);
             const mt = ctx.nodeTag(m);
-            if (mt != .method_def and mt != .computed_method_def) continue;
-            const md_data = ctx.nodeData(m);
-            if (md_data.lhs == .none or ctx.nodeTag(md_data.lhs) != .identifier) continue;
-            const mname = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
-            if (!std.mem.eql(u8, mname, name)) continue;
-            const method_data = ctx.extraData(ast.MethodData, @intFromEnum(md_data.rhs));
-            if ((method_data.modifiers & ast.ModifierBit.@"static") != 0) continue;
-            // Void if explicit `: void` OR no async + no Promise return.
-            if (returnTypeIsVoid(method_data.return_type, ctx)) return true;
-            const m_async = (method_data.modifiers & ast.ModifierBit.@"async") != 0;
-            if (!m_async and !annotationContainsPromise(method_data.return_type, ctx)) return true;
+            if (mt == .method_def or mt == .computed_method_def) {
+                const md_data = ctx.nodeData(m);
+                if (md_data.lhs == .none or ctx.nodeTag(md_data.lhs) != .identifier) continue;
+                const mname = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
+                if (!std.mem.eql(u8, mname, name)) continue;
+                const method_data = ctx.extraData(ast.MethodData, @intFromEnum(md_data.rhs));
+                if ((method_data.modifiers & ast.ModifierBit.@"static") != 0) continue;
+                if (returnTypeIsVoid(method_data.return_type, ctx)) return true;
+                const m_async = (method_data.modifiers & ast.ModifierBit.@"async") != 0;
+                if (!m_async and !annotationContainsPromise(method_data.return_type, ctx)) return true;
+                continue;
+            }
+            if (mt == .property_def or mt == .computed_property_def) {
+                if (fieldMatchesVoidReturning(m, name, ctx)) return true;
+            }
         }
         return false;
     }
     return false;
+}
+
+/// True when class field `m` is named `name` and its declared /
+/// initialiser type describes a void-returning function (no
+/// Promise/async).
+fn fieldMatchesVoidReturning(m: NodeIndex, name: []const u8, ctx: *const LintContext) bool {
+    const pd_data = ctx.nodeData(m);
+    if (pd_data.lhs == .none or ctx.nodeTag(pd_data.lhs) != .identifier) return false;
+    const fname = ctx.tokenText(ctx.nodeMainToken(pd_data.lhs));
+    if (!std.mem.eql(u8, fname, name)) return false;
+    const pd = ctx.extraData(ast.PropertyData, @intFromEnum(pd_data.rhs));
+    // Explicit annotation wins.
+    if (pd.type_annotation != .none) {
+        if (annotationFunctionReturnsPromise(pd.type_annotation, ctx)) return false;
+        return annotationFunctionReturnsVoid(pd.type_annotation, ctx);
+    }
+    // Inferred from initialiser.
+    if (pd.value != .none) {
+        const vt = ctx.nodeTag(pd.value);
+        if (vt == .arrow_fn) {
+            const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ctx.nodeData(pd.value).lhs));
+            if (annotationContainsPromise(ad.return_type, ctx)) return false;
+            return returnTypeIsVoid(ad.return_type, ctx);
+        }
+        if (vt == .async_arrow_fn) return false;
+        if (vt == .fn_expr) {
+            const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(pd.value).lhs));
+            if (annotationContainsPromise(fd.return_type, ctx)) return false;
+            return returnTypeIsVoid(fd.return_type, ctx);
+        }
+        if (vt == .async_fn_expr) return false;
+    }
+    return false;
+}
+
+/// True when the annotation describes a function type whose return
+/// type is `void` (peels parens / union / type-alias references).
+fn annotationFunctionReturnsVoid(ann: NodeIndex, ctx: *const LintContext) bool {
+    var ty = ann;
+    if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
+    while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) == .ts_union_type or ctx.nodeTag(ty) == .ts_intersection_type) {
+        const arms = directRange(ty, ctx) orelse return false;
+        var found_void = false;
+        for (arms) |raw| {
+            const a: NodeIndex = @enumFromInt(raw);
+            if (annotationFunctionReturnsPromise(a, ctx)) return false;
+            if (annotationFunctionReturnsVoid(a, ctx)) found_void = true;
+        }
+        return found_void;
+    }
+    if (ctx.nodeTag(ty) == .ts_type_reference) {
+        const name = ctx.tokenText(ctx.nodeMainToken(ty));
+        if (typeAliasBody(name, ctx)) |body| return annotationFunctionReturnsVoid(body, ctx);
+        return false;
+    }
+    if (ctx.nodeTag(ty) != .ts_function_type) return false;
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+    return returnTypeIsVoid(fd.body, ctx);
 }
 
 // ────────────────────────────────────────────────────────────────────
