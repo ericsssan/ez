@@ -694,12 +694,36 @@ fn calleeParamIsVoidFn(
         }
     }
     if (explicit_ann != .none) {
+        // `typeof Foo<Bar>` — peel the typeof and use the operand's
+        // type args as if they were call-site type args on Foo.
+        if (typeofWithTypeArgsParamIsVoidFn(explicit_ann, index, ctx)) return true;
         if (annotationParamIsVoidFnSubst(explicit_ann, index, type_arg_start, type_arg_end, ctx)) return true;
         return annotationParamIsVoidFn(explicit_ann, index, ctx) or
             annotationUnionParamIsVoidFn(explicit_ann, index, ctx);
     }
     if (fn_data_node != .none) {
         const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(fn_data_node).lhs));
+        // Generic function declaration + explicit call-site type args
+        // → build name→node bindings and apply them when checking
+        // the rest-tuple / rest-array element type.
+        if (type_arg_end > type_arg_start and
+            fd.type_params_end > fd.type_params and
+            fd.type_params_end <= ctx.ast.extra_data.len)
+        {
+            var names: [4][]const u8 = undefined;
+            var nodes: [4]NodeIndex = undefined;
+            const tp_slice = ctx.ast.extra_data[fd.type_params..fd.type_params_end];
+            const ta_slice = ctx.ast.extra_data[type_arg_start..type_arg_end];
+            const n = @min(@min(tp_slice.len, ta_slice.len), names.len);
+            var ti: usize = 0;
+            while (ti < n) : (ti += 1) {
+                const tp: NodeIndex = @enumFromInt(tp_slice[ti]);
+                if (ctx.nodeTag(tp) != .ts_type_parameter) continue;
+                names[ti] = ctx.tokenText(ctx.nodeMainToken(tp));
+                nodes[ti] = @enumFromInt(ta_slice[ti]);
+            }
+            if (n > 0 and paramIsVoidFnInSubrangeSubst(fd.params, fd.params_end, index, names[0..n], nodes[0..n], ctx)) return true;
+        }
         return paramIsVoidFnInSubrange(fd.params, fd.params_end, index, ctx);
     }
     if (arrow_data_node != .none) {
@@ -726,6 +750,103 @@ fn paramIsVoidFnInSubrange(params_start: u32, params_end: u32, index: usize, ctx
     const last_id: NodeIndex = @enumFromInt(params_slice[params_slice.len - 1]);
     if (ctx.nodeTag(last_id) != .rest_element) return false;
     return restParamElementVoid(last_id, index, params_slice.len - 1, ctx);
+}
+
+/// Substitution-aware variant of `paramIsVoidFnInSubrange`.  Walks
+/// the param at `index` (or the rest param's element type at that
+/// position), substituting names→nodes in the param's annotation
+/// before the void-returning check.
+fn paramIsVoidFnInSubrangeSubst(
+    params_start: u32,
+    params_end: u32,
+    index: usize,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+) bool {
+    if (params_start >= params_end or params_end > ctx.ast.extra_data.len) return false;
+    const params_slice = ctx.ast.extra_data[params_start..params_end];
+    if (index < params_slice.len) {
+        const param_id: NodeIndex = @enumFromInt(params_slice[index]);
+        if (ctx.nodeTag(param_id) == .rest_element) {
+            return restParamElementVoidSubst(param_id, index, index, names, nodes, ctx);
+        }
+        const ann = paramAnnotation(param_id, ctx);
+        if (ann == .none) return false;
+        return unionAwareVoidReturningFn(substituteTypeRef(ann, names, nodes, ctx), ctx);
+    }
+    if (params_slice.len == 0) return false;
+    const last_id: NodeIndex = @enumFromInt(params_slice[params_slice.len - 1]);
+    if (ctx.nodeTag(last_id) != .rest_element) return false;
+    return restParamElementVoidSubst(last_id, index, params_slice.len - 1, names, nodes, ctx);
+}
+
+fn restParamElementVoidSubst(
+    rest_node: NodeIndex,
+    arg_index: usize,
+    rest_index: usize,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+) bool {
+    const rd = ctx.nodeData(rest_node);
+    if (rd.rhs == .none) return false;
+    var ty = rd.rhs;
+    if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
+    while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    // T[] → unwrap → substitute T → check.
+    if (ctx.nodeTag(ty) == .ts_array_type) {
+        var inner = ctx.nodeData(ty).lhs;
+        while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+        // (T | string)[] — walk union members one at a time so we
+        // don't have to substitute deep into the AST.
+        if (ctx.nodeTag(inner) == .ts_union_type) {
+            const arms = directRange(inner, ctx) orelse return false;
+            var any_void = false;
+            for (arms) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                const sub = substituteTypeRef(m, names, nodes, ctx);
+                if (typeIsPromiseReturningFn(sub, ctx)) return false;
+                if (typeIsVoidReturningFn(sub, ctx)) any_void = true;
+            }
+            return any_void;
+        }
+        const sub = substituteTypeRef(inner, names, nodes, ctx);
+        return unionAwareVoidReturningFn(sub, ctx);
+    }
+    // (T | string)[] / Array<T | string>.  Walk to a union/array
+    // element, substitute and check.
+    if (ctx.nodeTag(ty) == .ts_tuple_type) {
+        const arms = directRange(ty, ctx) orelse return false;
+        const offset = arg_index - rest_index;
+        if (offset >= arms.len) return false;
+        const elem: NodeIndex = @enumFromInt(arms[offset]);
+        const sub = substituteTypeRef(elem, names, nodes, ctx);
+        return unionAwareVoidReturningFn(sub, ctx);
+    }
+    // Union member case via the existing helper after substituting
+    // the tuple/array element.  For `(T | string)[]` we walk inner.
+    return false;
+}
+
+/// Wrapper around `typeIsVoidReturningFnInner` that, when the given
+/// node is a union, walks members and (for any function-shaped
+/// arm) checks via the void-returning-fn test.
+fn unionAwareVoidReturningFn(ty: NodeIndex, ctx: *const LintContext) bool {
+    var n = ty;
+    while (ctx.nodeTag(n) == .ts_parenthesized_type) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .ts_union_type) {
+        const arms = directRange(n, ctx) orelse return false;
+        var any_void = false;
+        for (arms) |raw| {
+            const m: NodeIndex = @enumFromInt(raw);
+            if (typeIsPromiseReturningFn(m, ctx)) return false;
+            if (typeIsVoidReturningFnInner(m, ctx)) any_void = true;
+        }
+        return any_void;
+    }
+    return typeIsVoidReturningFnInner(n, ctx);
 }
 
 fn restParamElementVoid(rest_node: NodeIndex, arg_index: usize, rest_index: usize, ctx: *const LintContext) bool {
@@ -784,6 +905,41 @@ fn annotationUnionParamIsVoidFn(ann: NodeIndex, index: usize, ctx: *const LintCo
 
 /// For an explicit function-type annotation like `(a, b: () => void) => any`,
 /// check whether parameter `index` expects a void-returning function.
+/// Handle `typeof X<Y>` annotations on the callee — find X's
+/// declared generic-function annotation and use the operand's type
+/// args as the binding source.  Mirrors what `f<Y>(...)` does at
+/// the call site, but the type args live inside the annotation
+/// rather than the call.
+fn typeofWithTypeArgsParamIsVoidFn(ann: NodeIndex, index: usize, ctx: *const LintContext) bool {
+    var ty = ann;
+    if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
+    while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) != .ts_typeof_type and ctx.nodeTag(ty) != .ts_type_query) return false;
+    const operand = ctx.nodeData(ty).lhs;
+    if (operand == .none or ctx.nodeTag(operand) != .ts_type_reference) return false;
+    const op_data = ctx.nodeData(operand);
+    if (op_data.rhs == .none) return false;
+    const arg_range = ctx.extraData(ast.SubRange, @intFromEnum(op_data.rhs));
+    if (arg_range.start >= arg_range.end) return false;
+    // Find the operand's value declaration's annotation.
+    const name = ctx.tokenText(ctx.nodeMainToken(operand));
+    const tree = ctx.ast;
+    const total: u32 = @intCast(tree.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (ctx.nodeTag(ni) != .declarator) continue;
+        const d = ctx.nodeData(ni);
+        if (d.lhs == .none or ctx.nodeTag(d.lhs) != .identifier) continue;
+        const dn = ctx.tokenText(ctx.nodeMainToken(d.lhs));
+        if (!std.mem.eql(u8, dn, name)) continue;
+        const bd = ctx.nodeData(d.lhs);
+        if (bd.rhs == .none or ctx.nodeTag(bd.rhs) != .ts_type_annotation) return false;
+        return annotationParamIsVoidFnSubst(bd.rhs, index, arg_range.start, arg_range.end, ctx);
+    }
+    return false;
+}
+
 /// `annotationParamIsVoidFn` variant that applies type-argument
 /// substitution from the call site (`f<T>(...)`) before checking the
 /// Nth param's annotation.  Lets `<T extends ...>(fn: T) => T` see
@@ -1653,15 +1809,36 @@ fn fieldFullSpan(m: NodeIndex, ctx: *const LintContext) @import("../../../parser
     if (base.start == 0 or base.start > src.len) return base;
     // Extend forward to include a trailing `;` so the diagnostic
     // span lines up with TSe's report node.
+    // Start the forward walk from MAX(base.end, value-node end) —
+    // the parser's max_tok for property_def doesn't cover the value
+    // expression for class fields with arrow-/fn-expression
+    // initialisers, so we add the value node's own end explicitly.
     var end: u32 = base.end;
-    // Skip past closing type-arg brackets and the field's terminating
-    // `;`.  Bounded scan keeps the span on the same line.
+    const pd_data = ctx.nodeData(m);
+    if (pd_data.rhs != .none) {
+        const pd = ctx.extraData(ast.PropertyData, @intFromEnum(pd_data.rhs));
+        if (pd.value != .none) {
+            const val_end = ctx.nodeSpan(pd.value).end;
+            if (val_end > end) end = val_end;
+        }
+        if (pd.type_annotation != .none) {
+            const ann_end = ctx.nodeSpan(pd.type_annotation).end;
+            if (ann_end > end) end = ann_end;
+        }
+    }
+    // Then walk past the trailing `;` if present, balancing braces
+    // in case the value's max_tok also ended mid-body.
+    var depth: i32 = 0;
     while (end < src.len) : (end += 1) {
         const ch = src[end];
-        if (ch == '>') continue;
+        if (ch == '{') { depth += 1; continue; }
+        if (ch == '}') {
+            if (depth == 0) break;
+            depth -= 1;
+            continue;
+        }
+        if (depth > 0) continue;
         if (ch == ';') { end += 1; break; }
-        if (ch == ' ' or ch == '\t') continue;
-        break;
     }
     // Find start of the line containing `base.start`.
     var i: usize = base.start;
