@@ -508,7 +508,7 @@ pub const all_rules = .{
     // no_eq_null, // hand-written — disabled
     // no_extend_native, // hand-written — disabled
     // no_extra_bind, // hand-written — disabled
-    // no_extra_boolean_cast, // runner >> native (67%, missing enforceForLogicalOperands option); fall back
+    no_extra_boolean_cast,
     no_floating_decimal,
     no_iterator,
     // no_labels, // hand-written — disabled
