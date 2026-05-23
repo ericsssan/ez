@@ -400,6 +400,12 @@ pub const LintContext = struct {
         return c.resolveTypeNode(ty_node);
     }
 
+    /// True when `name` was declared as a TS enum in the source file.
+    pub fn typeNameIsEnum(self: *const LintContext, name: []const u8) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.enum_kinds.get(name) != null;
+    }
+
     /// True when `ty_node` is a `ts_type_reference` to a TS type parameter
     /// in scope (e.g. `T` inside `function f<T>(...)`).  Used by
     /// no-unsafe-type-assertion to fire the type-parameter-specific

@@ -429,6 +429,10 @@ pub inline fn regexAllowed(prev: Tag) bool {
         .ampersand_ampersand, .pipe_pipe, .question_question,
         .kw_return, .kw_typeof, .kw_void, .kw_delete, .kw_throw,
         .kw_new, .kw_in, .kw_instanceof, .kw_await, .kw_case,
+        // Inside a template-literal interpolation: `${/regex/}` — after
+        // `${` (template_head) and `}${` boundaries (template_middle),
+        // the next token starts an expression, so a regex is allowed.
+        .template_head, .template_middle,
         => true,
         else => false,
     };

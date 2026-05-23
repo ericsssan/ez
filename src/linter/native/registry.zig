@@ -309,6 +309,7 @@ const ts_await_thenable = @import("typescript/await_thenable.zig");
 const ts_no_for_in_array = @import("typescript/no_for_in_array.zig");
 const ts_only_throw_error = @import("typescript/only_throw_error.zig");
 const ts_no_base_to_string = @import("typescript/no_base_to_string.zig");
+const ts_no_unnecessary_template_expression = @import("typescript/no_unnecessary_template_expression.zig");
 const ts_prefer_promise_reject_errors = @import("typescript/prefer_promise_reject_errors.zig");
 const ts_no_meaningless_void_operator = @import("typescript/no_meaningless_void_operator.zig");
 const ts_require_await = @import("typescript/require_await.zig");
@@ -664,6 +665,7 @@ pub const all_rules = .{
     ts_no_for_in_array,
     ts_only_throw_error,
     ts_no_base_to_string,
+    ts_no_unnecessary_template_expression,
     ts_prefer_promise_reject_errors,
     ts_no_meaningless_void_operator,
     ts_require_await,
