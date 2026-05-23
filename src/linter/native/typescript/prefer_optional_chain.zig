@@ -1071,6 +1071,12 @@ fn sameExpr(a: NodeIndex, b: NodeIndex, ctx: *const LintContext) bool {
     }
     if (xt == .this_expr) return true;
     if (xt == .import_meta or xt == .new_target) return true;
+    if (xt == .await_expr) {
+        // TSe treats two `await X` expressions as referencing the
+        // same value for chain-rewrite purposes (the rewrite evaluates
+        // the await once and reuses).  Match on the awaited operand.
+        return sameExpr(ctx.nodeData(x).lhs, ctx.nodeData(y).lhs, ctx);
+    }
     if (xt == .member_expr) {
         const xd = ctx.nodeData(x);
         const yd = ctx.nodeData(y);
