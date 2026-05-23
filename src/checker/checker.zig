@@ -897,6 +897,21 @@ pub const Checker = struct {
     /// signatures are out of scope (they need separate representation
     /// in our Type model).  Index signatures cause the property lookup
     /// to fall back to "we don't know" — equivalent to unknown.
+    /// Source-scan helper: is there a `?` between the end of `name_node`
+    /// and the next colon/lparen/lbrace?  Property signatures lose the
+    /// optional marker during parse, so we recover it here.
+    fn propertyHasOptionalMarker(self: *Checker, name_node: NodeIndex) bool {
+        const span = self.ast_ref.nodeSpan(name_node);
+        const src = self.ast_ref.source;
+        var i: usize = span.end;
+        while (i < src.len) : (i += 1) {
+            const c = src[i];
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') continue;
+            return c == '?';
+        }
+        return false;
+    }
+
     fn resolveTypeLiteral(self: *Checker, ty_node: NodeIndex) TypeId {
         // Members range stored directly in lhs/rhs — see directRange comment.
         const data = self.ast_ref.nodeData(ty_node);
@@ -928,7 +943,11 @@ pub const Checker = struct {
                 const ty_inner = self.ast_ref.nodeData(member_data.rhs).lhs;
                 prop_ty = self.resolveTypeNode(ty_inner);
             }
-            props_buf[prop_count] = .{ .name = name, .type_id = prop_ty };
+            // Detect the `?` optional marker by scanning between the name's
+            // end and the next significant token.  The parser eats `?`
+            // without recording it, so we recover the flag from source.
+            const optional = propertyHasOptionalMarker(self, name_node);
+            props_buf[prop_count] = .{ .name = name, .type_id = prop_ty, .optional = optional };
             prop_count += 1;
         }
         const list = self.store.appendObjectProps(props_buf[0..prop_count]) catch return tymod.ID_UNKNOWN;
@@ -1102,7 +1121,11 @@ pub const Checker = struct {
         // common shapes and map them to the corresponding TS keyword.
         if (name.len > 0) switch (name[0]) {
             '\'', '"', '`' => return tymod.ID_STRING,
-            '0'...'9' => return tymod.ID_NUMBER,
+            // Numeric literal types: `0n` (bigint), `0`/`1.5` (number).
+            '0'...'9' => {
+                if (name[name.len - 1] == 'n') return tymod.ID_BIGINT;
+                return tymod.ID_NUMBER;
+            },
             else => {},
         };
         if (std.mem.eql(u8, name, "true") or std.mem.eql(u8, name, "false")) return tymod.ID_BOOLEAN;
@@ -1662,12 +1685,24 @@ pub const Checker = struct {
         }
         const callee_ty = self.typeOf(callee);
         if (tymod.isAny(&self.store, callee_ty)) return tymod.ID_ANY;
-        const t = self.store.get(callee_ty);
+        // Optional-chain calls (`fn?.()`) strip the nullish part of the
+        // callee for signature lookup, then re-add `| undefined` to the
+        // result (the short-circuit case).
+        const node_tag = self.ast_ref.nodeTag(node);
+        const is_optional_call = node_tag == .optional_call_expr;
+        const lookup_ty = if (is_optional_call) self.stripNullishForLookup(callee_ty) else callee_ty;
+        const t = self.store.get(lookup_ty);
+        var result: TypeId = tymod.ID_UNKNOWN;
         if (t.kind == .function_t) {
             const sigs = self.store.signaturesOf(t.signatures);
-            if (sigs.len > 0) return sigs[0].return_type;
+            if (sigs.len > 0) result = sigs[0].return_type;
         }
-        return tymod.ID_UNKNOWN;
+        if (is_optional_call and !result.eq(tymod.ID_UNKNOWN)) {
+            if (self.typeContainsNullish(callee_ty) and !self.typeContainsUndefined(result)) {
+                return self.store.unionOf(&.{ result, tymod.ID_UNDEFINED }) catch result;
+            }
+        }
+        return result;
     }
 
     /// For `new X<T>()` / `new X()`: peel ts_instantiation_expr / new_expr
@@ -1891,10 +1926,12 @@ pub const Checker = struct {
         const obj_ty = self.typeOf(data.lhs);
         if (tymod.isAny(&self.store, obj_ty)) return tymod.ID_ANY;
         const tag = self.ast_ref.nodeTag(node);
+        const is_optional = tag == .optional_member_expr or tag == .optional_computed_member_expr;
         // Computed member: `obj[idx]`.  Handles array/tuple element access
         // and string-literal key indexing into object types.
         if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
-            return self.inferComputedMember(obj_ty, data.rhs, data.lhs);
+            const inner = self.inferComputedMember(obj_ty, data.rhs, data.lhs);
+            return self.maybeAddOptionalUndefined(inner, obj_ty, is_optional);
         }
         const prop_name: []const u8 = switch (tag) {
             .member_expr, .optional_member_expr => blk: {
@@ -1905,13 +1942,61 @@ pub const Checker = struct {
             else => return tymod.ID_UNKNOWN,
         };
         if (prop_name.len == 0) return tymod.ID_UNKNOWN;
-        // Look up the property on the apparent type — TS substitutes
-        // type parameters with their constraints when accessing members
-        // (the "apparent type"), which lets `t.foo()` where `t: T
-        // extends Bar` resolve to `Bar.foo`.  We walk through union
-        // members similarly to TS (every member contributes its
-        // property type, joined by union).
-        return self.memberOnApparentType(obj_ty, prop_name, data.lhs);
+        // For `obj?.prop` where obj's type contains null/undefined, strip the
+        // nullish part for property lookup (`{a?:T} | undefined`'s `.a` is
+        // `T | undefined`, not unknown).
+        const lookup_ty = if (is_optional) self.stripNullishForLookup(obj_ty) else obj_ty;
+        const inner = self.memberOnApparentType(lookup_ty, prop_name, data.lhs);
+        return self.maybeAddOptionalUndefined(inner, obj_ty, is_optional);
+    }
+
+    fn stripNullishForLookup(self: *Checker, ty: TypeId) TypeId {
+        const t = self.store.get(ty);
+        if (t.kind != .union_t) return ty;
+        var buf: [16]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.idsOf(t.list_data)) |m| {
+            if (m.eq(tymod.ID_NULL) or m.eq(tymod.ID_UNDEFINED) or m.eq(tymod.ID_VOID)) continue;
+            if (n >= buf.len) return ty;
+            buf[n] = m;
+            n += 1;
+        }
+        if (n == 0) return ty;
+        if (n == 1) return buf[0];
+        return self.store.unionOf(buf[0..n]) catch ty;
+    }
+
+    fn maybeAddOptionalUndefined(self: *Checker, inner: TypeId, obj_ty: TypeId, is_optional: bool) TypeId {
+        if (!is_optional) return inner;
+        // For `?.` access, if the object's type was nullish, the result
+        // is `inner | undefined` (short-circuits to undefined).
+        if (!self.typeContainsNullish(obj_ty)) return inner;
+        if (self.typeContainsUndefined(inner)) return inner;
+        return self.store.unionOf(&.{ inner, tymod.ID_UNDEFINED }) catch inner;
+    }
+
+    fn typeContainsNullish(self: *Checker, id: TypeId) bool {
+        return self.typeContainsNull(id) or self.typeContainsUndefined(id);
+    }
+
+    fn typeContainsNull(self: *Checker, id: TypeId) bool {
+        if (id.eq(tymod.ID_NULL)) return true;
+        const t = self.store.get(id);
+        if (t.kind == .null_t) return true;
+        if (t.kind == .union_t) {
+            for (self.store.idsOf(t.list_data)) |m| if (self.typeContainsNull(m)) return true;
+        }
+        return false;
+    }
+
+    fn typeContainsUndefined(self: *Checker, id: TypeId) bool {
+        if (id.eq(tymod.ID_UNDEFINED) or id.eq(tymod.ID_VOID)) return true;
+        const t = self.store.get(id);
+        if (t.kind == .undefined_t or t.kind == .void_t) return true;
+        if (t.kind == .union_t) {
+            for (self.store.idsOf(t.list_data)) |m| if (self.typeContainsUndefined(m)) return true;
+        }
+        return false;
     }
 
     /// Compute the type of `obj[key]` access.  For arrays/tuples returns
@@ -2042,7 +2127,12 @@ pub const Checker = struct {
         }
         if (obj.kind == .object_t) {
             for (self.store.propsOf(obj.object_props)) |p| {
-                if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
+                if (std.mem.eql(u8, p.name, prop_name)) {
+                    if (p.optional) {
+                        return self.store.unionOf(&.{ p.type_id, tymod.ID_UNDEFINED }) catch p.type_id;
+                    }
+                    return p.type_id;
+                }
             }
         }
         // Primitive apparent types: number / string / boolean have
