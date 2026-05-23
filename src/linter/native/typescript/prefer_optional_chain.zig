@@ -47,7 +47,7 @@ pub const meta = RuleMeta{
 
 pub const relevant_tags = [_]Node.Tag{
     .member_expr, .computed_member_expr,
-    .logical_and,
+    .logical_and, .logical_or,
 };
 
 pub const needs_semantic = true;
@@ -57,6 +57,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     switch (tag) {
         .member_expr, .computed_member_expr => checkMember(node, ctx),
         .logical_and => checkAndChain(node, ctx),
+        .logical_or => checkOrChain(node, ctx),
         else => {},
     }
 }
@@ -118,6 +119,107 @@ fn isNullLiteralNode(node: NodeIndex, ctx: *const LintContext) bool {
     var n = node;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     return ctx.nodeTag(n) == .null_literal;
+}
+
+/// Subset of `chainOperandSubject` that's valid as the FIRST
+/// operand — only checks that establish non-nullishness on their
+/// own qualify:
+///   * bare identifier / member access (truthy → non-nullish)
+///   * loose `X != null` / `X != undefined` (excludes both)
+/// Strict `!==` checks and `typeof X !== 'undefined'` alone don't
+/// qualify because they leave one half of the nullish union still
+/// possible.
+fn firstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .not_equal) {
+        const d = ctx.nodeData(n);
+        if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
+        if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
+        return null;
+    }
+    return switch (tag) {
+        .identifier, .this_expr,
+        .member_expr, .computed_member_expr,
+        .optional_member_expr, .optional_computed_member_expr,
+        .call_expr, .optional_call_expr,
+        => n,
+        else => null,
+    };
+}
+
+/// Return the expression a chain-operand (other than the first)
+/// confirms.  Accepted forms:
+///   * bare identifier / member access      — truthy check
+///   * `X != null` / `X != undefined`       — loose nullish check
+///   * `X !== null` / `X !== undefined`     — strict (covers one side)
+///   * `typeof X !== 'undefined'`           — undefined exclusion
+///   * `null != X` / yoda variants          — same as above with sides swapped
+/// Returns `null` if the node doesn't look like a chain operand we
+/// can interpret.
+fn chainOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    // Comparisons.
+    if (tag == .not_equal or tag == .strict_not_equal) {
+        const d = ctx.nodeData(n);
+        // typeof X !== 'undefined'
+        if (typeofUndefinedSubject(d.lhs, d.rhs, ctx)) |x| return x;
+        if (typeofUndefinedSubject(d.rhs, d.lhs, ctx)) |x| return x;
+        if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
+        if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
+        return null;
+    }
+    // Plain access / identifier → confirms the value is truthy.
+    return switch (tag) {
+        .identifier, .this_expr,
+        .member_expr, .computed_member_expr,
+        .optional_member_expr, .optional_computed_member_expr,
+        .call_expr, .optional_call_expr,
+        => n,
+        else => null,
+    };
+}
+
+/// For `typeof X !== 'undefined'` with `typeof_expr` and string
+/// literal `'undefined'`, return the subject `X`.
+fn typeofUndefinedSubject(side_a: NodeIndex, side_b: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    var a = side_a;
+    while (ctx.nodeTag(a) == .grouping_expr) a = ctx.nodeData(a).lhs;
+    if (ctx.nodeTag(a) != .typeof_expr) return null;
+    var b = side_b;
+    while (ctx.nodeTag(b) == .grouping_expr) b = ctx.nodeData(b).lhs;
+    if (ctx.nodeTag(b) != .string_literal) return null;
+    const sp = ctx.nodeSpan(b);
+    const src = ctx.ast.source;
+    if (sp.end > src.len) return null;
+    const raw = src[sp.start..sp.end];
+    if (raw.len < 2) return null;
+    const inner = raw[1 .. raw.len - 1];
+    if (!std.mem.eql(u8, inner, "undefined")) return null;
+    return ctx.nodeData(a).lhs;
+}
+
+/// True when `next` is a strict suffix-extension of `prev` — `prev`
+/// equals an inner-prefix of `next` and `next` itself is at least
+/// one access step deeper (member / computed / call).
+fn isPrefixExtension(prev: NodeIndex, next: NodeIndex, ctx: *const LintContext) bool {
+    if (sameExpr(prev, next, ctx)) return false;
+    var cur = next;
+    while (true) {
+        const t = ctx.nodeTag(cur);
+        switch (t) {
+            .member_expr, .computed_member_expr,
+            .optional_member_expr, .optional_computed_member_expr,
+            .call_expr, .optional_call_expr, .new_expr,
+            .ts_non_null_expr, .grouping_expr,
+            => cur = ctx.nodeData(cur).lhs,
+            else => return false,
+        }
+        if (sameExpr(prev, cur, ctx)) return true;
+    }
 }
 
 /// If `node` is a nullish-presence check that excludes BOTH null
@@ -209,16 +311,28 @@ fn checkAndChain(node: NodeIndex, ctx: *const LintContext) void {
     // TSe doesn't rewrite `this && this.x` because `this` is never
     // nullish in normal code, so `this?.x` would be redundant.
     if (ctx.nodeTag(operands_buf[0]) == .this_expr) return;
-    // The first operand might itself be a nullish-check
-    // (`foo != null && foo.bar`) — in that case the EXPRESSION
-    // being checked drives the rest of the chain.
+    // First operand must establish a non-nullish baseline by itself
+    // — either a plain identifier/access (truthy check) or a LOOSE
+    // `X != null` / `X != undefined`.  Strict `!== null` alone
+    // would leave the chain still possibly-undefined (and vice
+    // versa), so chains beginning with strict checks aren't safe
+    // unless a later operand fills in the other half.
     const first = operands_buf[0];
+    var prev = firstOperandSubject(first, ctx) orelse return;
+    if (ctx.nodeTag(prev) == .this_expr) return;
     var k: usize = 1;
-    var prev = nullishCheckSubject(first, ctx) orelse first;
-    while (k < n_ops) : (k += 1) {
+    while (k + 1 < n_ops) : (k += 1) {
         const op = unwrapGrouping(operands_buf[k], ctx);
-        if (!isExtensionOf(prev, op, ctx)) return;
-        prev = op;
+        const subj = chainOperandSubject(op, ctx) orelse return;
+        if (sameExpr(prev, subj, ctx)) continue; // same-depth re-check
+        if (!isPrefixExtension(prev, subj, ctx)) return;
+        prev = subj;
+    }
+    // Last operand may be a plain access (extends prev) or a
+    // comparison `prev.path OP X` that meets the safe-RHS gate.
+    {
+        const last_op = unwrapGrouping(operands_buf[n_ops - 1], ctx);
+        if (!isExtensionOf(prev, last_op, ctx)) return;
     }
     // Private fields (`foo.#bar`) are skipped — TSe's rewriter
     // doesn't translate `?.` over them safely.
@@ -353,6 +467,145 @@ fn chainTouchesPrivateField(operands: []const NodeIndex, ctx: *const LintContext
         }
     }
     return false;
+}
+
+// X.path === undefined OR !X chains: `!foo || foo.bar OP X` /
+// `foo == null || foo.bar OP X`.  Mirrors `checkAndChain` with
+// inverted semantics — the rewrite is safe when `undefined OP X`
+// evaluates TRUTHY (matches the `!foo || ...` early-true branch).
+fn checkOrChain(node: NodeIndex, ctx: *const LintContext) void {
+    const parent = ctx.parentOf(node);
+    if (parent != .none and ctx.nodeTag(parent) == .logical_or) return;
+    var operands_buf: [16]NodeIndex = undefined;
+    var n_ops: usize = 0;
+    var cur = node;
+    while (ctx.nodeTag(cur) == .logical_or and n_ops < operands_buf.len - 1) {
+        const d = ctx.nodeData(cur);
+        operands_buf[n_ops] = d.rhs;
+        n_ops += 1;
+        cur = d.lhs;
+        while (ctx.nodeTag(cur) == .grouping_expr) cur = ctx.nodeData(cur).lhs;
+    }
+    operands_buf[n_ops] = cur;
+    n_ops += 1;
+    // Reverse for left-to-right order.
+    var i: usize = 0;
+    var j: usize = n_ops - 1;
+    while (i < j) : ({ i += 1; j -= 1; }) {
+        const tmp = operands_buf[i];
+        operands_buf[i] = operands_buf[j];
+        operands_buf[j] = tmp;
+    }
+    if (n_ops < 2) return;
+    // First operand must be a "presence-negation" — `!X`, `X == null`,
+    // or `X == undefined` — establishing that the chain proceeds
+    // only when X is non-nullish.
+    const first = operands_buf[0];
+    var prev = orFirstOperandSubject(first, ctx) orelse return;
+    if (ctx.nodeTag(prev) == .this_expr) return;
+    // Middle operands (between presence-checks and final access)
+    // can be more presence-checks at the same/extended depth.
+    var k: usize = 1;
+    while (k + 1 < n_ops) : (k += 1) {
+        const op = unwrapGrouping(operands_buf[k], ctx);
+        const subj = orMiddleOperandSubject(op, ctx) orelse return;
+        if (sameExpr(prev, subj, ctx)) continue;
+        if (!isPrefixExtension(prev, subj, ctx)) return;
+        prev = subj;
+    }
+    // Last operand: either a final access (rare for `||` chains)
+    // or a comparison whose `undefined OP X` is truthy.
+    const last_op = unwrapGrouping(operands_buf[n_ops - 1], ctx);
+    if (!isOrChainLast(prev, last_op, ctx)) return;
+    if (chainTouchesPrivateField(operands_buf[0..n_ops], ctx)) return;
+    // requireNullish / falsy-literal gating still applies — use the
+    // chain's first subject's type.
+    const opts = readOptions(ctx);
+    if (ctx.hasTypeChecker()) {
+        const ty = ctx.typeOfNode(prev);
+        if (!isEligibleNullishOperand(ty, opts, ctx)) return;
+    }
+    ctx.reportWithMessageId(node, "preferOptionalChain");
+}
+
+/// First-operand subjects for `||` chains:
+///   * `!X` (UnaryNot) — confirms X is falsy when truthy
+///   * `X == null` / `X == undefined` — loose null/undef equality
+fn orFirstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) == .logical_not) {
+        var inner = ctx.nodeData(n).lhs;
+        while (ctx.nodeTag(inner) == .grouping_expr) inner = ctx.nodeData(inner).lhs;
+        return switch (ctx.nodeTag(inner)) {
+            .identifier, .this_expr,
+            .member_expr, .computed_member_expr,
+            .optional_member_expr, .optional_computed_member_expr,
+            .call_expr, .optional_call_expr,
+            => inner,
+            else => null,
+        };
+    }
+    if (ctx.nodeTag(n) == .equal) {
+        const d = ctx.nodeData(n);
+        if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
+        if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
+    }
+    return null;
+}
+
+/// Middle-operand subjects for `||` chains.  `X == null` /
+/// `X === undefined` etc. are nullish-checks that confirm a step
+/// in the chain.
+fn orMiddleOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .equal or tag == .strict_equal) {
+        const d = ctx.nodeData(n);
+        if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
+        if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
+        return null;
+    }
+    if (tag == .logical_not) {
+        var inner = ctx.nodeData(n).lhs;
+        while (ctx.nodeTag(inner) == .grouping_expr) inner = ctx.nodeData(inner).lhs;
+        return inner;
+    }
+    return null;
+}
+
+/// True when the OR-chain's last operand is a comparison whose
+/// `undefined OP X` evaluates TRUTHY — bare access doesn't
+/// qualify for `||` chains since `!a || a.b` returns true when
+/// `a` is nullish but the rewrite `a?.b` returns undefined.
+fn isOrChainLast(prev: NodeIndex, last: NodeIndex, ctx: *const LintContext) bool {
+    var cur = last;
+    while (ctx.nodeTag(cur) == .grouping_expr) cur = ctx.nodeData(cur).lhs;
+    const t = ctx.nodeTag(cur);
+    if (t != .equal and t != .strict_equal and t != .not_equal and t != .strict_not_equal) return false;
+    const d = ctx.nodeData(cur);
+    if (isExtensionOf(prev, d.rhs, ctx) and orComparisonRhsAllowed(t, d.lhs, ctx)) return true;
+    if (isExtensionOf(prev, d.lhs, ctx) and orComparisonRhsAllowed(t, d.rhs, ctx)) return true;
+    return false;
+}
+
+/// `undefined OP X` evaluates truthy iff:
+///   * `=== undefined`           — true
+///   * `!== <non-undefined>`     — true
+///   * `== <nullish>`            — true
+///   * `!= <non-nullish>`        — true
+fn orComparisonRhsAllowed(op: Node.Tag, x_node: NodeIndex, ctx: *const LintContext) bool {
+    if (!isKnownConstantValue(x_node, ctx)) return false;
+    const is_undef = isUndefinedNode(x_node, ctx);
+    const is_null = isNullLiteralNode(x_node, ctx);
+    return switch (op) {
+        .strict_equal => is_undef,
+        .strict_not_equal => !is_undef,
+        .equal => is_undef or is_null,
+        .not_equal => !is_undef and !is_null,
+        else => false,
+    };
 }
 
 fn unwrapGrouping(node: NodeIndex, ctx: *const LintContext) NodeIndex {
