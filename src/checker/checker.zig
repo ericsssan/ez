@@ -1422,6 +1422,15 @@ pub const Checker = struct {
         return self.typeInheritsFromNameDepth(id, name, 0);
     }
 
+    /// Same as `typeInheritsFromName` but starts from a name string.
+    /// Resolves `decl_name` via the file's declared-type table, then
+    /// walks its `extends` chain looking for `base_name`.
+    pub fn declaredTypeInheritsFromByName(self: *Checker, decl_name: []const u8, base_name: []const u8) bool {
+        if (std.mem.eql(u8, decl_name, base_name)) return true;
+        const decl = self.type_decl_nodes.get(decl_name) orelse return false;
+        return self.declInheritsFromName(decl, base_name, 0);
+    }
+
     fn typeInheritsFromNameDepth(self: *Checker, id: TypeId, name: []const u8, depth: u8) bool {
         if (depth > 8) return false;
         const t = self.store.get(id);
@@ -1463,11 +1472,19 @@ pub const Checker = struct {
             const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
             if (cd.super_class == .none) return false;
             var sc = cd.super_class;
-            while (self.ast_ref.nodeTag(sc) == .grouping_expr) sc = self.ast_ref.nodeData(sc).lhs;
+            // Peel ts_instantiation_expr (`extends Promise<number>`) and
+            // grouping wrappers.
+            while (true) {
+                const sct = self.ast_ref.nodeTag(sc);
+                if (sct == .grouping_expr or sct == .ts_instantiation_expr) {
+                    sc = self.ast_ref.nodeData(sc).lhs;
+                    continue;
+                }
+                break;
+            }
             if (self.ast_ref.nodeTag(sc) == .identifier) {
                 const parent_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(sc));
                 if (std.mem.eql(u8, parent_name, name)) return true;
-                // Recurse into parent class's extends.
                 if (self.type_decl_nodes.get(parent_name)) |parent_decl| {
                     return self.declInheritsFromName(parent_decl, name, depth + 1);
                 }

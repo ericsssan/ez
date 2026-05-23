@@ -1063,30 +1063,10 @@ fn typeAliasBodyIsPromise(name: []const u8, ctx: *const LintContext) bool {
 }
 
 /// Walk class_decl nodes; if any has the given name AND `extends Promise`
-/// (one hop only), treat the type as Promise-flavored.  Generic args
+/// (transitive), treat the type as Promise-flavored.  Generic args
 /// don't matter for floating detection.
 fn classExtendsPromise(name: []const u8, ctx: *const LintContext) bool {
-    const tree = ctx.ast;
-    const total: u32 = @intCast(tree.nodes.len);
-    var i: u32 = 0;
-    while (i < total) : (i += 1) {
-        const ni: NodeIndex = @enumFromInt(i);
-        if (tree.nodeTag(ni) != .class_decl) continue;
-        const data = tree.nodeData(ni);
-        const cd = tree.extraData(ast.ClassData, @intFromEnum(data.lhs));
-        if (cd.name == .none) continue;
-        const cname = tree.tokenText(tree.nodeMainToken(cd.name));
-        if (!std.mem.eql(u8, cname, name)) continue;
-        if (cd.super_class == .none) return false;
-        // super_class is an expression: identifier, member_expr, or
-        // ts_instantiation_expr (`extends Promise<T>`).  Unwrap to the
-        // base identifier.
-        var sc = cd.super_class;
-        while (tree.nodeTag(sc) == .ts_instantiation_expr) sc = tree.nodeData(sc).lhs;
-        if (tree.nodeTag(sc) != .identifier) return false;
-        return std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(sc)), "Promise");
-    }
-    return false;
+    return ctx.declaredTypeInheritsFrom(name, "Promise");
 }
 
 /// `Promise.resolve(...)`, `Promise.reject(...)`, `Promise.all(...)`, etc.

@@ -155,6 +155,8 @@ fn isFilterCallOnArray(node: NodeIndex, ctx: *const LintContext) bool {
 
 /// Per TSe: every non-nullish union member must be array-like.  Null
 /// and undefined branches are OK (optional-chain narrowing handles them).
+/// `typeIdIsArrayLike` uses any-member semantics for unions, so we
+/// can't just delegate after `typeIdNonNullable`.
 fn typeIsArrayish(id: @import("../../../checker/types.zig").TypeId, ctx: *const LintContext) bool {
     const tymod = @import("../../../checker/types.zig");
     if (ctx.typeIdIsAny(id)) return false;

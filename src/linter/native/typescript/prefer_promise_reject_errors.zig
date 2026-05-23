@@ -454,25 +454,9 @@ fn identifierAliasesPromise(ident: NodeIndex, ctx: *const LintContext) bool {
 }
 
 fn classExtendsPromise(name: []const u8, ctx: *const LintContext) bool {
-    const tree = ctx.ast;
-    const total: u32 = @intCast(tree.nodes.len);
-    var i: u32 = 0;
-    while (i < total) : (i += 1) {
-        const ni: NodeIndex = @enumFromInt(i);
-        if (tree.nodeTag(ni) != .class_decl) continue;
-        const data = tree.nodeData(ni);
-        const cd = tree.extraData(ast.ClassData, @intFromEnum(data.lhs));
-        if (cd.name == .none) continue;
-        if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(cd.name)), name)) continue;
-        if (cd.super_class == .none) return false;
-        var sc = cd.super_class;
-        while (tree.nodeTag(sc) == .ts_instantiation_expr) sc = tree.nodeData(sc).lhs;
-        if (tree.nodeTag(sc) != .identifier) return false;
-        const sname = tree.tokenText(tree.nodeMainToken(sc));
-        if (std.mem.eql(u8, sname, "Promise")) return true;
-        return classExtendsPromise(sname, ctx);
-    }
-    return false;
+    // Use the shared declared-type-inheritance walker.  It handles
+    // both class extends chains and interface extends lists.
+    return ctx.declaredTypeInheritsFrom(name, "Promise");
 }
 
 const ERROR_NAMES = [_][]const u8{

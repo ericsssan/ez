@@ -694,6 +694,9 @@ fn isAwaitable(node: NodeIndex, id: tymod.TypeId, ctx: *const LintContext) bool 
     if (ctx.typeNodeIsPromise(node)) return true;
     // Walk declared annotations / call return / class heritage for the
     // common patterns the no-floating-promises rule already handles.
+    // (typeIdIsThenable would also accept `{ then() {} }` whose `then`
+    // doesn't take callbacks — TSe fires on those, so we can't use it
+    // as a positive fast-path here.)
     return exprIsThenable(node, ctx) or typeIdContainsPromise(id, ctx);
 }
 
@@ -1071,27 +1074,7 @@ fn interfaceExtendsPromise(name: []const u8, ctx: *const LintContext) bool {
 }
 
 fn classExtendsPromise(name: []const u8, ctx: *const LintContext) bool {
-    const tree = ctx.ast;
-    const total: u32 = @intCast(tree.nodes.len);
-    var i: u32 = 0;
-    while (i < total) : (i += 1) {
-        const ni: NodeIndex = @enumFromInt(i);
-        if (tree.nodeTag(ni) != .class_decl) continue;
-        const data = tree.nodeData(ni);
-        const cd = tree.extraData(ast.ClassData, @intFromEnum(data.lhs));
-        if (cd.name == .none) continue;
-        const cname = tree.tokenText(tree.nodeMainToken(cd.name));
-        if (!std.mem.eql(u8, cname, name)) continue;
-        if (cd.super_class == .none) return false;
-        var sc = cd.super_class;
-        while (tree.nodeTag(sc) == .ts_instantiation_expr) sc = tree.nodeData(sc).lhs;
-        if (tree.nodeTag(sc) != .identifier) return false;
-        const sname = tree.tokenText(tree.nodeMainToken(sc));
-        if (std.mem.eql(u8, sname, "Promise")) return true;
-        // Transitive: super may itself extend Promise.
-        return classExtendsPromise(sname, ctx);
-    }
-    return false;
+    return ctx.declaredTypeInheritsFrom(name, "Promise");
 }
 
 /// True when the type-id directly is or contains Promise<T> at any

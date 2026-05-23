@@ -886,6 +886,14 @@ pub const LintContext = struct {
         return c.typeInheritsFromName(id, name);
     }
 
+    /// True when a class/interface named `decl_name` exists in this
+    /// file's scope AND its `extends` chain reaches `base_name`.
+    /// Convenience wrapper for rules that have only a name string.
+    pub fn declaredTypeInheritsFrom(self: *const LintContext, decl_name: []const u8, base_name: []const u8) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.declaredTypeInheritsFromByName(decl_name, base_name);
+    }
+
     /// True when the type id has a property named `prop`.  Walks
     /// union/intersection composites.
     pub fn typeIdHasProperty(self: *const LintContext, id: tymod.TypeId, prop: []const u8) bool {
