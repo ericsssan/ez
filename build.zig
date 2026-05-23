@@ -25,13 +25,6 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run ez");
     run_step.dependOn(&run_cmd.step);
 
-    // zbc (the borrow-check / escape analyzer) lives in its own
-    // repo and gets invoked as a standalone CLI against ez's
-    // sources.  It is NOT compiled in here — pulling it in
-    // transitively dragged ZLS into every `zig build` for no
-    // build-time benefit.  Run `zbc <path>` directly when you
-    // need the borrow check.
-
     // ── Unit tests ───────────────────────────────────────────
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -584,4 +577,3 @@ pub fn build(b: *std.Build) void {
     //   * `ez.node` — NAPI binding (src/cli/napi.zig), consumed by ezlint
     //                 via the standard Node N-API ABI
 }
-
