@@ -744,6 +744,23 @@ pub const LintContext = struct {
     /// For a function/method/constructor type, return the return type
     /// of its first signature.  Returns `ID_UNKNOWN` for non-function
     /// types.
+    /// Three-valued structural assignability check — `.yes` /
+    /// `.no` / `.unknown`.  Useful when consumers need to distinguish
+    /// "definitely-not-assignable" from "can't tell".
+    pub const Assignability = enum { yes, no, unknown };
+    pub fn typeIdAssignableToTriState(
+        self: *const LintContext,
+        from_id: tymod.TypeId,
+        to_id: tymod.TypeId,
+    ) Assignability {
+        const c = self.ensureChecker() orelse return .unknown;
+        return switch (c.simpleAssignablePub(from_id, to_id)) {
+            .yes => Assignability.yes,
+            .no => Assignability.no,
+            .unknown => Assignability.unknown,
+        };
+    }
+
     /// Raw `TypeKind` of an id.  Falls back to `.any` when the checker
     /// isn't available so callers can fold the result into kind-based
     /// dispatch without an extra optional layer.

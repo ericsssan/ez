@@ -1052,7 +1052,10 @@ pub const Checker = struct {
     /// without a full TypeScript-style relation algebra.  Returns
     /// `.unknown` when either side is `any`/`unknown` or the
     /// relation depends on machinery we don't implement.
-    const AssignResult = enum { yes, no, unknown };
+    pub const AssignResult = enum { yes, no, unknown };
+    pub fn simpleAssignablePub(self: *Checker, source: TypeId, target: TypeId) AssignResult {
+        return self.simpleAssignable(source, target);
+    }
     fn simpleAssignable(self: *Checker, source: TypeId, target: TypeId) AssignResult {
         if (source.eq(target)) return .yes;
         if (target.eq(tymod.ID_ANY) or source.eq(tymod.ID_ANY)) return .yes;
@@ -2337,12 +2340,6 @@ pub const Checker = struct {
         }
         const callee_ty = self.typeOf(callee);
         if (tymod.isAny(&self.store, callee_ty)) return tymod.ID_ANY;
-        // Optional-chain calls — `fn?.()` or any call whose callee
-        // participates in an optional chain (e.g. `obj.a?.b.c()` where
-        // `.c()` is non-optional but the chain originated with `?.`).
-        // Strip the nullish part of the callee for signature lookup,
-        // then re-add `| undefined` to the result for the short-circuit
-        // branch — matches TS's chain-propagation semantics.
         const node_tag = self.ast_ref.nodeTag(node);
         const in_optional_chain = node_tag == .optional_call_expr or
             self.calleeIsInOptionalChain(callee);
@@ -2353,12 +2350,174 @@ pub const Checker = struct {
             const sigs = self.store.signaturesOf(t.signatures);
             if (sigs.len > 0) result = sigs[0].return_type;
         }
+        // Generic call-site inference — if the callee is a generic
+        // function declaration in this file, infer its type parameters
+        // from the argument types and substitute them into the
+        // return.
+        if (self.inferGenericReturn(callee, node, result)) |substituted| {
+            result = substituted;
+        }
         if (in_optional_chain and !result.eq(tymod.ID_UNKNOWN)) {
             if (self.typeContainsNullish(callee_ty) and !self.typeContainsUndefined(result)) {
                 return self.store.unionOf(&.{ result, tymod.ID_UNDEFINED }) catch result;
             }
         }
         return result;
+    }
+
+    /// Match argument types against parameter types looking for
+    /// type-parameter references; substitute the inferred bindings
+    /// into `return_ty`.  Returns `null` when the callee isn't a
+    /// generic function declaration we can find, or when there were
+    /// no inferences to make.
+    fn inferGenericReturn(self: *Checker, callee: NodeIndex, call: NodeIndex, return_ty: TypeId) ?TypeId {
+        const fn_decl = self.findCalleeFnDecl(callee) orelse return null;
+        const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(self.ast_ref.nodeData(fn_decl).lhs));
+        if (fd.type_params_end <= fd.type_params) return null;
+        // Collect type-parameter names.
+        var tp_names_buf: [4][]const u8 = undefined;
+        var tp_count: usize = 0;
+        const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+        if (fd.type_params_end <= ext_len) {
+            for (self.ast_ref.extra_data[fd.type_params..fd.type_params_end]) |raw| {
+                if (tp_count >= tp_names_buf.len) break;
+                const tp_node: NodeIndex = @enumFromInt(raw);
+                if (self.ast_ref.nodeTag(tp_node) != .ts_type_parameter) continue;
+                tp_names_buf[tp_count] = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(tp_node));
+                tp_count += 1;
+            }
+        }
+        if (tp_count == 0) return null;
+        // Collect explicit type args from the call (e.g. `id<number>(x)`).
+        var bindings_buf: [4]TypeId = undefined;
+        var bound: usize = 0;
+        while (bound < tp_count) : (bound += 1) bindings_buf[bound] = TypeId.none;
+        // Currently we don't parse explicit type arguments at call
+        // sites — fall back to pure inference from arg types.
+
+        // Walk params + args, matching type-ref names against the
+        // type-parameter names to build bindings.
+        const arg_nodes = self.callArguments(call);
+        if (fd.params_end > ext_len) return null;
+        const params = self.ast_ref.extra_data[fd.params..fd.params_end];
+        var i: usize = 0;
+        while (i < params.len and i < arg_nodes.len) : (i += 1) {
+            const param: NodeIndex = @enumFromInt(params[i]);
+            const param_ty_node = self.paramAnnotationNode(param) orelse continue;
+            const arg_node: NodeIndex = @enumFromInt(arg_nodes[i]);
+            const arg_ty = self.typeOf(arg_node);
+            self.matchTypeParam(param_ty_node, arg_ty, tp_names_buf[0..tp_count], bindings_buf[0..tp_count]);
+        }
+        // Anything still unbound stays as a constraint reference (or
+        // `any` if no constraint) — for substitution we just leave the
+        // type_ref alone, which behaves as "unknown" downstream.
+        var any_bound = false;
+        for (bindings_buf[0..tp_count]) |b| {
+            if (!b.eq(TypeId.none)) { any_bound = true; break; }
+        }
+        if (!any_bound) return null;
+        // Replace unbound entries with `unknown` so substituteTypeId
+        // doesn't preserve the literal name.
+        for (bindings_buf[0..tp_count]) |*b| {
+            if (b.eq(TypeId.none)) b.* = tymod.ID_UNKNOWN;
+        }
+        return self.substituteTypeId(return_ty, tp_names_buf[0..tp_count], bindings_buf[0..tp_count]);
+    }
+
+    fn callArguments(self: *Checker, call: NodeIndex) []const u32 {
+        const d = self.ast_ref.nodeData(call);
+        if (d.rhs == .none) return &.{};
+        const sr = self.ast_ref.extraData(ast.SubRange, @intFromEnum(d.rhs));
+        if (sr.start >= sr.end or sr.end > self.ast_ref.extra_data.len) return &.{};
+        return self.ast_ref.extra_data[sr.start..sr.end];
+    }
+
+    fn paramAnnotationNode(self: *Checker, param: NodeIndex) ?NodeIndex {
+        var p = param;
+        if (self.ast_ref.nodeTag(p) == .assignment_pattern) p = self.ast_ref.nodeData(p).lhs;
+        if (self.ast_ref.nodeTag(p) == .ts_parameter_property) p = self.ast_ref.nodeData(p).lhs;
+        if (self.ast_ref.nodeTag(p) == .rest_element) p = self.ast_ref.nodeData(p).lhs;
+        if (self.ast_ref.nodeTag(p) != .identifier) return null;
+        const bd = self.ast_ref.nodeData(p);
+        if (bd.rhs == .none or self.ast_ref.nodeTag(bd.rhs) != .ts_type_annotation) return null;
+        return self.ast_ref.nodeData(bd.rhs).lhs;
+    }
+
+    /// Walk `param_node` looking for `ts_type_reference`s whose name
+    /// matches one of `names`.  When found and not yet bound, set
+    /// `bindings[i]` to `arg_ty`.  Recurses through unions /
+    /// intersections / arrays / `Foo<T>` type args.
+    fn matchTypeParam(
+        self: *Checker,
+        param_node: NodeIndex,
+        arg_ty: TypeId,
+        names: []const []const u8,
+        bindings: []TypeId,
+    ) void {
+        var n = param_node;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        const tag = self.ast_ref.nodeTag(n);
+        if (tag == .ts_type_reference) {
+            const tname = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+            for (names, 0..) |k, i| {
+                if (std.mem.eql(u8, k, tname)) {
+                    if (bindings[i].eq(TypeId.none)) bindings[i] = arg_ty;
+                    return;
+                }
+            }
+            // `Foo<T>` — recurse into the type arg list against the
+            // argument's type-args when possible (we don't yet model
+            // that mapping; leave as no-op).
+            return;
+        }
+        if (tag == .ts_array_type) {
+            // `T[]` matched against `arg_ty[]` — bind T to the element
+            // type of arg_ty when arg_ty is an array.
+            const at = self.store.get(arg_ty);
+            if (at.kind == .array_t or at.kind == .readonly_array_t or at.kind == .tuple_t) {
+                const elems = self.store.idsOf(at.list_data);
+                if (elems.len > 0) {
+                    const inner = self.ast_ref.nodeData(n).lhs;
+                    self.matchTypeParam(inner, elems[0], names, bindings);
+                }
+            }
+            return;
+        }
+        if (tag == .ts_union_type or tag == .ts_intersection_type) {
+            const d = self.ast_ref.nodeData(n);
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (e > s and e <= self.ast_ref.extra_data.len) {
+                for (self.ast_ref.extra_data[s..e]) |raw| {
+                    const m: NodeIndex = @enumFromInt(raw);
+                    self.matchTypeParam(m, arg_ty, names, bindings);
+                }
+            }
+        }
+    }
+
+    /// For a call's callee, find the matching function declaration
+    /// node in the AST (by identifier name).  Returns null if the
+    /// callee isn't a simple identifier or we can't find a fn-decl.
+    fn findCalleeFnDecl(self: *Checker, callee: NodeIndex) ?NodeIndex {
+        var c = callee;
+        while (self.ast_ref.nodeTag(c) == .grouping_expr) c = self.ast_ref.nodeData(c).lhs;
+        if (self.ast_ref.nodeTag(c) != .identifier) return null;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(c));
+        if (name.len == 0) return null;
+        const total: u32 = @intCast(self.ast_ref.nodes.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            const t = self.ast_ref.nodeTag(ni);
+            if (t != .fn_decl and t != .async_fn_decl and t != .ts_declare_function and
+                t != .generator_fn_decl and t != .async_generator_fn_decl) continue;
+            const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(self.ast_ref.nodeData(ni).lhs));
+            if (fd.name == .none) continue;
+            const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
+            if (std.mem.eql(u8, dn, name)) return ni;
+        }
+        return null;
     }
 
     /// True when `node` is part of an optional chain — i.e. walking down
