@@ -499,8 +499,20 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
 
         // ── Generic function type: <T>(x: T) => T ─────────────
         .less_than => {
-            _ = try parseTypeParameterList(p);
-            return try parseParenthesizedOrFunctionType(p);
+            const tp_range = try parseTypeParameterList(p);
+            const inner = try parseParenthesizedOrFunctionType(p);
+            // If the inner shape is a function type, splice the type
+            // parameters into its FnData so downstream consumers can
+            // bind T at call sites.  FnData layout: name, params,
+            // params_end, body, return_type, type_params,
+            // type_params_end → the last two slots are positions
+            // 5/6 from the FnData index.
+            if (p.node_tags_ptr[inner.toInt()] == .ts_function_type) {
+                const fn_data_idx = @intFromEnum(p.node_data_ptr[inner.toInt()].lhs);
+                p.extra_data.items[fn_data_idx + 5] = tp_range.start;
+                p.extra_data.items[fn_data_idx + 6] = tp_range.end;
+            }
+            return inner;
         },
 
         // ── import("module"[, options]) type ─────────────────────

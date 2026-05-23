@@ -404,6 +404,21 @@ fn paramExpectsVoidReturningFn(callee: NodeIndex, index: usize, _: usize, call_n
     _ = call_node;
     var c = callee;
     while (ctx.nodeTag(c) == .grouping_expr) c = ctx.nodeData(c).lhs;
+    // `f<T>(...)` — peel `ts_instantiation_expr` to get the underlying
+    // identifier; the type args are captured from the wrapper for
+    // substitution into the param's annotation.
+    var type_arg_start: u32 = 0;
+    var type_arg_end: u32 = 0;
+    if (ctx.nodeTag(c) == .ts_instantiation_expr) {
+        const inst_data = ctx.nodeData(c);
+        if (inst_data.rhs != .none) {
+            const sr = ctx.extraData(ast.SubRange, @intFromEnum(inst_data.rhs));
+            type_arg_start = sr.start;
+            type_arg_end = sr.end;
+        }
+        c = inst_data.lhs;
+        while (ctx.nodeTag(c) == .grouping_expr) c = ctx.nodeData(c).lhs;
+    }
     const ct = ctx.nodeTag(c);
     // `new Promise(executor)`: executor signature is `(resolve, reject) => void`.
     if (ct == .identifier) {
@@ -424,7 +439,7 @@ fn paramExpectsVoidReturningFn(callee: NodeIndex, index: usize, _: usize, call_n
     }
     // Resolve identifier callee to its declaration and inspect param annotation.
     if (ct == .identifier) {
-        if (calleeParamIsVoidFn(c, index, ctx)) return true;
+        if (calleeParamIsVoidFn(c, index, type_arg_start, type_arg_end, ctx)) return true;
         // Identifier whose declared type is an interface with a call signature
         // whose Nth param expects void-returning.
         if (calleeInterfaceCallSigParamIsVoidFn(c, index, ctx)) return true;
@@ -464,6 +479,10 @@ fn calleeInterfaceCallSigParamIsVoidFn(ident: NodeIndex, index: usize, ctx: *con
     while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
     if (ctx.nodeTag(ty) != .ts_type_reference) return false;
     const name = ctx.tokenText(ctx.nodeMainToken(ty));
+    // Capture type-argument substitution: `Foo<void>` → {T → void node}.
+    var subst_names: [4][]const u8 = undefined;
+    var subst_nodes: [4]NodeIndex = undefined;
+    var subst_n: usize = 0;
     var any_void_only = false;
     var any_thenable = false;
     const total: u32 = @intCast(ctx.ast.nodes.len);
@@ -474,6 +493,9 @@ fn calleeInterfaceCallSigParamIsVoidFn(ident: NodeIndex, index: usize, ctx: *con
         const id = ctx.extraData(ast.InterfaceData, @intFromEnum(ctx.nodeData(ni).lhs));
         const iname = ctx.tokenText(id.name);
         if (!std.mem.eql(u8, iname, name)) continue;
+        // Build substitution from the annotation's `<...>` args and the
+        // interface's declared `<T, U, ...>` parameters.
+        subst_n = collectInterfaceSubstitution(ty, id, ctx, &subst_names, &subst_nodes);
         if (id.body_start >= id.body_end or id.body_end > ctx.ast.extra_data.len) continue;
         for (ctx.ast.extra_data[id.body_start..id.body_end]) |raw| {
             const m: NodeIndex = @enumFromInt(raw);
@@ -485,13 +507,109 @@ fn calleeInterfaceCallSigParamIsVoidFn(ident: NodeIndex, index: usize, ctx: *con
             const p: NodeIndex = @enumFromInt(params_slice[index]);
             const pann = paramAnnotation(p, ctx);
             if (pann == .none) continue;
-            if (typeIsPromiseReturningFnAnn(pann, ctx)) any_thenable = true
-            else if (typeIsVoidReturningFn(pann, ctx)) any_void_only = true;
+            if (typeIsPromiseReturningFnAnnSubst(pann, subst_names[0..subst_n], subst_nodes[0..subst_n], ctx)) any_thenable = true
+            else if (typeIsVoidReturningFnSubst(pann, subst_names[0..subst_n], subst_nodes[0..subst_n], ctx)) any_void_only = true;
         }
     }
-    // Any thenable overload exists → safe; don't fire.
     if (any_thenable) return false;
     return any_void_only;
+}
+
+/// Pair the interface's declared type parameters with the type-args
+/// at the use site (`Foo<void>` → {T → void node}).  Returns the
+/// number of bindings written.
+fn collectInterfaceSubstitution(
+    ref_node: NodeIndex,
+    id: ast.InterfaceData,
+    ctx: *const LintContext,
+    names_out: *[4][]const u8,
+    nodes_out: *[4]NodeIndex,
+) usize {
+    // `ts_type_reference.rhs` holds the SubRange of type args (when
+    // present).  Interface's type_params SubRange holds
+    // ts_type_parameter nodes.
+    const ref_data = ctx.nodeData(ref_node);
+    if (ref_data.rhs == .none) return 0;
+    const arg_range = ctx.extraData(ast.SubRange, @intFromEnum(ref_data.rhs));
+    if (arg_range.start >= arg_range.end or arg_range.end > ctx.ast.extra_data.len) return 0;
+    const args = ctx.ast.extra_data[arg_range.start..arg_range.end];
+    if (id.type_params_end <= id.type_params or id.type_params_end > ctx.ast.extra_data.len) return 0;
+    const params = ctx.ast.extra_data[id.type_params..id.type_params_end];
+    const n = @min(@min(args.len, params.len), names_out.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const tp: NodeIndex = @enumFromInt(params[i]);
+        if (ctx.nodeTag(tp) != .ts_type_parameter) continue;
+        names_out[i] = ctx.tokenText(ctx.nodeMainToken(tp));
+        nodes_out[i] = @enumFromInt(args[i]);
+    }
+    return n;
+}
+
+fn typeIsVoidReturningFnSubst(
+    ann: NodeIndex,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+) bool {
+    if (names.len == 0) return typeIsVoidReturningFn(ann, ctx);
+    var ty = ann;
+    if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
+    return typeIsVoidReturningFnInnerSubst(ty, names, nodes, ctx);
+}
+
+fn typeIsVoidReturningFnInnerSubst(
+    ty: NodeIndex,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+) bool {
+    if (ty == .none) return false;
+    var inner = ty;
+    while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+    const tag = ctx.nodeTag(inner);
+    if (tag == .ts_function_type) {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(inner).lhs));
+        // Substitute T in the return-type node, then check if it's void.
+        const ret_sub = substituteTypeRef(fd.body, names, nodes, ctx);
+        return returnTypeIsVoid(ret_sub, ctx);
+    }
+    return typeIsVoidReturningFnInner(inner, ctx);
+}
+
+fn typeIsPromiseReturningFnAnnSubst(
+    ann: NodeIndex,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+) bool {
+    if (names.len == 0) return typeIsPromiseReturningFnAnn(ann, ctx);
+    var ty = ann;
+    if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) == .ts_function_type) {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+        const ret_sub = substituteTypeRef(fd.body, names, nodes, ctx);
+        return typeContainsPromiseInner(ret_sub, ctx);
+    }
+    return typeIsPromiseReturningFn(ty, ctx);
+}
+
+/// If `node` is a `ts_type_reference` whose name appears in `names`,
+/// return the corresponding bound node.  Otherwise return `node`.
+fn substituteTypeRef(
+    node: NodeIndex,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+) NodeIndex {
+    var n = node;
+    while (ctx.nodeTag(n) == .ts_parenthesized_type) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .ts_type_reference) return node;
+    const name = ctx.tokenText(ctx.nodeMainToken(n));
+    for (names, nodes) |k, v| {
+        if (std.mem.eql(u8, k, name)) return v;
+    }
+    return node;
 }
 
 fn typeIsPromiseReturningFnAnn(ann: NodeIndex, ctx: *const LintContext) bool {
@@ -530,7 +648,13 @@ fn classConstructorParamIsVoidFn(ident: NodeIndex, index: usize, ctx: *const Lin
 
 /// Look up the identifier's declaration; if it's a function with a
 /// typed parameter `(x: () => void) => ...`, return true.
-fn calleeParamIsVoidFn(ident: NodeIndex, index: usize, ctx: *const LintContext) bool {
+fn calleeParamIsVoidFn(
+    ident: NodeIndex,
+    index: usize,
+    type_arg_start: u32,
+    type_arg_end: u32,
+    ctx: *const LintContext,
+) bool {
     const sym = symbolForIdent(ident, ctx) orelse return false;
     const decl = ctx.semantic.symbols.getDeclNode(sym);
     if (decl == .none) return false;
@@ -570,6 +694,7 @@ fn calleeParamIsVoidFn(ident: NodeIndex, index: usize, ctx: *const LintContext) 
         }
     }
     if (explicit_ann != .none) {
+        if (annotationParamIsVoidFnSubst(explicit_ann, index, type_arg_start, type_arg_end, ctx)) return true;
         return annotationParamIsVoidFn(explicit_ann, index, ctx) or
             annotationUnionParamIsVoidFn(explicit_ann, index, ctx);
     }
@@ -659,6 +784,75 @@ fn annotationUnionParamIsVoidFn(ann: NodeIndex, index: usize, ctx: *const LintCo
 
 /// For an explicit function-type annotation like `(a, b: () => void) => any`,
 /// check whether parameter `index` expects a void-returning function.
+/// `annotationParamIsVoidFn` variant that applies type-argument
+/// substitution from the call site (`f<T>(...)`) before checking the
+/// Nth param's annotation.  Lets `<T extends ...>(fn: T) => T` see
+/// `T = void-returning fn` when the call is `f<() => void>(...)`.
+fn annotationParamIsVoidFnSubst(
+    ann: NodeIndex,
+    index: usize,
+    type_arg_start: u32,
+    type_arg_end: u32,
+    ctx: *const LintContext,
+) bool {
+    if (type_arg_end <= type_arg_start) return false;
+    var ty = ann;
+    if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
+    while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) != .ts_function_type) return false;
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(ty).lhs));
+    if (fd.params >= fd.params_end or fd.params_end > ctx.ast.extra_data.len) return false;
+    // Build bindings from the function-type's declared type parameters
+    // and the call-site's type arguments.
+    if (fd.type_params_end <= fd.type_params or fd.type_params_end > ctx.ast.extra_data.len) return false;
+    const tp_slice = ctx.ast.extra_data[fd.type_params..fd.type_params_end];
+    const ta_slice = ctx.ast.extra_data[type_arg_start..type_arg_end];
+    var names: [4][]const u8 = undefined;
+    var nodes: [4]NodeIndex = undefined;
+    const n = @min(@min(tp_slice.len, ta_slice.len), names.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const tp: NodeIndex = @enumFromInt(tp_slice[i]);
+        if (ctx.nodeTag(tp) != .ts_type_parameter) continue;
+        names[i] = ctx.tokenText(ctx.nodeMainToken(tp));
+        nodes[i] = @enumFromInt(ta_slice[i]);
+    }
+    if (n == 0) return false;
+    const params_slice = ctx.ast.extra_data[fd.params..fd.params_end];
+    if (index >= params_slice.len) return false;
+    const param_id: NodeIndex = @enumFromInt(params_slice[index]);
+    const param_ann = paramAnnotation(param_id, ctx);
+    if (param_ann == .none) return false;
+    return typeIsVoidReturningFnAnnAfterSubst(param_ann, names[0..n], nodes[0..n], ctx);
+}
+
+/// Substitute T in the param annotation, then ask "is the resulting
+/// type a void-returning function?".
+fn typeIsVoidReturningFnAnnAfterSubst(
+    ann: NodeIndex,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+) bool {
+    var ty = ann;
+    if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
+    while (ctx.nodeTag(ty) == .ts_parenthesized_type) ty = ctx.nodeData(ty).lhs;
+    if (ctx.nodeTag(ty) == .ts_type_reference) {
+        const name = ctx.tokenText(ctx.nodeMainToken(ty));
+        // Direct type-param substitution: `fn: T` where T = call-site arg.
+        for (names, nodes) |k, v| {
+            if (std.mem.eql(u8, k, name)) {
+                return typeIsVoidReturningFn(v, ctx);
+            }
+        }
+        // Type alias — peel and recurse.
+        if (typeAliasBody(name, ctx)) |body| {
+            return typeIsVoidReturningFnAnnAfterSubst(body, names, nodes, ctx);
+        }
+    }
+    return typeIsVoidReturningFn(ann, ctx);
+}
+
 fn annotationParamIsVoidFn(ann: NodeIndex, index: usize, ctx: *const LintContext) bool {
     var ty = ann;
     if (ctx.nodeTag(ty) == .ts_type_annotation) ty = ctx.nodeData(ty).lhs;
@@ -739,6 +933,15 @@ fn typeIsPromiseReturningFn(ty: NodeIndex, ctx: *const LintContext) bool {
     if (ty == .none) return false;
     var inner = ty;
     while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+    // Peel type-alias references so `type X = () => Promise<void>; ...; T = X`
+    // is recognised as promise-returning even after substitution.
+    var hop: u8 = 0;
+    while (ctx.nodeTag(inner) == .ts_type_reference and hop < 6) : (hop += 1) {
+        const name = ctx.tokenText(ctx.nodeMainToken(inner));
+        const body = typeAliasBody(name, ctx) orelse break;
+        inner = body;
+        while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+    }
     if (ctx.nodeTag(inner) != .ts_function_type) return false;
     const fd = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(inner).lhs));
     // ts_function_type reuses `body` for the return type.
