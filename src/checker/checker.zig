@@ -949,7 +949,7 @@ pub const Checker = struct {
             .ts_indexed_access_type => self.resolveIndexedAccess(ty_node),
             .ts_conditional_type => self.resolveConditionalType(ty_node),
             .ts_mapped_type => self.resolveMappedType(ty_node),
-            .ts_template_literal_type => tymod.ID_STRING,
+            .ts_template_literal_type => self.resolveTemplateLiteralType(ty_node),
             // Literal types in type position — parser keeps them as
             // value-style literal nodes.
             .string_literal => tymod.ID_STRING,
@@ -1095,6 +1095,104 @@ pub const Checker = struct {
     /// value-type expression.  Only handles cases where the constraint
     /// is a closed set of string-literal types (the form rules care
     /// about, e.g. `{ [K in 'toString' | 'valueOf']: ... }`).
+    /// Evaluate a template-literal type into a concrete string-literal
+    /// when every interpolation resolves to a string-literal type.
+    /// Otherwise approximate as `string`.  Composes results across
+    /// unions: each interpolation can expand to multiple variants
+    /// when its type is a union of string literals; the result is the
+    /// cross-product of all such variants.
+    fn resolveTemplateLiteralType(self: *Checker, ty_node: NodeIndex) TypeId {
+        const data = self.ast_ref.nodeData(ty_node);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_STRING;
+        // Parts alternate template_element (quasi) and expression
+        // (interpolation type).  Accumulate possible string variants.
+        var variants: std.ArrayList([]const u8) = .empty;
+        defer variants.deinit(self.gpa);
+        variants.append(self.gpa, "") catch return tymod.ID_STRING;
+        for (slice) |raw| {
+            const part: NodeIndex = @enumFromInt(raw);
+            if (self.ast_ref.nodeTag(part) == .template_element) {
+                const tok = self.ast_ref.nodeMainToken(part);
+                const start = self.ast_ref.tokenStart(tok);
+                const len = self.ast_ref.tokens.items(.len)[tok];
+                const src = self.ast_ref.source;
+                if (start + len > src.len) return tymod.ID_STRING;
+                var span_start = start;
+                var span_end: u32 = start + len;
+                if (span_start < span_end and (src[span_start] == '`' or src[span_start] == '}')) span_start += 1;
+                if (span_end >= span_start + 2 and src[span_end - 1] == '{' and src[span_end - 2] == '$') {
+                    span_end -= 2;
+                } else if (span_end > span_start and src[span_end - 1] == '`') {
+                    span_end -= 1;
+                }
+                const quasi_text = src[span_start..span_end];
+                if (quasi_text.len == 0) continue;
+                for (variants.items) |*v| {
+                    const joined = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ v.*, quasi_text }) catch return tymod.ID_STRING;
+                    v.* = joined;
+                }
+                continue;
+            }
+            // Interpolation — gather string-literal options.
+            const id = self.resolveTypeNode(part);
+            var options_buf: [16][]const u8 = undefined;
+            const opt_count = self.gatherStringLiteralOptions(id, &options_buf) catch return tymod.ID_STRING;
+            if (opt_count == 0) return tymod.ID_STRING;
+            const prev_len = variants.items.len;
+            // Cross product: each existing variant × each option.
+            for (0..opt_count - 1) |_| {
+                var dup_i: usize = 0;
+                while (dup_i < prev_len) : (dup_i += 1) {
+                    variants.append(self.gpa, variants.items[dup_i]) catch return tymod.ID_STRING;
+                }
+            }
+            // Append option suffix to each variant slot.
+            var oi: usize = 0;
+            while (oi < opt_count) : (oi += 1) {
+                var vi: usize = 0;
+                while (vi < prev_len) : (vi += 1) {
+                    const slot = oi * prev_len + vi;
+                    const joined = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ variants.items[slot], options_buf[oi] }) catch return tymod.ID_STRING;
+                    variants.items[slot] = joined;
+                }
+            }
+        }
+        if (variants.items.len == 0) return tymod.ID_STRING;
+        if (variants.items.len == 1) {
+            return self.store.add(.{ .kind = .string_literal, .literal_value = .{ .string = variants.items[0] } }) catch tymod.ID_STRING;
+        }
+        var ids_buf: [16]TypeId = undefined;
+        const n = @min(variants.items.len, ids_buf.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            ids_buf[i] = self.store.add(.{ .kind = .string_literal, .literal_value = .{ .string = variants.items[i] } }) catch return tymod.ID_STRING;
+        }
+        return self.store.unionOf(ids_buf[0..n]) catch tymod.ID_STRING;
+    }
+
+    /// Collect string-literal values from a type id (or a union of
+    /// them).  Returns the count written; returns 0 when the type
+    /// can't be reduced to concrete strings.
+    fn gatherStringLiteralOptions(self: *Checker, id: TypeId, out: *[16][]const u8) !usize {
+        const t = self.store.get(id);
+        if (t.kind == .string_literal) {
+            out[0] = switch (t.literal_value) { .string => |s| s, else => return 0 };
+            return 1;
+        }
+        if (t.kind == .union_t) {
+            var n: usize = 0;
+            for (self.store.idsOf(t.list_data)) |m| {
+                const mt = self.store.get(m);
+                if (mt.kind != .string_literal) return 0;
+                if (n >= out.len) return 0;
+                out[n] = switch (mt.literal_value) { .string => |s| s, else => return 0 };
+                n += 1;
+            }
+            return n;
+        }
+        return 0;
+    }
+
     /// Evaluate `T extends U ? A : B`.  We support only the cases
     /// where the relation is decidable from the type representations
     /// available — primitive vs primitive, literal vs base type, void
