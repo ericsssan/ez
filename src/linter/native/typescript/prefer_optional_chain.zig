@@ -385,46 +385,127 @@ fn checkAndChain(node: NodeIndex, ctx: *const LintContext) void {
         operands_buf[j] = tmp;
     }
     if (n_ops < 2) return;
-    // TSe doesn't rewrite `this && this.x` because `this` is never
-    // nullish in normal code, so `this?.x` would be redundant.
-    if (ctx.nodeTag(operands_buf[0]) == .this_expr) return;
-    // First operand must establish a non-nullish baseline by itself
-    // — either a plain identifier/access (truthy check) or a LOOSE
-    // `X != null` / `X != undefined`.  Strict `!== null` alone
-    // would leave the chain still possibly-undefined (and vice
-    // versa), so chains beginning with strict checks aren't safe
-    // unless a later operand fills in the other half.
-    const first = operands_buf[0];
-    var prev = firstOperandSubject(first, ctx) orelse return;
-    if (ctx.nodeTag(prev) == .this_expr) return;
-    var k: usize = 1;
-    while (k + 1 < n_ops) : (k += 1) {
-        const op = unwrapGrouping(operands_buf[k], ctx);
-        const subj = chainOperandSubject(op, ctx) orelse return;
-        if (sameExpr(prev, subj, ctx)) continue;
-        if (!isPrefixExtension(prev, subj, ctx)) return;
-        prev = subj;
-    }
-    {
-        const last_op = unwrapGrouping(operands_buf[n_ops - 1], ctx);
-        if (!isExtensionOf(prev, last_op, ctx)) return;
-    }
-    // Private fields (`foo.#bar`) are skipped — TSe's rewriter
-    // doesn't translate `?.` over them safely.
-    if (chainTouchesPrivateField(operands_buf[0..n_ops], ctx)) return;
-    // Type-aware gating against the first operand's type:
-    //   * default behaviour skips operands whose type includes a
-    //     non-nullish falsy literal (`false` / `''` / `0` / `0n`) —
-    //     rewriting to `?.` would change runtime semantics.
-    //   * the `checkX` options narrow the set of types we'll rewrite.
-    //   * `requireNullish: true` requires at least one nullish
-    //     constituent.
+    // Walk operands looking for every maximal valid subrun.  TSe's
+    // reporter scans for stretches of consecutive chained operands
+    // and emits one finding per stretch — so `foo && foo.bar(a) &&
+    // foo.bar(a, b).baz` (where the third operand doesn't extend
+    // the second) becomes a single finding on the `foo && foo.bar(a)`
+    // prefix, and `foo1 && foo1.bar && foo2 && foo2.bar` becomes
+    // two separate findings.  Each subrun is gated independently
+    // for falsy/checkX/requireNullish and reported at its span.
     const opts = readOptions(ctx);
+    var start: usize = 0;
+    while (start < n_ops) {
+        const end_idx = findAndChainSubrunEnd(operands_buf[0..n_ops], start, ctx);
+        if (end_idx > start) {
+            reportAndChainSubrun(operands_buf[0..n_ops], start, end_idx, opts, ctx);
+            start = end_idx + 1;
+        } else {
+            start += 1;
+        }
+    }
+}
+
+/// Find the longest valid `&&`-chain subrun starting at `start`.
+/// Returns the inclusive end index (= start when no subrun forms).
+///
+/// A subrun is split into two phases:
+///   * presence-check phase — operands that confirm non-nullishness
+///     of the chain subject WITHOUT producing a value comparison:
+///     truthy accesses (`X`, `X.path`, `X()`) and loose nullish
+///     checks (`X != null`, `X != undefined`).  Each step either
+///     reaffirms the current depth (sameExpr) or extends it one
+///     access deeper (isPrefixExtension).
+///   * closing-comparison phase — at most one final operand that
+///     compares an extension of the chain subject to a value whose
+///     `undefined OP Y` evaluation matches the original chain's
+///     nullish short-circuit.  Gated by `isExtensionOf`'s use of
+///     `comparisonRhsAllowed`, so strict `!== null` (which would
+///     leak past undefined) and `=== undefined` (which would flip
+///     truthiness) are correctly rejected.
+fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const LintContext) usize {
+    const first = unwrapGrouping(operands[start], ctx);
+    if (ctx.nodeTag(first) == .this_expr) return start;
+    var prev = firstOperandSubject(first, ctx) orelse return start;
+    if (ctx.nodeTag(prev) == .this_expr) return start;
+    var end: usize = start;
+    var extended: bool = false;
+    var k: usize = start + 1;
+    // Presence-check phase.
+    while (k < operands.len) : (k += 1) {
+        const op = unwrapGrouping(operands[k], ctx);
+        if (presenceCheckSubject(op, ctx)) |subj| {
+            if (sameExpr(prev, subj, ctx)) {
+                end = k;
+                continue;
+            }
+            if (isPrefixExtension(prev, subj, ctx)) {
+                prev = subj;
+                end = k;
+                extended = true;
+                continue;
+            }
+        }
+        break;
+    }
+    // Closing-comparison phase.
+    if (k < operands.len) {
+        const op = unwrapGrouping(operands[k], ctx);
+        if (isExtensionOf(prev, op, ctx)) {
+            end = k;
+            extended = true;
+        }
+    }
+    if (!extended) return start;
+    return end;
+}
+
+/// Operand forms that confirm non-nullishness of the chain subject
+/// WITHOUT collapsing it to a boolean value comparison:
+///   * truthy access — `X`, `X.path`, `X()`, optional variants
+///   * loose nullish equality — `X != null`, `X != undefined`,
+///     and the yoda-form swaps (`null != X` etc.)
+/// Strict `!==` is intentionally excluded — it excludes only one
+/// nullish constituent, so it can't extend the chain on its own.
+fn presenceCheckSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .not_equal) {
+        const d = ctx.nodeData(n);
+        if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
+        if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
+        return null;
+    }
+    return switch (tag) {
+        .identifier, .this_expr,
+        .member_expr, .computed_member_expr,
+        .optional_member_expr, .optional_computed_member_expr,
+        .call_expr, .optional_call_expr,
+        => n,
+        else => null,
+    };
+}
+
+fn reportAndChainSubrun(
+    operands: []const NodeIndex,
+    start: usize,
+    end_idx: usize,
+    opts: Options,
+    ctx: *const LintContext,
+) void {
+    if (end_idx <= start) return;
+    if (chainTouchesPrivateField(operands[start .. end_idx + 1], ctx)) return;
     if (ctx.hasTypeChecker()) {
-        const ty = ctx.typeOfNode(first);
+        const ty = ctx.typeOfNode(operands[start]);
         if (!isEligibleNullishOperand(ty, opts, ctx)) return;
     }
-    ctx.reportWithMessageId(node, "preferOptionalChain");
+    const span_start = ctx.nodeSpan(operands[start]).start;
+    const span_end = ctx.nodeSpan(operands[end_idx]).end;
+    ctx.reportSpanWithMessageId(
+        .{ .start = span_start, .end = span_end },
+        "preferOptionalChain",
+    );
 }
 
 /// True when the operand's type meets the configured gating: no
