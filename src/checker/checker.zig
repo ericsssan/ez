@@ -3243,6 +3243,23 @@ pub const Checker = struct {
         return self.resolveTypeNode(tp_data.lhs);
     }
 
+    /// Returns the AST node of the type-parameter's constraint
+    /// expression (the `X` in `T extends X`), or `null` when there
+    /// is none.  Lets callers distinguish "no constraint" from
+    /// "constraint resolves to unknown".
+    pub fn typeParameterConstraintNodeOf(self: *Checker, ty_node: NodeIndex) ?NodeIndex {
+        var n = ty_node;
+        if (n == .none) return null;
+        if (self.ast_ref.nodeTag(n) == .ts_type_annotation) n = self.ast_ref.nodeData(n).lhs;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) != .ts_type_reference) return null;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+        const tp = self.findTypeParameterDecl(n, name) orelse return null;
+        const tp_data = self.ast_ref.nodeData(tp);
+        if (tp_data.lhs == .none) return null;
+        return tp_data.lhs;
+    }
+
     /// Find a `ts_type_parameter` AST node whose name matches and is
     /// declared in an enclosing scope of `ref_node`.
     fn findTypeParameterDecl(self: *Checker, ref_node: NodeIndex, name: []const u8) ?NodeIndex {

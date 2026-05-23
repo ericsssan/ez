@@ -446,6 +446,16 @@ pub const LintContext = struct {
         return c.typeParameterConstraintOf(ty_node);
     }
 
+    /// Returns the type-position AST node for the constraint of the
+    /// type parameter referenced by `ty_node` (e.g. the `X` in
+    /// `T extends X`), or `.none` when the parameter is
+    /// declaration-unconstrained.  Distinguishes "no constraint"
+    /// from "constraint = unknown".
+    pub fn typeParameterConstraintNodeOf(self: *const LintContext, ty_node: NodeIndex) ?NodeIndex {
+        const c = self.ensureChecker() orelse return null;
+        return c.typeParameterConstraintNodeOf(ty_node);
+    }
+
     /// True when the type id reaches `any` either directly or through a
     /// composite (union/intersection/array/tuple).
     pub fn typeIdContainsAny(self: *const LintContext, id: tymod.TypeId) bool {

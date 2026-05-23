@@ -53,58 +53,60 @@ fn check(node: NodeIndex, ctx: *const LintContext) void {
     // Skip `as const`.
     if (isAsConst(ty_node, ctx)) return;
 
-    const expr_ty = ctx.typeOfNode(expr_node);
+    var expr_ty = ctx.typeOfNode(expr_node);
     const asserted_ty = ctx.resolveTypeAnnotationNode(ty_node);
-
-    // Type-parameter assertion has its own identity — `T` is NOT assignable
-    // to anything except itself, even when its constraint equals the expr.
-    // Resolve identity from the AST node, not the constraint-substituted
-    // TypeId.  Done BEFORE the equality check below, since the asserted
-    // TypeId resolves to the constraint and would falsely match.
-    if (ctx.typeAnnotationIsTypeParameter(ty_node) and
-        !exprIsSameTypeParameter(expr_node, ty_node, ctx))
-    {
-        const cstr_opt = ctx.typeParameterConstraintOf(ty_node);
-        const type_text = annotationText(ty_node, ctx);
-        if (cstr_opt) |cstr| {
-            if (ctx.typeIdIsUnknown(cstr)) {
-                report(node, "unsafeToUnconstrainedTypeAssertion", type_text, ty_node, ctx);
-                return;
-            }
-            if (ctx.typeIdAssignableTo(expr_ty, cstr)) {
-                report(node, "unsafeTypeAssertionAssignableToConstraint", type_text, ty_node, ctx);
-                return;
-            }
-        }
-        report(node, "unsafeTypeAssertion", type_text, ty_node, ctx);
-        return;
+    // Unresolved value identifier — TS gives it an error/any type.
+    // Our checker leaves it as `unknown` to avoid leaking `any` to
+    // other rules; for this rule's purposes, treat it as error-typed.
+    if (ctx.typeIdIsUnknown(expr_ty) and isUnresolvedIdent(expr_node, ctx)) {
+        expr_ty = tymod.ID_ERROR;
     }
 
-    if (expr_ty.eq(asserted_ty)) return;
+    // Self-assertion `T as T` is fine even for type parameters.
+    if (expr_ty.eq(asserted_ty) and !ctx.typeAnnotationIsTypeParameter(ty_node)) return;
+    if (ctx.typeAnnotationIsTypeParameter(ty_node) and
+        exprIsSameTypeParameter(expr_node, ty_node, ctx)) return;
 
-    // any/unknown handling matches TSe ordering:
-    //   1) unknown → any  → unsafeToAnyTypeAssertion
-    //   2) X (where X contains any) → ...  → unsafeOfAnyTypeAssertion
-    //   3) ... → X (where X contains any) → unsafeToAnyTypeAssertion
+    // any/unknown handling matches TSe ordering (must precede the
+    // type-parameter branches — TS reports the any-source first).
     if (ctx.typeIdIsAny(asserted_ty) and ctx.typeIdIsUnknown(expr_ty)) {
         report(node, "unsafeToAnyTypeAssertion", "`any`", ty_node, ctx);
         return;
     }
-
-    // isUnsafeAssignment(expressionType, assertedType) — does the source
-    // type contain `any` in a place that would corrupt the target?
     if (isUnsafeAssignment(expr_ty, asserted_ty, ctx)) {
         report(node, "unsafeOfAnyTypeAssertion", anyTypeName(expr_ty, ctx), ty_node, ctx);
         return;
     }
-    // isUnsafeAssignment(assertedType, expressionType) — does the target
-    // contain `any` in a place that the source can't supply?
     if (isUnsafeAssignment(asserted_ty, expr_ty, ctx)) {
         report(node, "unsafeToAnyTypeAssertion", anyTypeName(asserted_ty, ctx), ty_node, ctx);
         return;
     }
 
-    // Safe if the expression's type is assignable to the asserted type.
+    // Type-parameter target gets its own messages — even when the
+    // expression is assignable to the parameter's *constraint*, TS
+    // can still pick a more specific subtype, so we must report.
+    // Therefore the type-parameter branch runs BEFORE the safe-
+    // assignable early return.
+    if (ctx.typeAnnotationIsTypeParameter(ty_node)) {
+        const type_text = annotationText(ty_node, ctx);
+        // Walk the constraint chain to find the first concrete
+        // constraint type-node (skipping type-parameter hops).
+        const base_cstr_node = resolveBaseConstraintNode(ty_node, ctx);
+        if (base_cstr_node == .none) {
+            report(node, "unsafeToUnconstrainedTypeAssertion", type_text, ty_node, ctx);
+            return;
+        }
+        const cstr_ty = ctx.resolveTypeAnnotationNode(base_cstr_node);
+        if (ctx.typeIdAssignableTo(expr_ty, cstr_ty)) {
+            report(node, "unsafeTypeAssertionAssignableToConstraint", type_text, ty_node, ctx);
+            return;
+        }
+        report(node, "unsafeTypeAssertion", type_text, ty_node, ctx);
+        return;
+    }
+
+    // Safe if the expression's type is assignable to the asserted
+    // (non-type-parameter) type.
     if (ctx.typeIdAssignableTo(expr_ty, asserted_ty)) return;
 
     const type_text = annotationText(ty_node, ctx);
@@ -120,19 +122,56 @@ fn check(node: NodeIndex, ctx: *const LintContext) void {
 /// Conservatively: when source contains `any` at any depth AND target's
 /// matching slot is non-`any`/non-`unknown`, treat as unsafe.
 fn isUnsafeAssignment(source: TypeId, target: TypeId, ctx: *const LintContext) bool {
-    // Top-level any → non-any/non-unknown.
-    if (ctx.typeIdIsAny(source)) {
-        return !ctx.typeIdIsAny(target) and !ctx.typeIdIsUnknown(target);
+    // Top-level any/error → non-any/non-unknown.  TSe's checker treats
+    // the intrinsic error type (TS's "couldn't resolve this name")
+    // identically to `any` for unsafe-assignment purposes.
+    if (isAnyLike(source, ctx)) {
+        return !isAnyLike(target, ctx) and !ctx.typeIdIsUnknown(target);
     }
-    if (ctx.typeIdIsAny(target)) return false;
+    if (isAnyLike(target, ctx)) return false;
     return unsafeAssignmentRec(source, target, ctx, 0);
+}
+
+fn isAnyLike(id: TypeId, ctx: *const LintContext) bool {
+    return ctx.typeIdIsAny(id) or id.eq(tymod.ID_ERROR);
+}
+
+/// Walk the constraint chain `V extends T extends ...` until we find
+/// a constraint node that isn't a reference to another type
+/// parameter; return that node, or `.none` if the chain terminates
+/// without an explicit constraint.
+fn resolveBaseConstraintNode(ty_node: NodeIndex, ctx: *const LintContext) NodeIndex {
+    var cur = ty_node;
+    var hop: u8 = 0;
+    while (hop < 8) : (hop += 1) {
+        const cstr_opt = ctx.typeParameterConstraintNodeOf(cur);
+        const cstr = cstr_opt orelse return .none;
+        var c = cstr;
+        while (ctx.nodeTag(c) == .ts_parenthesized_type) c = ctx.nodeData(c).lhs;
+        if (ctx.nodeTag(c) == .ts_type_reference and ctx.typeAnnotationIsTypeParameter(c)) {
+            cur = c;
+            continue;
+        }
+        return c;
+    }
+    return .none;
+}
+
+
+/// True when `expr_node` is a bare identifier whose semantic
+/// reference can't be resolved (implicit global / undeclared name).
+fn isUnresolvedIdent(expr_node: NodeIndex, ctx: *const LintContext) bool {
+    var n = expr_node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .identifier) return false;
+    return ctx.isGlobalReference(n);
 }
 
 fn unsafeAssignmentRec(source: TypeId, target: TypeId, ctx: *const LintContext, depth: u8) bool {
     if (depth > 4) return false;
     if (source.eq(target)) return false;
-    if (ctx.typeIdIsAny(source) and !ctx.typeIdIsAny(target) and !ctx.typeIdIsUnknown(target)) return true;
-    if (ctx.typeIdIsAny(target) and !ctx.typeIdIsAny(source) and !ctx.typeIdIsUnknown(source)) return false; // handled at caller
+    if (isAnyLike(source, ctx) and !isAnyLike(target, ctx) and !ctx.typeIdIsUnknown(target)) return true;
+    if (isAnyLike(target, ctx) and !isAnyLike(source, ctx) and !ctx.typeIdIsUnknown(source)) return false; // handled at caller
     // Generic-of-any: same type_ref outer name, compare args.
     if (ctx.typeIdSameOuterRef(source, target)) {
         return positionwiseUnsafe(ctx.typeIdRefArgs(source), ctx.typeIdRefArgs(target), ctx, depth);
