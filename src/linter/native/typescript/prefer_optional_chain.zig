@@ -1016,7 +1016,55 @@ fn findOrChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const L
     }
     if (!extended) return start;
     if (root_kind == .statically_false and !saw_optional_ext) return start;
+    // Post-walk: validate the chain TERMINAL operand for OR-chain
+    // rewrite safety.  Only applies when the chain root is a
+    // presence-negation that returns TRUE on nullish prev (`!X`,
+    // `X == null`) — in that case the terminal `X.path === null`
+    // can't be rewritten because the rewrite would yield FALSE on
+    // nullish prev while the original yields TRUE.
+    if (rootMatchesOnNullish(unwrapGrouping(operands[start], ctx), ctx)) {
+        const last_op = unwrapGrouping(operands[end], ctx);
+        if (isUnsafeOrChainTerminal(last_op, ctx)) return start;
+    }
     return end;
+}
+
+/// True when the OR chain's ROOT operand evaluates to TRUE when its
+/// subject is nullish — `!X`, `X == null`, `X == undefined`.  When
+/// the root produces FALSE on nullish (e.g. `X === null` with
+/// non-null subject), the rewrite's terminal-safety analysis is
+/// different and we don't apply the unsafe-terminal gate.
+fn rootMatchesOnNullish(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .logical_not) return true;
+    if (tag == .equal) {
+        const d = ctx.nodeData(n);
+        return isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx) or
+            isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx);
+    }
+    return false;
+}
+
+/// True when an OR-chain operand is unsafe as the chain TERMINAL —
+/// e.g. strict `=== null` (rewrite yields `undefined === null` =
+/// false on nullish-prev, diverging from the original's true).
+fn isUnsafeOrChainTerminal(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag != .strict_equal and tag != .strict_not_equal and
+        tag != .equal and tag != .not_equal) return false;
+    const d = ctx.nodeData(n);
+    if (typeofUndefinedSubject(d.lhs, d.rhs, ctx) != null or
+        typeofUndefinedSubject(d.rhs, d.lhs, ctx) != null)
+    {
+        return tag == .strict_not_equal or tag == .not_equal;
+    }
+    if (orComparisonRhsAllowed(tag, d.rhs, ctx)) return false;
+    if (orComparisonRhsAllowed(tag, d.lhs, ctx)) return false;
+    return true;
 }
 
 const OrRootKind = enum {
