@@ -1497,8 +1497,22 @@ pub const Checker = struct {
             if (id_data.extends_end <= id_data.extends_start) return false;
             const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
             if (id_data.extends_end > ext_len) return false;
-            for (self.ast_ref.extra_data[id_data.extends_start..id_data.extends_end]) |tok| {
-                const ext_name = self.ast_ref.tokenText(tok);
+            // The extends list stores NodeIndex values (one per
+            // `extends Foo<...>` type reference).  Walk each, peeling
+            // ts_instantiation_expr / grouping, and read the name token.
+            for (self.ast_ref.extra_data[id_data.extends_start..id_data.extends_end]) |raw| {
+                var ext_node: NodeIndex = @enumFromInt(raw);
+                while (true) {
+                    const t = self.ast_ref.nodeTag(ext_node);
+                    if (t == .grouping_expr or t == .ts_instantiation_expr) {
+                        ext_node = self.ast_ref.nodeData(ext_node).lhs;
+                        continue;
+                    }
+                    break;
+                }
+                if (self.ast_ref.nodeTag(ext_node) != .ts_type_reference and
+                    self.ast_ref.nodeTag(ext_node) != .identifier) continue;
+                const ext_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ext_node));
                 if (std.mem.eql(u8, ext_name, name)) return true;
                 if (self.type_decl_nodes.get(ext_name)) |parent_decl| {
                     if (self.declInheritsFromName(parent_decl, name, depth + 1)) return true;
@@ -1528,10 +1542,18 @@ pub const Checker = struct {
                 // ID_UNKNOWN holes that confuse downstream checks.
                 const dd = self.ast_ref.nodeData(decl);
                 const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
-                if (self.typeNodeReferences(ad.type_node, name)) return null;
+                if (self.typeNodeReferences(ad.type_node, name)) {
+                    // Remove the sentinel so the next lookup doesn't
+                    // see ID_UNKNOWN and think the alias resolved.
+                    _ = self.declared_type_cache.remove(name);
+                    return null;
+                }
                 break :blk self.resolveTypeNode(ad.type_node);
             },
-            else => return null,
+            else => {
+                _ = self.declared_type_cache.remove(name);
+                return null;
+            },
         };
         self.declared_type_cache.put(self.gpa, name, result) catch {};
         return result;
@@ -1549,10 +1571,22 @@ pub const Checker = struct {
         var props: std.ArrayList(tymod.ObjectProp) = .empty;
         defer props.deinit(self.gpa);
         // Inherited props from `extends` clauses (one hop).
+        // The extends list stores NodeIndex per type reference.
         if (id.extends_end > id.extends_start) {
             const extends = self.ast_ref.extra_data[id.extends_start..id.extends_end];
-            for (extends) |tok| {
-                const ext_name = self.ast_ref.tokenText(tok);
+            for (extends) |raw| {
+                var ext_node: NodeIndex = @enumFromInt(raw);
+                while (true) {
+                    const t_tag = self.ast_ref.nodeTag(ext_node);
+                    if (t_tag == .grouping_expr or t_tag == .ts_instantiation_expr) {
+                        ext_node = self.ast_ref.nodeData(ext_node).lhs;
+                        continue;
+                    }
+                    break;
+                }
+                if (self.ast_ref.nodeTag(ext_node) != .ts_type_reference and
+                    self.ast_ref.nodeTag(ext_node) != .identifier) continue;
+                const ext_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ext_node));
                 if (self.resolveDeclaredType(ext_name)) |ext_ty| {
                     const t = self.store.get(ext_ty);
                     if (t.kind == .object_t) {

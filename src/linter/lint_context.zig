@@ -924,6 +924,14 @@ pub const LintContext = struct {
         return c.declaredTypeInheritsFromByName(decl_name, base_name);
     }
 
+    /// Look up the body TypeId of a declared type by name (interface,
+    /// class instance, or type alias).  Returns null when the name
+    /// isn't a declared type in this file.
+    pub fn resolveDeclaredTypeByName(self: *const LintContext, name: []const u8) ?tymod.TypeId {
+        const c = self.ensureChecker() orelse return null;
+        return c.resolveDeclaredTypePub(name);
+    }
+
     /// True when the type id has a property named `prop`.  Walks
     /// union/intersection composites.
     pub fn typeIdHasProperty(self: *const LintContext, id: tymod.TypeId, prop: []const u8) bool {
