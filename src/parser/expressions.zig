@@ -4703,6 +4703,21 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
         }
         break :blk expr;
     } else .none;
+    // TS implements clause for class expressions: `class implements X { ... }`
+    // / `class C extends Base implements X, Y { ... }`.  Class
+    // declarations already record impls via a dedicated SubRange; for
+    // class expressions we just consume the clause to satisfy the
+    // parser (downstream lint rules source-scan the slice between
+    // `class` and `{`).
+    if (p.is_ts and p.peek() == .kw_implements) {
+        _ = p.advance(); // eat `implements`
+        const ts_mod = @import("typescript.zig");
+        _ = try ts_mod.parseType(p);
+        while (p.peek() == .comma) {
+            _ = p.advance();
+            _ = try ts_mod.parseType(p);
+        }
+    }
     const l_brace_tok = try p.expect(.l_brace);
     const prev_in_class = p.in_class;
     const prev_strict = p.in_strict;

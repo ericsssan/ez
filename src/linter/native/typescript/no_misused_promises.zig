@@ -1780,24 +1780,46 @@ fn checkInterfaceInheritedMethods(node: NodeIndex, ctx: *const LintContext) void
     // check if any extended type has a method with the same name returning void.
     for (ctx.ast.extra_data[id.body_start..id.body_end]) |raw| {
         const m: NodeIndex = @enumFromInt(raw);
-        if (ctx.nodeTag(m) != .ts_method_signature) continue;
-        const sd = ctx.extraData(ast.InterfaceSigData, @intFromEnum(ctx.nodeData(m).lhs));
-        const name_node = sd.key;
-        if (name_node == .none or ctx.nodeTag(name_node) != .identifier) continue;
-        const name = ctx.tokenText(ctx.nodeMainToken(name_node));
-        if (!annotationContainsPromise(sd.return_type, ctx)) continue;
+        const mt = ctx.nodeTag(m);
+        var name: []const u8 = "";
+        var promise_returning = false;
+        var report_span_helper: enum { method_sig, prop_sig } = .method_sig;
+        if (mt == .ts_method_signature) {
+            const sd = ctx.extraData(ast.InterfaceSigData, @intFromEnum(ctx.nodeData(m).lhs));
+            const name_node = sd.key;
+            if (name_node == .none or ctx.nodeTag(name_node) != .identifier) continue;
+            name = ctx.tokenText(ctx.nodeMainToken(name_node));
+            if (!annotationContainsPromise(sd.return_type, ctx)) continue;
+            promise_returning = true;
+        } else if (mt == .ts_property_signature) {
+            const md = ctx.nodeData(m);
+            if (md.lhs == .none or ctx.nodeTag(md.lhs) != .identifier) continue;
+            if (md.rhs == .none) continue;
+            name = ctx.tokenText(ctx.nodeMainToken(md.lhs));
+            // Inspect the property's annotation for a Promise-returning
+            // function type (`name: () => Promise<void>`).
+            if (!annotationFunctionReturnsPromise(md.rhs, ctx)) continue;
+            promise_returning = true;
+            report_span_helper = .prop_sig;
+        } else {
+            continue;
+        }
+        if (!promise_returning) continue;
         for (ctx.ast.extra_data[id.extends_start..id.extends_end]) |eraw| {
             const ref: NodeIndex = @enumFromInt(eraw);
             if (ref == .none) continue;
-            // ref is typically ts_type_reference or identifier.
             var ref_root = ref;
             while (ctx.nodeTag(ref_root) == .grouping_expr) ref_root = ctx.nodeData(ref_root).lhs;
             const heritage_name: []const u8 = if (ctx.nodeTag(ref_root) == .identifier or ctx.nodeTag(ref_root) == .ts_type_reference)
                 ctx.tokenText(ctx.nodeMainToken(ref_root))
             else
                 continue;
-            if (heritageMethodIsVoid(heritage_name, name, ctx)) {
-                ctx.reportSpanWithMessageIdAndData(methodSignatureSpan(m, ctx), "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
+            if (heritageMethodIsVoidWithRef(heritage_name, name, ref_root, ctx)) {
+                const span = if (report_span_helper == .method_sig)
+                    methodSignatureSpan(m, ctx)
+                else
+                    propertySignatureSpan(m, ctx);
+                ctx.reportSpanWithMessageIdAndData(span, "voidReturnInheritedMethod", &[_]@import("../../lint_context.zig").MessageDataEntry{
                     .{ .key = "heritageTypeName", .val = heritage_name },
                 });
                 break;
@@ -1806,8 +1828,64 @@ fn checkInterfaceInheritedMethods(node: NodeIndex, ctx: *const LintContext) void
     }
 }
 
+/// Report span for a `ts_property_signature` — extend forward past
+/// a trailing `;` / `,` if present so the diagnostic matches TSe.
+fn propertySignatureSpan(m: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+    const Span = @import("../../../parser/span.zig").Span;
+    const base = ctx.nodeSpan(m);
+    const src = ctx.ast.source;
+    var end: u32 = base.end;
+    while (end < src.len) : (end += 1) {
+        const ch = src[end];
+        if (ch == '>' or ch == ' ' or ch == '\t') continue;
+        if (ch == ';' or ch == ',') { end += 1; break; }
+        break;
+    }
+    return Span{ .start = base.start, .end = end };
+}
+
 /// Looks for a class, interface, or type alias named `type_name` and
 /// checks if it has a method `member_name` with a void return type.
+/// `heritage_ref` is the original ts_type_reference (or .none) so
+/// callers can supply type-argument bindings.
+fn heritageMethodIsVoidWithRef(
+    type_name: []const u8,
+    member_name: []const u8,
+    heritage_ref: NodeIndex,
+    ctx: *const LintContext,
+) bool {
+    const total: u32 = @intCast(ctx.ast.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        const t = ctx.nodeTag(ni);
+        if (t == .class_decl) {
+            const cd = ctx.extraData(ast.ClassData, @intFromEnum(ctx.nodeData(ni).lhs));
+            if (cd.name == .none) continue;
+            const cname = ctx.tokenText(ctx.nodeMainToken(cd.name));
+            if (!std.mem.eql(u8, cname, type_name)) continue;
+            return classMethodIsVoid(cd, member_name, ctx);
+        }
+        if (t == .ts_interface_decl) {
+            const id = ctx.extraData(ast.InterfaceData, @intFromEnum(ctx.nodeData(ni).lhs));
+            const iname = ctx.tokenText(id.name);
+            if (!std.mem.eql(u8, iname, type_name)) continue;
+            return interfaceMethodIsVoid(id, member_name, ctx);
+        }
+        if (t == .ts_type_alias_decl) {
+            const ad = ctx.extraData(ast.TypeAliasData, @intFromEnum(ctx.nodeData(ni).lhs));
+            const aname = ctx.tokenText(ad.name);
+            if (!std.mem.eql(u8, aname, type_name)) continue;
+            // Collect alias-arg bindings from the heritage reference.
+            var names: [4][]const u8 = undefined;
+            var nodes: [4]NodeIndex = undefined;
+            const n = collectAliasSubstitution(heritage_ref, ad, ctx, &names, &nodes);
+            return aliasMethodIsVoidSubst(ad.type_node, member_name, names[0..n], nodes[0..n], ctx, 0);
+        }
+    }
+    return false;
+}
+
 fn heritageMethodIsVoid(type_name: []const u8, member_name: []const u8, ctx: *const LintContext) bool {
     const total: u32 = @intCast(ctx.ast.nodes.len);
     var i: u32 = 0;
@@ -1833,6 +1911,119 @@ fn heritageMethodIsVoid(type_name: []const u8, member_name: []const u8, ctx: *co
         return aliasMethodIsVoid(body, member_name, ctx, 0);
     }
     return false;
+}
+
+/// Pair the alias's declared type parameters with the heritage's
+/// type-args, returning the count of bindings written.
+fn collectAliasSubstitution(
+    heritage_ref: NodeIndex,
+    ad: ast.TypeAliasData,
+    ctx: *const LintContext,
+    names_out: *[4][]const u8,
+    nodes_out: *[4]NodeIndex,
+) usize {
+    if (heritage_ref == .none) return 0;
+    var ref = heritage_ref;
+    while (ctx.nodeTag(ref) == .grouping_expr) ref = ctx.nodeData(ref).lhs;
+    if (ctx.nodeTag(ref) != .ts_type_reference) return 0;
+    const ref_data = ctx.nodeData(ref);
+    if (ref_data.rhs == .none) return 0;
+    const arg_range = ctx.extraData(ast.SubRange, @intFromEnum(ref_data.rhs));
+    if (arg_range.start >= arg_range.end or arg_range.end > ctx.ast.extra_data.len) return 0;
+    const args = ctx.ast.extra_data[arg_range.start..arg_range.end];
+    if (ad.type_params_end <= ad.type_params or ad.type_params_end > ctx.ast.extra_data.len) return 0;
+    const params = ctx.ast.extra_data[ad.type_params..ad.type_params_end];
+    const n = @min(@min(args.len, params.len), names_out.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const tp: NodeIndex = @enumFromInt(params[i]);
+        if (ctx.nodeTag(tp) != .ts_type_parameter) continue;
+        names_out[i] = ctx.tokenText(ctx.nodeMainToken(tp));
+        nodes_out[i] = @enumFromInt(args[i]);
+    }
+    return n;
+}
+
+fn aliasMethodIsVoidSubst(
+    ty: NodeIndex,
+    member_name: []const u8,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+    depth: u8,
+) bool {
+    if (depth > 6) return false;
+    if (ty == .none) return false;
+    var inner = ty;
+    while (ctx.nodeTag(inner) == .ts_parenthesized_type) inner = ctx.nodeData(inner).lhs;
+    const tag = ctx.nodeTag(inner);
+    // Conditional type: `Check extends Extends ? A : B`.  Try to
+    // evaluate the relation using the heritage's bindings.
+    if (tag == .ts_conditional_type) {
+        const d = ctx.nodeData(inner);
+        const slice_start = @intFromEnum(d.lhs);
+        const slice_end = @intFromEnum(d.rhs);
+        if (slice_end <= slice_start or slice_end > ctx.ast.extra_data.len) return false;
+        const slice = ctx.ast.extra_data[slice_start..slice_end];
+        if (slice.len < 4) return false;
+        const check_node: NodeIndex = @enumFromInt(slice[0]);
+        const extends_node: NodeIndex = @enumFromInt(slice[1]);
+        const true_arm: NodeIndex = @enumFromInt(slice[2]);
+        const false_arm: NodeIndex = @enumFromInt(slice[3]);
+        // Substitute check_node's type-parameter ref, then compare.
+        const resolved_check = resolveBindingNode(check_node, names, nodes, ctx);
+        const relation = compareTypeNodes(resolved_check, extends_node, ctx);
+        if (relation == .yes) return aliasMethodIsVoidSubst(true_arm, member_name, names, nodes, ctx, depth + 1);
+        if (relation == .no) return aliasMethodIsVoidSubst(false_arm, member_name, names, nodes, ctx, depth + 1);
+        // Unknown — walk both arms; if either is void-matching we
+        // can't safely fire, so OR them only if both agree.  Stay
+        // conservative: require both arms void to fire.
+        const a = aliasMethodIsVoidSubst(true_arm, member_name, names, nodes, ctx, depth + 1);
+        const b = aliasMethodIsVoidSubst(false_arm, member_name, names, nodes, ctx, depth + 1);
+        return a and b;
+    }
+    return aliasMethodIsVoid(inner, member_name, ctx, depth);
+}
+
+fn resolveBindingNode(
+    node: NodeIndex,
+    names: []const []const u8,
+    nodes: []const NodeIndex,
+    ctx: *const LintContext,
+) NodeIndex {
+    var n = node;
+    while (ctx.nodeTag(n) == .ts_parenthesized_type) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .ts_type_reference) return node;
+    const name = ctx.tokenText(ctx.nodeMainToken(n));
+    for (names, nodes) |k, v| {
+        if (std.mem.eql(u8, k, name)) return v;
+    }
+    return node;
+}
+
+const Relation = enum { yes, no, unknown };
+
+/// Trivial type-node equality / disjointness check used by
+/// conditional-type evaluation in inherited-method walks.  Handles
+/// the cases the corpus exercises: literal-type-vs-literal-type,
+/// keyword-vs-keyword.
+fn compareTypeNodes(a: NodeIndex, b: NodeIndex, ctx: *const LintContext) Relation {
+    if (a == .none or b == .none) return .unknown;
+    var na = a;
+    var nb = b;
+    while (ctx.nodeTag(na) == .ts_parenthesized_type) na = ctx.nodeData(na).lhs;
+    while (ctx.nodeTag(nb) == .ts_parenthesized_type) nb = ctx.nodeData(nb).lhs;
+    if (ctx.nodeTag(na) != .ts_type_reference or ctx.nodeTag(nb) != .ts_type_reference) {
+        return .unknown;
+    }
+    const txt_a = ctx.tokenText(ctx.nodeMainToken(na));
+    const txt_b = ctx.tokenText(ctx.nodeMainToken(nb));
+    if (std.mem.eql(u8, txt_a, txt_b)) return .yes;
+    // `false extends true` / `true extends false` etc.
+    const a_bool_lit = std.mem.eql(u8, txt_a, "true") or std.mem.eql(u8, txt_a, "false");
+    const b_bool_lit = std.mem.eql(u8, txt_b, "true") or std.mem.eql(u8, txt_b, "false");
+    if (a_bool_lit and b_bool_lit) return .no;
+    return .unknown;
 }
 
 fn aliasMethodIsVoid(ty: NodeIndex, member_name: []const u8, ctx: *const LintContext, depth: u8) bool {
@@ -1881,6 +2072,22 @@ fn aliasMethodIsVoid(ty: NodeIndex, member_name: []const u8, ctx: *const LintCon
         if (typeAliasBody(name, ctx)) |body| return aliasMethodIsVoid(body, member_name, ctx, depth + 1);
         if (heritageMethodIsVoid(name, member_name, ctx)) return true;
     }
+    // `typeof X` — resolve to X's value type.  When X is bound to a
+    // class expression, walk its members.
+    if (tag == .ts_typeof_type or tag == .ts_type_query) {
+        const operand_node = ctx.nodeData(inner).lhs;
+        if (operand_node == .none) return false;
+        var op = operand_node;
+        while (ctx.nodeTag(op) == .ts_parenthesized_type) op = ctx.nodeData(op).lhs;
+        if (ctx.nodeTag(op) == .ts_type_reference or ctx.nodeTag(op) == .identifier) {
+            const op_name = ctx.tokenText(ctx.nodeMainToken(op));
+            if (classExpressionBoundToName(op_name, ctx)) |cd| {
+                if (classDataMethodIsVoid(cd, member_name, ctx)) return true;
+            }
+            // Or resolve to a known type alias.
+            if (heritageMethodIsVoid(op_name, member_name, ctx)) return true;
+        }
+    }
     return false;
 }
 
@@ -1912,14 +2119,24 @@ fn interfaceMethodIsVoid(id: ast.InterfaceData, name: []const u8, ctx: *const Li
     if (id.body_start >= id.body_end or id.body_end > ctx.ast.extra_data.len) return false;
     for (ctx.ast.extra_data[id.body_start..id.body_end]) |raw| {
         const m: NodeIndex = @enumFromInt(raw);
-        if (ctx.nodeTag(m) != .ts_method_signature) continue;
-        const sd = ctx.extraData(ast.InterfaceSigData, @intFromEnum(ctx.nodeData(m).lhs));
-        const name_node = sd.key;
-        if (name_node == .none or ctx.nodeTag(name_node) != .identifier) continue;
-        const mname = ctx.tokenText(ctx.nodeMainToken(name_node));
-        if (!std.mem.eql(u8, mname, name)) continue;
-        if (returnTypeIsVoid(sd.return_type, ctx)) return true;
-        if (!annotationContainsPromise(sd.return_type, ctx)) return true;
+        const mt = ctx.nodeTag(m);
+        if (mt == .ts_method_signature) {
+            const sd = ctx.extraData(ast.InterfaceSigData, @intFromEnum(ctx.nodeData(m).lhs));
+            const name_node = sd.key;
+            if (name_node == .none or ctx.nodeTag(name_node) != .identifier) continue;
+            const mname = ctx.tokenText(ctx.nodeMainToken(name_node));
+            if (!std.mem.eql(u8, mname, name)) continue;
+            if (returnTypeIsVoid(sd.return_type, ctx)) return true;
+            if (!annotationContainsPromise(sd.return_type, ctx)) return true;
+        } else if (mt == .ts_property_signature) {
+            const md = ctx.nodeData(m);
+            if (md.lhs == .none or ctx.nodeTag(md.lhs) != .identifier) continue;
+            if (md.rhs == .none) continue;
+            const pname = ctx.tokenText(ctx.nodeMainToken(md.lhs));
+            if (!std.mem.eql(u8, pname, name)) continue;
+            if (annotationFunctionReturnsPromise(md.rhs, ctx)) continue;
+            if (annotationFunctionReturnsVoid(md.rhs, ctx)) return true;
+        }
     }
     return false;
 }
@@ -2015,6 +2232,11 @@ fn superclassMethodIsVoid(super_ref: NodeIndex, name: []const u8, ctx: *const Li
     while (ctx.nodeTag(ref) == .grouping_expr) ref = ctx.nodeData(ref).lhs;
     if (ctx.nodeTag(ref) != .identifier) return false;
     const sname = ctx.tokenText(ctx.nodeMainToken(ref));
+    // First, check for a `const X = class { ... }` binding — the
+    // class expression is the parent's structural shape.
+    if (classExpressionBoundToName(sname, ctx)) |cd| {
+        if (classDataMethodIsVoid(cd, name, ctx)) return true;
+    }
     // Find class declaration with this name; walk its members for matching method.
     const total: u32 = @intCast(ctx.ast.nodes.len);
     var i: u32 = 0;
@@ -2051,6 +2273,57 @@ fn superclassMethodIsVoid(super_ref: NodeIndex, name: []const u8, ctx: *const Li
             }
         }
         return false;
+    }
+    return false;
+}
+
+/// Find a `const X = class { ... }` declarator and return its
+/// ClassData when X matches `name`.
+fn classExpressionBoundToName(name: []const u8, ctx: *const LintContext) ?ast.ClassData {
+    const total: u32 = @intCast(ctx.ast.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (ctx.nodeTag(ni) != .declarator) continue;
+        const d = ctx.nodeData(ni);
+        if (d.lhs == .none or ctx.nodeTag(d.lhs) != .identifier) continue;
+        const dn = ctx.tokenText(ctx.nodeMainToken(d.lhs));
+        if (!std.mem.eql(u8, dn, name)) continue;
+        if (d.rhs == .none) continue;
+        var init = d.rhs;
+        while (ctx.nodeTag(init) == .grouping_expr) init = ctx.nodeData(init).lhs;
+        if (ctx.nodeTag(init) != .class_expr) continue;
+        return ctx.extraData(ast.ClassData, @intFromEnum(ctx.nodeData(init).lhs));
+    }
+    return null;
+}
+
+/// Walk `cd.body` looking for a method (or void-returning field)
+/// matching `name`.  Lifted from the inline loop in
+/// `superclassMethodIsVoid` so the class-expression case can reuse it.
+fn classDataMethodIsVoid(cd: ast.ClassData, name: []const u8, ctx: *const LintContext) bool {
+    const body = cd.body;
+    if (body == .none) return false;
+    const bd = ctx.nodeData(body);
+    const bs = @intFromEnum(bd.lhs);
+    const be = @intFromEnum(bd.rhs);
+    if (bs >= be or be > ctx.ast.extra_data.len) return false;
+    for (ctx.ast.extra_data[bs..be]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        const mt = ctx.nodeTag(m);
+        if (mt == .method_def or mt == .computed_method_def) {
+            const md_data = ctx.nodeData(m);
+            if (md_data.lhs == .none or ctx.nodeTag(md_data.lhs) != .identifier) continue;
+            const mname = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
+            if (!std.mem.eql(u8, mname, name)) continue;
+            const method_data = ctx.extraData(ast.MethodData, @intFromEnum(md_data.rhs));
+            if ((method_data.modifiers & ast.ModifierBit.@"static") != 0) continue;
+            if (returnTypeIsVoid(method_data.return_type, ctx)) return true;
+            const m_async = (method_data.modifiers & ast.ModifierBit.@"async") != 0;
+            if (!m_async and !annotationContainsPromise(method_data.return_type, ctx)) return true;
+        } else if (mt == .property_def or mt == .computed_property_def) {
+            if (fieldMatchesVoidReturning(m, name, ctx)) return true;
+        }
     }
     return false;
 }
