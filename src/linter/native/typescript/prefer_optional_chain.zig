@@ -471,6 +471,11 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
     }
     var prev = prev_opt orelse return start;
     if (ctx.nodeTag(prev) == .this_expr) return start;
+    // Strict-root classification for AND chains: `X !== null` against
+    // a subject with BOTH null and undef can't rewrite to `?.`
+    // semantically (both halves collapse to undefined under `?.`,
+    // but `!== null` only excludes one).
+    if (classifyAndStrictRoot(first, ctx) == .both_halves) return start;
     var end: usize = if (k_start == start + 2) start + 1 else start;
     var extended: bool = false;
     var ext_count: usize = 0;
@@ -490,7 +495,8 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
                 continue;
             }
             if (isPrefixExtension(prev, subj, ctx)) {
-                if (!prev_narrow.full() and !outermostStepIsOptional(subj, ctx)) break;
+                const opt = outermostStepIsOptional(subj, ctx);
+                if (!prev_narrow.full() and !opt) break;
                 prev = subj;
                 prev_narrow = op_narrow;
                 end = k;
@@ -511,7 +517,8 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
         const op = unwrapGrouping(operands[k], ctx);
         if (isComparisonForm(op, ctx) and isExtensionOf(prev, op, ctx)) {
             const subj = comparisonExtensionSubject(prev, op, ctx);
-            if (prev_narrow.full() or (subj != .none and outermostStepIsOptional(subj, ctx))) {
+            const opt = subj != .none and outermostStepIsOptional(subj, ctx);
+            if (prev_narrow.full() or opt) {
                 end = k;
                 extended = true;
                 ext_count += 1;
@@ -534,6 +541,47 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
         return start;
     }
     return end;
+}
+
+/// AND chain analog of `classifyOrStrictRoot`: strict `X !== null`
+/// vs `X !== undefined` chain root + type-based classification.
+fn classifyAndStrictRoot(node: NodeIndex, ctx: *const LintContext) OrRootKind {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .strict_not_equal) return .unknown;
+    const d = ctx.nodeData(n);
+    // Skip typeof patterns — handled separately.
+    if (typeofUndefinedSubject(d.lhs, d.rhs, ctx) != null) return .unknown;
+    if (typeofUndefinedSubject(d.rhs, d.lhs, ctx) != null) return .unknown;
+    if (!ctx.hasTypeChecker()) return .unknown;
+    var subj: NodeIndex = .none;
+    var testing_undef = false;
+    if (isUndefinedNode(d.rhs, ctx)) {
+        subj = d.lhs;
+        testing_undef = true;
+    } else if (isNullLiteralNode(d.rhs, ctx)) {
+        subj = d.lhs;
+    } else if (isUndefinedNode(d.lhs, ctx)) {
+        subj = d.rhs;
+        testing_undef = true;
+    } else if (isNullLiteralNode(d.lhs, ctx)) {
+        subj = d.rhs;
+    } else return .unknown;
+    const ty = ctx.typeOfNode(subj);
+    const kind = ctx.typeKind(ty);
+    switch (kind) {
+        .any, .unknown, .error_t, .type_param => return .unknown,
+        else => {},
+    }
+    const has_null = ctx.typeIdContainsNull(ty);
+    const has_undef = ctx.typeIdContainsUndefined(ty);
+    if (has_null and has_undef) return .both_halves;
+    if (testing_undef) {
+        if (has_undef) return .safe;
+        return .statically_false;
+    }
+    if (has_null) return .safe;
+    return .statically_false;
 }
 
 /// Narrowing footprint of a chain operand: which nullish halves
@@ -924,18 +972,29 @@ fn findOrChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const L
     if (ctx.nodeTag(first) == .this_expr) return start;
     var prev = orFirstOperandSubject(first, ctx) orelse return start;
     if (ctx.nodeTag(prev) == .this_expr) return start;
+    const root_kind = classifyOrStrictRoot(first, ctx);
+    // If subject's type has BOTH null and undef, strict `=== null`
+    // can't be rewritten to `?.` (collapses both halves) — bail.
+    if (root_kind == .both_halves) return start;
+    var prev_narrow = orOperandNarrowing(first, ctx);
     var end: usize = start;
     var extended: bool = false;
+    var saw_optional_ext: bool = false;
     var k: usize = start + 1;
     while (k < operands.len) : (k += 1) {
         const op = unwrapGrouping(operands[k], ctx);
         if (orMiddleOperandSubject(op, ctx)) |subj| {
+            const op_narrow = orOperandNarrowing(op, ctx);
             if (sameExpr(prev, subj, ctx)) {
-                // Same-depth re-check — don't advance `end`.
+                prev_narrow = prev_narrow.combine(op_narrow);
                 continue;
             }
             if (isPrefixExtension(prev, subj, ctx)) {
+                const opt = outermostStepIsOptional(subj, ctx);
+                if (!prev_narrow.full() and !opt) break;
+                if (opt) saw_optional_ext = true;
                 prev = subj;
+                prev_narrow = op_narrow;
                 end = k;
                 extended = true;
                 continue;
@@ -946,12 +1005,91 @@ fn findOrChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const L
     if (k < operands.len) {
         const op = unwrapGrouping(operands[k], ctx);
         if (isOrChainLast(prev, op, ctx)) {
-            end = k;
-            extended = true;
+            const ext_subj = orChainLastExtensionSubject(prev, op, ctx);
+            const opt = ext_subj != .none and outermostStepIsOptional(ext_subj, ctx);
+            if (prev_narrow.full() or opt) {
+                if (opt) saw_optional_ext = true;
+                end = k;
+                extended = true;
+            }
         }
     }
     if (!extended) return start;
+    if (root_kind == .statically_false and !saw_optional_ext) return start;
     return end;
+}
+
+const OrRootKind = enum {
+    /// Type info missing/imprecise — accept conservatively.
+    unknown,
+    /// Subject's type has only the tested nullish half — safe
+    /// chain (`foo === null` against `T | null` rewrites cleanly).
+    safe,
+    /// Subject's type has BOTH null and undefined — unsafe rewrite
+    /// because `?.` collapses both halves while `=== null` only
+    /// matches one.
+    both_halves,
+    /// Subject's type has only the OTHER half — check is statically
+    /// false.  TSe still fires when the chain has at least one
+    /// optional-access extension (suggests simplification).
+    statically_false,
+};
+
+/// Classify a strict `X === null/undefined` chain root for OR
+/// chains: determines whether the rewrite to `?.` would preserve
+/// semantics based on the subject's type.
+fn classifyOrStrictRoot(node: NodeIndex, ctx: *const LintContext) OrRootKind {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .strict_equal) return .unknown;
+    if (!ctx.hasTypeChecker()) return .unknown;
+    const d = ctx.nodeData(n);
+    var subj: NodeIndex = .none;
+    var testing_undef = false;
+    if (isUndefinedNode(d.rhs, ctx)) {
+        subj = d.lhs;
+        testing_undef = true;
+    } else if (isNullLiteralNode(d.rhs, ctx)) {
+        subj = d.lhs;
+    } else if (isUndefinedNode(d.lhs, ctx)) {
+        subj = d.rhs;
+        testing_undef = true;
+    } else if (isNullLiteralNode(d.lhs, ctx)) {
+        subj = d.rhs;
+    } else return .unknown;
+    const ty = ctx.typeOfNode(subj);
+    const kind = ctx.typeKind(ty);
+    switch (kind) {
+        .any, .unknown, .error_t, .type_param => return .unknown,
+        else => {},
+    }
+    const has_null = ctx.typeIdContainsNull(ty);
+    const has_undef = ctx.typeIdContainsUndefined(ty);
+    if (has_null and has_undef) return .both_halves;
+    if (testing_undef) {
+        if (has_undef) return .safe;
+        return .statically_false;
+    }
+    if (has_null) return .safe;
+    return .statically_false;
+}
+
+/// Return the extension subject of the last operand of an OR chain
+/// — the chain-extending side of either `!X.path` or `X.path OP Y`.
+fn orChainLastExtensionSubject(prev: NodeIndex, op: NodeIndex, ctx: *const LintContext) NodeIndex {
+    var n = op;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) == .logical_not) {
+        var inner = ctx.nodeData(n).lhs;
+        while (ctx.nodeTag(inner) == .grouping_expr) inner = ctx.nodeData(inner).lhs;
+        if (isExtensionOf(prev, inner, ctx)) return inner;
+        if (sameExpr(prev, inner, ctx)) return inner;
+        return .none;
+    }
+    const d = ctx.nodeData(n);
+    if (isExtensionOf(prev, d.lhs, ctx)) return d.lhs;
+    if (isExtensionOf(prev, d.rhs, ctx)) return d.rhs;
+    return .none;
 }
 
 fn reportOrChainSubrun(
@@ -1007,10 +1145,52 @@ fn orFirstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     }
     if (ctx.nodeTag(n) == .strict_equal) {
         const d = ctx.nodeData(n);
-        if (strictNullishCheckSafe(d.lhs, d.rhs, ctx)) return d.lhs;
-        if (strictNullishCheckSafe(d.rhs, d.lhs, ctx)) return d.rhs;
+        // Relaxed: accept strict `X === null` / `X === undefined` as
+        // chain ROOT.  Single-half exclusion is fine — the walker's
+        // narrowing gate rejects unsafe extensions.
+        if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
+        if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
     }
     return null;
+}
+
+/// Narrowing footprint of an OR-chain operand.  OR chains test the
+/// "is nullish" side: `X == null` ⇒ X IS null OR undefined.  The
+/// chain continues when these checks accumulate to confirm BOTH
+/// nullish halves, mirroring AND-chain narrowing in reverse.
+fn orOperandNarrowing(node: NodeIndex, ctx: *const LintContext) Narrow {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .logical_not) {
+        return .{ .excludes_null = true, .excludes_undef = true };
+    }
+    if (tag == .equal) {
+        return .{ .excludes_null = true, .excludes_undef = true };
+    }
+    if (tag == .strict_equal) {
+        const d = ctx.nodeData(n);
+        var subj: NodeIndex = undefined;
+        var n_excl_null = false;
+        var n_excl_undef = false;
+        if (isNullLiteralNode(d.rhs, ctx)) {
+            subj = d.lhs;
+            n_excl_null = true;
+        } else if (isUndefinedNode(d.rhs, ctx)) {
+            subj = d.lhs;
+            n_excl_undef = true;
+        } else if (isNullLiteralNode(d.lhs, ctx)) {
+            subj = d.rhs;
+            n_excl_null = true;
+        } else if (isUndefinedNode(d.lhs, ctx)) {
+            subj = d.rhs;
+            n_excl_undef = true;
+        } else {
+            return .{ .excludes_null = true, .excludes_undef = true };
+        }
+        return typeAwareNarrowComplement(.{ .excludes_null = n_excl_null, .excludes_undef = n_excl_undef }, subj, ctx);
+    }
+    return .{ .excludes_null = true, .excludes_undef = true };
 }
 
 /// Middle-operand subjects for `||` chains.  `X == null` /
