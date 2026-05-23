@@ -490,7 +490,9 @@ pub const Parser = struct {
             .max_nodes = if (streaming) |s| s.capacity_hint * 16
                 else tokens.len * 16,
             .in_function = false,
-            .in_async = is_module_file, // top-level await in modules (ES2022)
+            // Top-level await: allowed in modules (ES2022) and in TypeScript
+            // (TSe / tsc accept it in script files too).
+            .in_async = is_module_file or language == .ts or language == .tsx,
             .in_generator = false,
             .in_class = false,
             .in_static_block = false,

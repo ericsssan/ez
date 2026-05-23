@@ -719,7 +719,15 @@ pub const Checker = struct {
             const bd = self.ast_ref.nodeData(binding);
             if (bd.rhs != .none and self.ast_ref.nodeTag(bd.rhs) == .ts_type_annotation) {
                 const ty_node = self.ast_ref.nodeData(bd.rhs).lhs;
-                return self.resolveTypeNode(ty_node);
+                var ty = self.resolveTypeNode(ty_node);
+                // Optional parameter (`x?: T`) — parser marks the identifier
+                // by setting lhs to `.root`.  Union the annotation type
+                // with `undefined` to match TS's behavior.
+                if (bd.lhs == .root) {
+                    const ids = [_]TypeId{ ty, tymod.ID_UNDEFINED };
+                    ty = self.store.unionOf(&ids) catch ty;
+                }
+                return ty;
             }
         }
         const parents = self.ast_ref.parents;
@@ -1028,6 +1036,21 @@ pub const Checker = struct {
             if (prop_count >= props_buf.len) break;
             const member: NodeIndex = @enumFromInt(raw);
             const m_tag = self.ast_ref.nodeTag(member);
+            if (m_tag == .ts_index_signature) {
+                // `[k: T]: V` — store the value type V under a sentinel
+                // name "[]" so inferComputedMember can find it when
+                // indexing the object with a non-literal key.
+                const sig_data = self.ast_ref.nodeData(member);
+                if (sig_data.rhs == .none) continue;
+                const value_node = if (self.ast_ref.nodeTag(sig_data.rhs) == .ts_type_annotation)
+                    self.ast_ref.nodeData(sig_data.rhs).lhs
+                else
+                    sig_data.rhs;
+                const value_ty = self.resolveTypeNode(value_node);
+                props_buf[prop_count] = .{ .name = "[]", .type_id = value_ty };
+                prop_count += 1;
+                continue;
+            }
             if (m_tag != .ts_property_signature and m_tag != .ts_method_signature) continue;
             if (m_tag == .ts_property_signature) {
                 const member_data = self.ast_ref.nodeData(member);
@@ -3101,6 +3124,13 @@ pub const Checker = struct {
                 for (self.store.propsOf(obj.object_props)) |p| {
                     if (std.mem.eql(u8, p.name, name)) return p.type_id;
                 }
+            }
+        }
+        // Index signature `{[k: T]: V}` — match ANY key against the "[]"
+        // sentinel prop stashed by `resolveTypeLiteral`.
+        if (obj.kind == .object_t) {
+            for (self.store.propsOf(obj.object_props)) |p| {
+                if (std.mem.eql(u8, p.name, "[]")) return p.type_id;
             }
         }
         // Type reference (Promise / Array / etc.): resolve to the

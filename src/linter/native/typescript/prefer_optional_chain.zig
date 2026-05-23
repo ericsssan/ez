@@ -153,8 +153,15 @@ fn firstOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
             if (subjectTypeCarriesUndefined(x, ctx)) return x;
             return null;
         }
-        if (strictNullishCheckSafe(d.lhs, d.rhs, ctx)) return d.lhs;
-        if (strictNullishCheckSafe(d.rhs, d.lhs, ctx)) return d.rhs;
+        // Plain strict `X !== null` / `X !== undefined` — accept as
+        // a chain ROOT.  Single-half exclusion is fine because the
+        // walker's `prev_full` check gates further extension: if the
+        // next operand doesn't use optional access AND the type
+        // doesn't narrow to the other nullish half, the chain breaks
+        // immediately.  Post-walk terminal validation rejects unsafe
+        // single-extension chains.
+        if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
+        if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
         return null;
     }
     return switch (tag) {
@@ -453,37 +460,39 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
     const first = unwrapGrouping(operands[start], ctx);
     if (ctx.nodeTag(first) == .this_expr) return start;
     var prev_opt = firstOperandSubject(first, ctx);
-    // Compound strict pair: when operand[start] is a strict
-    // `X !== <nullish>` that doesn't pass `strictNullishCheckSafe`
-    // alone (because the OTHER nullish half is still possible) but
-    // operand[start+1] is a complementary strict check on the same
-    // subject (excludes the missing half), the two together form a
-    // valid chain ROOT confirming X is non-nullish.
     var k_start: usize = start + 1;
+    var initial_narrow = operandNarrowing(first, ctx);
     if (prev_opt == null and start + 1 < operands.len) {
         if (compoundStrictPairSubject(first, unwrapGrouping(operands[start + 1], ctx), ctx)) |s| {
             prev_opt = s;
             k_start = start + 2;
+            initial_narrow = .{ .excludes_null = true, .excludes_undef = true };
         }
     }
     var prev = prev_opt orelse return start;
     if (ctx.nodeTag(prev) == .this_expr) return start;
-    // After a compound strict pair (consumed two operands without
-    // deepening), `end` is the second op but `extended` remains
-    // false — chain still needs an actual access-extension after.
     var end: usize = if (k_start == start + 2) start + 1 else start;
     var extended: bool = false;
     var ext_count: usize = 0;
+    var prev_narrow = initial_narrow;
     var k: usize = k_start;
-    // Presence-check phase.
+    // Presence-check phase with narrowing tracking.  Extension to a
+    // deeper level requires `prev` to be FULLY non-nullish (both
+    // null and undefined excluded) UNLESS the extension's outermost
+    // step uses optional access (`?.`), in which case the `?.`
+    // absorbs the partial narrowing of `prev`.
     while (k < operands.len) : (k += 1) {
         const op = unwrapGrouping(operands[k], ctx);
         if (presenceCheckSubject(op, ctx)) |subj| {
+            const op_narrow = operandNarrowing(op, ctx);
             if (sameExpr(prev, subj, ctx)) {
+                prev_narrow = prev_narrow.combine(op_narrow);
                 continue;
             }
             if (isPrefixExtension(prev, subj, ctx)) {
+                if (!prev_narrow.full() and !outermostStepIsOptional(subj, ctx)) break;
                 prev = subj;
+                prev_narrow = op_narrow;
                 end = k;
                 extended = true;
                 ext_count += 1;
@@ -492,13 +501,21 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
         }
         break;
     }
-    // Closing-comparison phase.
+    // Closing-comparison phase — accept value-comparison closers
+    // (`X.path === 'Y'`, `X.path !== undefined`), but NOT plain
+    // truthy access (those go through the presence-check phase
+    // above with narrowing-aware gating).  Same prev_full gate
+    // applies: the comparison's subject-extension can't access
+    // through a partially-narrowed prev unless via optional `?.`.
     if (k < operands.len) {
         const op = unwrapGrouping(operands[k], ctx);
-        if (isExtensionOf(prev, op, ctx)) {
-            end = k;
-            extended = true;
-            ext_count += 1;
+        if (isComparisonForm(op, ctx) and isExtensionOf(prev, op, ctx)) {
+            const subj = comparisonExtensionSubject(prev, op, ctx);
+            if (prev_narrow.full() or (subj != .none and outermostStepIsOptional(subj, ctx))) {
+                end = k;
+                extended = true;
+                ext_count += 1;
+            }
         }
     }
     if (!extended) return start;
@@ -517,6 +534,118 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
         return start;
     }
     return end;
+}
+
+/// Narrowing footprint of a chain operand: which nullish halves
+/// the operand excludes from its subject.  Combines via OR when
+/// multiple operands re-check the same subject.
+const Narrow = struct {
+    excludes_null: bool,
+    excludes_undef: bool,
+
+    fn full(self: Narrow) bool {
+        return self.excludes_null and self.excludes_undef;
+    }
+
+    fn combine(self: Narrow, other: Narrow) Narrow {
+        return .{
+            .excludes_null = self.excludes_null or other.excludes_null,
+            .excludes_undef = self.excludes_undef or other.excludes_undef,
+        };
+    }
+};
+
+/// Compute the nullish exclusion contributed by an operand.
+/// Type-aware: when a strict-one-half check applies to a subject
+/// whose type doesn't carry the OTHER nullish half, the operand
+/// effectively achieves full narrowing.
+fn operandNarrowing(node: NodeIndex, ctx: *const LintContext) Narrow {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .not_equal) {
+        return .{ .excludes_null = true, .excludes_undef = true };
+    }
+    if (tag == .strict_not_equal) {
+        const d = ctx.nodeData(n);
+        if (typeofUndefinedSubject(d.lhs, d.rhs, ctx)) |subj| {
+            return typeAwareNarrowComplement(.{ .excludes_null = false, .excludes_undef = true }, subj, ctx);
+        }
+        if (typeofUndefinedSubject(d.rhs, d.lhs, ctx)) |subj| {
+            return typeAwareNarrowComplement(.{ .excludes_null = false, .excludes_undef = true }, subj, ctx);
+        }
+        var subj: NodeIndex = undefined;
+        var n_excl_null = false;
+        var n_excl_undef = false;
+        if (isNullLiteralNode(d.rhs, ctx)) {
+            subj = d.lhs;
+            n_excl_null = true;
+        } else if (isUndefinedNode(d.rhs, ctx)) {
+            subj = d.lhs;
+            n_excl_undef = true;
+        } else if (isNullLiteralNode(d.lhs, ctx)) {
+            subj = d.rhs;
+            n_excl_null = true;
+        } else if (isUndefinedNode(d.lhs, ctx)) {
+            subj = d.rhs;
+            n_excl_undef = true;
+        } else {
+            return .{ .excludes_null = true, .excludes_undef = true };
+        }
+        return typeAwareNarrowComplement(.{ .excludes_null = n_excl_null, .excludes_undef = n_excl_undef }, subj, ctx);
+    }
+    return .{ .excludes_null = true, .excludes_undef = true };
+}
+
+/// Promote a partial Narrow to full when the subject's type doesn't
+/// carry the other nullish half — a strict `X !== undefined` against
+/// a subject typed `T | undefined` (no null) is effectively a full
+/// presence check.
+fn typeAwareNarrowComplement(syntactic: Narrow, subj: NodeIndex, ctx: *const LintContext) Narrow {
+    if (!ctx.hasTypeChecker()) return syntactic;
+    const ty = ctx.typeOfNode(subj);
+    const kind = ctx.typeKind(ty);
+    switch (kind) {
+        .any, .unknown, .error_t, .type_param => return syntactic,
+        else => {},
+    }
+    var result = syntactic;
+    if (syntactic.excludes_null and !syntactic.excludes_undef) {
+        if (!ctx.typeIdContainsUndefined(ty)) result.excludes_undef = true;
+    } else if (syntactic.excludes_undef and !syntactic.excludes_null) {
+        if (!ctx.typeIdContainsNull(ty)) result.excludes_null = true;
+    }
+    return result;
+}
+
+/// For a comparison operand whose subject extends `prev`, return the
+/// extending-side expression (the LHS or RHS that walks down to `prev`).
+fn comparisonExtensionSubject(prev: NodeIndex, op: NodeIndex, ctx: *const LintContext) NodeIndex {
+    var n = op;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const d = ctx.nodeData(n);
+    if (isExtensionOf(prev, d.lhs, ctx)) return d.lhs;
+    if (isExtensionOf(prev, d.rhs, ctx)) return d.rhs;
+    return .none;
+}
+
+/// True when `node` is a binary comparison (`==`, `===`, `!=`, `!==`).
+fn isComparisonForm(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    return tag == .equal or tag == .strict_equal or
+        tag == .not_equal or tag == .strict_not_equal;
+}
+
+/// True when the outermost access step of `node` uses optional `?.`.
+fn outermostStepIsOptional(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr or ctx.nodeTag(n) == .ts_non_null_expr) {
+        n = ctx.nodeData(n).lhs;
+    }
+    const t = ctx.nodeTag(n);
+    return t == .optional_member_expr or t == .optional_computed_member_expr or t == .optional_call_expr;
 }
 
 /// Operand forms that confirm non-nullishness of the chain subject
