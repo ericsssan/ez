@@ -821,6 +821,46 @@ pub const LintContext = struct {
         };
     }
 
+    pub const BooleanValue = enum { true_value, false_value, none };
+
+    /// For a `boolean_literal` type, return whether its literal value
+    /// is `true` / `false`.  `.none` for non-boolean-literal ids.
+    pub fn typeIdBooleanValue(self: *const LintContext, id: tymod.TypeId) BooleanValue {
+        const c = self.ensureChecker() orelse return .none;
+        const t = c.store.get(id);
+        if (t.kind != .boolean_literal) return .none;
+        return switch (t.literal_value) {
+            .boolean => |b| if (b) BooleanValue.true_value else BooleanValue.false_value,
+            else => .none,
+        };
+    }
+
+    /// True when the type id is a `number_literal` whose value is `0`.
+    pub fn typeIdNumberLiteralIsZero(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind != .number_literal) return false;
+        return switch (t.literal_value) {
+            .number => |n| n == 0,
+            else => false,
+        };
+    }
+
+    /// True when the type id is a `bigint_literal` whose value is `0`.
+    pub fn typeIdBigintLiteralIsZero(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind != .bigint_literal) return false;
+        return switch (t.literal_value) {
+            .bigint => |s| {
+                if (s.len == 0) return false;
+                for (s) |ch| if (ch != '0') return false;
+                return true;
+            },
+            else => false,
+        };
+    }
+
     /// True when the type id is "thenable" — has a `then` member that's
     /// a function whose first signature accepts a callback as its first
     /// parameter.  Mirrors TSe's tsutils.isThenableType (and TS's actual
