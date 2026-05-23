@@ -250,6 +250,7 @@ fn isPrefixExtension(prev: NodeIndex, next: NodeIndex, ctx: *const LintContext) 
             .member_expr, .computed_member_expr,
             .optional_member_expr, .optional_computed_member_expr,
             .call_expr, .optional_call_expr, .new_expr,
+            .ts_instantiation_expr,
             .ts_non_null_expr, .grouping_expr,
             => cur = ctx.nodeData(cur).lhs,
             else => return false,
@@ -316,15 +317,28 @@ fn isTypeKnownLiteral(node: NodeIndex, ctx: *const LintContext) bool {
 fn comparisonRhsAllowed(op: Node.Tag, x_node: NodeIndex, ctx: *const LintContext) bool {
     var is_undef = isUndefinedNode(x_node, ctx);
     var is_null = isNullLiteralNode(x_node, ctx);
-    const syntactic = isKnownConstantValue(x_node, ctx);
-    if (!syntactic) {
+    if (!isKnownConstantValue(x_node, ctx)) {
         if (!ctx.hasTypeChecker()) return false;
         const ty = ctx.typeOfNode(x_node);
         const kind = ctx.typeKind(ty);
         switch (kind) {
             .undefined_t, .void_t => is_undef = true,
             .null_t => is_null = true,
-            .number_literal, .string_literal, .bigint_literal, .boolean_literal => {},
+            // Concrete primitive / literal / object types — fine.
+            .number, .number_literal,
+            .string, .string_literal,
+            .boolean, .boolean_literal,
+            .bigint, .bigint_literal,
+            .symbol,
+            .object_t, .object_keyword,
+            .array_t, .readonly_array_t, .tuple_t,
+            .function_t,
+            => {},
+            // Composite types — accept only when no nullish constituent.
+            .union_t, .intersection_t, .type_ref => {
+                if (ctx.typeIdContainsNullish(ty)) return false;
+            },
+            // any / unknown / error / never / type_param: too imprecise.
             else => return false,
         }
     }
@@ -387,12 +401,10 @@ fn checkAndChain(node: NodeIndex, ctx: *const LintContext) void {
     while (k + 1 < n_ops) : (k += 1) {
         const op = unwrapGrouping(operands_buf[k], ctx);
         const subj = chainOperandSubject(op, ctx) orelse return;
-        if (sameExpr(prev, subj, ctx)) continue; // same-depth re-check
+        if (sameExpr(prev, subj, ctx)) continue;
         if (!isPrefixExtension(prev, subj, ctx)) return;
         prev = subj;
     }
-    // Last operand may be a plain access (extends prev) or a
-    // comparison `prev.path OP X` that meets the safe-RHS gate.
     {
         const last_op = unwrapGrouping(operands_buf[n_ops - 1], ctx);
         if (!isExtensionOf(prev, last_op, ctx)) return;
@@ -508,6 +520,18 @@ fn primitiveAllowed(ty: tymod.TypeId, opts: Options, ctx: *const LintContext) bo
 fn chainTouchesPrivateField(operands: []const NodeIndex, ctx: *const LintContext) bool {
     for (operands) |op| {
         var cur = unwrapGrouping(op, ctx);
+        // Strip operand-shape wrappers — negation, comparison subject —
+        // before walking the member chain.
+        if (ctx.nodeTag(cur) == .logical_not) {
+            cur = unwrapGrouping(ctx.nodeData(cur).lhs, ctx);
+        }
+        if (ctx.nodeTag(cur) == .not_equal or ctx.nodeTag(cur) == .strict_not_equal or
+            ctx.nodeTag(cur) == .equal or ctx.nodeTag(cur) == .strict_equal)
+        {
+            const d = ctx.nodeData(cur);
+            if (chainTouchesPrivateField(&[_]NodeIndex{d.lhs}, ctx)) return true;
+            cur = unwrapGrouping(d.rhs, ctx);
+        }
         while (true) {
             const t = ctx.nodeTag(cur);
             if (t == .member_expr or t == .optional_member_expr) {
@@ -643,14 +667,24 @@ fn orMiddleOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     return null;
 }
 
-/// True when the OR-chain's last operand is a comparison whose
-/// `undefined OP X` evaluates TRUTHY — bare access doesn't
-/// qualify for `||` chains since `!a || a.b` returns true when
-/// `a` is nullish but the rewrite `a?.b` returns undefined.
+/// True when the OR-chain's last operand is either a comparison
+/// whose `undefined OP X` evaluates TRUTHY or a `!X.path` form
+/// where X.path extends the chain subject — both rewrite safely:
+///   * `!foo || !foo.bar` → `!foo?.bar` (negation of optional)
+///   * `!foo || foo.bar === undefined` → `foo?.bar === undefined`
+/// Bare access (`!foo || foo.bar`) doesn't qualify because
+/// `!foo || foo.bar` is truthy when foo is nullish, but `foo?.bar`
+/// returns undefined.
 fn isOrChainLast(prev: NodeIndex, last: NodeIndex, ctx: *const LintContext) bool {
     var cur = last;
     while (ctx.nodeTag(cur) == .grouping_expr) cur = ctx.nodeData(cur).lhs;
     const t = ctx.nodeTag(cur);
+    // `!X.path` where X.path extends the chain subject.
+    if (t == .logical_not) {
+        var inner = ctx.nodeData(cur).lhs;
+        while (ctx.nodeTag(inner) == .grouping_expr) inner = ctx.nodeData(inner).lhs;
+        return isExtensionOf(prev, inner, ctx) or sameExpr(prev, inner, ctx);
+    }
     if (t != .equal and t != .strict_equal and t != .not_equal and t != .strict_not_equal) return false;
     const d = ctx.nodeData(cur);
     const lhs_ext = isExtensionOf(prev, d.lhs, ctx);
@@ -669,15 +703,25 @@ fn isOrChainLast(prev: NodeIndex, last: NodeIndex, ctx: *const LintContext) bool
 fn orComparisonRhsAllowed(op: Node.Tag, x_node: NodeIndex, ctx: *const LintContext) bool {
     var is_undef = isUndefinedNode(x_node, ctx);
     var is_null = isNullLiteralNode(x_node, ctx);
-    const syntactic = isKnownConstantValue(x_node, ctx);
-    if (!syntactic) {
+    if (!isKnownConstantValue(x_node, ctx)) {
         if (!ctx.hasTypeChecker()) return false;
         const ty = ctx.typeOfNode(x_node);
         const kind = ctx.typeKind(ty);
         switch (kind) {
             .undefined_t, .void_t => is_undef = true,
             .null_t => is_null = true,
-            .number_literal, .string_literal, .bigint_literal, .boolean_literal => {},
+            .number, .number_literal,
+            .string, .string_literal,
+            .boolean, .boolean_literal,
+            .bigint, .bigint_literal,
+            .symbol,
+            .object_t, .object_keyword,
+            .array_t, .readonly_array_t, .tuple_t,
+            .function_t,
+            => {},
+            .union_t, .intersection_t, .type_ref => {
+                if (ctx.typeIdContainsNullish(ty)) return false;
+            },
             else => return false,
         }
     }
@@ -711,7 +755,9 @@ fn isExtensionOf(prev: NodeIndex, next: NodeIndex, ctx: *const LintContext) bool
             .member_expr, .computed_member_expr, .optional_member_expr, .optional_computed_member_expr => {
                 cur = ctx.nodeData(cur).lhs;
             },
-            .call_expr, .optional_call_expr, .new_expr => {
+            .call_expr, .optional_call_expr, .new_expr,
+            .ts_instantiation_expr,
+            => {
                 cur = ctx.nodeData(cur).lhs;
             },
             .ts_non_null_expr, .grouping_expr => {
@@ -789,7 +835,93 @@ fn sameExpr(a: NodeIndex, b: NodeIndex, ctx: *const LintContext) bool {
         if (xs.end > src.len or ys.end > src.len) return false;
         return std.mem.eql(u8, src[xs.start..xs.end], src[ys.start..ys.end]);
     }
-    return false;
+    // Fallback: compare by source span text for expressions that
+    // are side-effect-free.  Skip when either expression is a
+    // function call, `new`, increment/decrement, or contains a
+    // logical/assignment operator — those can produce different
+    // runtime values on repeated evaluation and so aren't safe to
+    // unify under `?.`.
+    if (!isSideEffectFreeExpr(x, ctx) or !isSideEffectFreeExpr(y, ctx)) return false;
+    const xs = ctx.nodeSpan(x);
+    const ys = ctx.nodeSpan(y);
+    const src = ctx.ast.source;
+    if (xs.end > src.len or ys.end > src.len) return false;
+    if (xs.end - xs.start != ys.end - ys.start) return false;
+    return std.mem.eql(u8, src[xs.start..xs.end], src[ys.start..ys.end]);
+}
+
+/// True when `node`'s expression is side-effect-free: no calls,
+/// `new`, increments, assignments, or logical/coalescing
+/// operators that could short-circuit.  Used as a safety gate
+/// before treating two equal-text expressions as the same value.
+fn isSideEffectFreeExpr(node: NodeIndex, ctx: *const LintContext) bool {
+    var stack_buf: [32]NodeIndex = undefined;
+    stack_buf[0] = node;
+    var stack_len: usize = 1;
+    while (stack_len > 0) {
+        stack_len -= 1;
+        var n = stack_buf[stack_len];
+        while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+        switch (ctx.nodeTag(n)) {
+            // Pure expressions.
+            .identifier, .this_expr, .super_expr,
+            .number_literal, .string_literal, .bigint_literal,
+            .boolean_literal, .null_literal, .regex_literal,
+            .property_ident,
+            .template_element,
+            => continue,
+            // Composite — push children, keep walking.
+            .member_expr, .optional_member_expr => {
+                if (stack_len >= stack_buf.len) return false;
+                stack_buf[stack_len] = ctx.nodeData(n).lhs;
+                stack_len += 1;
+            },
+            .computed_member_expr, .optional_computed_member_expr => {
+                const d = ctx.nodeData(n);
+                if (stack_len + 1 >= stack_buf.len) return false;
+                stack_buf[stack_len] = d.lhs;
+                stack_buf[stack_len + 1] = d.rhs;
+                stack_len += 2;
+            },
+            .typeof_expr, .unary_plus, .unary_minus,
+            .bitwise_not, .logical_not, .ts_non_null_expr,
+            .ts_as_expr, .ts_satisfies_expr, .ts_type_assertion,
+            .ts_instantiation_expr,
+            => {
+                if (stack_len >= stack_buf.len) return false;
+                stack_buf[stack_len] = ctx.nodeData(n).lhs;
+                stack_len += 1;
+            },
+            .add, .subtract, .multiply, .divide, .modulo,
+            .equal, .not_equal, .strict_equal, .strict_not_equal,
+            .less_than, .greater_than, .less_equal, .greater_equal,
+            => {
+                const d = ctx.nodeData(n);
+                if (stack_len + 1 >= stack_buf.len) return false;
+                stack_buf[stack_len] = d.lhs;
+                stack_buf[stack_len + 1] = d.rhs;
+                stack_len += 2;
+            },
+            .template_literal => {
+                // template_literal stores parts in a SubRange.
+                const d = ctx.nodeData(n);
+                const s = @intFromEnum(d.lhs);
+                const e = @intFromEnum(d.rhs);
+                if (e > s and e <= ctx.ast.extra_data.len) {
+                    for (ctx.ast.extra_data[s..e]) |raw| {
+                        if (stack_len >= stack_buf.len) return false;
+                        stack_buf[stack_len] = @enumFromInt(raw);
+                        stack_len += 1;
+                    }
+                }
+            },
+            // Everything else (calls, new, ++/--, =, &&, ||, ??,
+            // conditional, yield, await, arrow, etc.) is treated
+            // as potentially side-effecting.
+            else => return false,
+        }
+    }
+    return true;
 }
 
 fn sameCallArgs(call_a: NodeIndex, call_b: NodeIndex, ctx: *const LintContext) bool {
