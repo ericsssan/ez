@@ -639,9 +639,7 @@ pub const LintContext = struct {
     /// True when the inferred type at this node is `Promise<T>` (any T).
     pub fn typeNodeIsPromise(self: *const LintContext, n: NodeIndex) bool {
         const c = self.ensureChecker() orelse return false;
-        const t = c.store.get(c.typeOf(n));
-        if (t.kind != .type_ref) return false;
-        return std.mem.eql(u8, t.name, "Promise");
+        return typeIdIsPromiseRefHelper(&c.store, c.typeOf(n));
     }
 
     /// True when the inferred type is `Promise<T>` and T contains `any`.
@@ -8622,6 +8620,17 @@ pub const LintContext = struct {
         }) catch {};
     }
 };
+
+fn typeIdIsPromiseRefHelper(store: *const tymod.TypeStore, id: tymod.TypeId) bool {
+    const t = store.get(id);
+    if (t.kind == .type_ref) return std.mem.eql(u8, t.name, "Promise");
+    if (t.kind == .union_t or t.kind == .intersection_t) {
+        for (store.idsOf(t.list_data)) |m| {
+            if (typeIdIsPromiseRefHelper(store, m)) return true;
+        }
+    }
+    return false;
+}
 
 fn mentionsRefHelper(store: *const tymod.TypeStore, id: tymod.TypeId, name: []const u8) bool {
     const t = store.get(id);

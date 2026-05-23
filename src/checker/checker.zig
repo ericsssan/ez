@@ -1685,24 +1685,52 @@ pub const Checker = struct {
         }
         const callee_ty = self.typeOf(callee);
         if (tymod.isAny(&self.store, callee_ty)) return tymod.ID_ANY;
-        // Optional-chain calls (`fn?.()`) strip the nullish part of the
-        // callee for signature lookup, then re-add `| undefined` to the
-        // result (the short-circuit case).
+        // Optional-chain calls — `fn?.()` or any call whose callee
+        // participates in an optional chain (e.g. `obj.a?.b.c()` where
+        // `.c()` is non-optional but the chain originated with `?.`).
+        // Strip the nullish part of the callee for signature lookup,
+        // then re-add `| undefined` to the result for the short-circuit
+        // branch — matches TS's chain-propagation semantics.
         const node_tag = self.ast_ref.nodeTag(node);
-        const is_optional_call = node_tag == .optional_call_expr;
-        const lookup_ty = if (is_optional_call) self.stripNullishForLookup(callee_ty) else callee_ty;
+        const in_optional_chain = node_tag == .optional_call_expr or
+            self.calleeIsInOptionalChain(callee);
+        const lookup_ty = if (in_optional_chain) self.stripNullishForLookup(callee_ty) else callee_ty;
         const t = self.store.get(lookup_ty);
         var result: TypeId = tymod.ID_UNKNOWN;
         if (t.kind == .function_t) {
             const sigs = self.store.signaturesOf(t.signatures);
             if (sigs.len > 0) result = sigs[0].return_type;
         }
-        if (is_optional_call and !result.eq(tymod.ID_UNKNOWN)) {
+        if (in_optional_chain and !result.eq(tymod.ID_UNKNOWN)) {
             if (self.typeContainsNullish(callee_ty) and !self.typeContainsUndefined(result)) {
                 return self.store.unionOf(&.{ result, tymod.ID_UNDEFINED }) catch result;
             }
         }
         return result;
+    }
+
+    /// True when `node` is part of an optional chain — i.e. walking down
+    /// the left-spine of member/call expressions reaches an
+    /// `optional_*` node.  Matches TS's "once you `?.`, the whole chain
+    /// propagates undefined" rule.
+    fn calleeIsInOptionalChain(self: *Checker, node: NodeIndex) bool {
+        var cur = node;
+        while (cur != .none) {
+            const tag = self.ast_ref.nodeTag(cur);
+            switch (tag) {
+                .optional_member_expr,
+                .optional_computed_member_expr,
+                .optional_call_expr => return true,
+                .member_expr, .computed_member_expr, .call_expr => {
+                    cur = self.ast_ref.nodeData(cur).lhs;
+                },
+                .grouping_expr => {
+                    cur = self.ast_ref.nodeData(cur).lhs;
+                },
+                else => return false,
+            }
+        }
+        return false;
     }
 
     /// For `new X<T>()` / `new X()`: peel ts_instantiation_expr / new_expr
@@ -1927,11 +1955,16 @@ pub const Checker = struct {
         if (tymod.isAny(&self.store, obj_ty)) return tymod.ID_ANY;
         const tag = self.ast_ref.nodeTag(node);
         const is_optional = tag == .optional_member_expr or tag == .optional_computed_member_expr;
+        // Optional chain propagates: even on plain `.x` access, if a prior
+        // step in the chain used `?.`, the receiver type carries `|
+        // undefined` and we need to strip it before lookup.
+        const in_chain = is_optional or self.calleeIsInOptionalChain(data.lhs);
         // Computed member: `obj[idx]`.  Handles array/tuple element access
         // and string-literal key indexing into object types.
         if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
-            const inner = self.inferComputedMember(obj_ty, data.rhs, data.lhs);
-            return self.maybeAddOptionalUndefined(inner, obj_ty, is_optional);
+            const lookup_obj = if (in_chain) self.stripNullishForLookup(obj_ty) else obj_ty;
+            const inner = self.inferComputedMember(lookup_obj, data.rhs, data.lhs);
+            return self.maybeAddOptionalUndefined(inner, obj_ty, in_chain);
         }
         const prop_name: []const u8 = switch (tag) {
             .member_expr, .optional_member_expr => blk: {
@@ -1942,12 +1975,12 @@ pub const Checker = struct {
             else => return tymod.ID_UNKNOWN,
         };
         if (prop_name.len == 0) return tymod.ID_UNKNOWN;
-        // For `obj?.prop` where obj's type contains null/undefined, strip the
-        // nullish part for property lookup (`{a?:T} | undefined`'s `.a` is
-        // `T | undefined`, not unknown).
-        const lookup_ty = if (is_optional) self.stripNullishForLookup(obj_ty) else obj_ty;
+        // For `obj?.prop` or any in-chain member access, strip the
+        // nullish part for property lookup (`{a?:T} | undefined`'s `.a`
+        // is `T | undefined`, not unknown).
+        const lookup_ty = if (in_chain) self.stripNullishForLookup(obj_ty) else obj_ty;
         const inner = self.memberOnApparentType(lookup_ty, prop_name, data.lhs);
-        return self.maybeAddOptionalUndefined(inner, obj_ty, is_optional);
+        return self.maybeAddOptionalUndefined(inner, obj_ty, in_chain);
     }
 
     fn stripNullishForLookup(self: *Checker, ty: TypeId) TypeId {
