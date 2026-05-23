@@ -310,6 +310,15 @@ pub const Checker = struct {
         while (p != NONE) {
             const pn: NodeIndex = @enumFromInt(p);
             const tag = self.ast_ref.nodeTag(pn);
+            // Cross-statement narrowing: when we cross into a
+            // block_stmt, walk prior siblings looking for
+            // `if (cond) <early-exit>;` patterns and apply the
+            // inverse-cond narrowing.  Done once at the most-specific
+            // block — preceding flow constraints flow inward but not
+            // outward across function boundaries.
+            if (tag == .block_stmt) {
+                ty = self.narrowByPriorEarlyExits(pn, @enumFromInt(prev), sym, ty);
+            }
             switch (tag) {
                 .if_stmt => {
                     // if_stmt: lhs=cond, rhs=consequent.  If `prev` is
@@ -353,6 +362,70 @@ pub const Checker = struct {
             p = self.ast_ref.parents[p];
         }
         return ty;
+    }
+
+    /// Within `block`, walk the children that appear *before* `child`
+    /// and apply the inverse-condition narrowing from any
+    /// `if (cond) <early-exit>;` so subsequent uses of `sym` see the
+    /// remaining type.  Early-exit = return / throw / continue / break.
+    fn narrowByPriorEarlyExits(
+        self: *Checker,
+        block: NodeIndex,
+        child: NodeIndex,
+        sym: symbol_mod.SymbolId,
+        base: TypeId,
+    ) TypeId {
+        const data = self.ast_ref.nodeData(block);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return base;
+        var ty = base;
+        for (slice) |raw| {
+            const stmt: NodeIndex = @enumFromInt(raw);
+            if (stmt == child) break;
+            // Single-armed if with an early exit:
+            // `if (cond) return;` / `if (cond) throw ...;`
+            const stmt_tag = self.ast_ref.nodeTag(stmt);
+            if (stmt_tag == .if_stmt) {
+                const sd = self.ast_ref.nodeData(stmt);
+                if (statementIsEarlyExit(self, sd.rhs)) {
+                    ty = self.applyNarrowing(sd.lhs, sym, ty, true);
+                }
+            } else if (stmt_tag == .if_else_stmt) {
+                // `if (cond) earlyExit() else earlyExit()` — both branches
+                // exit, so the post-statement state is unreachable; we
+                // can't narrow safely, leave ty unchanged.  Single-branch
+                // exit (else branch falls through) is handled by the
+                // same shape as if_stmt.
+                const sd = self.ast_ref.nodeData(stmt);
+                const ifd = self.ast_ref.extraData(ast.IfData, @intFromEnum(sd.rhs));
+                if (statementIsEarlyExit(self, ifd.consequent) and !statementIsEarlyExit(self, ifd.alternate)) {
+                    ty = self.applyNarrowing(sd.lhs, sym, ty, true);
+                } else if (statementIsEarlyExit(self, ifd.alternate) and !statementIsEarlyExit(self, ifd.consequent)) {
+                    ty = self.applyNarrowing(sd.lhs, sym, ty, false);
+                }
+            }
+            // `cond && earlyExit()` as an expression statement is rare
+            // enough to skip.
+        }
+        return ty;
+    }
+
+    fn statementIsEarlyExit(self: *Checker, stmt: NodeIndex) bool {
+        if (stmt == .none) return false;
+        var n = stmt;
+        // Peel a single-stmt block: `if (cond) { return; }`.
+        if (self.ast_ref.nodeTag(n) == .block_stmt) {
+            const d = self.ast_ref.nodeData(n);
+            const slice = self.directRange(d.lhs, d.rhs) orelse return false;
+            if (slice.len == 0) return false;
+            // Only an early exit if every path ends with one — for
+            // simplicity, check that the LAST stmt is an early exit
+            // (most common in practice).
+            n = @enumFromInt(slice[slice.len - 1]);
+        }
+        return switch (self.ast_ref.nodeTag(n)) {
+            .return_stmt, .throw_stmt, .continue_stmt, .break_stmt => true,
+            else => false,
+        };
     }
 
     fn descendsFrom(self: *Checker, node: NodeIndex, ancestor: NodeIndex) bool {
