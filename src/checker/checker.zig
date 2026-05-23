@@ -1206,6 +1206,16 @@ pub const Checker = struct {
         const extends_node: NodeIndex = @enumFromInt(slice[1]);
         const true_node: NodeIndex = @enumFromInt(slice[2]);
         const false_node: NodeIndex = @enumFromInt(slice[3]);
+        // Bail conservatively when either side names a type parameter
+        // or uses `infer V` — without proper higher-order inference
+        // we can't decide the relation and unioning both branches
+        // mixes the `infer`-bound branch's unresolved name into
+        // downstream types.
+        if (typeNodeReferencesUnresolved(self, check_node) or
+            typeNodeReferencesUnresolved(self, extends_node))
+        {
+            return tymod.ID_UNKNOWN;
+        }
         const check_ty = self.resolveTypeNode(check_node);
         const extends_ty = self.resolveTypeNode(extends_node);
         switch (self.simpleAssignable(check_ty, extends_ty)) {
@@ -1217,6 +1227,46 @@ pub const Checker = struct {
                 return self.store.unionOf(&.{ a, b }) catch tymod.ID_UNKNOWN;
             },
         }
+    }
+
+    /// True when the type-position AST node references a name we
+    /// can't resolve — type parameter (in scope) or `infer V`.
+    fn typeNodeReferencesUnresolved(self: *Checker, node: NodeIndex) bool {
+        var n = node;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        const tag = self.ast_ref.nodeTag(n);
+        if (tag == .ts_infer_type) return true;
+        if (tag == .ts_type_reference) {
+            const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+            // Names like `D`, `T`, `V` not in known_type_names and not
+            // a built-in are typically type parameters.
+            if (!self.known_type_names.contains(name)) {
+                // built-in keywords skip — they'd be caught by
+                // resolveTypeRef.
+                if (std.mem.eql(u8, name, "any") or std.mem.eql(u8, name, "unknown") or
+                    std.mem.eql(u8, name, "never") or std.mem.eql(u8, name, "string") or
+                    std.mem.eql(u8, name, "number") or std.mem.eql(u8, name, "boolean") or
+                    std.mem.eql(u8, name, "bigint") or std.mem.eql(u8, name, "symbol") or
+                    std.mem.eql(u8, name, "object") or std.mem.eql(u8, name, "void") or
+                    std.mem.eql(u8, name, "undefined") or std.mem.eql(u8, name, "null"))
+                {
+                    return false;
+                }
+                return true;
+            }
+        }
+        if (tag == .ts_union_type or tag == .ts_intersection_type) {
+            const d = self.ast_ref.nodeData(n);
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (e > s and e <= self.ast_ref.extra_data.len) {
+                for (self.ast_ref.extra_data[s..e]) |raw| {
+                    const m: NodeIndex = @enumFromInt(raw);
+                    if (typeNodeReferencesUnresolved(self, m)) return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// Three-valued assignability check for the cases we can decide
