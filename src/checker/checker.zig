@@ -828,6 +828,23 @@ pub const Checker = struct {
         }
     }
 
+    /// `typeof x` in type position — resolve to the value-side type of
+    /// the identifier `x`.  Falls back to ID_UNKNOWN when the inner
+    /// expression isn't a bare identifier or no value is found.
+    fn resolveTypeofType(self: *Checker, ty_node: NodeIndex) TypeId {
+        const d = self.ast_ref.nodeData(ty_node);
+        var inner = d.lhs;
+        if (inner == .none) return tymod.ID_UNKNOWN;
+        while (self.ast_ref.nodeTag(inner) == .grouping_expr) inner = self.ast_ref.nodeData(inner).lhs;
+        if (self.ast_ref.nodeTag(inner) != .identifier) return tymod.ID_UNKNOWN;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(inner));
+        if (name.len == 0) return tymod.ID_UNKNOWN;
+        // Find a declarator binding the same name and use its inferred type.
+        if (self.typeOfNameByAstSearch(name)) |t| return t;
+        if (self.global_value_types.get(name)) |t| return t;
+        return tymod.ID_UNKNOWN;
+    }
+
     /// Build a function_t from an fn_decl / async_fn_decl / etc. node.
     /// Params come from the FnData params SubRange; each param's
     /// declared annotation (if any) becomes its TypeId, defaulting to
@@ -1042,7 +1059,7 @@ pub const Checker = struct {
             // Unresolved-but-not-any cases default to `unknown` so
             // no-unsafe-* rules don't spuriously fire on objects /
             // functions / etc. declared via structural annotations.
-            .ts_typeof_type => tymod.ID_UNKNOWN, // we don't resolve `typeof x` yet
+            .ts_typeof_type => self.resolveTypeofType(ty_node),
             .ts_keyof_type => blk: {
                 // Parser also uses .ts_keyof_type as TSTypeOperator for
                 // 'readonly T[]' / 'readonly [T, U]' (TS doesn't share
@@ -3304,12 +3321,26 @@ pub const Checker = struct {
         // Composite receivers: walk members.
         if (obj.kind == .union_t) {
             // Per TS: every union member must have the property.  We
-            // approximate by returning the first non-unknown result.
+            // union each member's projected type — `({type:'A'} |
+            // {type:'B'}).type` becomes `'A' | 'B'`.  Nullish members
+            // (null/undefined/void) are skipped so `(T | null).prop`
+            // is just `prop_of_T` (matching TSC's optional-chain
+            // model — explicit `?.` access is required to safely
+            // reach the prop when the receiver could be nullish).
+            var buf: [16]TypeId = undefined;
+            var n: usize = 0;
             for (self.store.idsOf(obj.list_data)) |m| {
+                if (n >= buf.len) break;
+                const mk = self.store.get(m).kind;
+                if (mk == .null_t or mk == .undefined_t or mk == .void_t) continue;
                 const t = self.memberOnApparentType(m, prop_name, obj_node);
-                if (!tymod.isUnknown(&self.store, t)) return t;
+                if (tymod.isUnknown(&self.store, t)) return tymod.ID_UNKNOWN;
+                buf[n] = t;
+                n += 1;
             }
-            return tymod.ID_UNKNOWN;
+            if (n == 0) return tymod.ID_UNKNOWN;
+            if (n == 1) return buf[0];
+            return self.store.unionOf(buf[0..n]) catch tymod.ID_UNKNOWN;
         }
         if (obj.kind == .intersection_t) {
             for (self.store.idsOf(obj.list_data)) |m| {
