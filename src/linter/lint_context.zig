@@ -2020,6 +2020,14 @@ pub const LintContext = struct {
     /// shaped view by returning the interface decl node itself, and
     /// the caller distinguishes the two via `nodeTag`.  Returns
     /// `.none` for names that aren't declared in this file.
+    /// Return the AST decl node for a type name declared in this file
+    /// (interface, type alias, enum, or class).  `.none` when the name
+    /// isn't declared here.
+    pub fn typeDeclNode(self: *const LintContext, name: []const u8) NodeIndex {
+        const c = self.ensureChecker() orelse return .none;
+        return c.type_decl_nodes.get(name) orelse .none;
+    }
+
     pub fn typeAliasBodyNode(self: *const LintContext, name: []const u8) NodeIndex {
         const c = self.ensureChecker() orelse return .none;
         const decl = c.type_decl_nodes.get(name) orelse return .none;

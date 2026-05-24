@@ -161,10 +161,30 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
             }
             return true; // keyof T → string keys; no nested mutability
         },
-        .ts_union_type, .ts_intersection_type => {
+        .ts_union_type => {
             const s = @intFromEnum(d.lhs);
             const e = @intFromEnum(d.rhs);
             if (e > s and e <= ctx.ast.extra_data.len) {
+                for (ctx.ast.extra_data[s..e]) |raw| {
+                    const m: NodeIndex = @enumFromInt(raw);
+                    if (!typeNodeIsDeeplyReadonly(m, opts, ctx, depth + 1)) return false;
+                }
+            }
+            return true;
+        },
+        .ts_intersection_type => {
+            // Brand-style intersections (`string & {__tag}`) are
+            // readonly when the primitive member is present — the
+            // brand objects are markers and don't introduce mutation.
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (e > s and e <= ctx.ast.extra_data.len) {
+                var has_primitive = false;
+                for (ctx.ast.extra_data[s..e]) |raw| {
+                    const m: NodeIndex = @enumFromInt(raw);
+                    if (typeNodeIsPrimitive(m, ctx)) { has_primitive = true; break; }
+                }
+                if (has_primitive) return true;
                 for (ctx.ast.extra_data[s..e]) |raw| {
                     const m: NodeIndex = @enumFromInt(raw);
                     if (!typeNodeIsDeeplyReadonly(m, opts, ctx, depth + 1)) return false;
@@ -219,10 +239,24 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
             {
                 return true;
             }
-            // User type alias / interface — lenient: assume readonly.
-            // Without precise interface-member detection the resolved
-            // form often loses modifier info; deep introspection is
-            // tracked separately in the test transcript.
+            // User type alias / interface — walk the declaration to
+            // check that all members are readonly + deeply readonly.
+            // Skip "branded-primitive" intersections (`string & {...}`)
+            // which TS-eslint treats as readonly — leave those to the
+            // intersection arm below.
+            const decl = ctx.typeDeclNode(name);
+            if (decl != .none) {
+                const dtag = ctx.nodeTag(decl);
+                if (dtag == .ts_interface_decl) {
+                    return interfaceIsDeeplyReadonly(decl, opts, ctx, depth + 1);
+                }
+                if (dtag == .ts_type_alias_decl) {
+                    const body = ctx.typeAliasBodyNode(name);
+                    if (body == .none) return true;
+                    return typeNodeIsDeeplyReadonly(body, opts, ctx, depth + 1);
+                }
+            }
+            // External or built-in name we don't model — lenient.
             return true;
         },
         .ts_type_literal => {
@@ -290,6 +324,25 @@ fn memberValueTypeIsDeeplyReadonly(member: NodeIndex, opts: Options, ctx: *const
 /// level — for arrays/tuples, the elements still need to be deeply
 /// readonly; for type literals, each property's value-type must be
 /// deeply readonly.  For arbitrary `T` (named types), accept.
+fn typeNodeIsPrimitive(node: NodeIndex, ctx: *const LintContext) bool {
+    if (node == .none) return false;
+    var n = node;
+    while (ctx.nodeTag(n) == .ts_parenthesized_type) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .ts_type_reference) return false;
+    const name_node = ctx.nodeData(n).lhs;
+    const name = if (name_node != .none) ctx.tokenText(ctx.nodeMainToken(name_node))
+        else ctx.tokenText(ctx.nodeMainToken(n));
+    return std.mem.eql(u8, name, "string") or
+        std.mem.eql(u8, name, "number") or
+        std.mem.eql(u8, name, "boolean") or
+        std.mem.eql(u8, name, "bigint") or
+        std.mem.eql(u8, name, "symbol") or
+        std.mem.eql(u8, name, "null") or
+        std.mem.eql(u8, name, "undefined") or
+        std.mem.eql(u8, name, "void") or
+        std.mem.eql(u8, name, "never");
+}
+
 fn innerOfReadonlyOk(node: NodeIndex, opts: Options, ctx: *const LintContext, depth: u32) bool {
     if (node == .none or depth > 16) return true;
     var n = node;
