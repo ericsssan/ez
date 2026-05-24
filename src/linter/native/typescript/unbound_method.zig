@@ -274,9 +274,49 @@ fn classHasStaticMethod(decl: NodeIndex, prop: []const u8, ctx: *const LintConte
 /// Destructuring `const { method } = instance` extracts methods
 /// without their `this`-binding — fire on each pattern entry that
 /// matches a class instance method.
+/// Locate the parser-stashed type annotation for a destructuring
+/// pattern that's in parameter position.  The parser sets
+/// parents[ts_type_annotation] = obj_pattern_node — scan ts_type_annotation
+/// nodes whose parent is `pattern_node` and resolve their inner type.
+fn patternAnnotationType(pattern_node: NodeIndex, ctx: *const LintContext) ?tymod.TypeId {
+    const total = ctx.ast.nodes.len;
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const n: NodeIndex = @enumFromInt(i);
+        if (ctx.nodeTag(n) != .ts_type_annotation) continue;
+        if (ctx.parentOf(n) != pattern_node) continue;
+        const inner = ctx.nodeData(n).lhs;
+        if (inner == .none) continue;
+        return ctx.resolveTypeAnnotationNode(inner);
+    }
+    return null;
+}
+
+/// Walk up from a declarator into `for (const {x} of expr) ...` and
+/// return the array element type — i.e. each loop iteration's value
+/// type for the destructuring source.
+fn forOfElementType(decl: NodeIndex, ctx: *const LintContext) ?tymod.TypeId {
+    // declarator → const_decl/let_decl/var_decl → for_of_stmt
+    var cur = ctx.parentOf(decl);
+    var depth: u32 = 0;
+    while (cur != .none and depth < 4) : ({ cur = ctx.parentOf(cur); depth += 1; }) {
+        if (ctx.nodeTag(cur) == .for_of_stmt or ctx.nodeTag(cur) == .for_await_of_stmt) {
+            const d = ctx.nodeData(cur);
+            if (d.lhs == .none) return null;
+            const fd = ctx.extraData(ast.ForInOfData, @intFromEnum(d.lhs));
+            if (fd.expr == .none) return null;
+            const arr_ty = ctx.narrowedTypeOf(fd.expr);
+            // Pluck the array element type.
+            return ctx.typeIdArrayElement(arr_ty);
+        }
+    }
+    return null;
+}
+
 fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
-    // Find the source of the destructuring (the declarator's init or
-    // the right-hand side of an assign / for-of).
+    // Find the source of the destructuring (the declarator's init,
+    // the right-hand side of an assignment, or the iterable of a
+    // for-of loop).
     const parent = ctx.parentOf(node);
     if (parent == .none) return;
     var source_ty: tymod.TypeId = tymod.ID_UNKNOWN;
@@ -284,16 +324,37 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
     switch (ctx.nodeTag(parent)) {
         .declarator => {
             const pd = ctx.nodeData(parent);
-            if (pd.rhs == .none) return;
-            source_ty = ctx.typeOfNode(pd.rhs);
-            have_source = true;
+            if (pd.rhs != .none) {
+                source_ty = ctx.typeOfNode(pd.rhs);
+                have_source = true;
+            } else {
+                // No initializer — could be `for (const {x} of arr)`.
+                source_ty = forOfElementType(parent, ctx) orelse return;
+                have_source = true;
+            }
         },
         .assign => {
             const pd = ctx.nodeData(parent);
             source_ty = ctx.typeOfNode(pd.rhs);
             have_source = true;
         },
-        else => return,
+        else => {
+            // Parameter position: the parser stashes the type
+            // annotation as a sibling node whose parent is the
+            // obj_pattern.  Find it.
+            if (patternAnnotationType(node, ctx)) |t| {
+                source_ty = t;
+                have_source = true;
+            }
+            // Assignment-pattern parent: `{x}: T = default` — annotation
+            // is on the obj_pattern; default lives in assignment_pattern.
+            if (!have_source and ctx.nodeTag(parent) == .assignment_pattern) {
+                if (patternAnnotationType(node, ctx)) |t| {
+                    source_ty = t;
+                    have_source = true;
+                }
+            }
+        },
     }
     if (!have_source) return;
 

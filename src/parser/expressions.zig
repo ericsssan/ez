@@ -6138,6 +6138,17 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
                 // setChildParents ran before this mutation).
                 const ann_idx = type_ann.toInt();
                 if (ann_idx < p.parents_buf.len) p.parents_buf[ann_idx] = @intCast(node.toInt());
+            } else if (node_tag == .object_pattern or node_tag == .array_pattern) {
+                // Patterns can't store the annotation inline (their
+                // data slots hold a SubRange), but we still need
+                // downstream rules (no-unsafe-*, unbound-method, …) to
+                // reach the annotation.  Wire parents[type_ann] = node
+                // so a parent-walk from the annotation lands on the
+                // pattern, and let rules discover it by scanning all
+                // ts_type_annotation children whose parent matches.
+                const ann_idx = type_ann.toInt();
+                if (ann_idx < p.parents_buf.len) p.parents_buf[ann_idx] = @intCast(node.toInt());
+                p.node_end_toks[node.toInt()] = if (p.tok_i > 0) @intCast(p.tok_i - 1) else 0;
             }
         }
         // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).
