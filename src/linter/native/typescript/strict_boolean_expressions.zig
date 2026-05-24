@@ -120,7 +120,10 @@ fn walkBoolCtx(expr: NodeIndex, opts: Options, ctx: *const LintContext, depth: u
 fn checkBoolLeaf(expr: NodeIndex, opts: Options, ctx: *const LintContext) void {
     var n = expr;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
-    const ty = ctx.typeOfNode(n);
+    // Use flow-narrowed type so enclosing guards refine which messageId
+    // applies (e.g. `if (x !== null) { if (x) … }` — at the inner test
+    // x is non-null and conditionErrorNullableString shouldn't fire).
+    const ty = ctx.narrowedTypeOf(n);
     const classification = classify(ty, opts, ctx);
     const msg = messageFor(classification, opts);
     if (msg) |m| ctx.reportWithMessageId(n, m);

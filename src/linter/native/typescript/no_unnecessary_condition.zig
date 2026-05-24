@@ -99,12 +99,11 @@ fn checkTruthiness(expr: NodeIndex, ctx: *const LintContext) void {
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     const t = ctx.nodeTag(n);
     if (t == .logical_and or t == .logical_or or t == .logical_not) return;
-    // Skip computed-access expressions — under noUncheckedIndexedAccess
-    // they can return T | undefined that we can't see from the type.
     if (containsComputedAccess(n, ctx)) return;
     // Use flow-narrowed type so guards in enclosing scopes refine the
     // tested expression's type — `if (x !== undefined) { if (x) … }`
     // becomes `if (string)` once null/undefined are stripped.
+    if (containsComputedAccess(n, ctx)) return;
     const ty = ctx.narrowedTypeOf(n);
     const tr = truthiness(ty, ctx);
     switch (tr) {
