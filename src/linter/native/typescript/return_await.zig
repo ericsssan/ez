@@ -123,7 +123,23 @@ fn checkReturnedExpr(node: NodeIndex, expr: NodeIndex, mode: Mode, ctx: *const L
     // `is_definitely_not_promise` — type is a concrete primitive that
     // can't be a Promise.  When false (any/unknown/type-param/object/...
     // /Promise), be lenient and treat as possibly a Promise.
-    const could_be_promise = is_definite_promise or !isDefinitelyNotPromise(inner_ty, ctx);
+    var def_not_promise = isDefinitelyNotPromise(inner_ty, ctx);
+    if (!def_not_promise) {
+        // Identifier referring to a binding with a type-parameter
+        // annotation `value: T extends X`: use X (the constraint).
+        if (ctx.nodeTag(inner) == .identifier) {
+            if (ctx.bindingTypeAnnotationOf(inner)) |ann| {
+                var ty_node = ann;
+                if (ctx.nodeTag(ty_node) == .ts_type_annotation) ty_node = ctx.nodeData(ty_node).lhs;
+                if (ctx.typeAnnotationIsTypeParameter(ty_node)) {
+                    if (ctx.typeParameterConstraintOf(ty_node)) |c_ty| {
+                        def_not_promise = isDefinitelyNotPromise(c_ty, ctx);
+                    }
+                }
+            }
+        }
+    }
+    const could_be_promise = is_definite_promise or !def_not_promise;
 
     const ctx_kind = inTryCatch(node, ctx);
     // `using` / `await using` declarations seen BEFORE this node in the
