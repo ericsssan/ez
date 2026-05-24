@@ -645,6 +645,17 @@ pub const LintContext = struct {
         return c.store.get(id).kind == .object_t;
     }
 
+    /// Returns the object-type properties as a slice of ObjectProp.
+    /// Returns an empty slice for non-object types.  Borrows from the
+    /// type-store; treat as read-only and don't retain past the
+    /// rule's run().
+    pub fn typeIdObjectProps(self: *const LintContext, id: tymod.TypeId) []const tymod.ObjectProp {
+        const c = self.ensureChecker() orelse return &.{};
+        const t = c.store.get(id);
+        if (t.kind != .object_t) return &.{};
+        return c.store.propsOf(t.object_props);
+    }
+
     /// Return the raw TypeKind for a TypeId.  Use when a rule needs to
     /// branch on the underlying type-store representation; lighter
     /// alternative to exposing the full store.
