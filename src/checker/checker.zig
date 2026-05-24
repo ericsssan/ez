@@ -2985,7 +2985,35 @@ pub const Checker = struct {
         const data = self.ast_ref.nodeData(node);
         const a = self.typeOf(data.lhs);
         const b = self.typeOf(data.rhs);
+        const tag = self.ast_ref.nodeTag(node);
+        // `a ?? b` evaluates to a (when non-nullish) or b — the result
+        // type is `(a - null - undefined) | b`.  Stripping nullish from
+        // the LHS catches `x?: true; x ?? true` → `true`.
+        if (tag == .nullish_coalesce) {
+            const a_stripped = self.stripNullishUnion(a);
+            return self.store.unionOf(&.{ a_stripped, b }) catch tymod.ID_ANY;
+        }
         return self.store.unionOf(&.{ a, b }) catch tymod.ID_ANY;
+    }
+
+    fn stripNullishUnion(self: *Checker, id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind != .union_t) {
+            if (t.kind == .null_t or t.kind == .undefined_t or t.kind == .void_t) return tymod.ID_NEVER;
+            return id;
+        }
+        var buf: [16]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.idsOf(t.list_data)) |m| {
+            const mk = self.store.get(m).kind;
+            if (mk == .null_t or mk == .undefined_t or mk == .void_t) continue;
+            if (n >= buf.len) return id;
+            buf[n] = m;
+            n += 1;
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return self.store.unionOf(buf[0..n]) catch id;
     }
 
     fn inferCallReturn(self: *Checker, node: NodeIndex) TypeId {
