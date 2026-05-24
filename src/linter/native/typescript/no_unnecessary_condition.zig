@@ -188,39 +188,48 @@ fn checkTypePredicateRedundant(call: NodeIndex, ctx: *const LintContext) void {
     const d = ctx.nodeData(call);
     var callee = d.lhs;
     while (ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
-    // Look up the callee's function-type signature.
     const callee_ty = ctx.typeOfNode(callee);
+
     var param_index: u16 = 0xFFFF;
     var target: tymod.TypeId = tymod.TypeId.none;
+    var asserts_truthy = false;
     if (ctx.functionPredicateInfo(callee_ty)) |info| {
         param_index = info.param_index;
         target = info.target;
     } else if (ctx.functionAssertionInfo(callee_ty)) |info| {
-        // `asserts x is X` — target is set; `asserts x` (no `is X`)
-        // doesn't apply here.
-        if (info.target.eq(tymod.TypeId.none)) return;
         param_index = info.param_index;
         target = info.target;
+        // `asserts x` (no `is X`) — truthiness assertion.  Target is
+        // .none here; we'll classify the arg by truthiness below.
+        asserts_truthy = info.target.eq(tymod.TypeId.none);
     } else return;
-    if (target.eq(tymod.TypeId.none)) return;
     if (d.rhs == .none) return;
     const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
     if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
     const args = ctx.ast.extra_data[sr.start..sr.end];
-    // Spread args make positional indexing unreliable.
     for (args) |raw| if (ctx.nodeTag(@enumFromInt(raw)) == .spread_element) return;
     if (param_index >= args.len) return;
     const arg: NodeIndex = @enumFromInt(args[param_index]);
     const arg_ty = ctx.narrowedTypeOf(arg);
-    // Skip when the argument's type is itself indeterminate (any /
-    // unknown / unresolved type-ref) — TS-eslint doesn't flag in that
-    // case.
     const kind = ctx.typeIdKind(arg_ty) orelse return;
+
+    if (asserts_truthy) {
+        // `asserts x` — argument that's already always-truthy or
+        // always-falsy is redundant.
+        switch (kind) {
+            .any, .unknown, .error_t, .type_ref, .type_param => return,
+            else => {},
+        }
+        switch (truthiness(arg_ty, ctx)) {
+            .always_truthy => ctx.reportWithMessageId(arg, "alwaysTruthy"),
+            .always_falsy => ctx.reportWithMessageId(arg, "alwaysFalsy"),
+            else => {},
+        }
+        return;
+    }
+    if (target.eq(tymod.TypeId.none)) return;
     switch (kind) {
-        // Indeterminate types — skip to avoid false positives.
         .any, .unknown, .error_t, .type_ref, .type_param => return,
-        // Literal-typed arguments are explicit constants — TS-eslint
-        // doesn't flag `isString('foo')` even though 'foo' ⊆ string.
         .string_literal, .number_literal, .bigint_literal,
         .boolean_literal, .null_t, .undefined_t,
         => return,
