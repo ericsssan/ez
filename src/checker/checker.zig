@@ -1236,7 +1236,40 @@ pub const Checker = struct {
             const ids = [_]TypeId{ result, tymod.ID_UNDEFINED };
             result = self.store.unionOf(&ids) catch result;
         }
+        // If some code path may fall off the end without returning,
+        // union with undefined.  Approximate "falls off" as "last
+        // top-level statement isn't a guaranteed-terminator (return,
+        // throw, or block ending in one)".
+        if (self.bodyCanFallThrough(body)) {
+            const ids = [_]TypeId{ result, tymod.ID_UNDEFINED };
+            result = self.store.unionOf(&ids) catch result;
+        }
         return result;
+    }
+
+    fn bodyCanFallThrough(self: *Checker, body: NodeIndex) bool {
+        if (body == .none) return true;
+        if (self.ast_ref.nodeTag(body) != .block_stmt) return true;
+        const d = self.ast_ref.nodeData(body);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e <= s or e > self.ast_ref.extra_data.len) return true;
+        const last_raw = self.ast_ref.extra_data[e - 1];
+        const last: NodeIndex = @enumFromInt(last_raw);
+        return !stmtGuaranteesReturn(self, last);
+    }
+
+    fn stmtGuaranteesReturn(self: *Checker, stmt: NodeIndex) bool {
+        const t = self.ast_ref.nodeTag(stmt);
+        if (t == .return_stmt or t == .throw_stmt) return true;
+        if (t == .block_stmt) return !self.bodyCanFallThrough(stmt);
+        if (t == .if_else_stmt) {
+            const d = self.ast_ref.nodeData(stmt);
+            const ed = self.ast_ref.extraData(ast.IfData, @intFromEnum(d.rhs));
+            return stmtGuaranteesReturn(self, ed.consequent) and
+                stmtGuaranteesReturn(self, ed.alternate);
+        }
+        return false;
     }
 
     fn paramDeclaredType(self: *Checker, param: NodeIndex) TypeId {
