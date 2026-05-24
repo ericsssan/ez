@@ -67,6 +67,57 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
         return;
     }
+    // `Class.prototype.method` — when receiver is an X.prototype access
+    // and X is a class declared in this file, treat as instance method.
+    if (prototypeAccessHasInstanceMethod(d.lhs, prop, ctx)) {
+        ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
+        return;
+    }
+}
+
+fn prototypeAccessHasInstanceMethod(recv: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    var n = recv;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .member_expr) return false;
+    const md = ctx.nodeData(n);
+    if (md.rhs == .none) return false;
+    const inner_prop = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    if (!std.mem.eql(u8, inner_prop, "prototype")) return false;
+    var cls_node = md.lhs;
+    while (ctx.nodeTag(cls_node) == .grouping_expr) cls_node = ctx.nodeData(cls_node).lhs;
+    if (ctx.nodeTag(cls_node) != .identifier) return false;
+    const class_name = ctx.tokenText(ctx.nodeMainToken(cls_node));
+    if (class_name.len == 0) return false;
+    const decl = ctx.classDeclByName(class_name);
+    if (decl == .none) {
+        // Built-in class? Defer to prototype catalogue.
+        return isKnownPrototypeMethod(class_name, prop);
+    }
+    // Walk class body for a non-static method_def named `prop`.
+    return classHasInstanceMethod(decl, prop, ctx);
+}
+
+fn classHasInstanceMethod(decl: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    const d = ctx.nodeData(decl);
+    if (d.lhs == .none) return false;
+    const cd = ctx.extraData(ast.ClassData, @intFromEnum(d.lhs));
+    if (cd.body == .none) return false;
+    const body_data = ctx.nodeData(cd.body);
+    const s = @intFromEnum(body_data.lhs);
+    const e = @intFromEnum(body_data.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const m: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(m) != .method_def) continue;
+        const md_data = ctx.nodeData(m);
+        if (md_data.rhs == .none) continue;
+        const meth = ctx.extraData(ast.MethodData, @intFromEnum(md_data.rhs));
+        if ((meth.modifiers & ast.ModifierBit.@"static") != 0) continue;
+        if (md_data.lhs == .none) continue;
+        const k = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
+        if (std.mem.eql(u8, k, prop)) return true;
+    }
+    return false;
 }
 
 /// `Class.prototype.method` access — TSe always flags these.
