@@ -1616,11 +1616,21 @@ pub const Checker = struct {
                 return start + 1;
             }
             const name = raw;
-            const decl = self.type_decl_nodes.get(name) orelse return null;
-            if (self.ast_ref.nodeTag(decl) != .ts_type_alias_decl) return null;
-            const dd = self.ast_ref.nodeData(decl);
-            const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
-            return self.collectStringLiteralKeys(ad.type_node, out, start);
+            if (self.type_decl_nodes.get(name)) |decl| {
+                if (self.ast_ref.nodeTag(decl) == .ts_type_alias_decl) {
+                    const dd = self.ast_ref.nodeData(decl);
+                    const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
+                    return self.collectStringLiteralKeys(ad.type_node, out, start);
+                }
+                return null;
+            }
+            // Type parameter — descend into its constraint expression.
+            if (self.findTypeParameterDecl(n, name)) |tp_decl| {
+                const tp_data = self.ast_ref.nodeData(tp_decl);
+                if (tp_data.lhs == .none) return null;
+                return self.collectStringLiteralKeys(tp_data.lhs, out, start);
+            }
+            return null;
         }
         if (tag == .ts_union_type) {
             const d = self.ast_ref.nodeData(n);
