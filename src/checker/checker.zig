@@ -2337,25 +2337,26 @@ pub const Checker = struct {
             nanc += 1;
         }
         // Find ts_type_parameter nodes named `name` whose ancestor chain
-        // includes a scope ancestor shared with ty_node.
+        // includes a scope ancestor shared with ty_node.  When multiple
+        // candidates match, prefer the INNERMOST scope (matches TS's
+        // shadowing rules) — track the best candidate's tp_pos and
+        // override when we find a later one.
         const total: u32 = @intCast(tree.nodes.len);
         const ty_main_tok = tree.nodeMainToken(ty_node);
         const ty_pos = tree.tokenStart(ty_main_tok);
+        var best_tp_pos: u32 = 0;
+        var best_constraint: NodeIndex = .none;
+        var found_any = false;
         var j: u32 = 0;
         while (j < total) : (j += 1) {
             const ni: NodeIndex = @enumFromInt(j);
             if (tree.nodeTag(ni) != .ts_type_parameter) continue;
             if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
-            // Type param must appear textually before ty_node.
             const tp_pos = tree.tokenStart(tree.nodeMainToken(ni));
             if (tp_pos >= ty_pos) continue;
             // Determine if some ancestor of the tp is a scope that
-            // also appears in ty_node's ancestor chain — meaning they
-            // share an enclosing scope (the alias/fn/class header).
-            // Type params parents aren't always set, so we use spans
-            // via tokenStart and compare against ty_node's ancestors.
-            // For each ancestor of ty_node, check if it's a scope
-            // node and if it textually CONTAINS the tp's main token.
+            // also appears in ty_node's ancestor chain.
+            var in_scope = false;
             for (anc_buf[0..nanc]) |anc_idx| {
                 const anc: NodeIndex = @enumFromInt(anc_idx);
                 const tag = tree.nodeTag(anc);
@@ -2371,28 +2372,26 @@ pub const Checker = struct {
                     tag == .ts_constructor_type or tag == .ts_call_signature or
                     tag == .ts_construct_signature or tag == .ts_method_signature;
                 if (!is_scope) continue;
-                // Check if tp_pos lies AFTER scope's main_token (i.e.
-                // tp is structurally inside the scope's header) AND
-                // before ty_pos.  We don't have end-spans for the
-                // scope, but the main_token position is the keyword
-                // start; tp inside the same fn/class will always be
-                // after that.
                 const anc_pos = tree.tokenStart(tree.nodeMainToken(anc));
                 if (tp_pos < anc_pos) continue;
-                // Found a plausible match — same scope ancestor.
-                const constraint = tree.nodeData(ni).lhs;
-                if (constraint == .none) return null;
-                const resolved = self.resolveTypeNode(constraint);
-                // Don't substitute when the constraint is `any` — TS
-                // treats `<T extends any>` as an unconstrained type
-                // parameter, not as a value of type `any`.  Substituting
-                // would make rules like no-unsafe-call fire on `x()`
-                // where `x: T`.
-                if (tymod.isAny(&self.store, resolved)) return null;
-                return resolved;
+                in_scope = true;
+                break;
+            }
+            if (!in_scope) continue;
+            // Innermost wins — tp closer to ty_pos shadows outer ones.
+            if (!found_any or tp_pos > best_tp_pos) {
+                found_any = true;
+                best_tp_pos = tp_pos;
+                best_constraint = tree.nodeData(ni).lhs;
             }
         }
-        return null;
+        if (!found_any) return null;
+        if (best_constraint == .none) return null;
+        const resolved = self.resolveTypeNode(best_constraint);
+        // Don't substitute when the constraint is `any` — TS treats
+        // `<T extends any>` as an unconstrained type parameter.
+        if (tymod.isAny(&self.store, resolved)) return null;
+        return resolved;
     }
 
     /// Hardcoded lib type seeds for the most common parameterized types.
