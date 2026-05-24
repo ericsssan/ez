@@ -2017,6 +2017,41 @@ pub const LintContext = struct {
         }
     }
 
+    /// If `node` is an Identifier with an effective-const binding (or
+    /// pass-through via grouping), returns the initializer expression
+    /// node of its declarator.  Returns null otherwise.  Useful for rules
+    /// that want to inspect a referenced constant's initializer (e.g.
+    /// `const re = /^bar/; re.test(s)` → returns the regex literal node).
+    pub fn constInitializerOf(self: *const LintContext, node: NodeIndex) ?NodeIndex {
+        if (node == .none) return null;
+        var n = node;
+        while (self.ast.nodeTag(n) == .grouping_expr) n = self.ast.nodeData(n).lhs;
+        if (self.ast.nodeTag(n) != .identifier) return null;
+        const ref_id = self.nodeRefId(n);
+        if (ref_id == .none) return null;
+        const sym_id = self.semantic.references.getSymbol(ref_id);
+        if (sym_id == .none) return null;
+        const kind = self.semantic.symbols.getBindingKind(sym_id);
+        const is_const_kind = kind == .@"const" or kind == .import_binding;
+        if (!is_const_kind) {
+            if (kind != .let and kind != .@"var") return null;
+            const range = self.semantic.symbols.getRefRange(sym_id);
+            const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
+            for (sym_refs) |rid| {
+                const k = self.semantic.references.getKind(rid);
+                if (k.isWrite() and k != .write_init) return null;
+            }
+        }
+        const decl = self.semantic.symbols.getDeclNode(sym_id);
+        if (decl == .none) return null;
+        const decl_parent = self.parentOf(decl);
+        if (decl_parent == .none) return null;
+        if (self.ast.nodeTag(decl_parent) != .declarator) return null;
+        const init = self.ast.nodeData(decl_parent).rhs;
+        if (init == .none) return null;
+        return init;
+    }
+
     /// True iff `id` is an Identifier whose effective-const binding's
     /// initializer is the global identifier `target_name`.  One hop;
     /// e.g. `const r = RegExp; r` resolves to "RegExp" for callers like

@@ -1030,6 +1030,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "class-literal-property-style",
       "prefer-literal-enum-member",
       "no-unnecessary-type-constraint",
+      "prefer-string-starts-ends-with",
       "no-unsafe-function-type",
       "no-wrapper-object-types",
       "prefer-namespace-keyword",

@@ -334,6 +334,7 @@ const ts_no_import_type_side_effects = @import("typescript/no_import_type_side_e
 const ts_ban_tslint_comment = @import("typescript/ban_tslint_comment.zig");
 const ts_class_literal_property_style = @import("typescript/class_literal_property_style.zig");
 const ts_no_unnecessary_type_constraint = @import("typescript/no_unnecessary_type_constraint.zig");
+const ts_prefer_string_starts_ends_with = @import("typescript/prefer_string_starts_ends_with.zig");
 const ts_no_unsafe_function_type = @import("typescript/no_unsafe_function_type.zig");
 const ts_no_wrapper_object_types = @import("typescript/no_wrapper_object_types.zig");
 // v0.8 TypeScript rules
@@ -691,6 +692,7 @@ pub const all_rules = .{
     ts_ban_tslint_comment,
     ts_class_literal_property_style,
     ts_no_unnecessary_type_constraint,
+    ts_prefer_string_starts_ends_with,
     ts_no_unsafe_function_type,
     ts_no_wrapper_object_types,
     ts_no_empty_object_type,
