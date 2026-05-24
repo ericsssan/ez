@@ -189,6 +189,14 @@ fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Opt
 }
 
 fn checkPredicateReturnsOnCallback(cb: NodeIndex, body: NodeIndex, opts: Options, ctx: *const LintContext) void {
+    // When the callback has an explicit return type annotation, use
+    // it directly — that's what TS-eslint sees.
+    if (callbackReturnTypeAnnotation(cb, ctx)) |ret_ann| {
+        const ty = ctx.resolveTypeAnnotationNode(ret_ann);
+        const klass = classify(ty, opts, ctx);
+        if (messageFor(klass, opts)) |id| ctx.reportWithMessageId(cb, id);
+        return;
+    }
     if (ctx.nodeTag(body) != .block_stmt) return;
     const d = ctx.nodeData(body);
     const s = @intFromEnum(d.lhs);
@@ -233,6 +241,36 @@ fn checkPredicateReturnsOnCallback(cb: NodeIndex, body: NodeIndex, opts: Options
     // No top-level return, no nested return — implicit undefined.
     if (callbackHasAnyReturnRecursive(body, ctx)) return;
     ctx.reportWithMessageId(cb, "conditionErrorNullish");
+}
+
+fn callbackReturnTypeAnnotation(cb: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    const tag = ctx.nodeTag(cb);
+    const d = ctx.nodeData(cb);
+    if (d.lhs == .none) return null;
+    if (tag == .arrow_fn or tag == .async_arrow_fn) {
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(d.lhs));
+        if (ad.return_type == .none) return null;
+        // The annotation is a ts_type_annotation; peel to inner type.
+        if (ctx.nodeTag(ad.return_type) == .ts_type_annotation) {
+            const inner = ctx.nodeData(ad.return_type).lhs;
+            if (inner == .none) return null;
+            return inner;
+        }
+        return ad.return_type;
+    }
+    if (tag == .fn_expr or tag == .async_fn_expr or
+        tag == .generator_fn_expr or tag == .async_generator_fn_expr)
+    {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(d.lhs));
+        if (fd.return_type == .none) return null;
+        if (ctx.nodeTag(fd.return_type) == .ts_type_annotation) {
+            const inner = ctx.nodeData(fd.return_type).lhs;
+            if (inner == .none) return null;
+            return inner;
+        }
+        return fd.return_type;
+    }
+    return null;
 }
 
 fn callbackHasExplicitReturnAnnotation(cb: NodeIndex, ctx: *const LintContext) bool {
