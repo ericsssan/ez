@@ -237,15 +237,105 @@ fn isKnownStaticMethod(cls: []const u8, method: []const u8) bool {
 }
 
 fn staticMethodAccess(recv: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    return staticMethodAccessAlias(recv, prop, ctx, 0);
+}
+
+fn staticMethodAccessAlias(recv: NodeIndex, prop: []const u8, ctx: *const LintContext, depth: u32) bool {
+    if (depth > 4) return false;
     var n = recv;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     if (ctx.nodeTag(n) != .identifier) return false;
-    // Resolve to the class declaration via the type-decl table.
     const class_name = ctx.tokenText(ctx.nodeMainToken(n));
     if (class_name.len == 0) return false;
     const decl = ctx.classDeclByName(class_name);
-    if (decl == .none) return false;
-    return classHasStaticMethod(decl, prop, ctx);
+    if (decl != .none) {
+        if (classHasStaticMethod(decl, prop, ctx)) return true;
+        // Walk the extends chain — a subclass of Number/String/etc.
+        // inherits their static methods.
+        if (classExtendsName(decl, ctx)) |parent_name| {
+            // Resolve via a synthetic identifier node?  We have the
+            // text; check the built-in static-method catalogue first.
+            if (isBuiltinStaticMethodByName(parent_name, prop)) return true;
+            // Otherwise look up the parent class declaration and recurse.
+            const parent_decl = ctx.classDeclByName(parent_name);
+            if (parent_decl != .none) {
+                if (classHasStaticMethod(parent_decl, prop, ctx)) return true;
+            }
+        }
+        return false;
+    }
+    // Not a class name directly — could be `const foo = Bar` where
+    // Bar is the class.  Resolve the alias and retry.
+    if (ctx.constInitializerOf(n)) |init_node| {
+        return staticMethodAccessAlias(init_node, prop, ctx, depth + 1);
+    }
+    return false;
+}
+
+fn classExtendsName(decl: NodeIndex, ctx: *const LintContext) ?[]const u8 {
+    const d = ctx.nodeData(decl);
+    if (d.lhs == .none) return null;
+    const cd = ctx.extraData(ast.ClassData, @intFromEnum(d.lhs));
+    if (cd.super_class == .none) return null;
+    var s = cd.super_class;
+    while (ctx.nodeTag(s) == .grouping_expr) s = ctx.nodeData(s).lhs;
+    if (ctx.nodeTag(s) != .identifier) return null;
+    const name = ctx.tokenText(ctx.nodeMainToken(s));
+    if (name.len == 0) return null;
+    return name;
+}
+
+fn isBuiltinStaticMethodByName(class_name: []const u8, prop: []const u8) bool {
+    if (std.mem.eql(u8, class_name, "Number")) {
+        return std.mem.eql(u8, prop, "parseInt") or
+            std.mem.eql(u8, prop, "parseFloat") or
+            std.mem.eql(u8, prop, "isFinite") or
+            std.mem.eql(u8, prop, "isInteger") or
+            std.mem.eql(u8, prop, "isNaN") or
+            std.mem.eql(u8, prop, "isSafeInteger");
+    }
+    if (std.mem.eql(u8, class_name, "String")) {
+        return std.mem.eql(u8, prop, "fromCharCode") or
+            std.mem.eql(u8, prop, "fromCodePoint") or
+            std.mem.eql(u8, prop, "raw");
+    }
+    if (std.mem.eql(u8, class_name, "Object")) {
+        return std.mem.eql(u8, prop, "defineProperty") or
+            std.mem.eql(u8, prop, "defineProperties") or
+            std.mem.eql(u8, prop, "freeze") or
+            std.mem.eql(u8, prop, "fromEntries") or
+            std.mem.eql(u8, prop, "getOwnPropertyDescriptor") or
+            std.mem.eql(u8, prop, "getOwnPropertyDescriptors") or
+            std.mem.eql(u8, prop, "getOwnPropertyNames") or
+            std.mem.eql(u8, prop, "getOwnPropertySymbols") or
+            std.mem.eql(u8, prop, "getPrototypeOf") or
+            std.mem.eql(u8, prop, "setPrototypeOf") or
+            std.mem.eql(u8, prop, "is") or
+            std.mem.eql(u8, prop, "isFrozen") or
+            std.mem.eql(u8, prop, "isSealed") or
+            std.mem.eql(u8, prop, "isExtensible") or
+            std.mem.eql(u8, prop, "keys") or
+            std.mem.eql(u8, prop, "values") or
+            std.mem.eql(u8, prop, "entries") or
+            std.mem.eql(u8, prop, "assign") or
+            std.mem.eql(u8, prop, "create") or
+            std.mem.eql(u8, prop, "seal") or
+            std.mem.eql(u8, prop, "preventExtensions");
+    }
+    if (std.mem.eql(u8, class_name, "Array")) {
+        return std.mem.eql(u8, prop, "from") or
+            std.mem.eql(u8, prop, "of") or
+            std.mem.eql(u8, prop, "isArray");
+    }
+    if (std.mem.eql(u8, class_name, "Promise")) {
+        return std.mem.eql(u8, prop, "all") or
+            std.mem.eql(u8, prop, "allSettled") or
+            std.mem.eql(u8, prop, "any") or
+            std.mem.eql(u8, prop, "race") or
+            std.mem.eql(u8, prop, "reject") or
+            std.mem.eql(u8, prop, "resolve");
+    }
+    return false;
 }
 
 fn classHasStaticMethod(decl: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
