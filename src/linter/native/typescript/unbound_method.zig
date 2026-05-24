@@ -346,12 +346,8 @@ fn isSafePosition(node: NodeIndex, ctx: *const LintContext) bool {
             }
         }
     }
-    // Delete / typeof are safe (they don't call the method).
-    if (ptag == .delete_expr or ptag == .typeof_expr) return true;
-    // `void obj.m;` voids the value — `void instance.unbound;` is
-    // typically used as a "consume the reference" expression, but TSe
-    // still treats it as an unbound reference.  Don't add void_expr to
-    // safe positions.
+    // Delete / typeof / void are safe (they don't call the method).
+    if (ptag == .delete_expr or ptag == .typeof_expr or ptag == .void_expr) return true;
     // Assignment LHS: `obj.m = ...`.
     if (isWriteOpTag(ptag) and pd.lhs == node) return true;
     // Equality compares — comparing against undefined/null/etc.: `obj.m === undefined`.
