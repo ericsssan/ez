@@ -2403,6 +2403,16 @@ pub const Checker = struct {
             const v = if (args.len > 1) args[1] else tymod.ID_UNKNOWN;
             return self.buildMapLib(k, v, std.mem.eql(u8, name, "ReadonlyMap"));
         }
+        // Record<K, V> structurally behaves as `{ [k: K]: V }` — we
+        // model it as an object_t with a single "[]" index-signature
+        // prop carrying V.  inferComputedMember already looks for this
+        // sentinel prop on object_t.
+        if (std.mem.eql(u8, name, "Record")) {
+            const v = if (args.len > 1) args[1] else tymod.ID_UNKNOWN;
+            const props = [_]tymod.ObjectProp{.{ .name = "[]", .type_id = v }};
+            const list = self.store.appendObjectProps(&props) catch return null;
+            return self.store.add(.{ .kind = .object_t, .object_props = list }) catch null;
+        }
         return null;
     }
 

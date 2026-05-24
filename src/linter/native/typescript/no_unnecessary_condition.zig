@@ -367,11 +367,13 @@ fn checkTruthiness(expr: NodeIndex, ctx: *const LintContext) void {
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     const t = ctx.nodeTag(n);
     if (t == .logical_and or t == .logical_or or t == .logical_not) return;
-    if (containsComputedAccess(n, ctx)) return;
+    // Computed-access over an array could be `T | undefined` under
+    // noUncheckedIndexedAccess — bail to avoid FPs.  Object-style
+    // indexed access (Record, etc.) is safer.
+    if (containsArrayIndexedAccess(n, ctx)) return;
     // Use flow-narrowed type so guards in enclosing scopes refine the
     // tested expression's type — `if (x !== undefined) { if (x) … }`
     // becomes `if (string)` once null/undefined are stripped.
-    if (containsComputedAccess(n, ctx)) return;
     const ty = ctx.narrowedTypeOf(n);
     const tr = truthiness(ty, ctx);
     switch (tr) {
@@ -441,6 +443,45 @@ fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
 /// True when `expr` is or contains a computed member access
 /// (`x[y]`).  Under noUncheckedIndexedAccess these can produce
 /// `T | undefined` that we can't see from the resolved type alone.
+/// True when `node` contains a computed access whose receiver is an
+/// array/tuple — those could be `T | undefined` under
+/// noUncheckedIndexedAccess.  Record/object computed access doesn't
+/// trigger the bail.
+fn containsArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    var depth: u32 = 0;
+    while (depth < 16) : (depth += 1) {
+        const tag = ctx.nodeTag(n);
+        if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+            const d = ctx.nodeData(n);
+            const recv_ty = ctx.narrowedTypeOf(d.lhs);
+            if (ctx.typeIsArrayLikeOrUnresolved(recv_ty)) {
+                // Be precise: only bail when the receiver is an
+                // actual array/tuple (skip the "or unresolved" lenient
+                // path — for unresolved we'd over-bail).
+                const kind = ctx.typeIdKind(recv_ty) orelse return false;
+                if (kind == .array_t or kind == .readonly_array_t or kind == .tuple_t) return true;
+            }
+            n = d.lhs;
+            continue;
+        }
+        if (tag == .member_expr or tag == .optional_member_expr) {
+            n = ctx.nodeData(n).lhs;
+            continue;
+        }
+        if (tag == .call_expr or tag == .optional_call_expr) {
+            n = ctx.nodeData(n).lhs;
+            continue;
+        }
+        if (tag == .grouping_expr) {
+            n = ctx.nodeData(n).lhs;
+            continue;
+        }
+        return false;
+    }
+    return false;
+}
+
 fn containsComputedAccess(node: NodeIndex, ctx: *const LintContext) bool {
     var n = node;
     var depth: u32 = 0;
