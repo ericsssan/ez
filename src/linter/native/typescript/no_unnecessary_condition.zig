@@ -63,7 +63,14 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         },
         .logical_not => checkTruthiness(d.lhs, ctx),
         .logical_and, .logical_or => {
-            // LHS is tested for truthiness.
+            // LHS is tested for truthiness — but only when this logical
+            // isn't the immediate operand of a higher-level chain walk
+            // that would visit us via checkTruthiness's recursion (and
+            // so already fire on us).  Specifically: when our parent is
+            // an if/while/do-while/for-cond/conditional/logical, the
+            // top-level walker handles every operand and we'd double-
+            // fire from here.
+            if (parentTriggersChainWalk(node, ctx)) return;
             checkTruthiness(d.lhs, ctx);
         },
         .nullish_coalesce, .nullish_assign => {
@@ -431,6 +438,28 @@ fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
         .always_nullish => ctx.reportWithMessageId(n, "alwaysNullish"),
         else => {},
     }
+}
+
+fn parentTriggersChainWalk(node: NodeIndex, ctx: *const LintContext) bool {
+    var p = ctx.parentOf(node);
+    while (p != .none) {
+        const t = ctx.nodeTag(p);
+        switch (t) {
+            .grouping_expr => p = ctx.parentOf(p),
+            .if_stmt, .while_stmt, .do_while_stmt => return true,
+            .for_stmt => return true,
+            .conditional => {
+                const d = ctx.nodeData(p);
+                return d.lhs == node;
+            },
+            .logical_not => return true,
+            // Chained logical — the outer logical's checkTruthiness
+            // will reach us when it walks operands.
+            .logical_and, .logical_or => return true,
+            else => return false,
+        }
+    }
+    return false;
 }
 
 fn isOptionalChain(node: NodeIndex, ctx: *const LintContext) bool {
