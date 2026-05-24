@@ -375,7 +375,16 @@ fn checkTruthiness(expr: NodeIndex, ctx: *const LintContext) void {
     var n = expr;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     const t = ctx.nodeTag(n);
-    if (t == .logical_and or t == .logical_or or t == .logical_not) return;
+    // Walk both operands of a logical chain — `if (a && b && c)`
+    // checks each branch independently.  The chain visitor only
+    // tests the LHS at each level; the RHS lives here.
+    if (t == .logical_and or t == .logical_or) {
+        const d = ctx.nodeData(n);
+        checkTruthiness(d.lhs, ctx);
+        checkTruthiness(d.rhs, ctx);
+        return;
+    }
+    if (t == .logical_not) return;
     // Computed-access over an array could be `T | undefined` under
     // noUncheckedIndexedAccess — bail to avoid FPs.  Object-style
     // indexed access (Record, etc.) is safer.
