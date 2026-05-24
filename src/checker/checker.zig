@@ -2084,7 +2084,17 @@ pub const Checker = struct {
         // hallucinate types we haven't modelled.
         try self.global_value_types.put(self.gpa, "process", tymod.ID_ANY);
         try self.global_value_types.put(self.gpa, "globalThis", tymod.ID_ANY);
-        try self.global_value_types.put(self.gpa, "window", tymod.ID_ANY);
+        // Window — minimal shape with the methods unbound-method cares
+        // about (alert / prompt / confirm).  Methods bind `this` to the
+        // Window object, so destructuring them off `window` is unsafe.
+        const window_alert_fn = try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_VOID);
+        const window_props = [_]tymod.ObjectProp{
+            .{ .name = "alert", .type_id = window_alert_fn, .is_method = true },
+            .{ .name = "prompt", .type_id = try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_STRING), .is_method = true },
+            .{ .name = "confirm", .type_id = try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_BOOLEAN), .is_method = true },
+        };
+        const window_ty = try h.objType(&window_props);
+        try self.global_value_types.put(self.gpa, "window", window_ty);
         try self.global_value_types.put(self.gpa, "document", tymod.ID_ANY);
         try self.global_value_types.put(self.gpa, "self", tymod.ID_ANY);
     }
@@ -3840,6 +3850,10 @@ pub const Checker = struct {
         const total: u32 = @intCast(tree.nodes.len);
         const ref_main_tok = tree.nodeMainToken(ref_node);
         const ref_pos = tree.tokenStart(ref_main_tok);
+        // Pick the INNERMOST type parameter (highest tp_pos) — matches
+        // TS's shadowing rules where an inner `<T>` shadows an outer.
+        var best: NodeIndex = .none;
+        var best_pos: u32 = 0;
         var j: u32 = 0;
         while (j < total) : (j += 1) {
             const ni: NodeIndex = @enumFromInt(j);
@@ -3847,18 +3861,24 @@ pub const Checker = struct {
             if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
             const tp_pos = tree.tokenStart(tree.nodeMainToken(ni));
             if (tp_pos >= ref_pos) continue;
-            // Ensure the tp is in scope of ref_node: walk tp's parents
-            // and check any ancestor is shared with ref_node's ancestors.
             const tp_parent = parents[j];
             if (tp_parent == NONE) continue;
             var tp_p = tp_parent;
+            var in_scope = false;
             while (tp_p != NONE) : (tp_p = parents[tp_p]) {
                 for (anc_buf[0..nanc]) |anc| {
-                    if (anc == tp_p) return ni;
+                    if (anc == tp_p) { in_scope = true; break; }
                 }
+                if (in_scope) break;
+            }
+            if (!in_scope) continue;
+            if (best == .none or tp_pos > best_pos) {
+                best = ni;
+                best_pos = tp_pos;
             }
         }
-        return null;
+        if (best == .none) return null;
+        return best;
     }
 
     /// Substitute type arguments into a generic type-alias body.

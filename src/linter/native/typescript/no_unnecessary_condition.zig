@@ -399,16 +399,6 @@ fn checkTruthiness(expr: NodeIndex, ctx: *const LintContext) void {
         ctx.reportWithMessageId(n, "never");
         return;
     }
-    if (ctx.nodeTag(n) == .computed_member_expr) {
-        const d_ = ctx.nodeData(n);
-        const recv = d_.lhs;
-        const recv_tag = ctx.nodeTag(recv);
-        const recv_text = if (recv_tag == .identifier) ctx.tokenText(ctx.nodeMainToken(recv)) else &.{};
-        const recv_ty = ctx.narrowedTypeOf(recv);
-        const rk = ctx.typeIdKind(recv_ty) orelse .any;
-        const k = ctx.typeIdKind(ty) orelse .any;
-        std.debug.print("[CMA] recv={s} rk={} ty_kind={} bail_array={}\n", .{recv_text, rk, k, containsArrayIndexedAccess(n, ctx)});
-    }
     const tr = truthiness(ty, ctx);
     switch (tr) {
         .always_truthy => ctx.reportWithMessageId(n, "alwaysTruthy"),
