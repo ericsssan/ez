@@ -239,11 +239,6 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
             {
                 return true;
             }
-            // User type alias / interface — walk the declaration to
-            // check that all members are readonly + deeply readonly.
-            // Skip "branded-primitive" intersections (`string & {...}`)
-            // which TS-eslint treats as readonly — leave those to the
-            // intersection arm below.
             const decl = ctx.typeDeclNode(name);
             if (decl != .none) {
                 const dtag = ctx.nodeTag(decl);
@@ -256,7 +251,6 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
                     return typeNodeIsDeeplyReadonly(body, opts, ctx, depth + 1);
                 }
             }
-            // External or built-in name we don't model — lenient.
             return true;
         },
         .ts_type_literal => {
@@ -328,10 +322,13 @@ fn typeNodeIsPrimitive(node: NodeIndex, ctx: *const LintContext) bool {
     if (node == .none) return false;
     var n = node;
     while (ctx.nodeTag(n) == .ts_parenthesized_type) n = ctx.nodeData(n).lhs;
-    if (ctx.nodeTag(n) != .ts_type_reference) return false;
-    const name_node = ctx.nodeData(n).lhs;
-    const name = if (name_node != .none) ctx.tokenText(ctx.nodeMainToken(name_node))
-        else ctx.tokenText(ctx.nodeMainToken(n));
+    const tag = ctx.nodeTag(n);
+    // Literal types are immutable (primitive literals + template_literal)
+    if (tag == .string_literal or tag == .number_literal or
+        tag == .bigint_literal or tag == .boolean_literal or
+        tag == .null_literal or tag == .ts_template_literal_type) return true;
+    if (tag != .ts_type_reference) return false;
+    const name = ctx.tokenText(ctx.nodeMainToken(n));
     return std.mem.eql(u8, name, "string") or
         std.mem.eql(u8, name, "number") or
         std.mem.eql(u8, name, "boolean") or
