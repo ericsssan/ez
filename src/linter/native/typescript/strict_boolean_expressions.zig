@@ -97,6 +97,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
                 walkBoolCtx(arg, opts, ctx, 0);
                 return;
             }
+            // Array predicate methods: `arr.{some,every,filter,find,
+            // findIndex,findLast,findLastIndex}(cb)` — cb's return is
+            // implicitly tested for truthiness.  Walk the body's
+            // return / expression target.
+            checkArrayPredicateCallback(callee, d.rhs, opts, ctx);
             // Assertion functions: `declare function assert(x): asserts x;
             // assert(value)` — the argument is being implicitly tested.
             const callee_ty = ctx.typeOfNode(callee);
@@ -117,6 +122,41 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         },
         else => {},
     }
+}
+
+fn isArrayPredicateMethod(name: []const u8) bool {
+    return std.mem.eql(u8, name, "filter") or
+        std.mem.eql(u8, name, "find") or
+        std.mem.eql(u8, name, "findIndex") or
+        std.mem.eql(u8, name, "findLast") or
+        std.mem.eql(u8, name, "findLastIndex") or
+        std.mem.eql(u8, name, "some") or
+        std.mem.eql(u8, name, "every");
+}
+
+fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Options, ctx: *const LintContext) void {
+    _ = opts;
+    if (ctx.nodeTag(callee) != .member_expr and ctx.nodeTag(callee) != .optional_member_expr) return;
+    const md = ctx.nodeData(callee);
+    if (md.rhs == .none) return;
+    const method = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    if (!isArrayPredicateMethod(method)) return;
+    if (!ctx.typeIsArrayLikeOrUnresolved(ctx.narrowedTypeOf(md.lhs))) return;
+    if (args_rhs == .none) return;
+    const sr = ctx.extraData(ast.SubRange, @intFromEnum(args_rhs));
+    if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
+    const arg: NodeIndex = @enumFromInt(ctx.ast.extra_data[sr.start]);
+    var n = arg;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .async_arrow_fn or tag == .async_fn_expr) {
+        ctx.reportWithMessageId(n, "predicateCannotBeAsync");
+        return;
+    }
+    // Note: walking the callback body for non-boolean returns requires
+    // contextual typing of the callback parameter (from the array's
+    // element type), which the checker doesn't yet do.  Without that,
+    // params show up as `any` and over-fire conditionErrorAny.  Skip.
 }
 
 /// Walk a boolean-context expression: descend through `&&` / `||`,
