@@ -2833,7 +2833,16 @@ pub const Checker = struct {
                 } else if (pd.value != .none) {
                     ty = self.typeOf(pd.value);
                 }
-                return .{ .name = name, .type_id = ty };
+                // A class field whose initializer is a regular
+                // `function () {}` is a method that uses `this`.  Mark
+                // it so unbound-method fires on `instance.field`.  Arrow
+                // functions don't bind `this`, so they don't qualify.
+                const is_method_like = if (pd.value != .none) blk: {
+                    const vt = self.ast_ref.nodeTag(pd.value);
+                    break :blk vt == .fn_expr or vt == .async_fn_expr or
+                        vt == .generator_fn_expr or vt == .async_generator_fn_expr;
+                } else false;
+                return .{ .name = name, .type_id = ty, .is_method = is_method_like };
             },
             .method_def, .getter_def, .setter_def => {
                 if (data.lhs == .none) return null;
