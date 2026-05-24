@@ -1788,6 +1788,14 @@ pub const Checker = struct {
             "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError",
             "ReferenceError", "URIError", "EvalError", "AggregateError",
             "Function", "Object", "Symbol", "BigInt", "JSON", "Math",
+            // Wrapper-object types for primitives — type-annotation
+            // positions like `foo: Number` should resolve to a
+            // `type_ref` named after the wrapper rather than the
+            // `error_t` fallback that would suppress rule analysis.
+            "Number", "String", "Boolean",
+            "ArrayBuffer", "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray",
+            "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
+            "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
             "Iterable", "AsyncIterable", "IterableIterator", "AsyncIterator",
             "Iterator", "Generator", "AsyncGenerator", "AsyncIterableIterator",
             "Record", "Partial", "Required", "Readonly", "Pick", "Omit",
