@@ -341,6 +341,7 @@ const ts_restrict_plus_operands = @import("typescript/restrict_plus_operands.zig
 const ts_no_unnecessary_type_parameters = @import("typescript/no_unnecessary_type_parameters.zig");
 const ts_prefer_readonly = @import("typescript/prefer_readonly.zig");
 const ts_return_await = @import("typescript/return_await.zig");
+const ts_switch_exhaustiveness_check = @import("typescript/switch_exhaustiveness_check.zig");
 const ts_no_unsafe_function_type = @import("typescript/no_unsafe_function_type.zig");
 const ts_no_wrapper_object_types = @import("typescript/no_wrapper_object_types.zig");
 // v0.8 TypeScript rules
@@ -705,6 +706,7 @@ pub const all_rules = .{
     ts_no_unnecessary_type_parameters,
     ts_prefer_readonly,
     ts_return_await,
+    ts_switch_exhaustiveness_check,
     ts_no_unsafe_function_type,
     ts_no_wrapper_object_types,
     ts_no_empty_object_type,

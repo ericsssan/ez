@@ -653,6 +653,18 @@ pub const LintContext = struct {
         return c.store.get(id).kind;
     }
 
+    /// For string/number/bigint/boolean literal type ids, return the
+    /// literal's value as a tagged union.  Caller-owned slice for
+    /// strings/bigints (borrows from the type-store; treat as read-only).
+    pub fn typeIdLiteralValue(self: *const LintContext, id: tymod.TypeId) ?tymod.LiteralValue {
+        const c = self.ensureChecker() orelse return null;
+        const t = c.store.get(id);
+        return switch (t.kind) {
+            .string_literal, .number_literal, .bigint_literal, .boolean_literal => t.literal_value,
+            else => null,
+        };
+    }
+
     /// Array element TypeId — for `T[]`, `readonly T[]`, `Array<T>`, and
     /// `ReadonlyArray<T>`.  Returns null when not an array-like type.
     pub fn typeIdArrayElement(self: *const LintContext, id: tymod.TypeId) ?tymod.TypeId {
