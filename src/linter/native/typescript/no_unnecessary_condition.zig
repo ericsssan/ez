@@ -35,13 +35,20 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const tag = ctx.nodeTag(node);
     const d = ctx.nodeData(node);
     switch (tag) {
-        .if_stmt, .while_stmt, .do_while_stmt => {
+        .if_stmt => checkTruthiness(d.lhs, ctx),
+        .while_stmt, .do_while_stmt => {
+            // `while (true)` / `do {} while (true)` are exempt when
+            // `allowConstantLoopConditions` is enabled.
+            if (allowsConstantLoopConditions(ctx) and isConstantLoopGuard(d.lhs, ctx)) return;
             checkTruthiness(d.lhs, ctx);
         },
         .for_stmt => {
             if (d.lhs == .none) return;
             const fd = ctx.extraData(ast.ForData, @intFromEnum(d.lhs));
-            if (fd.condition != .none) checkTruthiness(fd.condition, ctx);
+            if (fd.condition != .none) {
+                if (allowsConstantLoopConditions(ctx) and isConstantLoopGuard(fd.condition, ctx)) return;
+                checkTruthiness(fd.condition, ctx);
+            }
         },
         .conditional => {
             checkTruthiness(d.lhs, ctx);
@@ -64,14 +71,39 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     }
 }
 
+fn allowsConstantLoopConditions(ctx: *const LintContext) bool {
+    const v = ctx.rule_options orelse return false;
+    if (v.* != .object) return false;
+    const k = v.object.get("allowConstantLoopConditions") orelse return false;
+    return switch (k) {
+        .bool => |b| b,
+        .string => |s|
+            std.mem.eql(u8, s, "always") or std.mem.eql(u8, s, "only-allowed-literals"),
+        else => false,
+    };
+}
+
+fn isConstantLoopGuard(expr: NodeIndex, ctx: *const LintContext) bool {
+    var n = expr;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const t = ctx.nodeTag(n);
+    if (t != .boolean_literal and t != .number_literal and t != .null_literal) return false;
+    return true;
+}
+
 fn checkTruthiness(expr: NodeIndex, ctx: *const LintContext) void {
     if (expr == .none) return;
     var n = expr;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
-    // Skip when nested logicals — each operand is visited separately.
     const t = ctx.nodeTag(n);
     if (t == .logical_and or t == .logical_or or t == .logical_not) return;
-    const ty = ctx.typeOfNode(n);
+    // Skip computed-access expressions — under noUncheckedIndexedAccess
+    // they can return T | undefined that we can't see from the type.
+    if (containsComputedAccess(n, ctx)) return;
+    // Use flow-narrowed type so guards in enclosing scopes refine the
+    // tested expression's type — `if (x !== undefined) { if (x) … }`
+    // becomes `if (string)` once null/undefined are stripped.
+    const ty = ctx.narrowedTypeOf(n);
     const tr = truthiness(ty, ctx);
     switch (tr) {
         .always_truthy => ctx.reportWithMessageId(n, "alwaysTruthy"),
@@ -84,11 +116,8 @@ fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
     if (lhs == .none) return;
     var n = lhs;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
-    // Conservative: skip expressions whose value depends on computed
-    // index access — under `noUncheckedIndexedAccess` they may return
-    // `undefined`, and we can't see that option from the AST alone.
     if (containsComputedAccess(n, ctx)) return;
-    const ty = ctx.typeOfNode(n);
+    const ty = ctx.narrowedTypeOf(n);
     const nul = nullability(ty, ctx);
     switch (nul) {
         .never_nullish => ctx.reportWithMessageId(n, "neverNullish"),
@@ -102,7 +131,7 @@ fn checkOptionalChainReceiver(recv: NodeIndex, ctx: *const LintContext) void {
     var n = recv;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     if (containsComputedAccess(n, ctx)) return;
-    const ty = ctx.typeOfNode(n);
+    const ty = ctx.narrowedTypeOf(n);
     const nul = nullability(ty, ctx);
     if (nul == .never_nullish) {
         ctx.reportWithMessageId(n, "neverOptionalChain");
@@ -139,11 +168,10 @@ fn checkComparison(lhs: NodeIndex, rhs: NodeIndex, node: NodeIndex, ctx: *const 
     if (lhs == .none or rhs == .none) return;
     const lt = ctx.typeOfNode(lhs);
     const rt = ctx.typeOfNode(rhs);
-    // Both literal types?
+    // Both sides literal types — fire either way (trivially true OR
+    // trivially false comparisons are both "unnecessary").
     if (isLiteralType(lt, ctx) and isLiteralType(rt, ctx)) {
-        if (!literalsOverlap(lt, rt, ctx)) {
-            ctx.reportWithMessageId(node, "comparisonBetweenLiteralTypes");
-        }
+        ctx.reportWithMessageId(node, "comparisonBetweenLiteralTypes");
     }
 }
 
@@ -181,7 +209,7 @@ fn truthinessDepth(id: TypeId, ctx: *const LintContext, depth: u32) Truthiness {
 fn singleTruthiness(id: TypeId, kind: tymod.TypeKind, ctx: *const LintContext) Truthiness {
     switch (kind) {
         .null_t, .undefined_t, .void_t, .never => return .always_falsy,
-        .object_t, .array_t, .readonly_array_t, .tuple_t, .function_t => return .always_truthy,
+        .object_t, .object_keyword, .array_t, .readonly_array_t, .tuple_t, .function_t => return .always_truthy,
         .string_literal => {
             if (ctx.typeIdLiteralValue(id)) |v| switch (v) {
                 .string => |s| return if (s.len == 0) .always_falsy else .always_truthy,

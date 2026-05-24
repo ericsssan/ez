@@ -848,6 +848,327 @@ pub const LintContext = struct {
         return c.store.unionOf(buf[0..n]) catch id;
     }
 
+    /// Strip a specific singleton TypeId out of a union (or return
+    /// never if the input was exactly that singleton).
+    pub fn typeIdStripSingleton(self: *const LintContext, id: tymod.TypeId, target: tymod.TypeId) tymod.TypeId {
+        const c = self.ensureChecker() orelse return id;
+        if (id.eq(target)) return tymod.ID_NEVER;
+        const t = c.store.get(id);
+        if (t.kind != .union_t) return id;
+        var buf: [16]tymod.TypeId = undefined;
+        var n: usize = 0;
+        for (c.store.idsOf(t.list_data)) |m| {
+            if (m.eq(target)) continue;
+            if (n >= buf.len) return id;
+            buf[n] = m;
+            n += 1;
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return c.store.unionOf(buf[0..n]) catch id;
+    }
+
+    /// Strip all union members whose kind is in `kinds_to_remove`.
+    pub fn typeIdStripKinds(self: *const LintContext, id: tymod.TypeId, kinds_to_remove: []const tymod.TypeKind) tymod.TypeId {
+        const c = self.ensureChecker() orelse return id;
+        const t = c.store.get(id);
+        if (t.kind != .union_t) {
+            for (kinds_to_remove) |k| if (t.kind == k) return tymod.ID_NEVER;
+            return id;
+        }
+        var buf: [16]tymod.TypeId = undefined;
+        var n: usize = 0;
+        for (c.store.idsOf(t.list_data)) |m| {
+            const mk = c.store.get(m).kind;
+            var skip = false;
+            for (kinds_to_remove) |k| if (mk == k) { skip = true; break; };
+            if (skip) continue;
+            if (n >= buf.len) return id;
+            buf[n] = m;
+            n += 1;
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return c.store.unionOf(buf[0..n]) catch id;
+    }
+
+    /// Keep only union members whose kind matches `kinds_to_keep`.
+    pub fn typeIdRestrictToKinds(self: *const LintContext, id: tymod.TypeId, kinds_to_keep: []const tymod.TypeKind) tymod.TypeId {
+        const c = self.ensureChecker() orelse return id;
+        const t = c.store.get(id);
+        if (t.kind != .union_t) {
+            for (kinds_to_keep) |k| if (t.kind == k) return id;
+            return tymod.ID_NEVER;
+        }
+        var buf: [16]tymod.TypeId = undefined;
+        var n: usize = 0;
+        for (c.store.idsOf(t.list_data)) |m| {
+            const mk = c.store.get(m).kind;
+            var keep = false;
+            for (kinds_to_keep) |k| if (mk == k) { keep = true; break; };
+            if (!keep) continue;
+            if (n >= buf.len) return id;
+            buf[n] = m;
+            n += 1;
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return c.store.unionOf(buf[0..n]) catch id;
+    }
+
+    /// Flow-narrowed type of an Identifier reference at its current
+    /// position.  Walks enclosing guards (if/conditional/&&/||
+    /// branches), recognises common predicates (typeof checks, ===/!==
+    /// equality against literal/null/undefined, truthy/falsy guards,
+    /// `Array.isArray`, `instanceof`) and refines the binding's type
+    /// accordingly.  Falls back to `typeOfNode(node)` when the node
+    /// isn't a narrowable reference or no guard applies.
+    pub fn narrowedTypeOf(self: *const LintContext, node: NodeIndex) tymod.TypeId {
+        const base = self.typeOfNode(node);
+        if (self.ast.nodeTag(node) != .identifier) return base;
+        const name = self.ast.tokenText(self.ast.nodeMainToken(node));
+        if (name.len == 0) return base;
+        return self.narrowedByEnclosingGuards(node, name, base);
+    }
+
+    fn narrowedByEnclosingGuards(self: *const LintContext, node: NodeIndex, name: []const u8, base: tymod.TypeId) tymod.TypeId {
+        var refined = base;
+        var prev: NodeIndex = node;
+        var cur: NodeIndex = self.parentOf(node);
+        var hops: u32 = 0;
+        while (cur != .none and hops < 64) : (hops += 1) {
+            const tag = self.ast.nodeTag(cur);
+            const d = self.ast.nodeData(cur);
+            switch (tag) {
+                .if_stmt => {
+                    // lhs = cond, rhs = consequent.  No else.
+                    if (prev == d.rhs) {
+                        refined = self.applyGuard(d.lhs, name, refined, true);
+                    }
+                },
+                .if_else_stmt => {
+                    // lhs = cond, rhs = extra IfData.
+                    if (d.rhs != .none) {
+                        const idata = self.extraData(ast_mod.IfData, @intFromEnum(d.rhs));
+                        if (prev == idata.consequent) {
+                            refined = self.applyGuard(d.lhs, name, refined, true);
+                        } else if (prev == idata.alternate) {
+                            refined = self.applyGuard(d.lhs, name, refined, false);
+                        }
+                    }
+                },
+                .conditional => {
+                    // lhs = test, rhs = extra Conditional index.
+                    if (prev != d.lhs and d.rhs != .none) {
+                        const cd = self.extraData(ast_mod.Conditional, @intFromEnum(d.rhs));
+                        if (prev == cd.consequent) {
+                            refined = self.applyGuard(d.lhs, name, refined, true);
+                        } else if (prev == cd.alternate) {
+                            refined = self.applyGuard(d.lhs, name, refined, false);
+                        }
+                    }
+                },
+                .while_stmt, .do_while_stmt => {
+                    // Inside the body, cond is true.
+                    if (prev == d.rhs) {
+                        refined = self.applyGuard(d.lhs, name, refined, true);
+                    }
+                },
+                .logical_and => {
+                    // RHS is reached when LHS is truthy.
+                    if (prev == d.rhs) refined = self.applyGuard(d.lhs, name, refined, true);
+                },
+                .logical_or => {
+                    // RHS is reached when LHS is falsy.
+                    if (prev == d.rhs) refined = self.applyGuard(d.lhs, name, refined, false);
+                },
+                .nullish_coalesce => {
+                    // RHS reached when LHS is nullish.  This narrows
+                    // `name` on the RHS to nullish if name was on the LHS.
+                },
+                else => {},
+            }
+            prev = cur;
+            cur = self.parentOf(cur);
+        }
+        return refined;
+    }
+
+    /// Apply a guard predicate `guard` to refine `ty` for an identifier
+    /// named `name`.  `positive=true` means the guard is being treated
+    /// as true (consequent); false = its negation.
+    fn applyGuard(self: *const LintContext, guard: NodeIndex, name: []const u8, ty: tymod.TypeId, positive: bool) tymod.TypeId {
+        return self.applyGuardDepth(guard, name, ty, positive, 0);
+    }
+
+    fn applyGuardDepth(self: *const LintContext, guard: NodeIndex, name: []const u8, ty: tymod.TypeId, positive: bool, depth: u32) tymod.TypeId {
+        if (guard == .none or depth > 6) return ty;
+        var g = guard;
+        while (self.ast.nodeTag(g) == .grouping_expr) g = self.ast.nodeData(g).lhs;
+        const tag = self.ast.nodeTag(g);
+        const d = self.ast.nodeData(g);
+        switch (tag) {
+            .logical_not => return self.applyGuardDepth(d.lhs, name, ty, !positive, depth + 1),
+            .logical_and => {
+                if (positive) {
+                    // Both must hold — apply both.
+                    var r = self.applyGuardDepth(d.lhs, name, ty, true, depth + 1);
+                    r = self.applyGuardDepth(d.rhs, name, r, true, depth + 1);
+                    return r;
+                }
+                // !(a && b) — at least one false.  Can't narrow precisely.
+                return ty;
+            },
+            .logical_or => {
+                if (!positive) {
+                    // Both false.
+                    var r = self.applyGuardDepth(d.lhs, name, ty, false, depth + 1);
+                    r = self.applyGuardDepth(d.rhs, name, r, false, depth + 1);
+                    return r;
+                }
+                return ty;
+            },
+            .identifier => {
+                // Truthy/falsy guard on the identifier itself.
+                if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(g)), name)) return ty;
+                if (positive) {
+                    // Strip null/undefined/void plus false-y literals.
+                    return self.typeIdStripKinds(ty, &.{ .null_t, .undefined_t, .void_t });
+                }
+                // Negative: keep only the falsy forms.
+                return self.typeIdRestrictToKinds(ty, &.{ .null_t, .undefined_t, .void_t });
+            },
+            .strict_equal, .equal, .strict_not_equal, .not_equal => {
+                return self.applyEqualityGuard(g, name, ty, positive);
+            },
+            .instanceof_expr => {
+                // `name instanceof T` — narrow to T's class type when positive.
+                // Conservative: just remove null/undefined when positive.
+                if (!self.guardLhsIsName(d.lhs, name)) return ty;
+                if (positive) {
+                    return self.typeIdStripKinds(ty, &.{ .null_t, .undefined_t, .void_t });
+                }
+                return ty;
+            },
+            .call_expr => {
+                // `Array.isArray(name)` → narrow to array.
+                return self.applyCallGuard(g, name, ty, positive);
+            },
+            else => return ty,
+        }
+    }
+
+    fn applyEqualityGuard(self: *const LintContext, guard: NodeIndex, name: []const u8, ty: tymod.TypeId, positive_outer: bool) tymod.TypeId {
+        const tag = self.ast.nodeTag(guard);
+        const d = self.ast.nodeData(guard);
+        const negated = (tag == .strict_not_equal or tag == .not_equal);
+        const positive = if (negated) !positive_outer else positive_outer;
+        // Find which side is `name` and which is the value.
+        const lhs_is = self.guardLhsIsName(d.lhs, name);
+        const rhs_is = self.guardLhsIsName(d.rhs, name);
+        if (!lhs_is and !rhs_is) {
+            // `typeof name === 's'` pattern: lhs is a typeof_expr with `name` inside.
+            return self.applyTypeofGuard(guard, name, ty, positive);
+        }
+        const value_node = if (lhs_is) d.rhs else d.lhs;
+        // `name === literal` / `name === null` / `name === undefined`.
+        var v = value_node;
+        while (self.ast.nodeTag(v) == .grouping_expr) v = self.ast.nodeData(v).lhs;
+        const vtag = self.ast.nodeTag(v);
+        if (vtag == .null_literal) {
+            if (positive) {
+                return tymod.ID_NULL;
+            }
+            return self.typeIdStripSingleton(ty, tymod.ID_NULL);
+        }
+        if (vtag == .identifier and
+            std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(v)), "undefined") and
+            self.isGlobalReference(v))
+        {
+            if (positive) return tymod.ID_UNDEFINED;
+            return self.typeIdStripSingleton(self.typeIdStripSingleton(ty, tymod.ID_UNDEFINED), tymod.ID_VOID);
+        }
+        // Literal comparisons would refine to the literal in positive
+        // / remove the literal in negative; skip for now.
+        return ty;
+    }
+
+    fn applyTypeofGuard(self: *const LintContext, guard: NodeIndex, name: []const u8, ty: tymod.TypeId, positive_outer: bool) tymod.TypeId {
+        const tag = self.ast.nodeTag(guard);
+        const d = self.ast.nodeData(guard);
+        const negated = (tag == .strict_not_equal or tag == .not_equal);
+        const positive = if (negated) !positive_outer else positive_outer;
+        // Find typeof side and string side.
+        var typeof_node: NodeIndex = .none;
+        var str_node: NodeIndex = .none;
+        if (self.ast.nodeTag(d.lhs) == .typeof_expr) {
+            typeof_node = d.lhs;
+            str_node = d.rhs;
+        } else if (self.ast.nodeTag(d.rhs) == .typeof_expr) {
+            typeof_node = d.rhs;
+            str_node = d.lhs;
+        } else return ty;
+        const inner = self.ast.nodeData(typeof_node).lhs;
+        if (!self.guardLhsIsName(inner, name)) return ty;
+        var s = str_node;
+        while (self.ast.nodeTag(s) == .grouping_expr) s = self.ast.nodeData(s).lhs;
+        if (self.ast.nodeTag(s) != .string_literal) return ty;
+        const raw = self.ast.tokenText(self.ast.nodeMainToken(s));
+        if (raw.len < 2) return ty;
+        const lit = raw[1 .. raw.len - 1];
+        // Map typeof string to kinds.
+        const kinds: []const tymod.TypeKind = if (std.mem.eql(u8, lit, "string"))
+            &.{ .string, .string_literal }
+        else if (std.mem.eql(u8, lit, "number"))
+            &.{ .number, .number_literal }
+        else if (std.mem.eql(u8, lit, "boolean"))
+            &.{ .boolean, .boolean_literal }
+        else if (std.mem.eql(u8, lit, "bigint"))
+            &.{ .bigint, .bigint_literal }
+        else if (std.mem.eql(u8, lit, "symbol"))
+            &.{.symbol}
+        else if (std.mem.eql(u8, lit, "undefined"))
+            &.{ .undefined_t, .void_t }
+        else if (std.mem.eql(u8, lit, "function"))
+            &.{.function_t}
+        else if (std.mem.eql(u8, lit, "object"))
+            &.{ .object_t, .object_keyword, .array_t, .readonly_array_t, .tuple_t, .null_t }
+        else
+            return ty;
+        if (positive) return self.typeIdRestrictToKinds(ty, kinds);
+        return self.typeIdStripKinds(ty, kinds);
+    }
+
+    fn applyCallGuard(self: *const LintContext, call: NodeIndex, name: []const u8, ty: tymod.TypeId, positive: bool) tymod.TypeId {
+        const cd = self.ast.nodeData(call);
+        var callee = cd.lhs;
+        while (self.ast.nodeTag(callee) == .grouping_expr) callee = self.ast.nodeData(callee).lhs;
+        if (self.ast.nodeTag(callee) != .member_expr) return ty;
+        const md = self.ast.nodeData(callee);
+        if (md.rhs == .none) return ty;
+        const prop = self.ast.tokenText(self.ast.nodeMainToken(md.rhs));
+        if (!std.mem.eql(u8, prop, "isArray")) return ty;
+        var recv = md.lhs;
+        while (self.ast.nodeTag(recv) == .grouping_expr) recv = self.ast.nodeData(recv).lhs;
+        if (self.ast.nodeTag(recv) != .identifier) return ty;
+        if (!std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(recv)), "Array")) return ty;
+        // The argument must be our name.
+        if (cd.rhs == .none) return ty;
+        const sr = self.extraData(ast_mod.SubRange, @intFromEnum(cd.rhs));
+        if (sr.start >= sr.end or sr.end > self.ast.extra_data.len) return ty;
+        const arg: NodeIndex = @enumFromInt(self.ast.extra_data[sr.start]);
+        if (!self.guardLhsIsName(arg, name)) return ty;
+        if (positive) return self.typeIdRestrictToKinds(ty, &.{ .array_t, .readonly_array_t, .tuple_t });
+        return self.typeIdStripKinds(ty, &.{ .array_t, .readonly_array_t, .tuple_t });
+    }
+
+    fn guardLhsIsName(self: *const LintContext, node: NodeIndex, name: []const u8) bool {
+        var n = node;
+        while (self.ast.nodeTag(n) == .grouping_expr) n = self.ast.nodeData(n).lhs;
+        if (self.ast.nodeTag(n) != .identifier) return false;
+        return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(n)), name);
+    }
+
     /// If `id` is a `Promise<T>` / `PromiseLike<T>` / `Thenable<T>` type
     /// reference, return the awaited type `T`.  For a non-promise type,
     /// return `id` unchanged (matches TS's `Awaited<T>` semantics).

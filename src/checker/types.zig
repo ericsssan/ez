@@ -277,6 +277,34 @@ pub const TypeStore = struct {
 
     // ── Convenience constructors ──────────────────────────
 
+    pub fn stringLiteral(self: *TypeStore, value: []const u8) !TypeId {
+        return try self.add(.{
+            .kind = .string_literal,
+            .literal_value = .{ .string = value },
+        });
+    }
+
+    pub fn numberLiteral(self: *TypeStore, value: f64) !TypeId {
+        return try self.add(.{
+            .kind = .number_literal,
+            .literal_value = .{ .number = value },
+        });
+    }
+
+    pub fn bigintLiteral(self: *TypeStore, value: []const u8) !TypeId {
+        return try self.add(.{
+            .kind = .bigint_literal,
+            .literal_value = .{ .bigint = value },
+        });
+    }
+
+    pub fn booleanLiteral(self: *TypeStore, value: bool) !TypeId {
+        return try self.add(.{
+            .kind = .boolean_literal,
+            .literal_value = .{ .boolean = value },
+        });
+    }
+
     pub fn unionOf(self: *TypeStore, members: []const TypeId) !TypeId {
         // Flatten + dedup (cheap: most unions are small).
         var buf = std.ArrayList(TypeId).empty;

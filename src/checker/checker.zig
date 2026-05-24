@@ -133,9 +133,9 @@ pub const Checker = struct {
         const t = self.ast_ref.nodeTag(node);
         return switch (t) {
             .string_literal => self.literalString(node),
-            .number_literal => tymod.ID_NUMBER,
-            .bigint_literal => tymod.ID_BIGINT,
-            .boolean_literal => tymod.ID_BOOLEAN,
+            .number_literal => self.literalNumber(node),
+            .bigint_literal => self.literalBigint(node),
+            .boolean_literal => self.literalBoolean(node),
             .null_literal => tymod.ID_NULL,
             .regex_literal => self.regexpRefType(),
             .template_literal => tymod.ID_STRING,
@@ -213,9 +213,37 @@ pub const Checker = struct {
     }
 
     fn literalString(self: *Checker, node: NodeIndex) TypeId {
-        _ = self;
-        _ = node;
-        return tymod.ID_STRING;
+        const tok = self.ast_ref.nodeMainToken(node);
+        const raw = self.ast_ref.tokenText(tok);
+        if (raw.len < 2) return tymod.ID_STRING;
+        const value = raw[1 .. raw.len - 1];
+        return self.store.stringLiteral(value) catch tymod.ID_STRING;
+    }
+
+    fn literalNumber(self: *Checker, node: NodeIndex) TypeId {
+        const tok = self.ast_ref.nodeMainToken(node);
+        const raw = self.ast_ref.tokenText(tok);
+        // Strip underscores and 0x/0o/0b prefixes for std.fmt.parseFloat.
+        // For our purposes the literal is usually a plain decimal /
+        // negative; rely on parseFloat's tolerance.
+        const v = std.fmt.parseFloat(f64, raw) catch return tymod.ID_NUMBER;
+        return self.store.numberLiteral(v) catch tymod.ID_NUMBER;
+    }
+
+    fn literalBigint(self: *Checker, node: NodeIndex) TypeId {
+        const tok = self.ast_ref.nodeMainToken(node);
+        const raw = self.ast_ref.tokenText(tok);
+        // Trim the trailing 'n' suffix.
+        if (raw.len < 2 or raw[raw.len - 1] != 'n') return tymod.ID_BIGINT;
+        const value = raw[0 .. raw.len - 1];
+        return self.store.bigintLiteral(value) catch tymod.ID_BIGINT;
+    }
+
+    fn literalBoolean(self: *Checker, node: NodeIndex) TypeId {
+        const tok = self.ast_ref.nodeMainToken(node);
+        const raw = self.ast_ref.tokenText(tok);
+        const v = std.mem.eql(u8, raw, "true");
+        return self.store.booleanLiteral(v) catch tymod.ID_BOOLEAN;
     }
 
     fn regexpRefType(self: *Checker) TypeId {
