@@ -146,7 +146,10 @@ fn checkReturnedExpr(node: NodeIndex, expr: NodeIndex, mode: Mode, ctx: *const L
     // enclosing function body act as an implicit try-catch context for
     // await consistency.
     const has_using = enclosingFunctionHasUsingBefore(node, ctx);
-    const require_await = ctx_kind.in_try or has_using;
+    // A return inside a catch handler whose try has a finally clause
+    // needs await — the finally needs to see promise rejections.  Our
+    // inTryCatch flags this case with `.in_catch = true`.
+    const require_await = ctx_kind.in_try or ctx_kind.in_catch or has_using;
     const allow_await = ctx_kind.in_try or ctx_kind.in_catch or has_using;
 
     if (has_await) {

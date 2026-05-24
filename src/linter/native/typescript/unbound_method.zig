@@ -332,6 +332,11 @@ fn isBuiltinStaticMethodByName(class_name: []const u8, prop: []const u8) bool {
             std.mem.eql(u8, prop, "reject") or
             std.mem.eql(u8, prop, "resolve");
     }
+    if (std.mem.eql(u8, class_name, "Date")) {
+        return std.mem.eql(u8, prop, "parse") or
+            std.mem.eql(u8, prop, "UTC") or
+            std.mem.eql(u8, prop, "now");
+    }
     return false;
 }
 
