@@ -106,6 +106,13 @@ pub const Signature = struct {
     return_type: TypeId,
     is_async: bool = false,
     is_generator: bool = false,
+    /// For `name is X` type-predicate return types: the zero-based
+    /// parameter index that's being narrowed, or 0xFFFF when this
+    /// signature isn't a type guard.
+    predicate_param_index: u16 = 0xFFFF,
+    /// Target type for the predicate (`X` in `name is X`).
+    /// Meaningful only when predicate_param_index != 0xFFFF.
+    predicate_target: TypeId = .none,
 };
 
 pub const Type = struct {

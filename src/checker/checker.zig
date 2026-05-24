@@ -834,11 +834,39 @@ pub const Checker = struct {
         // returns are inferred by walking direct `return <expr>;`
         // statements in the body (no nested function descent).
         var ret_ty: TypeId = tymod.ID_UNKNOWN;
+        var predicate_param_idx: u16 = 0xFFFF;
+        var predicate_target: TypeId = TypeId.none;
         if (return_type_node != .none and
             self.ast_ref.nodeTag(return_type_node) == .ts_type_annotation)
         {
             const ty_inner = self.ast_ref.nodeData(return_type_node).lhs;
-            ret_ty = self.resolveTypeNode(ty_inner);
+            // `name is X` type-predicate return — record the predicate
+            // info AND treat the actual return type as boolean.
+            if (self.ast_ref.nodeTag(ty_inner) == .ts_type_predicate) {
+                const pd = self.ast_ref.nodeData(ty_inner);
+                // pd.lhs = param-name identifier (or this_expr).
+                if (pd.lhs != .none and self.ast_ref.nodeTag(pd.lhs) == .identifier) {
+                    const pred_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(pd.lhs));
+                    // Find which param has this name.
+                    var pi: usize = 0;
+                    if (params_start <= params_end and params_end <= ext_len) {
+                        const params = self.ast_ref.extra_data[params_start..params_end];
+                        for (params) |raw| {
+                            const p_node: NodeIndex = @enumFromInt(raw);
+                            const pn = self.paramName(p_node);
+                            if (pn.len > 0 and std.mem.eql(u8, pn, pred_name)) {
+                                predicate_param_idx = @intCast(pi);
+                                break;
+                            }
+                            pi += 1;
+                        }
+                    }
+                    predicate_target = self.resolveTypeNode(pd.rhs);
+                }
+                ret_ty = tymod.ID_BOOLEAN;
+            } else {
+                ret_ty = self.resolveTypeNode(ty_inner);
+            }
         } else if (body_for_inference != .none) {
             const btag = self.ast_ref.nodeTag(body_for_inference);
             if (btag != .block_stmt) {
@@ -855,8 +883,20 @@ pub const Checker = struct {
             .params_end = param_range.end,
             .return_type = ret_ty,
             .is_async = is_async,
+            .predicate_param_index = predicate_param_idx,
+            .predicate_target = predicate_target,
         };
         return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
+    }
+
+    /// Return the identifier name of a function parameter binding.
+    fn paramName(self: *Checker, param: NodeIndex) []const u8 {
+        var n = param;
+        if (self.ast_ref.nodeTag(n) == .ts_parameter_property) n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) == .assignment_pattern) n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) == .rest_element) n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) != .identifier) return &.{};
+        return self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
     }
 
     /// Infer the return type of a block body by union-ing the types
