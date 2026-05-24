@@ -977,13 +977,17 @@ pub const Checker = struct {
                 // pd.lhs = param-name identifier (or this_expr).
                 if (pd.lhs != .none and self.ast_ref.nodeTag(pd.lhs) == .identifier) {
                     const pred_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(pd.lhs));
-                    // Find which param has this name.
+                    // Find which param has this name.  `this` parameters
+                    // are a TS-only declaration of the receiver type and
+                    // don't take an argument slot — exclude them from
+                    // the index used to match call-site arg positions.
                     var pi: usize = 0;
                     if (params_start <= params_end and params_end <= ext_len) {
                         const params = self.ast_ref.extra_data[params_start..params_end];
                         for (params) |raw| {
                             const p_node: NodeIndex = @enumFromInt(raw);
                             const pn = self.paramName(p_node);
+                            if (std.mem.eql(u8, pn, "this")) continue;
                             if (pn.len > 0 and std.mem.eql(u8, pn, pred_name)) {
                                 predicate_param_idx = @intCast(pi);
                                 break;
