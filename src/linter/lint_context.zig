@@ -1035,12 +1035,93 @@ pub const LintContext = struct {
                     // RHS reached when LHS is nullish.  This narrows
                     // `name` on the RHS to nullish if name was on the LHS.
                 },
+                .switch_case => {
+                    // Inside a case body, the case value matched the
+                    // switch's discriminant.  Apply discriminant-narrowing
+                    // when name appears on either side.
+                    refined = self.applyCaseNarrow(cur, name, refined);
+                },
+                .block_stmt => {
+                    // Apply early-exit narrowing from preceding statements:
+                    // `if (!x) return; x.foo` — `x.foo` is narrowed by the
+                    // negation of the if's cond because the consequent
+                    // exits the surrounding function/loop.
+                    refined = self.applyEarlyExitNarrows(cur, prev, name, refined);
+                },
                 else => {},
             }
             prev = cur;
             cur = self.parentOf(cur);
         }
         return refined;
+    }
+
+    /// Walk preceding sibling statements in a block, applying the negation
+    /// of any guard whose consequent ends in an unconditional control
+    /// transfer (return / throw / continue / break).
+    fn applyEarlyExitNarrows(self: *const LintContext, block: NodeIndex, after: NodeIndex, name: []const u8, ty: tymod.TypeId) tymod.TypeId {
+        const d = self.ast.nodeData(block);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e <= s or e > self.ast.extra_data.len) return ty;
+        var refined = ty;
+        for (self.ast.extra_data[s..e]) |raw| {
+            const stmt: NodeIndex = @enumFromInt(raw);
+            if (stmt == after) break;
+            refined = self.maybeApplyEarlyExit(stmt, name, refined);
+        }
+        return refined;
+    }
+
+    fn maybeApplyEarlyExit(self: *const LintContext, stmt: NodeIndex, name: []const u8, ty: tymod.TypeId) tymod.TypeId {
+        const tag = self.ast.nodeTag(stmt);
+        const d = self.ast.nodeData(stmt);
+        // `if (cond) <exit>;` — narrow by !cond.
+        if (tag == .if_stmt) {
+            if (branchAlwaysExits(self, d.rhs)) {
+                return self.applyGuard(d.lhs, name, ty, false);
+            }
+            return ty;
+        }
+        // `if (cond) <a> else <b>` — narrow by !cond if consequent exits,
+        // by cond if alternate exits.
+        if (tag == .if_else_stmt) {
+            if (d.rhs == .none) return ty;
+            const idata = self.extraData(ast_mod.IfData, @intFromEnum(d.rhs));
+            const cons_exit = branchAlwaysExits(self, idata.consequent);
+            const alt_exit = branchAlwaysExits(self, idata.alternate);
+            if (cons_exit and !alt_exit) return self.applyGuard(d.lhs, name, ty, false);
+            if (alt_exit and !cons_exit) return self.applyGuard(d.lhs, name, ty, true);
+            return ty;
+        }
+        return ty;
+    }
+
+    /// Apply switch_case narrowing — inside a case body, the case value
+    /// matched the surrounding switch's discriminant.
+    fn applyCaseNarrow(self: *const LintContext, case_node: NodeIndex, name: []const u8, ty: tymod.TypeId) tymod.TypeId {
+        const case_d = self.ast.nodeData(case_node);
+        if (case_d.lhs == .none) return ty;
+        // Find the enclosing switch_stmt for the discriminant.
+        var cur = self.parentOf(case_node);
+        while (cur != .none) : (cur = self.parentOf(cur)) {
+            if (self.ast.nodeTag(cur) == .switch_stmt) {
+                const sd = self.ast.nodeData(cur);
+                const discriminant = sd.lhs;
+                // Check if `name` is the discriminant (or a member of it).
+                if (self.guardLhsIsName(discriminant, name)) {
+                    const value_ty = self.typeOfNode(case_d.lhs);
+                    return self.typeIdRestrictToLiteral(ty, value_ty);
+                }
+                // Discriminated-union shape: `switch (x.type) { case 'A': ... }`
+                // narrows x to the variant where x.type === 'A'.
+                if (self.memberOfName(discriminant, name)) |prop| {
+                    return self.narrowDiscriminant(ty, prop, case_d.lhs, true);
+                }
+                break;
+            }
+        }
+        return ty;
     }
 
     /// Apply a guard predicate `guard` to refine `ty` for an identifier
@@ -1462,6 +1543,36 @@ pub const LintContext = struct {
         while (self.ast.nodeTag(n) == .grouping_expr) n = self.ast.nodeData(n).lhs;
         if (self.ast.nodeTag(n) != .identifier) return false;
         return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(n)), name);
+    }
+
+    /// True when `node` (a statement or block) unconditionally transfers
+    /// control out of the enclosing block — `return`, `throw`,
+    /// `continue`, `break`, or a block whose last statement does so.
+    fn branchAlwaysExits(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        const n = node;
+        const tag = self.ast.nodeTag(n);
+        switch (tag) {
+            .return_stmt, .throw_stmt, .continue_stmt, .break_stmt => return true,
+            .block_stmt => {
+                const d = self.ast.nodeData(n);
+                const s = @intFromEnum(d.lhs);
+                const e = @intFromEnum(d.rhs);
+                if (e <= s or e > self.ast.extra_data.len) return false;
+                // Last statement must exit.  An empty block doesn't exit.
+                const last_raw = self.ast.extra_data[e - 1];
+                const last: NodeIndex = @enumFromInt(last_raw);
+                return self.branchAlwaysExits(last);
+            },
+            .if_else_stmt => {
+                // Both branches must exit.
+                const d = self.ast.nodeData(n);
+                if (d.rhs == .none) return false;
+                const idata = self.extraData(ast_mod.IfData, @intFromEnum(d.rhs));
+                return self.branchAlwaysExits(idata.consequent) and self.branchAlwaysExits(idata.alternate);
+            },
+            else => return false,
+        }
     }
 
     /// If `id` is a `Promise<T>` / `PromiseLike<T>` / `Thenable<T>` type

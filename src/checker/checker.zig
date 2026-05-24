@@ -272,11 +272,56 @@ pub const Checker = struct {
         const name = self.ast_ref.tokenText(tok);
         if (name.len == 0) return tymod.ID_UNKNOWN;
         if (self.typeOfNameByAstSearch(name)) |t| return t;
+        // Enum value access: `Foo.member` — synthesize an object_t with
+        // each member as a literal-typed prop.
+        if (self.enum_kinds.get(name) != null) {
+            if (self.buildEnumObjectType(name)) |t| return t;
+        }
         // Built-in global values (`console`, `Math`, `JSON`, ...) — fall
         // back to the curated lib shapes so member access / calls type
         // correctly without modelling the full lib.d.ts.
         if (self.global_value_types.get(name)) |t| return t;
         return tymod.ID_UNKNOWN;
+    }
+
+    /// Build an object_t for an enum's value-side shape — each enum
+    /// member becomes a property whose type is the literal value (or
+    /// the broad number/string when we can't statically resolve).
+    fn buildEnumObjectType(self: *Checker, enum_name: []const u8) ?TypeId {
+        const decl = self.type_decl_nodes.get(enum_name) orelse return null;
+        if (self.ast_ref.nodeTag(decl) != .ts_enum_decl) return null;
+        const data = self.ast_ref.nodeData(decl);
+        if (data.lhs == .none) return null;
+        const ed = self.ast_ref.extraData(ast.EnumData, @intFromEnum(data.lhs));
+        var props_buf: [64]tymod.ObjectProp = undefined;
+        var n: usize = 0;
+        if (ed.members_start >= ed.members_end or ed.members_end > self.ast_ref.extra_data.len) return null;
+        var auto_idx: f64 = 0;
+        for (self.ast_ref.extra_data[ed.members_start..ed.members_end]) |raw| {
+            if (n >= props_buf.len) break;
+            const m: NodeIndex = @enumFromInt(raw);
+            if (self.ast_ref.nodeTag(m) != .ts_enum_member) continue;
+            const md = self.ast_ref.nodeData(m);
+            if (md.lhs == .none) continue;
+            const member_name_tok = self.ast_ref.nodeMainToken(md.lhs);
+            const member_name = self.ast_ref.tokenText(member_name_tok);
+            const value_ty: TypeId = if (md.rhs != .none) blk: {
+                // Initializer specified — use its inferred type.
+                const init_ty = self.typeOf(md.rhs);
+                // Try to keep numeric auto-increment in sync.
+                const tt = self.store.get(init_ty);
+                if (tt.kind == .number_literal) auto_idx = tt.literal_value.number + 1;
+                break :blk init_ty;
+            } else blk: {
+                const lit = self.store.numberLiteral(auto_idx) catch tymod.ID_NUMBER;
+                auto_idx += 1;
+                break :blk lit;
+            };
+            props_buf[n] = .{ .name = member_name, .type_id = value_ty };
+            n += 1;
+        }
+        const list = self.store.appendObjectProps(props_buf[0..n]) catch return null;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch null;
     }
 
     /// Walk the AST looking for a top-level declarator/fn_decl/class_decl
