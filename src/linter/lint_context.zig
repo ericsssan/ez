@@ -704,6 +704,17 @@ pub const LintContext = struct {
         return c.store.propsOf(t.object_props);
     }
 
+    /// Return the (first signature's) return type of a function_t id,
+    /// or null when `id` isn't a function type.
+    pub fn functionReturnType(self: *const LintContext, id: tymod.TypeId) ?tymod.TypeId {
+        const c = self.ensureChecker() orelse return null;
+        const t = c.store.get(id);
+        if (t.kind != .function_t) return null;
+        const sigs = c.store.signaturesOf(t.signatures);
+        if (sigs.len == 0) return null;
+        return sigs[0].return_type;
+    }
+
     /// Return the raw TypeKind for a TypeId.  Use when a rule needs to
     /// branch on the underlying type-store representation; lighter
     /// alternative to exposing the full store.

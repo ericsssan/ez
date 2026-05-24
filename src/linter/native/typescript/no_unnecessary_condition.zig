@@ -27,6 +27,7 @@ pub const relevant_tags = [_]Node.Tag{
     .optional_computed_member_expr,
     .equal, .not_equal, .strict_equal, .strict_not_equal,
     .less_than, .less_equal, .greater_than, .greater_equal,
+    .call_expr,
 };
 
 pub const needs_semantic = true;
@@ -69,8 +70,153 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .less_than, .less_equal, .greater_than, .greater_equal => {
             checkComparison(d.lhs, d.rhs, node, ctx);
         },
+        .call_expr => checkArrayPredicateCall(node, ctx),
         else => {},
     }
+}
+
+/// `arr.filter(fn)` / `.find(fn)` / `.findIndex(fn)` / `.some(fn)` /
+/// `.every(fn)`: when `fn`'s return value's type is statically truthy
+/// or falsy, fire `alwaysTruthy` / `alwaysFalsy` on the value node.
+/// When `fn` is a named function reference whose declared return type
+/// is statically truthy/falsy, fire `alwaysTruthyFunc`/`alwaysFalsyFunc`.
+fn checkArrayPredicateCall(call: NodeIndex, ctx: *const LintContext) void {
+    const d = ctx.nodeData(call);
+    var callee = d.lhs;
+    while (ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
+    if (ctx.nodeTag(callee) != .member_expr and ctx.nodeTag(callee) != .optional_member_expr) return;
+    const md = ctx.nodeData(callee);
+    if (md.rhs == .none) return;
+    const method = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    if (!isPredicateMethod(method)) return;
+    if (d.rhs == .none) return;
+    const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
+    const arg: NodeIndex = @enumFromInt(ctx.ast.extra_data[sr.start]);
+    var n = arg;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    // Inline arrow / function-expression: report on each return value's
+    // node so the span matches TSe (the literal, not the arrow).
+    if (tag == .arrow_fn or tag == .async_arrow_fn) {
+        const ad_d = ctx.nodeData(n);
+        if (ad_d.lhs == .none) return;
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ad_d.lhs));
+        if (ad.body == .none) return;
+        if (ctx.nodeTag(ad.body) == .block_stmt) {
+            reportReturnsInBlock(ad.body, ctx);
+        } else {
+            reportPredicateValueNode(ad.body, ctx);
+        }
+        return;
+    }
+    if (tag == .fn_expr or tag == .async_fn_expr) {
+        const fd_d = ctx.nodeData(n);
+        if (fd_d.lhs == .none) return;
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(fd_d.lhs));
+        if (fd.body == .none) return;
+        reportReturnsInBlock(fd.body, ctx);
+        return;
+    }
+    // Named function reference — peek at declared return type.
+    if (tag == .identifier) {
+        const ty = ctx.typeOfNode(n);
+        const ret_ty = ctx.functionReturnType(ty) orelse return;
+        const tr = truthiness(ret_ty, ctx);
+        switch (tr) {
+            .always_truthy => ctx.reportWithMessageId(arg, "alwaysTruthyFunc"),
+            .always_falsy => ctx.reportWithMessageId(arg, "alwaysFalsyFunc"),
+            else => {},
+        }
+    }
+}
+
+fn reportPredicateValueNode(value: NodeIndex, ctx: *const LintContext) void {
+    var v = value;
+    while (ctx.nodeTag(v) == .grouping_expr) v = ctx.nodeData(v).lhs;
+    const ty = ctx.narrowedTypeOf(v);
+    const tr = truthiness(ty, ctx);
+    switch (tr) {
+        .always_truthy => ctx.reportWithMessageId(v, "alwaysTruthy"),
+        .always_falsy => ctx.reportWithMessageId(v, "alwaysFalsy"),
+        else => {},
+    }
+}
+
+fn reportReturnsInBlock(body: NodeIndex, ctx: *const LintContext) void {
+    if (ctx.nodeTag(body) != .block_stmt) return;
+    const d = ctx.nodeData(body);
+    const s = @intFromEnum(d.lhs);
+    const e = @intFromEnum(d.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const stmt: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(stmt) != .return_stmt) continue;
+        const rd = ctx.nodeData(stmt);
+        if (rd.lhs != .none) reportPredicateValueNode(rd.lhs, ctx);
+    }
+}
+
+fn isPredicateMethod(name: []const u8) bool {
+    return std.mem.eql(u8, name, "filter") or
+        std.mem.eql(u8, name, "find") or
+        std.mem.eql(u8, name, "findIndex") or
+        std.mem.eql(u8, name, "findLast") or
+        std.mem.eql(u8, name, "findLastIndex") or
+        std.mem.eql(u8, name, "some") or
+        std.mem.eql(u8, name, "every");
+}
+
+fn predicateReturnType(arg: NodeIndex, ctx: *const LintContext) ?tymod.TypeId {
+    var n = arg;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    // Inline arrow / function-expression callback.
+    if (tag == .arrow_fn or tag == .async_arrow_fn) {
+        const d = ctx.nodeData(n);
+        if (d.lhs == .none) return null;
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(d.lhs));
+        if (ad.body == .none) return null;
+        if (ctx.nodeTag(ad.body) == .block_stmt) {
+            // Try to read a `return <expr>;` from the block.
+            return predicateBlockReturnType(ad.body, ctx);
+        }
+        // Expression body — its type IS the return type.
+        return ctx.typeOfNode(ad.body);
+    }
+    if (tag == .fn_expr or tag == .async_fn_expr) {
+        const d = ctx.nodeData(n);
+        if (d.lhs == .none) return null;
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(d.lhs));
+        if (fd.body == .none) return null;
+        return predicateBlockReturnType(fd.body, ctx);
+    }
+    // Named function reference — peek at its declared return type.
+    if (tag == .identifier) {
+        const ty = ctx.typeOfNode(n);
+        return ctx.functionReturnType(ty);
+    }
+    return null;
+}
+
+fn predicateBlockReturnType(body: NodeIndex, ctx: *const LintContext) ?tymod.TypeId {
+    if (ctx.nodeTag(body) != .block_stmt) return null;
+    const d = ctx.nodeData(body);
+    const s = @intFromEnum(d.lhs);
+    const e = @intFromEnum(d.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return null;
+    // Scan ALL return statements; if all return the same literal, that's
+    // the inferred return type.  We approximate by reading the FIRST
+    // return's expression type — sufficient for the literal-return cases
+    // the rule cares about.
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const stmt: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(stmt) != .return_stmt) continue;
+        const rd = ctx.nodeData(stmt);
+        if (rd.lhs == .none) return null;
+        return ctx.typeOfNode(rd.lhs);
+    }
+    return null;
 }
 
 fn allowsConstantLoopConditions(ctx: *const LintContext) bool {
