@@ -38,11 +38,16 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const d = ctx.nodeData(node);
     switch (tag) {
         .if_stmt => checkTruthiness(d.lhs, ctx),
-        .while_stmt, .do_while_stmt => {
-            // `while (true)` / `do {} while (true)` are exempt when
-            // `allowConstantLoopConditions` is enabled.
+        .while_stmt => {
+            // `while (true)` is exempt when `allowConstantLoopConditions`
+            // is enabled.  Otherwise the condition (d.lhs) is tested.
             if (allowsConstantLoopConditions(ctx) and isConstantLoopGuard(d.lhs, ctx)) return;
             checkTruthiness(d.lhs, ctx);
+        },
+        .do_while_stmt => {
+            // do-while condition lives in d.rhs (d.lhs is the body).
+            if (allowsConstantLoopConditions(ctx) and isConstantLoopGuard(d.rhs, ctx)) return;
+            checkTruthiness(d.rhs, ctx);
         },
         .for_stmt => {
             if (d.lhs == .none) return;
