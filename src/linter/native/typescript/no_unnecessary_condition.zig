@@ -405,7 +405,10 @@ fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
     if (lhs == .none) return;
     var n = lhs;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
-    if (containsComputedAccess(n, ctx)) return;
+    // Bail only on direct array indexed access (`a[0]`) — when the
+    // access is followed by a property (`a[0].foo`), the post-access
+    // path is well-defined regardless of noUncheckedIndexedAccess.
+    if (isDirectArrayIndexedAccess(n, ctx)) return;
     const ty = ctx.narrowedTypeOf(n);
     const nul = nullability(ty, ctx);
     switch (nul) {
@@ -413,6 +416,15 @@ fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
         .always_nullish => ctx.reportWithMessageId(n, "alwaysNullish"),
         else => {},
     }
+}
+
+fn isDirectArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(node);
+    if (tag != .computed_member_expr and tag != .optional_computed_member_expr) return false;
+    const d = ctx.nodeData(node);
+    const recv_ty = ctx.narrowedTypeOf(d.lhs);
+    const kind = ctx.typeIdKind(recv_ty) orelse return false;
+    return kind == .array_t or kind == .readonly_array_t or kind == .tuple_t;
 }
 
 fn checkOptionalChainReceiver(recv: NodeIndex, op_node: NodeIndex, ctx: *const LintContext) void {
