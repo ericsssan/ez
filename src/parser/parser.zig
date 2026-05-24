@@ -5907,6 +5907,18 @@ pub const Parser = struct {
             if (is_optional_ts) {
                 self.node_data_ptr[binding.toInt()].lhs = .root;
             }
+        } else if (param_type_annotation != .none and
+            (binding_tag == .object_pattern or binding_tag == .array_pattern))
+        {
+            // Patterns can't store the annotation inline (their data
+            // slots hold a SubRange).  Wire parents[type_ann] = pattern
+            // so downstream rules can discover the annotation by
+            // scanning ts_type_annotation children whose parent matches.
+            const ann_idx = param_type_annotation.toInt();
+            if (ann_idx < self.parents_buf.len) {
+                self.parents_buf[ann_idx] = @intCast(binding.toInt());
+            }
+            self.node_end_toks[binding.toInt()] = if (self.tok_i > 0) @intCast(self.tok_i - 1) else 0;
         }
 
         // TS1015: Parameter cannot have question mark and initializer.
