@@ -135,11 +135,13 @@ fn isArrayPredicateMethod(name: []const u8) bool {
 }
 
 fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Options, ctx: *const LintContext) void {
-    _ = opts;
     if (ctx.nodeTag(callee) != .member_expr and ctx.nodeTag(callee) != .optional_member_expr) return;
     const md = ctx.nodeData(callee);
     if (md.rhs == .none) return;
     const method = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    // Only the *boolean*-result predicate methods participate here.
+    // `.map` / `.forEach` / `.flatMap` callbacks aren't tested for
+    // truthiness even though their first param gets contextual typing.
     if (!isArrayPredicateMethod(method)) return;
     if (!ctx.typeIsArrayLikeOrUnresolved(ctx.narrowedTypeOf(md.lhs))) return;
     if (args_rhs == .none) return;
@@ -153,10 +155,45 @@ fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Opt
         ctx.reportWithMessageId(n, "predicateCannotBeAsync");
         return;
     }
-    // Note: walking the callback body for non-boolean returns requires
-    // contextual typing of the callback parameter (from the array's
-    // element type), which the checker doesn't yet do.  Without that,
-    // params show up as `any` and over-fire conditionErrorAny.  Skip.
+    if (tag == .arrow_fn) {
+        const ad_d = ctx.nodeData(n);
+        if (ad_d.lhs == .none) return;
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ad_d.lhs));
+        if (ad.body == .none) return;
+        if (ctx.nodeTag(ad.body) == .block_stmt) {
+            walkPredicateReturns(ad.body, opts, ctx);
+        } else {
+            walkBoolCtx(ad.body, opts, ctx, 0);
+        }
+        return;
+    }
+    if (tag == .fn_expr) {
+        const fd_d = ctx.nodeData(n);
+        if (fd_d.lhs == .none) return;
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(fd_d.lhs));
+        if (fd.body == .none) return;
+        walkPredicateReturns(fd.body, opts, ctx);
+        return;
+    }
+}
+
+fn walkPredicateReturns(body: NodeIndex, opts: Options, ctx: *const LintContext) void {
+    if (ctx.nodeTag(body) != .block_stmt) return;
+    const d = ctx.nodeData(body);
+    const s = @intFromEnum(d.lhs);
+    const e = @intFromEnum(d.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const stmt: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(stmt) != .return_stmt) continue;
+        const rd = ctx.nodeData(stmt);
+        if (rd.lhs == .none) {
+            // bare `return;` — value is undefined.
+            ctx.reportWithMessageId(stmt, "conditionErrorNullish");
+            continue;
+        }
+        walkBoolCtx(rd.lhs, opts, ctx, 0);
+    }
 }
 
 /// Walk a boolean-context expression: descend through `&&` / `||`,

@@ -824,7 +824,144 @@ pub const Checker = struct {
             // Function/method/getter/setter parameter, class field, etc.
             // We don't resolve these structurally yet — return unknown
             // rather than any so unsafe-* rules don't spuriously fire.
-            else => return tymod.ID_UNKNOWN,
+            else => {
+                // Contextual typing: an un-annotated arrow/fn-expr parameter
+                // that's the predicate of an array method gets the array's
+                // element type.  `arr.some(x => x)` → x has type arr's
+                // element.
+                if (self.contextualArrayPredicateParamType(binding)) |t| return t;
+                return tymod.ID_UNKNOWN;
+            },
+        }
+    }
+
+    /// If `binding` is the first parameter of an arrow/function-expression
+    /// callback passed as the first argument to a recognised array
+    /// predicate method (`.some`/`.every`/`.filter`/`.find`/...), return
+    /// the array's element type.  Otherwise null.
+    fn contextualArrayPredicateParamType(self: *Checker, binding: NodeIndex) ?TypeId {
+        const parents = self.ast_ref.parents;
+        if (parents.len == 0) return null;
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        // Walk up: identifier → arrow_fn/fn_expr (the callback).
+        var cur = parents[binding.toInt()];
+        if (cur == NONE) return null;
+        // Skip through patterns / ts_parameter_property / rest_element.
+        var fn_node: NodeIndex = .none;
+        var first_param_idx: u32 = 0;
+        var depth: u32 = 0;
+        while (cur != NONE and depth < 8) : ({ cur = parents[cur]; depth += 1; }) {
+            const t = self.ast_ref.nodeTag(@enumFromInt(cur));
+            switch (t) {
+                .arrow_fn, .async_arrow_fn,
+                .fn_expr, .async_fn_expr,
+                .generator_fn_expr, .async_generator_fn_expr,
+                => { fn_node = @enumFromInt(cur); break; },
+                else => {},
+            }
+        }
+        if (fn_node == .none) return null;
+        // The callback must be the first param of the fn — only first
+        // params get the element type.
+        const fn_idx = fn_node.toInt();
+        const fn_tag = self.ast_ref.nodeTag(fn_node);
+        var pstart: u32 = 0;
+        var pend: u32 = 0;
+        switch (fn_tag) {
+            .arrow_fn, .async_arrow_fn => {
+                const fd_d = self.ast_ref.nodeData(fn_node);
+                if (fd_d.lhs == .none) return null;
+                const ad = self.ast_ref.extraData(ast.ArrowData, @intFromEnum(fd_d.lhs));
+                pstart = ad.params_start; pend = ad.params_end;
+            },
+            else => {
+                const fd_d = self.ast_ref.nodeData(fn_node);
+                if (fd_d.lhs == .none) return null;
+                const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(fd_d.lhs));
+                pstart = fd.params; pend = fd.params_end;
+            },
+        }
+        if (pend <= pstart or pend > self.ast_ref.extra_data.len) return null;
+        const params = self.ast_ref.extra_data[pstart..pend];
+        // Binding must be (the un-annotated id reachable from) the first
+        // param.  Walk the first param's children — direct identifier
+        // wins, or peel patterns.
+        first_param_idx = params[0];
+        var p_node: NodeIndex = @enumFromInt(first_param_idx);
+        if (self.ast_ref.nodeTag(p_node) == .ts_parameter_property) p_node = self.ast_ref.nodeData(p_node).lhs;
+        if (self.ast_ref.nodeTag(p_node) == .assignment_pattern) p_node = self.ast_ref.nodeData(p_node).lhs;
+        if (self.ast_ref.nodeTag(p_node) == .rest_element) p_node = self.ast_ref.nodeData(p_node).lhs;
+        if (p_node != binding) return null;
+        _ = fn_idx;
+        // The fn must be the first argument of a call to an array
+        // predicate method.
+        const fn_parent = parents[fn_node.toInt()];
+        if (fn_parent == NONE) return null;
+        const call_node: NodeIndex = @enumFromInt(fn_parent);
+        if (self.ast_ref.nodeTag(call_node) != .call_expr) return null;
+        const cd = self.ast_ref.nodeData(call_node);
+        // Callee must be `<arrLike>.<predicate>`.
+        var callee = cd.lhs;
+        while (self.ast_ref.nodeTag(callee) == .grouping_expr) callee = self.ast_ref.nodeData(callee).lhs;
+        const callee_tag = self.ast_ref.nodeTag(callee);
+        if (callee_tag != .member_expr and callee_tag != .optional_member_expr) return null;
+        const md = self.ast_ref.nodeData(callee);
+        if (md.rhs == .none) return null;
+        const method = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.rhs));
+        if (!isArrayPredicateMethodName(method)) return null;
+        // First argument of the call must be the fn we found.
+        if (cd.rhs == .none) return null;
+        const sr = self.ast_ref.extraData(ast.SubRange, @intFromEnum(cd.rhs));
+        if (sr.start >= sr.end or sr.end > self.ast_ref.extra_data.len) return null;
+        const arg0_idx = self.ast_ref.extra_data[sr.start];
+        if (arg0_idx != fn_node.toInt()) return null;
+        // Receiver's array element type.
+        const recv_ty = self.typeOf(md.lhs);
+        const elem = self.elementTypeOf(recv_ty) orelse return null;
+        return elem;
+    }
+
+    fn isArrayPredicateMethodName(name: []const u8) bool {
+        return std.mem.eql(u8, name, "filter") or
+            std.mem.eql(u8, name, "find") or
+            std.mem.eql(u8, name, "findIndex") or
+            std.mem.eql(u8, name, "findLast") or
+            std.mem.eql(u8, name, "findLastIndex") or
+            std.mem.eql(u8, name, "some") or
+            std.mem.eql(u8, name, "every") or
+            std.mem.eql(u8, name, "map") or
+            std.mem.eql(u8, name, "forEach") or
+            std.mem.eql(u8, name, "flatMap");
+    }
+
+    fn elementTypeOf(self: *Checker, id: TypeId) ?TypeId {
+        const t = self.store.get(id);
+        switch (t.kind) {
+            .array_t, .readonly_array_t => {
+                const elems = self.store.idsOf(t.list_data);
+                if (elems.len == 0) return null;
+                return elems[0];
+            },
+            .tuple_t => {
+                const elems = self.store.idsOf(t.list_data);
+                if (elems.len == 0) return null;
+                if (elems.len == 1) return elems[0];
+                return self.store.unionOf(elems) catch elems[0];
+            },
+            .union_t => {
+                var buf: [16]TypeId = undefined;
+                var n: usize = 0;
+                for (self.store.idsOf(t.list_data)) |m| {
+                    const e = self.elementTypeOf(m) orelse return null;
+                    if (n >= buf.len) return null;
+                    buf[n] = e;
+                    n += 1;
+                }
+                if (n == 0) return null;
+                if (n == 1) return buf[0];
+                return self.store.unionOf(buf[0..n]) catch null;
+            },
+            else => return null,
         }
     }
 
