@@ -1032,6 +1032,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-unnecessary-type-constraint",
       "prefer-string-starts-ends-with",
       "restrict-template-expressions",
+      "no-unnecessary-qualifier",
       "no-unsafe-function-type",
       "no-wrapper-object-types",
       "prefer-namespace-keyword",
