@@ -74,7 +74,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             checkTruthiness(d.lhs, ctx);
         },
         .optional_member_expr, .optional_call_expr, .optional_computed_member_expr => {
-            checkOptionalChainReceiver(d.lhs, ctx);
+            checkOptionalChainReceiver(d.lhs, node, ctx);
         },
         .equal, .not_equal, .strict_equal, .strict_not_equal,
         .less_than, .less_equal, .greater_than, .greater_equal => {
@@ -292,16 +292,47 @@ fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
     }
 }
 
-fn checkOptionalChainReceiver(recv: NodeIndex, ctx: *const LintContext) void {
+fn checkOptionalChainReceiver(recv: NodeIndex, op_node: NodeIndex, ctx: *const LintContext) void {
     if (recv == .none) return;
     var n = recv;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     if (containsComputedAccess(n, ctx)) return;
-    const ty = ctx.narrowedTypeOf(n);
+    const ty = chainCheckType(n, ctx);
     const nul = nullability(ty, ctx);
     if (nul == .never_nullish) {
-        ctx.reportWithMessageId(n, "neverOptionalChain");
+        // Report on the `?.` operator token of the outer chain — that's
+        // where TS-eslint anchors the diagnostic.
+        const tok = ctx.nodeMainToken(op_node);
+        const start = ctx.tokenStart(tok);
+        const len = ctx.tokenText(tok).len;
+        const end: u32 = @intCast(start + len);
+        ctx.reportSpanWithMessageId(.{ .start = start, .end = end }, "neverOptionalChain");
     }
+}
+
+/// For a mid-chain receiver, return the type the next `?.` operator
+/// actually tests — i.e. the property's *declared* type (NOT the
+/// chain-result type, which has `undefined` added by upstream `?.`).
+/// `foo?.bar?.baz` checks `?.baz` against foo's bar-property type.
+fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
+    const tag = ctx.nodeTag(n);
+    if (tag == .optional_member_expr or tag == .member_expr) {
+        const d = ctx.nodeData(n);
+        if (d.rhs == .none) return ctx.narrowedTypeOf(n);
+        const rhs_tag = ctx.nodeTag(d.rhs);
+        if (rhs_tag != .identifier and rhs_tag != .property_ident) return ctx.narrowedTypeOf(n);
+        const prop_name = ctx.tokenText(ctx.nodeMainToken(d.rhs));
+        var recv_ty = chainCheckType(d.lhs, ctx);
+        // Strip chain-introduced `undefined`/`null` from the receiver
+        // before projecting — the property exists on the non-nullish
+        // variant.  projectPropertyPub re-adds undefined for optional
+        // properties, so the optionality is preserved correctly.
+        const kinds = [_]tymod.TypeKind{ .undefined_t, .null_t };
+        recv_ty = ctx.typeIdStripKinds(recv_ty, &kinds);
+        const projected = ctx.projectPropertyPub(recv_ty, prop_name);
+        if (!projected.eq(tymod.TypeId.none)) return projected;
+    }
+    return ctx.narrowedTypeOf(n);
 }
 
 /// True when `expr` is or contains a computed member access

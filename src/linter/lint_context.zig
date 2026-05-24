@@ -1004,14 +1004,27 @@ pub const LintContext = struct {
         return base;
     }
 
+    pub fn projectPropertyPub(self: *const LintContext, ty: tymod.TypeId, prop_name: []const u8) tymod.TypeId {
+        const out = self.projectProperty(ty, prop_name);
+        if (out.eq(tymod.ID_UNKNOWN)) return tymod.TypeId.none;
+        return out;
+    }
+
     /// Project a property's type out of an object/union.  Returns
-    /// ID_UNKNOWN when the property isn't found.
+    /// ID_UNKNOWN when the property isn't found.  Optional properties
+    /// (`prop?: T`) are returned as `T | undefined`.
     fn projectProperty(self: *const LintContext, ty: tymod.TypeId, prop_name: []const u8) tymod.TypeId {
         const c = self.ensureChecker() orelse return tymod.ID_UNKNOWN;
         const t = c.store.get(ty);
         if (t.kind == .object_t) {
             for (c.store.propsOf(t.object_props)) |p| {
-                if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
+                if (std.mem.eql(u8, p.name, prop_name)) {
+                    if (p.optional) {
+                        const ids = [_]tymod.TypeId{ p.type_id, tymod.ID_UNDEFINED };
+                        return c.store.unionOf(&ids) catch p.type_id;
+                    }
+                    return p.type_id;
+                }
             }
             return tymod.ID_UNKNOWN;
         }
