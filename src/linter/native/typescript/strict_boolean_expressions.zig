@@ -186,6 +186,14 @@ fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Opt
         checkPredicateReturnsOnCallback(n, fd.body, opts, ctx);
         return;
     }
+    if (tag == .identifier) {
+        // Named function reference — classify by its declared return type.
+        const callee_ty = ctx.typeOfNode(n);
+        const ret_ty = ctx.functionReturnType(callee_ty) orelse return;
+        const klass = classify(ret_ty, opts, ctx);
+        if (messageFor(klass, opts)) |id| ctx.reportWithMessageId(n, id);
+        return;
+    }
 }
 
 fn checkPredicateReturnsOnCallback(cb: NodeIndex, body: NodeIndex, opts: Options, ctx: *const LintContext) void {
