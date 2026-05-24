@@ -173,8 +173,6 @@ fn checkComparison(lhs: NodeIndex, rhs: NodeIndex, node: NodeIndex, ctx: *const 
     const lt = effectiveLiteralType(lhs, ctx);
     const rt = effectiveLiteralType(rhs, ctx);
     if (isLiteralType(lt, ctx) and isLiteralType(rt, ctx)) {
-        // Loose `null == undefined` is true — don't flag.
-        if (loose and isNullishLiteral(lt) and isNullishLiteral(rt)) return;
         ctx.reportWithMessageId(node, "comparisonBetweenLiteralTypes");
         return;
     }
@@ -294,6 +292,9 @@ fn effectiveLiteralType(node: NodeIndex, ctx: *const LintContext) tymod.TypeId {
         return tymod.ID_UNDEFINED;
     }
     if (ctx.nodeTag(n) == .null_literal) return tymod.ID_NULL;
+    // For identifier references, use flow-narrowed type so guards in
+    // enclosing scopes refine the compared value's type.
+    if (ctx.nodeTag(n) == .identifier) return ctx.narrowedTypeOf(n);
     return ctx.typeOfNode(n);
 }
 
