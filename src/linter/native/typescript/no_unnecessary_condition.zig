@@ -89,6 +89,9 @@ fn checkArrayPredicateCall(call: NodeIndex, ctx: *const LintContext) void {
     if (md.rhs == .none) return;
     const method = ctx.tokenText(ctx.nodeMainToken(md.rhs));
     if (!isPredicateMethod(method)) return;
+    // Receiver must be an actual array/tuple — bail out on objects
+    // that just happen to have a same-named method.
+    if (!receiverIsArrayLike(md.lhs, ctx)) return;
     if (d.rhs == .none) return;
     const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
     if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
@@ -155,6 +158,12 @@ fn reportReturnsInBlock(body: NodeIndex, ctx: *const LintContext) void {
         const rd = ctx.nodeData(stmt);
         if (rd.lhs != .none) reportPredicateValueNode(rd.lhs, ctx);
     }
+}
+
+fn receiverIsArrayLike(recv: NodeIndex, ctx: *const LintContext) bool {
+    if (recv == .none) return false;
+    const ty = ctx.narrowedTypeOf(recv);
+    return ctx.typeIsArrayLikeOrUnresolved(ty);
 }
 
 fn isPredicateMethod(name: []const u8) bool {

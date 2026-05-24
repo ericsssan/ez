@@ -828,6 +828,69 @@ pub const Checker = struct {
         }
     }
 
+    /// If `ret_node` is a ts_type_reference to a type-parameter `T`
+    /// whose constraint is a literal type (`true`, `"foo"`, `42`, `0n`),
+    /// return that literal TypeId.  Otherwise return `fallback` (the
+    /// already-resolved type, typically a type_ref).
+    fn foldTypeParamLiteralConstraint(self: *Checker, ret_node: NodeIndex, fallback: TypeId) TypeId {
+        var n = ret_node;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type)
+            n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) != .ts_type_reference) return fallback;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+        const tp = self.findTypeParameterDecl(n, name) orelse return fallback;
+        const constraint = self.ast_ref.nodeData(tp).lhs;
+        if (constraint == .none) return fallback;
+        const resolved = self.resolveTypeNode(constraint);
+        const rt = self.store.get(resolved);
+        return switch (rt.kind) {
+            .string_literal, .number_literal, .bigint_literal,
+            .boolean_literal, .null_t, .undefined_t, .never,
+            => resolved,
+            else => fallback,
+        };
+    }
+
+    /// `keyof T` — when T resolves to an object-like type with known
+    /// properties, return the union of string-literal property names.
+    /// Falls back to ID_STRING when T can't be statically inspected.
+    fn resolveKeyofType(self: *Checker, inner: NodeIndex) TypeId {
+        if (inner == .none) return tymod.ID_STRING;
+        const inner_ty = self.resolveTypeNode(inner);
+        return self.keyofOf(inner_ty);
+    }
+
+    fn keyofOf(self: *Checker, id: TypeId) TypeId {
+        const t = self.store.get(id);
+        // Object: union of own prop names.
+        if (t.kind == .object_t) {
+            var buf: [32]TypeId = undefined;
+            var n: usize = 0;
+            for (self.store.propsOf(t.object_props)) |p| {
+                if (n >= buf.len) break;
+                buf[n] = self.store.stringLiteral(p.name) catch continue;
+                n += 1;
+            }
+            if (n == 0) return tymod.ID_NEVER;
+            if (n == 1) return buf[0];
+            return self.store.unionOf(buf[0..n]) catch tymod.ID_STRING;
+        }
+        // type_ref to user/interface — resolve and recurse.
+        if (t.kind == .type_ref) {
+            if (self.resolveDeclaredType(t.name)) |resolved| {
+                if (!resolved.eq(id)) return self.keyofOf(resolved);
+            }
+        }
+        // Array: keyof T[] includes number-coercible string indices +
+        // 'length' / 'push' / 'pop' / etc.  TS technically returns a
+        // huge union here; conservative: return number (the rule's
+        // common case for `T[number]` shape).
+        if (t.kind == .array_t or t.kind == .readonly_array_t or t.kind == .tuple_t) {
+            return tymod.ID_NUMBER;
+        }
+        return tymod.ID_STRING;
+    }
+
     /// `typeof x` in type position — resolve to the value-side type of
     /// the identifier `x`.  Falls back to ID_UNKNOWN when the inner
     /// expression isn't a bare identifier or no value is found.
@@ -1086,7 +1149,10 @@ pub const Checker = struct {
                     }
                     break :blk inner_ty;
                 }
-                break :blk tymod.ID_STRING; // keyof default approx
+                // `keyof T` — resolve to the literal union of T's property
+                // names when T is structurally inspectable.
+                const inner = self.ast_ref.nodeData(ty_node).lhs;
+                break :blk self.resolveKeyofType(inner);
             },
             .ts_type_literal => self.resolveTypeLiteral(ty_node),
             .ts_function_type, .ts_constructor_type => self.resolveFunctionType(ty_node),
@@ -1127,10 +1193,19 @@ pub const Checker = struct {
             }
         }
         // Return type is in body for ts_function_type.
-        const ret_ty = if (fd.body != .none)
+        var ret_ty = if (fd.body != .none)
             self.resolveTypeNode(fd.body)
         else
             tymod.ID_UNKNOWN;
+        // From the outside-of-the-function view, a return type that is
+        // a bare type-parameter ref (`<T ...>() => T`) gets folded to
+        // T's constraint — but only when the constraint is a literal
+        // type that uniquely determines a value (`extends true`, etc.).
+        // For broad constraints (`extends boolean`/`string`), leave as
+        // type_ref so callers don't treat T as a concrete value.
+        if (fd.body != .none and self.store.get(ret_ty).kind == .type_ref) {
+            ret_ty = self.foldTypeParamLiteralConstraint(fd.body, ret_ty);
+        }
         const param_range = self.store.appendSignatureParams(param_buf[0..count]) catch {
             return tymod.ID_UNKNOWN;
         };
@@ -2112,7 +2187,9 @@ pub const Checker = struct {
                     tag == .async_arrow_fn or tag == .method_def or
                     tag == .computed_method_def or tag == .class_decl or
                     tag == .class_expr or tag == .ts_type_alias_decl or
-                    tag == .ts_interface_decl;
+                    tag == .ts_interface_decl or tag == .ts_function_type or
+                    tag == .ts_constructor_type or tag == .ts_call_signature or
+                    tag == .ts_construct_signature or tag == .ts_method_signature;
                 if (!is_scope) continue;
                 // Check if tp_pos lies AFTER scope's main_token (i.e.
                 // tp is structurally inside the scope's header) AND

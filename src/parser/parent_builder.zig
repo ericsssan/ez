@@ -436,6 +436,9 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
             const ed = extraData(ast_mod.FnData, extra, @intFromEnum(lhs));
             spSub(parents, extra, ed.params, ed.params_end, idx);
             sp(parents, ed.body, idx);
+            if (ed.type_params_end > ed.type_params) {
+                spSub(parents, extra, ed.type_params, ed.type_params_end, idx);
+            }
         },
         .ts_type_reference => {
             sp(parents, lhs, idx);

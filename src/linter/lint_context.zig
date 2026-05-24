@@ -704,6 +704,25 @@ pub const LintContext = struct {
         return c.store.propsOf(t.object_props);
     }
 
+    /// Is `id` an array/tuple/readonly-array, or a union of array-likes?
+    /// Returns true for unknown/any/error/unresolved type_ref so callers
+    /// don't disable themselves when receiver type info is missing.
+    pub fn typeIsArrayLikeOrUnresolved(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return true;
+        const t = c.store.get(id);
+        switch (t.kind) {
+            .array_t, .readonly_array_t, .tuple_t => return true,
+            .union_t => {
+                for (c.store.idsOf(t.list_data)) |m| {
+                    if (!self.typeIsArrayLikeOrUnresolved(m)) return false;
+                }
+                return true;
+            },
+            .any, .unknown, .error_t, .type_ref => return true,
+            else => return false,
+        }
+    }
+
     /// Return the (first signature's) return type of a function_t id,
     /// or null when `id` isn't a function type.
     pub fn functionReturnType(self: *const LintContext, id: tymod.TypeId) ?tymod.TypeId {
@@ -1127,7 +1146,35 @@ pub const LintContext = struct {
             if (alt_exit and !cons_exit) return self.applyGuard(d.lhs, name, ty, true);
             return ty;
         }
+        // Assertion call as a statement: `assert(x);` narrows x in
+        // subsequent code.  Handles `asserts x` (truthiness) and
+        // `asserts x is T` (target-type narrowing).
+        if (tag == .expression_stmt) {
+            return self.applyAssertionCallNarrow(d.lhs, name, ty);
+        }
         return ty;
+    }
+
+    fn applyAssertionCallNarrow(self: *const LintContext, expr: NodeIndex, name: []const u8, ty: tymod.TypeId) tymod.TypeId {
+        var e = expr;
+        while (self.ast.nodeTag(e) == .grouping_expr) e = self.ast.nodeData(e).lhs;
+        if (self.ast.nodeTag(e) != .call_expr) return ty;
+        const cd = self.ast.nodeData(e);
+        const callee_ty = self.typeOfNode(cd.lhs);
+        const info = self.functionAssertionInfo(callee_ty) orelse return ty;
+        // Locate the asserted argument; must be a bare identifier matching name.
+        if (cd.rhs == .none) return ty;
+        const sr = self.extraData(ast_mod.SubRange, @intFromEnum(cd.rhs));
+        if (sr.start >= sr.end or sr.end > self.ast.extra_data.len) return ty;
+        const args = self.ast.extra_data[sr.start..sr.end];
+        if (info.param_index >= args.len) return ty;
+        const arg: NodeIndex = @enumFromInt(args[info.param_index]);
+        if (!self.guardLhsIsName(arg, name)) return ty;
+        // `asserts x is T`: narrow to T.  `asserts x`: narrow to truthy.
+        if (!info.target.eq(tymod.ID_UNKNOWN) and !info.target.eq(.none)) {
+            return info.target;
+        }
+        return self.typeIdStripKinds(ty, &.{ .null_t, .undefined_t, .void_t });
     }
 
     /// Apply switch_case narrowing — inside a case body, the case value
