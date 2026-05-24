@@ -502,9 +502,36 @@ fn truthinessDepth(id: TypeId, ctx: *const LintContext, depth: u32) Truthiness {
         return .indeterminate;
     }
     if (kind == .intersection_t) {
-        // Branded / intersection types — be conservative.  String &
-        // {brand} could be empty or non-empty; we can't tell.
-        return .indeterminate;
+        // Branded primitives like `"foo" & { __brand }` classify by
+        // the primitive (non-object) members.  Object members are
+        // structural brand markers and don't determine truthiness:
+        // `string & {brand}` could still be "".  Look only at
+        // primitive members.
+        var saw_truthy = false;
+        var saw_falsy = false;
+        var saw_primitive = false;
+        for (ctx.typeIdUnionMembers(id)) |m| {
+            const mk = ctx.typeIdKind(m) orelse continue;
+            switch (mk) {
+                .object_t, .object_keyword, .function_t, .type_ref => continue,
+                else => {},
+            }
+            saw_primitive = true;
+            switch (truthinessDepth(m, ctx, depth + 1)) {
+                .always_truthy => saw_truthy = true,
+                .always_falsy => saw_falsy = true,
+                .indeterminate => {},
+            }
+        }
+        if (saw_primitive) {
+            if (saw_truthy and !saw_falsy) return .always_truthy;
+            if (saw_falsy and !saw_truthy) return .always_falsy;
+            return .indeterminate;
+        }
+        // All members are object-like — always truthy (objects are
+        // truthy, and the intersection can't be more truthy/falsy
+        // than its narrowest member).
+        return .always_truthy;
     }
     return singleTruthiness(id, kind, ctx);
 }
