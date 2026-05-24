@@ -541,10 +541,12 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
     // a subject with BOTH null and undef can't rewrite to `?.`
     // semantically (both halves collapse to undefined under `?.`,
     // but `!== null` only excludes one).
-    if (classifyAndStrictRoot(first, ctx) == .both_halves) return start;
+    const and_root_kind = classifyAndStrictRoot(first, ctx);
+    if (and_root_kind == .both_halves) return start;
     var end: usize = if (k_start == start + 2) start + 1 else start;
     var extended: bool = false;
     var ext_count: usize = 0;
+    var and_saw_optional_ext: bool = false;
     var prev_narrow = initial_narrow;
     var k: usize = k_start;
     // Presence-check phase with narrowing tracking.  Extension to a
@@ -563,6 +565,7 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
             if (isPrefixExtension(prev, subj, ctx)) {
                 const opt = outermostStepIsOptional(subj, ctx);
                 if (!prev_narrow.full() and !opt) break;
+                if (opt) and_saw_optional_ext = true;
                 prev = subj;
                 prev_narrow = op_narrow;
                 end = k;
@@ -585,6 +588,7 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
             const subj = comparisonExtensionSubject(prev, op, ctx);
             const opt = subj != .none and outermostStepIsOptional(subj, ctx);
             if (prev_narrow.full() or opt) {
+                if (opt) and_saw_optional_ext = true;
                 end = k;
                 extended = true;
                 ext_count += 1;
@@ -598,6 +602,10 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
     // `?.` would lose semantics — reject by retreating.  When the
     // chain extends through MULTIPLE access steps the diagnostic
     // is meaningful even without a safe rewrite (TSe fires no-fix).
+    // AND chain with statically-false `!== null` root + any
+    // optional extension → TSe doesn't fire (the `?.` rewrite
+    // doesn't align with `!== null` semantics).
+    if (and_root_kind == .statically_false_null and and_saw_optional_ext) return start;
     if (ext_count < 2) {
         while (end > start) {
             const last_op = unwrapGrouping(operands[end], ctx);
@@ -717,7 +725,7 @@ fn operandNarrowing(node: NodeIndex, ctx: *const LintContext) Narrow {
 /// presence check.
 fn typeAwareNarrowComplement(syntactic: Narrow, subj: NodeIndex, ctx: *const LintContext) Narrow {
     if (!ctx.hasTypeChecker()) return syntactic;
-    const ty = ctx.typeOfNode(subj);
+    const ty = subjectTypeWithoutOptionalPropagation(subj, ctx);
     const kind = ctx.typeKind(ty);
     switch (kind) {
         .any, .unknown, .error_t, .type_param => return syntactic,
@@ -730,6 +738,43 @@ fn typeAwareNarrowComplement(syntactic: Narrow, subj: NodeIndex, ctx: *const Lin
         if (!ctx.typeIdContainsNull(ty)) result.excludes_null = true;
     }
     return result;
+}
+
+/// Return the subject's type EXCLUDING `undefined` propagation
+/// from `?.` access — when the chain root has narrowed the deepest
+/// optional source to non-nullish, the `?.` short-circuit can't
+/// trigger and the result type's `undefined` constituent is
+/// spurious for narrowing purposes.  Walks plain member accesses
+/// inward and uses the innermost-non-optional node's type when an
+/// `?.` was encountered along the way.
+fn subjectTypeWithoutOptionalPropagation(subj: NodeIndex, ctx: *const LintContext) tymod.TypeId {
+    var n = subj;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    // Walk through plain member/call accesses; stop when we see
+    // optional_* or a non-access node.  If we encounter optional,
+    // use the property/argument's APPARENT type after stripping
+    // the optional's `undefined`-propagation.
+    var saw_optional = false;
+    var cur = n;
+    while (true) {
+        const t = ctx.nodeTag(cur);
+        switch (t) {
+            .member_expr, .computed_member_expr,
+            .call_expr, .new_expr, .ts_instantiation_expr,
+            .ts_non_null_expr => {
+                cur = ctx.nodeData(cur).lhs;
+            },
+            .optional_member_expr, .optional_computed_member_expr, .optional_call_expr => {
+                saw_optional = true;
+                cur = ctx.nodeData(cur).lhs;
+            },
+            else => break,
+        }
+    }
+    const ty = ctx.typeOfNode(n);
+    if (!saw_optional) return ty;
+    // Strip `undefined` from the type's union members (if a union).
+    return ctx.typeIdNonNullable(ty);
 }
 
 /// For a comparison operand whose subject extends `prev`, return the
