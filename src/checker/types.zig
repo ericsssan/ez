@@ -92,6 +92,12 @@ pub const ObjectProp = struct {
     type_id: TypeId,
     optional: bool = false,
     readonly: bool = false,
+    /// True when the property was declared via `method() {}` syntax
+    /// (class method_def or object-literal method) — distinguishes
+    /// `this`-binding methods from arrow-property fields.  Used by
+    /// `unbound-method` to detect potential this-loss when methods are
+    /// passed around.
+    is_method: bool = false,
 };
 
 pub const Signature = struct {

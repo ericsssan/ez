@@ -645,6 +645,54 @@ pub const LintContext = struct {
         return c.store.get(id).kind == .object_t;
     }
 
+    /// Look up a class declaration by name.  Returns `.none` when no
+    /// class with that name is declared in this file.
+    pub fn classDeclByName(self: *const LintContext, name: []const u8) NodeIndex {
+        // The semantic stage records every binding decl; iterate to find
+        // a class_decl whose name matches.  Cheap for typical files.
+        const syms = &self.semantic.symbols;
+        const total: u32 = @intCast(syms.scope_ids.items.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const s = symbol_mod.SymbolId.fromInt(i);
+            const decl = syms.getDeclNode(s);
+            if (decl == .none) continue;
+            // Skip implicit/global symbols.
+            if (syms.isImplicitGlobal(s)) continue;
+            const parent = self.parentOf(decl);
+            if (parent == .none) continue;
+            const ptag = self.ast.nodeTag(parent);
+            if (ptag != .class_decl and ptag != .class_expr) continue;
+            // The decl is the class name; compare its text.
+            if (self.ast.nodeTag(decl) != .identifier) continue;
+            if (std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(decl)), name)) {
+                return parent;
+            }
+        }
+        return .none;
+    }
+
+    /// True when `id` is an object type (or a union containing one)
+    /// and the named property was originally declared via `method() {}`
+    /// syntax — distinguishes this-binding methods from arrow-property
+    /// fields.
+    pub fn typeIdObjectPropertyIsMethod(self: *const LintContext, id: tymod.TypeId, name: []const u8) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind == .object_t) {
+            for (c.store.propsOf(t.object_props)) |p| {
+                if (std.mem.eql(u8, p.name, name)) return p.is_method;
+            }
+            return false;
+        }
+        if (t.kind == .union_t or t.kind == .intersection_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (self.typeIdObjectPropertyIsMethod(m, name)) return true;
+            }
+        }
+        return false;
+    }
+
     /// Returns the object-type properties as a slice of ObjectProp.
     /// Returns an empty slice for non-object types.  Borrows from the
     /// type-store; treat as read-only and don't retain past the

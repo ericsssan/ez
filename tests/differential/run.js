@@ -1040,6 +1040,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "switch-exhaustiveness-check",
       "strict-boolean-expressions",
       "prefer-readonly-parameter-types",
+      "unbound-method",
 
       "no-unsafe-function-type",
       "no-wrapper-object-types",

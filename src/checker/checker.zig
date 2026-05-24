@@ -2438,7 +2438,11 @@ pub const Checker = struct {
                     .none,
                     is_async,
                 );
-                return .{ .name = name, .type_id = fn_ty };
+                return .{
+                    .name = name,
+                    .type_id = fn_ty,
+                    .is_method = tag == .method_def,
+                };
             },
             else => return null,
         }

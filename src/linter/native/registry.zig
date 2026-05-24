@@ -344,6 +344,7 @@ const ts_return_await = @import("typescript/return_await.zig");
 const ts_switch_exhaustiveness_check = @import("typescript/switch_exhaustiveness_check.zig");
 const ts_strict_boolean_expressions = @import("typescript/strict_boolean_expressions.zig");
 const ts_prefer_readonly_parameter_types = @import("typescript/prefer_readonly_parameter_types.zig");
+const ts_unbound_method = @import("typescript/unbound_method.zig");
 const ts_no_unsafe_function_type = @import("typescript/no_unsafe_function_type.zig");
 const ts_no_wrapper_object_types = @import("typescript/no_wrapper_object_types.zig");
 // v0.8 TypeScript rules
@@ -711,6 +712,7 @@ pub const all_rules = .{
     ts_switch_exhaustiveness_check,
     ts_strict_boolean_expressions,
     ts_prefer_readonly_parameter_types,
+    ts_unbound_method,
     ts_no_unsafe_function_type,
     ts_no_wrapper_object_types,
     ts_no_empty_object_type,
