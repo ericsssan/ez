@@ -2389,7 +2389,8 @@ pub const Checker = struct {
                     const ty_node = self.ast_ref.nodeData(data.rhs).lhs;
                     ty = self.resolveTypeNode(ty_node);
                 }
-                return .{ .name = name, .type_id = ty };
+                const optional = propertyHasOptionalMarker(self, data.lhs);
+                return .{ .name = name, .type_id = ty, .optional = optional };
             },
             .ts_method_signature => {
                 const sig_data = self.ast_ref.extraData(ast.InterfaceSigData, @intFromEnum(data.lhs));

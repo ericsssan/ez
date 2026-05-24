@@ -197,6 +197,9 @@ fn involvesIndeterminateType(id: tymod.TypeId, ctx: *const LintContext) bool {
     const kind = ctx.typeIdKind(id) orelse return true;
     return switch (kind) {
         .any, .unknown, .error_t, .type_param => true,
+        // Type refs to unrecognised names (often unresolved type
+        // parameters / generics) are conservatively indeterminate.
+        .type_ref => isUnresolvedRef(id, ctx),
         .union_t, .intersection_t => blk: {
             for (ctx.typeIdUnionMembers(id)) |m| {
                 if (involvesIndeterminateType(m, ctx)) break :blk true;
@@ -205,6 +208,19 @@ fn involvesIndeterminateType(id: tymod.TypeId, ctx: *const LintContext) bool {
         },
         else => false,
     };
+}
+
+fn isUnresolvedRef(id: tymod.TypeId, ctx: *const LintContext) bool {
+    const name = ctx.typeIdRefName(id);
+    if (name.len == 0) return true;
+    // Single-uppercase type-parameter-style names: conservatively
+    // indeterminate.  Concrete lib classes (Number / String / Promise /
+    // ...) are known and resolved by their structural rules elsewhere.
+    if (name.len <= 2) {
+        for (name) |ch| if (ch < 'A' or ch > 'Z') return false;
+        return true;
+    }
+    return false;
 }
 
 fn typeContainsNullish(id: tymod.TypeId, ctx: *const LintContext) bool {
