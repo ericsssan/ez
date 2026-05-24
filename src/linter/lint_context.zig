@@ -715,6 +715,28 @@ pub const LintContext = struct {
         return sigs[0].return_type;
     }
 
+    /// Information about a function's assertion-style signature.
+    pub const AssertionInfo = struct {
+        param_index: u16,
+        /// Asserted type — ID_UNKNOWN for `asserts x` (truthiness-only).
+        target: tymod.TypeId,
+    };
+
+    /// If `id` is a function_t whose (first) signature is an assertion
+    /// (`asserts x` / `asserts x is X`), return the asserted param
+    /// index + target type.  Otherwise null.
+    pub fn functionAssertionInfo(self: *const LintContext, id: tymod.TypeId) ?AssertionInfo {
+        const c = self.ensureChecker() orelse return null;
+        const t = c.store.get(id);
+        if (t.kind != .function_t) return null;
+        const sigs = c.store.signaturesOf(t.signatures);
+        if (sigs.len == 0) return null;
+        const s = sigs[0];
+        if (!s.is_assertion) return null;
+        if (s.predicate_param_index == 0xFFFF) return null;
+        return .{ .param_index = s.predicate_param_index, .target = s.predicate_target };
+    }
+
     /// Return the raw TypeKind for a TypeId.  Use when a rule needs to
     /// branch on the underlying type-store representation; lighter
     /// alternative to exposing the full store.

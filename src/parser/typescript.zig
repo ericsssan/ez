@@ -32,20 +32,33 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
     if (p.peek() == .identifier) {
         const text = p.tokenText(p.tokIdx());
         if (std.mem.eql(u8, text, "asserts")) {
-            // `asserts x` or `asserts x is Type`
-            _ = p.advance(); // eat 'asserts'
+            // `asserts x` or `asserts x is Type`.  Emit a ts_type_predicate
+            // whose main_token is the `asserts` keyword (downstream
+            // distinguishes from `x is Type` regular predicates by
+            // checking main_token's text).
+            const asserts_tok = p.advance(); // eat 'asserts'
             if (p.peek() == .identifier or p.peek() == .kw_this) {
+                const param_tok: u32 = p.tokIdx();
                 _ = p.advance(); // eat param name
+                var type_node: NodeIndex = .none;
                 if (p.peek() == .kw_is) {
                     _ = p.advance(); // eat 'is'
-                    const type_node = try parseType(p);
-                    return type_node;
+                    type_node = try parseType(p);
                 }
+                const param_name = try p.addNode(.{
+                    .tag = .identifier,
+                    .main_token = param_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+                return p.addNode(.{
+                    .tag = .ts_type_predicate,
+                    .main_token = asserts_tok,
+                    .data = .{ .lhs = param_name, .rhs = type_node },
+                });
             }
-            // `asserts x` without `is` — just a void assertion
             return p.addNode(.{
                 .tag = .ts_type_annotation,
-                .main_token = p.tokIdx(),
+                .main_token = asserts_tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });
         }

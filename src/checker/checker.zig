@@ -898,6 +898,7 @@ pub const Checker = struct {
         var ret_ty: TypeId = tymod.ID_UNKNOWN;
         var predicate_param_idx: u16 = 0xFFFF;
         var predicate_target: TypeId = TypeId.none;
+        var is_assertion: bool = false;
         if (return_type_node != .none and
             self.ast_ref.nodeTag(return_type_node) == .ts_type_annotation)
         {
@@ -906,6 +907,10 @@ pub const Checker = struct {
             // info AND treat the actual return type as boolean.
             if (self.ast_ref.nodeTag(ty_inner) == .ts_type_predicate) {
                 const pd = self.ast_ref.nodeData(ty_inner);
+                // Distinguish `asserts x [is X]` (main_token = "asserts")
+                // from `x is X` (main_token = the param name).
+                const pred_main = self.ast_ref.nodeMainToken(ty_inner);
+                is_assertion = std.mem.eql(u8, self.ast_ref.tokenText(pred_main), "asserts");
                 // pd.lhs = param-name identifier (or this_expr).
                 if (pd.lhs != .none and self.ast_ref.nodeTag(pd.lhs) == .identifier) {
                     const pred_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(pd.lhs));
@@ -923,9 +928,10 @@ pub const Checker = struct {
                             pi += 1;
                         }
                     }
-                    predicate_target = self.resolveTypeNode(pd.rhs);
+                    if (pd.rhs != .none) predicate_target = self.resolveTypeNode(pd.rhs);
                 }
-                ret_ty = tymod.ID_BOOLEAN;
+                // Assertion-style: return type is void (not boolean).
+                ret_ty = if (is_assertion) tymod.ID_VOID else tymod.ID_BOOLEAN;
             } else {
                 ret_ty = self.resolveTypeNode(ty_inner);
             }
@@ -947,6 +953,7 @@ pub const Checker = struct {
             .is_async = is_async,
             .predicate_param_index = predicate_param_idx,
             .predicate_target = predicate_target,
+            .is_assertion = is_assertion,
         };
         return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
     }

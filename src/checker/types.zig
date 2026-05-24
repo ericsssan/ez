@@ -113,6 +113,11 @@ pub const Signature = struct {
     /// Target type for the predicate (`X` in `name is X`).
     /// Meaningful only when predicate_param_index != 0xFFFF.
     predicate_target: TypeId = .none,
+    /// True when the predicate is an assertion (`asserts x` /
+    /// `asserts x is X`).  Callers (rules like
+    /// strict-boolean-expressions) treat the argument as being in a
+    /// boolean / value-testing context.
+    is_assertion: bool = false,
 };
 
 pub const Type = struct {

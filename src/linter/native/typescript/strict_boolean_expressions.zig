@@ -86,14 +86,30 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             // `Boolean(x)` — check the first argument.
             var callee = d.lhs;
             while (ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
-            if (ctx.nodeTag(callee) != .identifier) return;
-            if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "Boolean")) return;
-            if (!ctx.isGlobalReference(callee)) return;
-            if (d.rhs == .none) return;
-            const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
-            if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
-            const arg: NodeIndex = @enumFromInt(ctx.ast.extra_data[sr.start]);
-            walkBoolCtx(arg, opts, ctx, 0);
+            if (ctx.nodeTag(callee) == .identifier and
+                std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(callee)), "Boolean") and
+                ctx.isGlobalReference(callee))
+            {
+                if (d.rhs == .none) return;
+                const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+                if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
+                const arg: NodeIndex = @enumFromInt(ctx.ast.extra_data[sr.start]);
+                walkBoolCtx(arg, opts, ctx, 0);
+                return;
+            }
+            // Assertion functions: `declare function assert(x): asserts x;
+            // assert(value)` — the argument is being implicitly tested.
+            const callee_ty = ctx.typeOfNode(callee);
+            if (ctx.functionAssertionInfo(callee_ty)) |info| {
+                if (d.rhs == .none) return;
+                const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+                if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
+                const args = ctx.ast.extra_data[sr.start..sr.end];
+                if (info.param_index >= args.len) return;
+                const arg: NodeIndex = @enumFromInt(args[info.param_index]);
+                walkBoolCtx(arg, opts, ctx, 0);
+                return;
+            }
         },
         else => {},
     }
