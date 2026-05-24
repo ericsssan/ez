@@ -416,10 +416,14 @@ fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
     if (lhs == .none) return;
     var n = lhs;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
-    // Bail only on direct array indexed access (`a[0]`) — when the
-    // access is followed by a property (`a[0].foo`), the post-access
-    // path is well-defined regardless of noUncheckedIndexedAccess.
+    // Bail when:
+    //   * the lhs IS a direct array indexed access (`a[0] ?? x`).
+    //   * the lhs is an optional chain whose chain root is an array
+    //     indexed access (`a[i]?.foo ?? x` — under noUncheckedIndexedAccess
+    //     a[i] could be undefined, so `?.foo` could short-circuit and
+    //     the whole expr could be undefined).
     if (isDirectArrayIndexedAccess(n, ctx)) return;
+    if (isOptionalChain(n, ctx) and containsArrayIndexedAccess(n, ctx)) return;
     const ty = ctx.narrowedTypeOf(n);
     const nul = nullability(ty, ctx);
     switch (nul) {
@@ -427,6 +431,27 @@ fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
         .always_nullish => ctx.reportWithMessageId(n, "alwaysNullish"),
         else => {},
     }
+}
+
+fn isOptionalChain(node: NodeIndex, ctx: *const LintContext) bool {
+    var n = node;
+    var depth: u32 = 0;
+    while (depth < 16) : (depth += 1) {
+        const tag = ctx.nodeTag(n);
+        if (tag == .optional_member_expr or tag == .optional_call_expr or
+            tag == .optional_computed_member_expr) return true;
+        if (tag == .member_expr or tag == .computed_member_expr or
+            tag == .call_expr) {
+            n = ctx.nodeData(n).lhs;
+            continue;
+        }
+        if (tag == .grouping_expr) {
+            n = ctx.nodeData(n).lhs;
+            continue;
+        }
+        return false;
+    }
+    return false;
 }
 
 fn isDirectArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
