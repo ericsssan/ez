@@ -54,6 +54,135 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
         return;
     }
+    // Built-in lib-class instance: `foo: Number; foo.toFixed`, `foo: Date;
+    // foo.getTime` — these are all `this`-binding prototype methods.
+    if (isBuiltinPrototypeMethod(recv_ty, prop, ctx)) {
+        ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
+        return;
+    }
+    // Built-in static method: `Promise.all`, `Number.parseInt`,
+    // `Math.floor`, etc.  Receiver is an Identifier whose name is a
+    // global builtin and the property is one of its known methods.
+    if (isBuiltinStaticMethod(d.lhs, prop, ctx)) {
+        ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
+        return;
+    }
+}
+
+/// `Class.prototype.method` access — TSe always flags these.
+fn isPrototypeAccess(recv: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(recv) != .member_expr) return false;
+    const md = ctx.nodeData(recv);
+    if (md.rhs == .none) return false;
+    const prop = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    return std.mem.eql(u8, prop, "prototype");
+}
+
+fn isBuiltinPrototypeMethod(recv_ty: tymod.TypeId, prop: []const u8, ctx: *const LintContext) bool {
+    // The receiver's type must be one of the standard wrapper-object
+    // refs whose prototype methods rely on `this`.
+    const kind = ctx.typeIdKind(recv_ty) orelse return false;
+    if (kind != .type_ref) return false;
+    const name = ctx.typeIdRefName(recv_ty);
+    if (isThisBindingPrototypeClass(name)) {
+        return isKnownPrototypeMethod(name, prop);
+    }
+    return false;
+}
+
+fn isBuiltinStaticMethod(recv: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    var n = recv;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .identifier) return false;
+    const cls = ctx.tokenText(ctx.nodeMainToken(n));
+    return isKnownStaticMethod(cls, prop);
+}
+
+fn isThisBindingPrototypeClass(name: []const u8) bool {
+    const list = [_][]const u8{
+        "Number",   "String", "Boolean", "Date",  "Object",
+        "Array",    "Map",    "Set",     "WeakMap", "WeakSet",
+        "Function", "Error",  "Promise", "RegExp", "Symbol",
+        "ArrayBuffer", "DataView",
+    };
+    inline for (list) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
+}
+
+fn isKnownPrototypeMethod(class_name: []const u8, method: []const u8) bool {
+    // A small but representative catalogue of prototype methods that
+    // observably need `this`.  Conservative: we only flag well-known
+    // entries; anything else falls back to lenient.
+    if (std.mem.eql(u8, class_name, "Number")) {
+        const m = [_][]const u8{ "toFixed", "toString", "toExponential", "toLocaleString", "toPrecision", "valueOf" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "String")) {
+        const m = [_][]const u8{ "charAt", "charCodeAt", "concat", "endsWith", "includes", "indexOf", "lastIndexOf", "match", "matchAll", "normalize", "padEnd", "padStart", "repeat", "replace", "replaceAll", "search", "slice", "split", "startsWith", "substr", "substring", "toLocaleLowerCase", "toLocaleUpperCase", "toLowerCase", "toString", "toUpperCase", "trim", "trimEnd", "trimStart", "valueOf", "at" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "Date")) {
+        const m = [_][]const u8{ "getDate", "getDay", "getFullYear", "getHours", "getMilliseconds", "getMinutes", "getMonth", "getSeconds", "getTime", "getTimezoneOffset", "getUTCDate", "getUTCDay", "getUTCFullYear", "getUTCHours", "getUTCMilliseconds", "getUTCMinutes", "getUTCMonth", "getUTCSeconds", "setDate", "setFullYear", "setHours", "setMilliseconds", "setMinutes", "setMonth", "setSeconds", "setTime", "setUTCDate", "setUTCFullYear", "setUTCHours", "setUTCMilliseconds", "setUTCMinutes", "setUTCMonth", "setUTCSeconds", "toDateString", "toISOString", "toJSON", "toLocaleDateString", "toLocaleString", "toLocaleTimeString", "toString", "toTimeString", "toUTCString", "valueOf" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "Object")) {
+        const m = [_][]const u8{ "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString", "toString", "valueOf" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "Array")) {
+        const m = [_][]const u8{ "at", "concat", "copyWithin", "entries", "every", "fill", "filter", "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach", "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "pop", "push", "reduce", "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice", "toLocaleString", "toString", "unshift", "values" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "Map") or std.mem.eql(u8, class_name, "WeakMap")) {
+        const m = [_][]const u8{ "clear", "delete", "entries", "forEach", "get", "has", "keys", "set", "values" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "Set") or std.mem.eql(u8, class_name, "WeakSet")) {
+        const m = [_][]const u8{ "add", "clear", "delete", "entries", "forEach", "has", "keys", "values" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "Promise")) {
+        const m = [_][]const u8{ "then", "catch", "finally" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "RegExp")) {
+        const m = [_][]const u8{ "exec", "test", "toString" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "Function")) {
+        const m = [_][]const u8{ "apply", "bind", "call", "toString" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, class_name, "Error")) {
+        const m = [_][]const u8{ "toString" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    return false;
+}
+
+fn isKnownStaticMethod(cls: []const u8, method: []const u8) bool {
+    // Most JS built-in statics are pure functions that don't depend on
+    // `this` — `Math.floor`, `Number.parseInt`, `Object.keys`,
+    // `JSON.stringify`, `Array.from`, etc. — and TSe doesn't flag them.
+    // Promise's statics internally call `this.resolve` / `this.reject`,
+    // so they do need their `this` and are flagged.
+    if (std.mem.eql(u8, cls, "Promise")) {
+        const m = [_][]const u8{ "all", "allSettled", "any", "race", "reject", "resolve" };
+        inline for (m) |x| if (std.mem.eql(u8, x, method)) return true;
+        return false;
+    }
+    return false;
 }
 
 fn staticMethodAccess(recv: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
