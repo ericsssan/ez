@@ -366,6 +366,41 @@ fn classHasStaticMethod(decl: NodeIndex, prop: []const u8, ctx: *const LintConte
 /// Destructuring `const { method } = instance` extracts methods
 /// without their `this`-binding — fire on each pattern entry that
 /// matches a class instance method.
+/// True when an object_pattern lives inside a declaration-only
+/// position (declare function / abstract method / declare class
+/// method / interface method signature).  These contexts have no
+/// runtime binding so destructuring can't lose `this`.
+fn patternIsInDeclarationOnly(node: NodeIndex, ctx: *const LintContext) bool {
+    var cur = ctx.parentOf(node);
+    var depth: u32 = 0;
+    while (cur != .none and depth < 8) : ({ cur = ctx.parentOf(cur); depth += 1; }) {
+        const tag = ctx.nodeTag(cur);
+        switch (tag) {
+            .ts_declare_function, .ts_method_signature,
+            .ts_call_signature, .ts_construct_signature,
+            => return true,
+            .method_def, .computed_method_def => {
+                // Abstract methods carry no body — same as declarations.
+                const d = ctx.nodeData(cur);
+                if (d.rhs == .none) return false;
+                const meth = ctx.extraData(ast.MethodData, @intFromEnum(d.rhs));
+                if (meth.body == .none) return true;
+                if ((meth.modifiers & ast.ModifierBit.@"abstract") != 0) return true;
+                return false;
+            },
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .arrow_fn, .async_arrow_fn,
+            => {
+                // A regular function with a body — not declaration-only.
+                return false;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 /// Locate the parser-stashed type annotation for a destructuring
 /// pattern that's in parameter position.  The parser sets
 /// parents[ts_type_annotation] = obj_pattern_node — scan ts_type_annotation
@@ -411,6 +446,10 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
     // for-of loop).
     const parent = ctx.parentOf(node);
     if (parent == .none) return;
+    // Skip when the pattern is in a declaration-only context (declare
+    // function, abstract method, interface/declare-class member, etc.)
+    // — there's no actual runtime destructuring that could lose `this`.
+    if (patternIsInDeclarationOnly(node, ctx)) return;
     var source_ty: tymod.TypeId = tymod.ID_UNKNOWN;
     var have_source = false;
     switch (ctx.nodeTag(parent)) {
