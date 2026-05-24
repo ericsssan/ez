@@ -1911,8 +1911,9 @@ pub const LintContext = struct {
         }
         // Interface declarations expose their members directly; callers
         // can walk `interfaceDeclMembers` via the same APIs we use for
-        // type literals.
-        if (dtag == .ts_interface_decl) return decl;
+        // type literals.  Enum declarations are also returned directly
+        // — callers detect via nodeTag.
+        if (dtag == .ts_interface_decl or dtag == .ts_enum_decl) return decl;
         return .none;
     }
 
