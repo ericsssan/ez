@@ -29,6 +29,7 @@ pub const relevant_tags = [_]Node.Tag{
     .equal, .not_equal, .strict_equal, .strict_not_equal,
     .less_than, .less_equal, .greater_than, .greater_equal,
     .call_expr,
+    .switch_case,
 };
 
 pub const needs_semantic = true;
@@ -90,6 +91,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .call_expr => {
             checkArrayPredicateCall(node, ctx);
             checkTypePredicateRedundant(node, ctx);
+        },
+        .switch_case => {
+            // `switch (literal) case literal:` — when the discriminant
+            // type and the case test are both literal types that can't
+            // overlap, fire comparisonBetweenLiteralTypes.
+            checkSwitchCaseLiteral(node, ctx);
         },
         else => {},
     }
@@ -604,6 +611,24 @@ fn containsComputedAccess(node: NodeIndex, ctx: *const LintContext) bool {
         return false;
     }
     return false;
+}
+
+fn checkSwitchCaseLiteral(case_node: NodeIndex, ctx: *const LintContext) void {
+    // switch_case: data.lhs = test expression (or .none for default).
+    const cd = ctx.nodeData(case_node);
+    if (cd.lhs == .none) return;  // default
+    // Walk up to find the switch_stmt.
+    var p = ctx.parentOf(case_node);
+    while (p != .none and ctx.nodeTag(p) != .switch_stmt) p = ctx.parentOf(p);
+    if (p == .none) return;
+    const disc = ctx.nodeData(p).lhs;
+    if (disc == .none) return;
+    const disc_ty = ctx.narrowedTypeOf(disc);
+    const case_ty = ctx.narrowedTypeOf(cd.lhs);
+    if (!isLiteralType(disc_ty, ctx) or !isLiteralType(case_ty, ctx)) return;
+    // Both literals — flag whether they're equal or not (TS knows the
+    // outcome statically).
+    ctx.reportWithMessageId(cd.lhs, "comparisonBetweenLiteralTypes");
 }
 
 fn checkComparison(lhs: NodeIndex, rhs: NodeIndex, node: NodeIndex, ctx: *const LintContext) void {

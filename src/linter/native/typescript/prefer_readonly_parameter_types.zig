@@ -360,7 +360,7 @@ fn innerOfReadonlyOk(node: NodeIndex, opts: Options, ctx: *const LintContext, de
             }
             return true;
         },
-        else => return true, // primitives / type-refs — lenient
+        else => return true, // primitives / others — lenient
     }
 }
 
