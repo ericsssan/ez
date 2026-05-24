@@ -114,6 +114,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
                 const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
                 if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
                 const args = ctx.ast.extra_data[sr.start..sr.end];
+                // Spread arguments make positional indexing unreliable
+                // (`f(...xs, y)` could put `y` at any param slot).
+                // Bail out conservatively.
+                for (args) |raw| {
+                    if (ctx.nodeTag(@enumFromInt(raw)) == .spread_element) return;
+                }
                 if (info.param_index >= args.len) return;
                 const arg: NodeIndex = @enumFromInt(args[info.param_index]);
                 walkBoolCtx(arg, opts, ctx, 0);
@@ -161,9 +167,14 @@ fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Opt
         const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ad_d.lhs));
         if (ad.body == .none) return;
         if (ctx.nodeTag(ad.body) == .block_stmt) {
-            walkPredicateReturns(ad.body, opts, ctx);
+            // For block-body callbacks, TS-eslint reports the diagnostic
+            // on the callback node, not on the return value.
+            checkPredicateReturnsOnCallback(n, ad.body, opts, ctx);
         } else {
-            walkBoolCtx(ad.body, opts, ctx, 0);
+            // Expression-body arrow — TS-eslint also reports on the
+            // arrow itself, not on the inner expression.
+            const klass = classify(ctx.narrowedTypeOf(ad.body), opts, ctx);
+            if (messageFor(klass, opts)) |id| ctx.reportWithMessageId(n, id);
         }
         return;
     }
@@ -172,27 +183,43 @@ fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Opt
         if (fd_d.lhs == .none) return;
         const fd = ctx.extraData(ast.FnData, @intFromEnum(fd_d.lhs));
         if (fd.body == .none) return;
-        walkPredicateReturns(fd.body, opts, ctx);
+        checkPredicateReturnsOnCallback(n, fd.body, opts, ctx);
         return;
     }
 }
 
-fn walkPredicateReturns(body: NodeIndex, opts: Options, ctx: *const LintContext) void {
+fn checkPredicateReturnsOnCallback(cb: NodeIndex, body: NodeIndex, opts: Options, ctx: *const LintContext) void {
     if (ctx.nodeTag(body) != .block_stmt) return;
     const d = ctx.nodeData(body);
     const s = @intFromEnum(d.lhs);
     const e = @intFromEnum(d.rhs);
     if (e <= s or e > ctx.ast.extra_data.len) return;
+    var saw_return = false;
+    var any_indeterminate = false;
+    var combined_id: ?[]const u8 = null;
     for (ctx.ast.extra_data[s..e]) |raw| {
         const stmt: NodeIndex = @enumFromInt(raw);
         if (ctx.nodeTag(stmt) != .return_stmt) continue;
+        saw_return = true;
         const rd = ctx.nodeData(stmt);
-        if (rd.lhs == .none) {
-            // bare `return;` — value is undefined.
-            ctx.reportWithMessageId(stmt, "conditionErrorNullish");
-            continue;
+        const id: []const u8 = if (rd.lhs == .none)
+            "conditionErrorNullish"
+        else blk: {
+            const ty = ctx.narrowedTypeOf(rd.lhs);
+            const klass = classify(ty, opts, ctx);
+            break :blk messageFor(klass, opts) orelse {
+                any_indeterminate = true;
+                continue;
+            };
+        };
+        if (combined_id == null) {
+            combined_id = id;
+        } else if (!std.mem.eql(u8, combined_id.?, id)) {
+            any_indeterminate = true;
         }
-        walkBoolCtx(rd.lhs, opts, ctx, 0);
+    }
+    if (saw_return and !any_indeterminate) {
+        if (combined_id) |id| ctx.reportWithMessageId(cb, id);
     }
 }
 
