@@ -80,7 +80,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .less_than, .less_equal, .greater_than, .greater_equal => {
             checkComparison(d.lhs, d.rhs, node, ctx);
         },
-        .call_expr => checkArrayPredicateCall(node, ctx),
+        .call_expr => {
+            checkArrayPredicateCall(node, ctx);
+            checkTypePredicateRedundant(node, ctx);
+        },
         else => {},
     }
 }
@@ -167,6 +170,64 @@ fn reportReturnsInBlock(body: NodeIndex, ctx: *const LintContext) void {
         if (ctx.nodeTag(stmt) != .return_stmt) continue;
         const rd = ctx.nodeData(stmt);
         if (rd.lhs != .none) reportPredicateValueNode(rd.lhs, ctx);
+    }
+}
+
+fn checkTypePredicates(ctx: *const LintContext) bool {
+    const v = ctx.rule_options orelse return false;
+    if (v.* != .object) return false;
+    const k = v.object.get("checkTypePredicates") orelse return false;
+    return k == .bool and k.bool;
+}
+
+/// `isString(x)` where x's static type is already `string` — fire
+/// `typeGuardAlreadyIsType` when checkTypePredicates is enabled.  Also
+/// applies to `asserts x is X` assertions.
+fn checkTypePredicateRedundant(call: NodeIndex, ctx: *const LintContext) void {
+    if (!checkTypePredicates(ctx)) return;
+    const d = ctx.nodeData(call);
+    var callee = d.lhs;
+    while (ctx.nodeTag(callee) == .grouping_expr) callee = ctx.nodeData(callee).lhs;
+    // Look up the callee's function-type signature.
+    const callee_ty = ctx.typeOfNode(callee);
+    var param_index: u16 = 0xFFFF;
+    var target: tymod.TypeId = tymod.TypeId.none;
+    if (ctx.functionPredicateInfo(callee_ty)) |info| {
+        param_index = info.param_index;
+        target = info.target;
+    } else if (ctx.functionAssertionInfo(callee_ty)) |info| {
+        // `asserts x is X` — target is set; `asserts x` (no `is X`)
+        // doesn't apply here.
+        if (info.target.eq(tymod.TypeId.none)) return;
+        param_index = info.param_index;
+        target = info.target;
+    } else return;
+    if (target.eq(tymod.TypeId.none)) return;
+    if (d.rhs == .none) return;
+    const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
+    const args = ctx.ast.extra_data[sr.start..sr.end];
+    // Spread args make positional indexing unreliable.
+    for (args) |raw| if (ctx.nodeTag(@enumFromInt(raw)) == .spread_element) return;
+    if (param_index >= args.len) return;
+    const arg: NodeIndex = @enumFromInt(args[param_index]);
+    const arg_ty = ctx.narrowedTypeOf(arg);
+    // Skip when the argument's type is itself indeterminate (any /
+    // unknown / unresolved type-ref) — TS-eslint doesn't flag in that
+    // case.
+    const kind = ctx.typeIdKind(arg_ty) orelse return;
+    switch (kind) {
+        // Indeterminate types — skip to avoid false positives.
+        .any, .unknown, .error_t, .type_ref, .type_param => return,
+        // Literal-typed arguments are explicit constants — TS-eslint
+        // doesn't flag `isString('foo')` even though 'foo' ⊆ string.
+        .string_literal, .number_literal, .bigint_literal,
+        .boolean_literal, .null_t, .undefined_t,
+        => return,
+        else => {},
+    }
+    if (ctx.typeIsAssignableTo(arg_ty, target)) {
+        ctx.reportWithMessageId(arg, "typeGuardAlreadyIsType");
     }
 }
 

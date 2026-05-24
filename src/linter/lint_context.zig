@@ -756,6 +756,33 @@ pub const LintContext = struct {
         return .{ .param_index = s.predicate_param_index, .target = s.predicate_target };
     }
 
+    /// Like AssertionInfo but for plain `x is X` type predicates (not
+    /// `asserts`).  Returns the asserted param index and the target type.
+    pub const PredicateInfo = struct {
+        param_index: u16,
+        target: tymod.TypeId,
+    };
+
+    /// Is `src_ty` assignable to `dst_ty` per the checker's structural
+    /// rules?  Returns false when the checker isn't initialised.
+    pub fn typeIsAssignableTo(self: *const LintContext, src_ty: tymod.TypeId, dst_ty: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return tymod.isAssignableTo(&c.store, src_ty, dst_ty);
+    }
+
+    pub fn functionPredicateInfo(self: *const LintContext, id: tymod.TypeId) ?PredicateInfo {
+        const c = self.ensureChecker() orelse return null;
+        const t = c.store.get(id);
+        if (t.kind != .function_t) return null;
+        const sigs = c.store.signaturesOf(t.signatures);
+        if (sigs.len == 0) return null;
+        const s = sigs[0];
+        if (s.is_assertion) return null;
+        if (s.predicate_param_index == 0xFFFF) return null;
+        if (s.predicate_target.eq(tymod.TypeId.none)) return null;
+        return .{ .param_index = s.predicate_param_index, .target = s.predicate_target };
+    }
+
     /// Return the raw TypeKind for a TypeId.  Use when a rule needs to
     /// branch on the underlying type-store representation; lighter
     /// alternative to exposing the full store.
