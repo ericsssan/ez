@@ -1352,18 +1352,18 @@
     },
     "@typescript-eslint/no-unnecessary-qualifier": {
       "runner": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -1442,19 +1442,19 @@
     },
     "@typescript-eslint/unbound-method": {
       "runner": {
-        "fn": 61,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 61,
-        "fp": 0,
+        "fn": 45,
+        "fp": 3,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 61,
-        "fp": 0,
+        "fn": 45,
+        "fp": 3,
         "crash": 0
       }
     },
@@ -1610,13 +1610,13 @@
       },
       "native": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -1676,18 +1676,18 @@
     },
     "@typescript-eslint/prefer-readonly": {
       "runner": {
-        "fn": 86,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 86,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 86,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -1802,19 +1802,19 @@
     },
     "@typescript-eslint/prefer-readonly-parameter-types": {
       "runner": {
-        "fn": 44,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
         "fn": 44,
-        "fp": 0,
+        "fp": 21,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 44,
-        "fp": 0,
+        "fp": 21,
         "crash": 0
       }
     },
@@ -2036,19 +2036,19 @@
     },
     "@typescript-eslint/switch-exhaustiveness-check": {
       "runner": {
-        "fn": 48,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 48,
-        "fp": 0,
+        "fn": 17,
+        "fp": 1,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 48,
-        "fp": 0,
+        "fn": 17,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -2108,19 +2108,19 @@
     },
     "@typescript-eslint/no-unnecessary-condition": {
       "runner": {
-        "fn": 180,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 180,
-        "fp": 0,
+        "fn": 98,
+        "fp": 32,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 180,
-        "fp": 0,
+        "fn": 98,
+        "fp": 32,
         "crash": 0
       }
     },
@@ -2198,19 +2198,19 @@
     },
     "@typescript-eslint/strict-boolean-expressions": {
       "runner": {
-        "fn": 134,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 134,
-        "fp": 0,
+        "fn": 50,
+        "fp": 22,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 134,
-        "fp": 0,
+        "fn": 50,
+        "fp": 22,
         "crash": 0
       }
     },
@@ -2252,18 +2252,18 @@
     },
     "@typescript-eslint/restrict-plus-operands": {
       "runner": {
-        "fn": 65,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 65,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 65,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -2288,18 +2288,18 @@
     },
     "@typescript-eslint/restrict-template-expressions": {
       "runner": {
-        "fn": 22,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 22,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 22,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -2437,13 +2437,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       }
@@ -2900,18 +2900,18 @@
     },
     "@typescript-eslint/return-await": {
       "runner": {
-        "fn": 52,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 52,
+        "fn": 7,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 52,
+        "fn": 7,
         "fp": 0,
         "crash": 0
       }
@@ -22394,9 +22394,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 11586,
-    "runnerCasesPerSec": 8206,
-    "nativeCasesPerSec": 63964,
-    "totalCases": 73671
+    "totalElapsedMs": 11630,
+    "runnerCasesPerSec": 8052,
+    "nativeCasesPerSec": 61021,
+    "totalCases": 72281
   }
 }

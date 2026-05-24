@@ -26,6 +26,7 @@ pub const relevant_tags = [_]Node.Tag{
     .optional_member_expr, .optional_call_expr,
     .optional_computed_member_expr,
     .equal, .not_equal, .strict_equal, .strict_not_equal,
+    .less_than, .less_equal, .greater_than, .greater_equal,
 };
 
 pub const needs_semantic = true;
@@ -64,7 +65,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .optional_member_expr, .optional_call_expr, .optional_computed_member_expr => {
             checkOptionalChainReceiver(d.lhs, ctx);
         },
-        .equal, .not_equal, .strict_equal, .strict_not_equal => {
+        .equal, .not_equal, .strict_equal, .strict_not_equal,
+        .less_than, .less_equal, .greater_than, .greater_equal => {
             checkComparison(d.lhs, d.rhs, node, ctx);
         },
         else => {},
@@ -166,13 +168,133 @@ fn containsComputedAccess(node: NodeIndex, ctx: *const LintContext) bool {
 
 fn checkComparison(lhs: NodeIndex, rhs: NodeIndex, node: NodeIndex, ctx: *const LintContext) void {
     if (lhs == .none or rhs == .none) return;
-    const lt = ctx.typeOfNode(lhs);
-    const rt = ctx.typeOfNode(rhs);
-    // Both sides literal types — fire either way (trivially true OR
-    // trivially false comparisons are both "unnecessary").
+    const op = ctx.nodeTag(node);
+    const loose = (op == .equal or op == .not_equal);
+    const lt = effectiveLiteralType(lhs, ctx);
+    const rt = effectiveLiteralType(rhs, ctx);
     if (isLiteralType(lt, ctx) and isLiteralType(rt, ctx)) {
+        // Loose `null == undefined` is true — don't flag.
+        if (loose and isNullishLiteral(lt) and isNullishLiteral(rt)) return;
         ctx.reportWithMessageId(node, "comparisonBetweenLiteralTypes");
+        return;
     }
+    // Skip when either side has any/unknown/type-param — could overlap.
+    if (involvesIndeterminateType(lt, ctx) or involvesIndeterminateType(rt, ctx)) return;
+    if (!typesCanOverlap(lt, rt, ctx)) {
+        // For loose == with null literal, undefined matches too.  Skip
+        // when the other side might be undefined.
+        if (loose and (isNullishLiteral(lt) or isNullishLiteral(rt))) {
+            const other = if (isNullishLiteral(lt)) rt else lt;
+            if (typeContainsNullish(other, ctx)) return;
+        }
+        ctx.reportWithMessageId(node, "noOverlapBooleanExpression");
+    }
+}
+
+fn isNullishLiteral(id: tymod.TypeId) bool {
+    return id.eq(tymod.ID_NULL) or id.eq(tymod.ID_UNDEFINED) or id.eq(tymod.ID_VOID);
+}
+
+fn involvesIndeterminateType(id: tymod.TypeId, ctx: *const LintContext) bool {
+    const kind = ctx.typeIdKind(id) orelse return true;
+    return switch (kind) {
+        .any, .unknown, .error_t, .type_param => true,
+        .union_t, .intersection_t => blk: {
+            for (ctx.typeIdUnionMembers(id)) |m| {
+                if (involvesIndeterminateType(m, ctx)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn typeContainsNullish(id: tymod.TypeId, ctx: *const LintContext) bool {
+    const kind = ctx.typeIdKind(id) orelse return false;
+    if (kind == .null_t or kind == .undefined_t or kind == .void_t) return true;
+    if (kind == .union_t) {
+        for (ctx.typeIdUnionMembers(id)) |m| if (typeContainsNullish(m, ctx)) return true;
+    }
+    return false;
+}
+
+/// True when types `a` and `b` could share at least one runtime value.
+/// Conservative: returns true when uncertain.
+fn typesCanOverlap(a: tymod.TypeId, b: tymod.TypeId, ctx: *const LintContext) bool {
+    // Expand unions on both sides; if any pair overlaps, true.
+    const ka = ctx.typeIdKind(a) orelse return true;
+    const kb = ctx.typeIdKind(b) orelse return true;
+    if (ka == .any or kb == .any or ka == .unknown or kb == .unknown) return true;
+    if (ka == .union_t) {
+        for (ctx.typeIdUnionMembers(a)) |m| {
+            if (typesCanOverlap(m, b, ctx)) return true;
+        }
+        return false;
+    }
+    if (kb == .union_t) {
+        for (ctx.typeIdUnionMembers(b)) |m| {
+            if (typesCanOverlap(a, m, ctx)) return true;
+        }
+        return false;
+    }
+    if (ka == .intersection_t or kb == .intersection_t) return true;
+    // Singleton kinds first.
+    if (ka == .null_t and kb == .null_t) return true;
+    if (ka == .undefined_t or ka == .void_t) {
+        return kb == .undefined_t or kb == .void_t;
+    }
+    if (kb == .undefined_t or kb == .void_t) return false;
+    if (ka == .null_t) return false;
+    if (kb == .null_t) return false;
+    // Same broad family.
+    if (kindFamily(ka) == kindFamily(kb)) {
+        // Same family — possibly overlap.  For literal-vs-literal, defer
+        // to literalsOverlap; otherwise assume overlap.
+        if (ka == kb and (ka == .string_literal or ka == .number_literal or ka == .boolean_literal or ka == .bigint_literal)) {
+            return literalsOverlap(a, b, ctx);
+        }
+        // string-literal vs string is overlap.
+        return true;
+    }
+    return false;
+}
+
+fn kindFamily(k: tymod.TypeKind) u8 {
+    return switch (k) {
+        .string, .string_literal => 1,
+        .number, .number_literal => 2,
+        .bigint, .bigint_literal => 3,
+        .boolean, .boolean_literal => 4,
+        .symbol => 5,
+        .object_t, .object_keyword, .array_t, .readonly_array_t, .tuple_t, .function_t, .type_ref => 6,
+        .null_t => 7,
+        .undefined_t, .void_t => 8,
+        .never => 9,
+        else => 0, // unknown/any/error/etc.
+    };
+}
+
+/// Returns the literal type of an expression, peeking past `-expr`
+/// for negative numeric/bigint literals (the parser emits `unary_minus`
+/// around the inner literal).
+fn effectiveLiteralType(node: NodeIndex, ctx: *const LintContext) tymod.TypeId {
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) == .unary_minus) {
+        const inner = ctx.nodeData(n).lhs;
+        const inner_ty = ctx.typeOfNode(inner);
+        if (isLiteralType(inner_ty, ctx)) return inner_ty;
+    }
+    // Treat the bare global `undefined` identifier as the undefined
+    // type so comparisons recognise it.
+    if (ctx.nodeTag(n) == .identifier and
+        std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(n)), "undefined") and
+        ctx.isGlobalReference(n))
+    {
+        return tymod.ID_UNDEFINED;
+    }
+    if (ctx.nodeTag(n) == .null_literal) return tymod.ID_NULL;
+    return ctx.typeOfNode(n);
 }
 
 const Truthiness = enum { always_truthy, always_falsy, indeterminate };
@@ -287,7 +409,8 @@ fn nullabilityDepth(id: TypeId, ctx: *const LintContext, depth: u32) Nullability
 fn isLiteralType(id: TypeId, ctx: *const LintContext) bool {
     const kind = ctx.typeIdKind(id) orelse return false;
     return switch (kind) {
-        .string_literal, .number_literal, .bigint_literal, .boolean_literal => true,
+        .string_literal, .number_literal, .bigint_literal, .boolean_literal,
+        .null_t, .undefined_t, .void_t => true,
         else => false,
     };
 }
