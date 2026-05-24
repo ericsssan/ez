@@ -2917,7 +2917,34 @@ pub const Checker = struct {
             const m: NodeIndex = @enumFromInt(slice[i]);
             buf[i] = self.resolveTypeNode(m);
         }
+        // Incompatible primitive intersection → never.  E.g. `string &
+        // number` has no inhabitants.
+        if (intersectionIsImpossible(&self.store, buf[0..n])) return tymod.ID_NEVER;
         return self.store.intersectionOf(buf[0..n]) catch tymod.ID_UNKNOWN;
+    }
+
+    fn intersectionIsImpossible(store: *const tymod.TypeStore, members: []const TypeId) bool {
+        var saw_string = false;
+        var saw_number = false;
+        var saw_boolean = false;
+        var saw_bigint = false;
+        for (members) |m| {
+            const t = store.get(m);
+            switch (t.kind) {
+                .string, .string_literal => saw_string = true,
+                .number, .number_literal => saw_number = true,
+                .boolean, .boolean_literal => saw_boolean = true,
+                .bigint, .bigint_literal => saw_bigint = true,
+                else => {},
+            }
+        }
+        // Any two-of-four primitive families together → impossible.
+        var count: u32 = 0;
+        if (saw_string) count += 1;
+        if (saw_number) count += 1;
+        if (saw_boolean) count += 1;
+        if (saw_bigint) count += 1;
+        return count >= 2;
     }
 
     // ── Expression helpers ────────────────────────────────

@@ -393,12 +393,23 @@ fn checkTruthiness(expr: NodeIndex, ctx: *const LintContext) void {
     // tested expression's type — `if (x !== undefined) { if (x) … }`
     // becomes `if (string)` once null/undefined are stripped.
     const ty = ctx.narrowedTypeOf(n);
+    // `never`-typed condition fires the dedicated `never` message
+    // rather than always-falsy.
+    if (isNeverType(ty, ctx)) {
+        ctx.reportWithMessageId(n, "never");
+        return;
+    }
     const tr = truthiness(ty, ctx);
     switch (tr) {
         .always_truthy => ctx.reportWithMessageId(n, "alwaysTruthy"),
         .always_falsy => ctx.reportWithMessageId(n, "alwaysFalsy"),
         else => {},
     }
+}
+
+fn isNeverType(id: tymod.TypeId, ctx: *const LintContext) bool {
+    const k = ctx.typeIdKind(id) orelse return false;
+    return k == .never;
 }
 
 fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
