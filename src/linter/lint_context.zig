@@ -1103,8 +1103,52 @@ pub const LintContext = struct {
                 // `Array.isArray(name)` → narrow to array.
                 return self.applyCallGuard(g, name, ty, positive);
             },
+            .in_expr => {
+                // `'prop' in name` — narrow union variants by property
+                // membership.
+                return self.applyInOperatorGuard(g, name, ty, positive);
+            },
             else => return ty,
         }
+    }
+
+    fn applyInOperatorGuard(self: *const LintContext, in_node: NodeIndex, name: []const u8, ty: tymod.TypeId, positive: bool) tymod.TypeId {
+        // `key in name`: lhs is the key, rhs is the object.
+        const d = self.ast.nodeData(in_node);
+        if (!self.guardLhsIsName(d.rhs, name)) return ty;
+        // Extract the property name from a string literal key.
+        var key = d.lhs;
+        while (self.ast.nodeTag(key) == .grouping_expr) key = self.ast.nodeData(key).lhs;
+        if (self.ast.nodeTag(key) != .string_literal) return ty;
+        const raw = self.ast.tokenText(self.ast.nodeMainToken(key));
+        if (raw.len < 2) return ty;
+        const prop = raw[1 .. raw.len - 1];
+        const c = self.ensureChecker() orelse return ty;
+        const t = c.store.get(ty);
+        if (t.kind != .union_t) return ty;
+        var keep: [16]tymod.TypeId = undefined;
+        var n: usize = 0;
+        for (c.store.idsOf(t.list_data)) |m| {
+            const has = self.typeHasProperty(m, prop);
+            if (has == positive) {
+                if (n >= keep.len) return ty;
+                keep[n] = m;
+                n += 1;
+            }
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return keep[0];
+        return c.store.unionOf(keep[0..n]) catch ty;
+    }
+
+    fn typeHasProperty(self: *const LintContext, id: tymod.TypeId, prop: []const u8) bool {
+        const c = self.ensureChecker() orelse return true;
+        const t = c.store.get(id);
+        if (t.kind != .object_t) return false;
+        for (c.store.propsOf(t.object_props)) |p| {
+            if (std.mem.eql(u8, p.name, prop)) return true;
+        }
+        return false;
     }
 
     fn applyEqualityGuard(self: *const LintContext, guard: NodeIndex, name: []const u8, ty: tymod.TypeId, positive_outer: bool) tymod.TypeId {
