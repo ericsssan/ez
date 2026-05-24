@@ -657,13 +657,17 @@ fn walkType(id: TypeId, fam: *Family, ctx: *const LintContext, depth: u32) void 
             const name = ctx.typeIdRefName(id);
             if (name.len > 0 and ctx.typeNameIsEnum(name)) {
                 fam.has_enum = true;
+            } else if (name.len > 0 and ctx.typeDeclNode(name) == .none) {
+                // Not a user-declared interface/alias/class — likely
+                // a type parameter (or external name we can't resolve).
+                // TS-eslint treats `<T>(x: T)` boolean tests as if x
+                // were `any`.  Default to has_any so allowAny applies.
+                fam.has_any = true;
             } else {
-                // Other type_ref (e.g. user type alias resolved here) —
-                // treat as object-like.
                 fam.has_object = true;
             }
         },
-        .type_param => fam.has_other = true,
+        .type_param => fam.has_any = true,
         else => fam.has_other = true,
     }
 }
