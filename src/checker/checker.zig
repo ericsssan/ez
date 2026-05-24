@@ -3320,16 +3320,34 @@ pub const Checker = struct {
         const a = self.typeOf(data.lhs);
         const b = self.typeOf(data.rhs);
         if (tag == .add) {
-            // string + anything → string
-            if (a.eq(tymod.ID_STRING) or b.eq(tymod.ID_STRING)) return tymod.ID_STRING;
+            // string + anything → string.  Match both `string` and
+            // `string_literal` operands.
+            if (isStringish(&self.store, a) or isStringish(&self.store, b)) return tymod.ID_STRING;
             // Either side any → any (so unsafe-* fires through arithmetic).
             if (tymod.isAny(&self.store, a) or tymod.isAny(&self.store, b)) return tymod.ID_ANY;
-            if (a.eq(tymod.ID_BIGINT) or b.eq(tymod.ID_BIGINT)) return tymod.ID_BIGINT;
+            if (isBigintish(&self.store, a) or isBigintish(&self.store, b)) return tymod.ID_BIGINT;
             return tymod.ID_NUMBER;
         }
         if (tymod.isAny(&self.store, a) or tymod.isAny(&self.store, b)) return tymod.ID_ANY;
-        if (a.eq(tymod.ID_BIGINT) or b.eq(tymod.ID_BIGINT)) return tymod.ID_BIGINT;
+        if (isBigintish(&self.store, a) or isBigintish(&self.store, b)) return tymod.ID_BIGINT;
         return tymod.ID_NUMBER;
+    }
+
+    fn isStringish(store: *const tymod.TypeStore, id: TypeId) bool {
+        const t = store.get(id);
+        if (t.kind == .string or t.kind == .string_literal) return true;
+        if (t.kind == .union_t) {
+            for (store.idsOf(t.list_data)) |m| {
+                if (!isStringish(store, m)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn isBigintish(store: *const tymod.TypeStore, id: TypeId) bool {
+        const t = store.get(id);
+        return t.kind == .bigint or t.kind == .bigint_literal;
     }
 
     /// Safely read a SubRange stored in a NodeIndex slot.  The parser
