@@ -645,6 +645,42 @@ pub const LintContext = struct {
         return c.store.get(id).kind == .object_t;
     }
 
+    /// Return the raw TypeKind for a TypeId.  Use when a rule needs to
+    /// branch on the underlying type-store representation; lighter
+    /// alternative to exposing the full store.
+    pub fn typeIdKind(self: *const LintContext, id: tymod.TypeId) ?tymod.TypeKind {
+        const c = self.ensureChecker() orelse return null;
+        return c.store.get(id).kind;
+    }
+
+    /// Array element TypeId — for `T[]`, `readonly T[]`, `Array<T>`, and
+    /// `ReadonlyArray<T>`.  Returns null when not an array-like type.
+    pub fn typeIdArrayElement(self: *const LintContext, id: tymod.TypeId) ?tymod.TypeId {
+        const c = self.ensureChecker() orelse return null;
+        const t = c.store.get(id);
+        if (t.kind == .array_t or t.kind == .readonly_array_t) {
+            const elems = c.store.idsOf(t.list_data);
+            if (elems.len == 0) return null;
+            return elems[0];
+        }
+        if (t.kind == .type_ref) {
+            if (std.mem.eql(u8, t.name, "Array") or std.mem.eql(u8, t.name, "ReadonlyArray")) {
+                const args = c.store.idsOf(t.list_data);
+                if (args.len == 0) return null;
+                return args[0];
+            }
+        }
+        return null;
+    }
+
+    /// Tuple element TypeIds — empty slice when not a tuple.
+    pub fn typeIdTupleElements(self: *const LintContext, id: tymod.TypeId) []const tymod.TypeId {
+        const c = self.ensureChecker() orelse return &.{};
+        const t = c.store.get(id);
+        if (t.kind != .tuple_t) return &.{};
+        return c.store.idsOf(t.list_data);
+    }
+
     /// Member TypeIds of a union — empty slice when not a union or
     /// when the union has no members.
     pub fn typeIdUnionMembers(self: *const LintContext, id: tymod.TypeId) []const tymod.TypeId {
@@ -2015,6 +2051,26 @@ pub const LintContext = struct {
             },
             else => return null,
         }
+    }
+
+    /// If `node` is an Identifier reference, returns the declared TS
+    /// type-annotation NodeIndex (a `ts_type_annotation`) attached to its
+    /// binding declaration — works for `const x: T = ...`, `let x: T`,
+    /// `declare const x: T`, function parameters.  Returns null when the
+    /// reference doesn't resolve or the binding has no annotation.
+    pub fn bindingTypeAnnotationOf(self: *const LintContext, node: NodeIndex) ?NodeIndex {
+        if (node == .none) return null;
+        if (self.ast.nodeTag(node) != .identifier) return null;
+        const ref_id = self.nodeRefId(node);
+        if (ref_id == .none) return null;
+        const sym_id = self.semantic.references.getSymbol(ref_id);
+        if (sym_id == .none) return null;
+        const decl = self.semantic.symbols.getDeclNode(sym_id);
+        if (decl == .none) return null;
+        if (self.ast.nodeTag(decl) != .identifier) return null;
+        const ann = self.ast.nodeData(decl).rhs;
+        if (ann == .none) return null;
+        return ann;
     }
 
     /// If `node` is an Identifier with an effective-const binding (or
