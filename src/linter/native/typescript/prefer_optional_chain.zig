@@ -602,10 +602,17 @@ fn findAndChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const 
     // `?.` would lose semantics — reject by retreating.  When the
     // chain extends through MULTIPLE access steps the diagnostic
     // is meaningful even without a safe rewrite (TSe fires no-fix).
-    // AND chain with statically-false `!== null` root + any
-    // optional extension → TSe doesn't fire (the `?.` rewrite
-    // doesn't align with `!== null` semantics).
-    if (and_root_kind == .statically_false_null and and_saw_optional_ext) return start;
+    // AND chain with statically-false `!== null` root + optional
+    // extension: only fire when the optional access's result type
+    // has ONLY null (matching the `!== null` narrowing).  If the
+    // result has both null AND undefined, the rewrite leaves the
+    // undefined case unhandled and TSe doesn't fire.
+    if (and_root_kind == .statically_false_null and and_saw_optional_ext) {
+        if (end > start) {
+            const sec_op = unwrapGrouping(operands[start + 1], ctx);
+            if (classifyAndStrictRoot(sec_op, ctx) != .safe) return start;
+        }
+    }
     if (ext_count < 2) {
         while (end > start) {
             const last_op = unwrapGrouping(operands[end], ctx);
@@ -752,8 +759,8 @@ fn subjectTypeWithoutOptionalPropagation(subj: NodeIndex, ctx: *const LintContex
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     // Walk through plain member/call accesses; stop when we see
     // optional_* or a non-access node.  If we encounter optional,
-    // use the property/argument's APPARENT type after stripping
-    // the optional's `undefined`-propagation.
+    // the `?.` propagation adds an `undefined` constituent that
+    // doesn't reflect the original type — strip it for narrowing.
     var saw_optional = false;
     var cur = n;
     while (true) {
@@ -773,7 +780,20 @@ fn subjectTypeWithoutOptionalPropagation(subj: NodeIndex, ctx: *const LintContex
     }
     const ty = ctx.typeOfNode(n);
     if (!saw_optional) return ty;
-    // Strip `undefined` from the type's union members (if a union).
+    // Strip only the propagated `undefined` constituent — when the
+    // inner subject's type doesn't have undefined, the undefined in
+    // the optional-chained result's type is solely from `?.`
+    // propagation.  Use the inner subject's type if it doesn't have
+    // undefined; otherwise leave as-is (we can't disambiguate).
+    const inner_ty = ctx.typeOfNode(cur);
+    const inner_kind = ctx.typeKind(inner_ty);
+    switch (inner_kind) {
+        .any, .unknown, .error_t, .type_param => return ty,
+        else => {},
+    }
+    if (ctx.typeIdContainsUndefined(inner_ty)) return ty;
+    // Inner doesn't have undefined → propagated.  Strip only undefined
+    // (keep null and other constituents).
     return ctx.typeIdNonNullable(ty);
 }
 
@@ -1148,15 +1168,23 @@ fn findOrChainSubrunEnd(operands: []const NodeIndex, start: usize, ctx: *const L
         }
     }
     if (!extended) return start;
-    // Statically-false `=== null` requires an optional extension
-    // AND requires the ENTIRE operand sequence to be uniform
-    // `=== null` comparisons (so the chain rewrite is a single
-    // coherent comparison).  Mixed forms (some `=== null`, others
-    // truthy) don't unify and TSe doesn't fire.
+    // Statically-false `=== null` chains: fire when EITHER (a) the
+    // chain has an optional-access extension AND every operand is
+    // a `=== null` comparison (uniform rewrite), OR (b) every
+    // operand is `=== null` even with plain extensions (TSe
+    // recognises uniform comparison chains as a candidate for the
+    // collapsed `?.` rewrite).
     if (root_kind == .statically_false_null) {
-        if (!saw_optional_ext) return start;
+        var all_strict_null = true;
         for (operands) |op_n| {
-            if (!isStrictEqualNull(unwrapGrouping(op_n, ctx), ctx)) return start;
+            if (!isStrictEqualNull(unwrapGrouping(op_n, ctx), ctx)) {
+                all_strict_null = false;
+                break;
+            }
+        }
+        if (!all_strict_null) {
+            if (!saw_optional_ext) return start;
+            return start;
         }
     }
     // Post-walk: validate the chain TERMINAL operand for OR-chain
@@ -1406,6 +1434,10 @@ fn orMiddleOperandSubject(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     const tag = ctx.nodeTag(n);
     if (tag == .equal or tag == .strict_equal) {
         const d = ctx.nodeData(n);
+        // typeof X === 'undefined' (and yoda) — confirms X IS
+        // undefined, a nullish presence-negation for OR chains.
+        if (typeofUndefinedSubject(d.lhs, d.rhs, ctx)) |x| return x;
+        if (typeofUndefinedSubject(d.rhs, d.lhs, ctx)) |x| return x;
         if (isUndefinedNode(d.rhs, ctx) or isNullLiteralNode(d.rhs, ctx)) return d.lhs;
         if (isUndefinedNode(d.lhs, ctx) or isNullLiteralNode(d.lhs, ctx)) return d.rhs;
         return null;
