@@ -101,6 +101,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             // assert(value)` — the argument is being implicitly tested.
             const callee_ty = ctx.typeOfNode(callee);
             if (ctx.functionAssertionInfo(callee_ty)) |info| {
+                // `asserts x is X` is a type-narrowing assertion, not a
+                // truthiness test — don't apply boolean-context rules
+                // to the asserted argument.
+                if (!info.target.eq(tymod.TypeId.none)) return;
                 if (d.rhs == .none) return;
                 const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
                 if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return;
@@ -284,8 +288,32 @@ fn walkType(id: TypeId, fam: *Family, ctx: *const LintContext, depth: u32) void 
         return;
     }
     if (kind == .intersection_t) {
-        // Pick the first classifiable.  Conservative: classify each.
-        for (ctx.typeIdUnionMembers(id)) |m| walkType(m, fam, ctx, depth + 1);
+        // Branded primitives like `string & { __BRAND: 'X' }` should
+        // classify as the primitive — the object brand marker doesn't
+        // change the boolean-context behavior.  Walk each member with
+        // a temp family first; if any member is a primitive, keep only
+        // primitive contributions (skip the brand objects).
+        var sub: Family = .{};
+        for (ctx.typeIdUnionMembers(id)) |m| walkType(m, &sub, ctx, depth + 1);
+        const has_primitive = sub.has_string or sub.has_number or sub.has_boolean;
+        if (has_primitive) {
+            fam.has_string = fam.has_string or sub.has_string;
+            fam.string_possibly_falsy = fam.string_possibly_falsy or sub.string_possibly_falsy;
+            fam.has_number = fam.has_number or sub.has_number;
+            fam.number_possibly_falsy = fam.number_possibly_falsy or sub.number_possibly_falsy;
+            fam.has_boolean = fam.has_boolean or sub.has_boolean;
+            fam.boolean_possibly_falsy = fam.boolean_possibly_falsy or sub.boolean_possibly_falsy;
+            return;
+        }
+        // No primitive — merge whatever sub captured.
+        fam.has_object = fam.has_object or sub.has_object;
+        fam.has_null = fam.has_null or sub.has_null;
+        fam.has_undef = fam.has_undef or sub.has_undef;
+        fam.has_any = fam.has_any or sub.has_any;
+        fam.has_unknown = fam.has_unknown or sub.has_unknown;
+        fam.has_never = fam.has_never or sub.has_never;
+        fam.has_enum = fam.has_enum or sub.has_enum;
+        fam.has_other = fam.has_other or sub.has_other;
         return;
     }
     switch (kind) {
