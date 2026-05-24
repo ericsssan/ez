@@ -483,9 +483,6 @@ fn containsArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
             const d = ctx.nodeData(n);
             const recv_ty = ctx.narrowedTypeOf(d.lhs);
             if (ctx.typeIsArrayLikeOrUnresolved(recv_ty)) {
-                // Be precise: only bail when the receiver is an
-                // actual array/tuple (skip the "or unresolved" lenient
-                // path — for unresolved we'd over-bail).
                 const kind = ctx.typeIdKind(recv_ty) orelse return false;
                 if (kind == .array_t or kind == .readonly_array_t or kind == .tuple_t) return true;
             }

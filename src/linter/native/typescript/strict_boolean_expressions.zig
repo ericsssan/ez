@@ -218,9 +218,100 @@ fn checkPredicateReturnsOnCallback(cb: NodeIndex, body: NodeIndex, opts: Options
             any_indeterminate = true;
         }
     }
-    if (saw_return and !any_indeterminate) {
-        if (combined_id) |id| ctx.reportWithMessageId(cb, id);
+    if (saw_return) {
+        if (!any_indeterminate) {
+            if (combined_id) |id| ctx.reportWithMessageId(cb, id);
+        }
+        return;
     }
+    // No return statement seen at the top level — the callback might
+    // still return via nested blocks/if/try.  Bail unless we're sure
+    // the function returns void.  Use the explicit return annotation
+    // if present: a callback annotated `: boolean` clearly returns;
+    // one without an annotation that we can prove has no nested
+    // returns implicitly returns `undefined`.
+    // No top-level return, no nested return — implicit undefined.
+    if (callbackHasAnyReturnRecursive(body, ctx)) return;
+    ctx.reportWithMessageId(cb, "conditionErrorNullish");
+}
+
+fn callbackHasExplicitReturnAnnotation(cb: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(cb);
+    const d = ctx.nodeData(cb);
+    if (d.lhs == .none) return false;
+    if (tag == .arrow_fn or tag == .async_arrow_fn) {
+        const ad = ctx.extraData(ast.ArrowData, @intFromEnum(d.lhs));
+        return ad.return_type != .none;
+    }
+    if (tag == .fn_expr or tag == .async_fn_expr or
+        tag == .generator_fn_expr or tag == .async_generator_fn_expr)
+    {
+        const fd = ctx.extraData(ast.FnData, @intFromEnum(d.lhs));
+        return fd.return_type != .none;
+    }
+    return false;
+}
+
+fn callbackHasAnyReturnRecursive(body: NodeIndex, ctx: *const LintContext) bool {
+    if (body == .none) return false;
+    const tag = ctx.nodeTag(body);
+    if (tag == .return_stmt) return true;
+    // Only walk known statement containers — generic d.lhs/d.rhs
+    // walks are unsafe because many nodes store extra-data indices
+    // there, not NodeIndex.
+    const d = ctx.nodeData(body);
+    if (tag == .block_stmt) {
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e > s and e <= ctx.ast.extra_data.len) {
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                if (callbackHasAnyReturnRecursive(@enumFromInt(raw), ctx)) return true;
+            }
+        }
+        return false;
+    }
+    if (tag == .if_stmt) {
+        // d.lhs = cond, d.rhs = then-body.  Else-body lives elsewhere.
+        return callbackHasAnyReturnRecursive(d.rhs, ctx);
+    }
+    if (tag == .if_else_stmt) {
+        const ed = ctx.extraData(ast.IfData, @intFromEnum(d.rhs));
+        return callbackHasAnyReturnRecursive(ed.consequent, ctx) or
+            callbackHasAnyReturnRecursive(ed.alternate, ctx);
+    }
+    if (tag == .try_stmt) {
+        const ed = ctx.extraData(ast.TryData, @intFromEnum(d.rhs));
+        return callbackHasAnyReturnRecursive(d.lhs, ctx) or
+            callbackHasAnyReturnRecursive(ed.catch_node, ctx) or
+            callbackHasAnyReturnRecursive(ed.finally_body, ctx);
+    }
+    if (tag == .switch_stmt) {
+        if (d.rhs == .none) return false;
+        const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+        if (sr.end <= sr.start or sr.end > ctx.ast.extra_data.len) return false;
+        for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
+            if (callbackHasAnyReturnRecursive(@enumFromInt(raw), ctx)) return true;
+        }
+        return false;
+    }
+    if (tag == .switch_case or tag == .switch_default) {
+        if (d.rhs == .none) return false;
+        const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+        if (sr.end <= sr.start or sr.end > ctx.ast.extra_data.len) return false;
+        for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
+            if (callbackHasAnyReturnRecursive(@enumFromInt(raw), ctx)) return true;
+        }
+        return false;
+    }
+    if (tag == .for_stmt or tag == .for_in_stmt or
+        tag == .for_of_stmt or tag == .for_await_of_stmt or
+        tag == .while_stmt or tag == .do_while_stmt or
+        tag == .labeled_stmt)
+    {
+        // Body is in d.rhs for these statement kinds.
+        return callbackHasAnyReturnRecursive(d.rhs, ctx);
+    }
+    return false;
 }
 
 /// Walk a boolean-context expression: descend through `&&` / `||`,
