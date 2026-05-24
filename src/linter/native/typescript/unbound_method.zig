@@ -322,11 +322,8 @@ fn isBuiltinStaticMethodByName(class_name: []const u8, prop: []const u8) bool {
             std.mem.eql(u8, prop, "seal") or
             std.mem.eql(u8, prop, "preventExtensions");
     }
-    if (std.mem.eql(u8, class_name, "Array")) {
-        return std.mem.eql(u8, prop, "from") or
-            std.mem.eql(u8, prop, "of") or
-            std.mem.eql(u8, prop, "isArray");
-    }
+    // Array statics (`from`, `of`, `isArray`) are declared in lib.d.ts
+    // with `this: void` semantics — TS-eslint doesn't flag them.
     if (std.mem.eql(u8, class_name, "Promise")) {
         return std.mem.eql(u8, prop, "all") or
             std.mem.eql(u8, prop, "allSettled") or
@@ -446,6 +443,20 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
             }
         },
     }
+    // Class-as-value source: when the destructured RHS is an identifier
+    // referring to a class declaration, destructured names match the
+    // class's STATIC methods (not instance methods).
+    var class_static_decl: NodeIndex = .none;
+    if (have_source) {
+        const parent_data = ctx.nodeData(parent);
+        const init_node = parent_data.rhs;
+        if (init_node != .none and ctx.nodeTag(init_node) == .identifier) {
+            const class_name = ctx.tokenText(ctx.nodeMainToken(init_node));
+            const decl = ctx.classDeclByName(class_name);
+            if (decl != .none) class_static_decl = decl;
+        }
+    }
+
     if (!have_source) return;
 
     const d = ctx.nodeData(node);
@@ -464,6 +475,12 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
         if (name_node == .none) continue;
         if (ctx.nodeTag(name_node) != .identifier) continue;
         const name = ctx.tokenText(ctx.nodeMainToken(name_node));
+        if (class_static_decl != .none and
+            classHasStaticMethod(class_static_decl, name, ctx))
+        {
+            ctx.reportWithMessageId(name_node, "unboundWithoutThisAnnotation");
+            continue;
+        }
         if (ctx.typeIdObjectPropertyIsMethod(source_ty, name)) {
             ctx.reportWithMessageId(name_node, "unboundWithoutThisAnnotation");
         }
