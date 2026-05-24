@@ -22,7 +22,8 @@ pub const meta = RuleMeta{
 pub const relevant_tags = [_]Node.Tag{
     .if_stmt, .while_stmt, .do_while_stmt, .for_stmt,
     .conditional, .logical_and, .logical_or, .logical_not,
-    .nullish_coalesce,
+    .nullish_coalesce, .nullish_assign,
+    .logical_and_assign, .logical_or_assign,
     .optional_member_expr, .optional_call_expr,
     .optional_computed_member_expr,
     .equal, .not_equal, .strict_equal, .strict_not_equal,
@@ -65,8 +66,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             // LHS is tested for truthiness.
             checkTruthiness(d.lhs, ctx);
         },
-        .nullish_coalesce => {
+        .nullish_coalesce, .nullish_assign => {
             checkNullishCoalesce(d.lhs, ctx);
+        },
+        .logical_and_assign, .logical_or_assign => {
+            // `x &&= y` / `x ||= y` — LHS is tested for truthiness.
+            checkTruthiness(d.lhs, ctx);
         },
         .optional_member_expr, .optional_call_expr, .optional_computed_member_expr => {
             checkOptionalChainReceiver(d.lhs, ctx);
