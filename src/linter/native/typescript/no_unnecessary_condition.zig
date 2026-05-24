@@ -424,10 +424,13 @@ fn checkOptionalChainReceiver(recv: NodeIndex, op_node: NodeIndex, ctx: *const L
     const nul = nullability(ty, ctx);
     if (nul == .never_nullish) {
         // Report on the `?.` operator token of the outer chain — that's
-        // where TS-eslint anchors the diagnostic.
-        const tok = ctx.nodeMainToken(op_node);
-        const start = ctx.tokenStart(tok);
-        const len = ctx.tokenText(tok).len;
+        // where TS-eslint anchors the diagnostic.  The opt_member's
+        // main_token is the property name; the `?.` is the token just
+        // before it.
+        const main_tok = ctx.nodeMainToken(op_node);
+        const qdot_tok = if (main_tok > 0) main_tok - 1 else main_tok;
+        const start = ctx.tokenStart(qdot_tok);
+        const len = ctx.tokenText(qdot_tok).len;
         const end: u32 = @intCast(start + len);
         ctx.reportSpanWithMessageId(.{ .start = start, .end = end }, "neverOptionalChain");
     }
@@ -446,14 +449,20 @@ fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
         if (rhs_tag != .identifier and rhs_tag != .property_ident) return ctx.narrowedTypeOf(n);
         const prop_name = ctx.tokenText(ctx.nodeMainToken(d.rhs));
         var recv_ty = chainCheckType(d.lhs, ctx);
-        // Strip chain-introduced `undefined`/`null` from the receiver
-        // before projecting — the property exists on the non-nullish
-        // variant.  projectPropertyPub re-adds undefined for optional
-        // properties, so the optionality is preserved correctly.
         const kinds = [_]tymod.TypeKind{ .undefined_t, .null_t };
         recv_ty = ctx.typeIdStripKinds(recv_ty, &kinds);
         const projected = ctx.projectPropertyPub(recv_ty, prop_name);
         if (!projected.eq(tymod.TypeId.none)) return projected;
+    }
+    // Call/optional-call: the chain's checked type is the return type
+    // of the function being called.  `foo?.bar()?.baz` checks `?.baz`
+    // against bar's return type (not against the chain result).
+    if (tag == .optional_call_expr or tag == .call_expr) {
+        const d = ctx.nodeData(n);
+        var recv_ty = chainCheckType(d.lhs, ctx);
+        const kinds = [_]tymod.TypeKind{ .undefined_t, .null_t };
+        recv_ty = ctx.typeIdStripKinds(recv_ty, &kinds);
+        if (ctx.functionReturnType(recv_ty)) |ret| return ret;
     }
     return ctx.narrowedTypeOf(n);
 }
