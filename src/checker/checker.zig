@@ -1147,6 +1147,18 @@ pub const Checker = struct {
                 ret_ty = self.inferBlockReturn(body_for_inference);
             }
         }
+        // Async functions return Promise<T> at the call site, even if
+        // the body's return type is `T`.  Wrap unless the user already
+        // annotated `: Promise<T>` (avoid double-wrapping).
+        if (is_async and !is_assertion and !ret_ty.eq(tymod.ID_UNKNOWN)) {
+            const rt = self.store.get(ret_ty);
+            const already_promise = rt.kind == .type_ref and std.mem.eql(u8, rt.name, "Promise");
+            if (!already_promise) {
+                ret_ty = self.store.typeRef("Promise", &.{ret_ty}) catch ret_ty;
+            }
+        } else if (is_async and ret_ty.eq(tymod.ID_UNKNOWN)) {
+            ret_ty = self.store.typeRef("Promise", &.{tymod.ID_UNKNOWN}) catch ret_ty;
+        }
         const param_range = self.store.appendSignatureParams(param_buf[0..count]) catch {
             return tymod.ID_UNKNOWN;
         };
