@@ -1035,7 +1035,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-unnecessary-qualifier",
       "restrict-plus-operands",
       // "no-unnecessary-type-parameters", // needs TS-checker type inference; native partial impl held in place
-      // "prefer-readonly", // needs `self = this` alias tracking + onlyInlineLambdas option; partial impl held
+      "prefer-readonly",
 
       "no-unsafe-function-type",
       "no-wrapper-object-types",
