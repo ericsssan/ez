@@ -2213,6 +2213,33 @@ pub const Checker = struct {
                     .literal_value = .{ .number = std.fmt.parseFloat(f64, name) catch 0 },
                 }) catch tymod.ID_NUMBER;
             },
+            // Negative literal type: `-2`, `-2n`.  The parser stores
+            // the `-` as the main_token of a ts_type_reference and
+            // discards the literal; reconstruct the value by peeking
+            // at the next token's text.
+            '-' => {
+                const next_tok = name_tok + 1;
+                if (next_tok < self.ast_ref.tokens.len) {
+                    const next_text = self.ast_ref.tokenText(next_tok);
+                    if (next_text.len > 0 and (next_text[0] >= '0' and next_text[0] <= '9')) {
+                        if (next_text[next_text.len - 1] == 'n') {
+                            // Compose "-2" for the bigint payload.
+                            const composed = std.fmt.allocPrint(
+                                self.gpa, "-{s}", .{next_text[0 .. next_text.len - 1]},
+                            ) catch return tymod.ID_BIGINT;
+                            return self.store.add(.{
+                                .kind = .bigint_literal,
+                                .literal_value = .{ .bigint = composed },
+                            }) catch tymod.ID_BIGINT;
+                        }
+                        const v = std.fmt.parseFloat(f64, next_text) catch 0;
+                        return self.store.add(.{
+                            .kind = .number_literal,
+                            .literal_value = .{ .number = -v },
+                        }) catch tymod.ID_NUMBER;
+                    }
+                }
+            },
             else => {},
         };
         if (std.mem.eql(u8, name, "true")) {
@@ -3475,6 +3502,17 @@ pub const Checker = struct {
         // For tuples, a numeric literal selects a specific element;
         // otherwise return the union of all elements.
         if (obj.kind == .array_t or obj.kind == .readonly_array_t) {
+            // String-literal key on an array routes to the Array
+            // prototype (`'length'`, `'push'`, ...) — not the element
+            // type.
+            if (self.ast_ref.nodeTag(key_node) == .string_literal) {
+                const tok = self.ast_ref.nodeMainToken(key_node);
+                const raw = self.ast_ref.tokenText(tok);
+                if (raw.len >= 2) {
+                    const key_name = raw[1 .. raw.len - 1];
+                    if (std.mem.eql(u8, key_name, "length")) return tymod.ID_NUMBER;
+                }
+            }
             const elems = self.store.idsOf(obj.list_data);
             if (elems.len == 0) return tymod.ID_UNKNOWN;
             return elems[0];
