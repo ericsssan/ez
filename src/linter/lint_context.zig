@@ -717,6 +717,30 @@ pub const LintContext = struct {
         return c.store.unionOf(buf[0..n]) catch id;
     }
 
+    /// Strip only the `undefined` / `void` constituents from a union
+    /// type — keeps `null` and other members intact.  Used by the
+    /// prefer-optional-chain rule to remove `?.`-propagated `undefined`
+    /// without erasing original-source nullishness.
+    pub fn typeIdStripUndefined(self: *const LintContext, id: tymod.TypeId) tymod.TypeId {
+        const c = self.ensureChecker() orelse return id;
+        const t = c.store.get(id);
+        if (t.kind != .union_t) {
+            if (id.eq(tymod.ID_UNDEFINED) or id.eq(tymod.ID_VOID)) return tymod.ID_NEVER;
+            return id;
+        }
+        var buf: [16]tymod.TypeId = undefined;
+        var n: usize = 0;
+        for (c.store.idsOf(t.list_data)) |m| {
+            if (m.eq(tymod.ID_UNDEFINED) or m.eq(tymod.ID_VOID)) continue;
+            if (n >= buf.len) return id;
+            buf[n] = m;
+            n += 1;
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return c.store.unionOf(buf[0..n]) catch id;
+    }
+
     /// If `id` is a `Promise<T>` / `PromiseLike<T>` / `Thenable<T>` type
     /// reference, return the awaited type `T`.  For a non-promise type,
     /// return `id` unchanged (matches TS's `Awaited<T>` semantics).

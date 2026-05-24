@@ -757,10 +757,12 @@ fn typeAwareNarrowComplement(syntactic: Narrow, subj: NodeIndex, ctx: *const Lin
 fn subjectTypeWithoutOptionalPropagation(subj: NodeIndex, ctx: *const LintContext) tymod.TypeId {
     var n = subj;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
-    // Walk through plain member/call accesses; stop when we see
-    // optional_* or a non-access node.  If we encounter optional,
-    // the `?.` propagation adds an `undefined` constituent that
-    // doesn't reflect the original type — strip it for narrowing.
+    // When the subject's access chain crosses an `?.`, strip the
+    // `undefined` constituent that the checker added from `?.`
+    // propagation.  Keep `null` and other members intact — they
+    // reflect the original property type.  This makes narrowing
+    // see the chain's "logical" type as if the chain root were
+    // already guarded by a prior `!== null` / etc.
     var saw_optional = false;
     var cur = n;
     while (true) {
@@ -780,21 +782,7 @@ fn subjectTypeWithoutOptionalPropagation(subj: NodeIndex, ctx: *const LintContex
     }
     const ty = ctx.typeOfNode(n);
     if (!saw_optional) return ty;
-    // Strip only the propagated `undefined` constituent — when the
-    // inner subject's type doesn't have undefined, the undefined in
-    // the optional-chained result's type is solely from `?.`
-    // propagation.  Use the inner subject's type if it doesn't have
-    // undefined; otherwise leave as-is (we can't disambiguate).
-    const inner_ty = ctx.typeOfNode(cur);
-    const inner_kind = ctx.typeKind(inner_ty);
-    switch (inner_kind) {
-        .any, .unknown, .error_t, .type_param => return ty,
-        else => {},
-    }
-    if (ctx.typeIdContainsUndefined(inner_ty)) return ty;
-    // Inner doesn't have undefined → propagated.  Strip only undefined
-    // (keep null and other constituents).
-    return ctx.typeIdNonNullable(ty);
+    return ctx.typeIdStripUndefined(ty);
 }
 
 /// For a comparison operand whose subject extends `prev`, return the
