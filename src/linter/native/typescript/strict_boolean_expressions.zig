@@ -376,10 +376,47 @@ fn checkBoolLeaf(expr: NodeIndex, opts: Options, ctx: *const LintContext) void {
     // Use flow-narrowed type so enclosing guards refine which messageId
     // applies (e.g. `if (x !== null) { if (x) … }` — at the inner test
     // x is non-null and conditionErrorNullableString shouldn't fire).
-    const ty = ctx.narrowedTypeOf(n);
+    var ty = ctx.narrowedTypeOf(n);
+    // TS treats un-annotated function-param identifiers as implicit
+    // `any` (not `unknown`).  Our checker stores them as UNKNOWN to
+    // keep no-unsafe-* quiet; bridge the gap here so allowAny works.
+    if (ty.eq(@import("../../../checker/types.zig").ID_UNKNOWN) and isUnannotatedParamRef(n, ctx)) {
+        ty = @import("../../../checker/types.zig").ID_ANY;
+    }
     const classification = classify(ty, opts, ctx);
     const msg = messageFor(classification, opts);
     if (msg) |m| ctx.reportWithMessageId(n, m);
+}
+
+fn isUnannotatedParamRef(n: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(n) != .identifier) return false;
+    const decl = ctx.declOf(n) orelse return false;
+    if (ctx.nodeTag(decl) != .identifier) return false;
+    // Param identifiers have no annotation when rhs is .none AND the
+    // parent is an arrow_fn / fn_expr / similar function-like node.
+    const ann = ctx.nodeData(decl).rhs;
+    if (ann != .none) return false;
+    var p = ctx.parentOf(decl);
+    var depth: u32 = 0;
+    while (p != .none and depth < 4) : ({ p = ctx.parentOf(p); depth += 1; }) {
+        switch (ctx.nodeTag(p)) {
+            .arrow_fn, .async_arrow_fn,
+            .fn_expr, .async_fn_expr,
+            .generator_fn_expr, .async_generator_fn_expr,
+            .fn_decl, .async_fn_decl,
+            .generator_fn_decl, .async_generator_fn_decl,
+            .method_def, .computed_method_def,
+            .constructor_def,
+            => return true,
+            // Skip pattern wrappers between identifier and the function.
+            .ts_parameter_property, .assignment_pattern, .rest_element,
+            .array_pattern, .object_pattern,
+            .property, .shorthand_property,
+            => {},
+            else => return false,
+        }
+    }
+    return false;
 }
 
 /// True when `node`'s parent puts it in a boolean context that will

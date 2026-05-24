@@ -33,7 +33,16 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Skip type params declared inside infer-types / mapped-types — those
     // aren't function/class type params and have different semantics.
     const parent = ctx.parentOf(node);
-    if (parent == .none) return;
+    if (parent == .none) {
+        if (findOwnerByPosition(node, ctx)) |owner| {
+            const name = ctx.tokenText(ctx.nodeMainToken(node));
+            var count: u32 = 0;
+            countInContainer(owner, name, &count, ctx);
+            if (count == 1) ctx.reportWithMessageId(node, "sole");
+            return;
+        }
+        return;
+    }
     const ptag = ctx.nodeTag(parent);
     if (ptag == .ts_infer_type or ptag == .ts_mapped_type) return;
 
@@ -80,6 +89,38 @@ fn findOwner(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
             else => {},
         }
     }
+    // Fallback: arrow_fn parses but doesn't store type params, so
+    // ts_type_parameter has no parent links from its arrow.  Scan
+    // the AST for an arrow_fn whose main token sits just after the
+    // type param (the `(` after `<T>`).
+    return findOwnerByPosition(tp, ctx);
+}
+
+/// Position-based owner search for orphan type parameters.  Looks for
+/// the smallest arrow_fn/fn_expr whose main_token is positioned just
+/// after the type parameter's token span (typical `<T>(…) => …` shape).
+fn findOwnerByPosition(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
+    const tp_tok = ctx.nodeMainToken(tp);
+    const tp_pos = ctx.tokenStart(tp_tok);
+    const total: u32 = @intCast(ctx.ast.nodes.len);
+    var best: NodeIndex = .none;
+    var best_pos: u32 = std.math.maxInt(u32);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        switch (ctx.nodeTag(ni)) {
+            .arrow_fn, .async_arrow_fn => {
+                const m = ctx.nodeMainToken(ni);
+                const p = ctx.tokenStart(m);
+                if (p > tp_pos and p < best_pos) {
+                    best = ni;
+                    best_pos = p;
+                }
+            },
+            else => {},
+        }
+    }
+    if (best != .none) return best;
     return null;
 }
 

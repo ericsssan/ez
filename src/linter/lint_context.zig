@@ -2977,6 +2977,21 @@ pub const LintContext = struct {
     /// binding declaration — works for `const x: T = ...`, `let x: T`,
     /// `declare const x: T`, function parameters.  Returns null when the
     /// reference doesn't resolve or the binding has no annotation.
+    /// Resolve an identifier reference to its declaration node (the
+    /// binding identifier).  Returns null if the identifier doesn't
+    /// resolve to a declared symbol in this file.
+    pub fn declOf(self: *const LintContext, node: NodeIndex) ?NodeIndex {
+        if (node == .none) return null;
+        if (self.ast.nodeTag(node) != .identifier) return null;
+        const ref_id = self.nodeRefId(node);
+        if (ref_id == .none) return null;
+        const sym_id = self.semantic.references.getSymbol(ref_id);
+        if (sym_id == .none) return null;
+        const decl = self.semantic.symbols.getDeclNode(sym_id);
+        if (decl == .none) return null;
+        return decl;
+    }
+
     pub fn bindingTypeAnnotationOf(self: *const LintContext, node: NodeIndex) ?NodeIndex {
         if (node == .none) return null;
         if (self.ast.nodeTag(node) != .identifier) return null;
