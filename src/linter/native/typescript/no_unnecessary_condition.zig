@@ -238,22 +238,64 @@ fn predicateBlockReturnType(body: NodeIndex, ctx: *const LintContext) ?tymod.Typ
     return null;
 }
 
-fn allowsConstantLoopConditions(ctx: *const LintContext) bool {
-    const v = ctx.rule_options orelse return false;
-    if (v.* != .object) return false;
-    const k = v.object.get("allowConstantLoopConditions") orelse return false;
+const LoopConstantMode = enum { off, always, only_allowed };
+
+fn allowsConstantLoopConditionsMode(ctx: *const LintContext) LoopConstantMode {
+    const v = ctx.rule_options orelse return .off;
+    if (v.* != .object) return .off;
+    const k = v.object.get("allowConstantLoopConditions") orelse return .off;
     return switch (k) {
-        .bool => |b| b,
-        .string => |s|
-            std.mem.eql(u8, s, "always") or std.mem.eql(u8, s, "only-allowed-literals"),
-        else => false,
+        .bool => |b| if (b) .always else .off,
+        .string => |s| if (std.mem.eql(u8, s, "always")) .always
+            else if (std.mem.eql(u8, s, "only-allowed-literals")) .only_allowed
+            else .off,
+        else => .off,
     };
+}
+
+fn allowsConstantLoopConditions(ctx: *const LintContext) bool {
+    return allowsConstantLoopConditionsMode(ctx) != .off;
 }
 
 fn isConstantLoopGuard(expr: NodeIndex, ctx: *const LintContext) bool {
     var n = expr;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     const t = ctx.nodeTag(n);
+    const mode = allowsConstantLoopConditionsMode(ctx);
+    if (mode == .only_allowed) {
+        // TS-eslint's allow-list for `only-allowed-literals`:
+        // `true`, `false`, `0`, `1`, `-1`, `''`, `NaN`, `Infinity`,
+        // `null`, `undefined`.
+        if (t == .boolean_literal or t == .null_literal) return true;
+        if (t == .number_literal) {
+            const tok = ctx.nodeMainToken(n);
+            const text = ctx.tokenText(tok);
+            return std.mem.eql(u8, text, "0") or
+                std.mem.eql(u8, text, "1");
+        }
+        if (t == .string_literal) {
+            const tok = ctx.nodeMainToken(n);
+            const text = ctx.tokenText(tok);
+            return std.mem.eql(u8, text, "''") or std.mem.eql(u8, text, "\"\"");
+        }
+        if (t == .unary_minus) {
+            const inner = ctx.nodeData(n).lhs;
+            if (ctx.nodeTag(inner) == .number_literal) {
+                const tok = ctx.nodeMainToken(inner);
+                const text = ctx.tokenText(tok);
+                return std.mem.eql(u8, text, "1");
+            }
+            return false;
+        }
+        if (t == .identifier) {
+            const tok = ctx.nodeMainToken(n);
+            const text = ctx.tokenText(tok);
+            return std.mem.eql(u8, text, "NaN") or
+                std.mem.eql(u8, text, "Infinity") or
+                std.mem.eql(u8, text, "undefined");
+        }
+        return false;
+    }
     if (t != .boolean_literal and t != .number_literal and t != .null_literal) return false;
     return true;
 }
