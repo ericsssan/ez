@@ -118,7 +118,10 @@ fn exprIsStringArray(node: NodeIndex, ctx: *const LintContext) bool {
             const etag = ctx.nodeTag(el);
             if (etag == .string_literal or etag == .template_literal) continue;
             const el_ty = ctx.typeOfNode(el);
-            if (el_ty.eq(@import("../../../checker/types.zig").ID_STRING)) continue;
+            const tymod = @import("../../../checker/types.zig");
+            if (el_ty.eq(tymod.ID_STRING)) continue;
+            const ek = ctx.typeIdKind(el_ty) orelse tymod.TypeKind.unknown;
+            if (ek == .string or ek == .string_literal) continue;
             if (callReturnsString(el, ctx)) continue;
             return false;
         }
