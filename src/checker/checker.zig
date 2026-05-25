@@ -3505,6 +3505,23 @@ pub const Checker = struct {
         return self.store.arrayOf(elem_t) catch tymod.ID_ANY;
     }
 
+    fn methodFirstParamIsThisVoid(self: *Checker, params_start: u32, params_end: u32) bool {
+        if (params_end <= params_start) return false;
+        if (params_end > self.ast_ref.extra_data.len) return false;
+        const first_raw = self.ast_ref.extra_data[params_start];
+        const first: NodeIndex = @enumFromInt(first_raw);
+        if (self.ast_ref.nodeTag(first) != .identifier) return false;
+        const tok = self.ast_ref.nodeMainToken(first);
+        if (!std.mem.eql(u8, self.ast_ref.tokenText(tok), "this")) return false;
+        const ann = self.ast_ref.nodeData(first).rhs;
+        if (ann == .none) return false;
+        if (self.ast_ref.nodeTag(ann) != .ts_type_annotation) return false;
+        const ty_node = self.ast_ref.nodeData(ann).lhs;
+        if (self.ast_ref.nodeTag(ty_node) != .ts_type_reference) return false;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ty_node));
+        return std.mem.eql(u8, name, "void");
+    }
+
     fn fnFirstParamIsThisVoid(self: *Checker, fn_node: NodeIndex) bool {
         const data = self.ast_ref.nodeData(fn_node);
         if (data.lhs == .none) return false;
@@ -3581,10 +3598,13 @@ pub const Checker = struct {
                         .none,
                         is_async,
                     );
+                    // `m(this: void, …)` is explicitly not a this-bound
+                    // method — unbound-method should ignore it.
+                    const this_void = self.methodFirstParamIsThisVoid(md.params_start, md.params_end);
                     buf[n] = .{
                         .name = key_name,
                         .type_id = fn_ty,
-                        .is_method = true,
+                        .is_method = !this_void,
                         .is_fn_property = false,
                     };
                     n += 1;
