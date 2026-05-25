@@ -7006,6 +7006,24 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
             const t = p.peekAt(i);
             if (t == .eof) break;
             if (t == .r_paren and depth == 0) break;
+            // At param start: `({...}: T)` or `([...]: T)` — destructure
+            // pattern followed by type annotation.  Detect by checking
+            // for matching close bracket then `:` at depth 0.
+            if (at_param_start and depth == 0 and (t == .l_brace or t == .l_bracket)) {
+                const close: @import("token.zig").Tag = if (t == .l_brace) .r_brace else .r_bracket;
+                var j: u32 = i + 1;
+                var sub_depth: i32 = 1;
+                while (j < max_scan and sub_depth > 0) : (j += 1) {
+                    const tt = p.peekAt(j);
+                    if (tt == .eof) break;
+                    if (tt == .l_brace or tt == .l_bracket or tt == .l_paren) sub_depth += 1
+                    else if (tt == .r_brace or tt == .r_bracket or tt == .r_paren) sub_depth -= 1;
+                    if (sub_depth == 0 and tt == close) {
+                        if (p.peekAt(j + 1) == .colon) return true;
+                        break;
+                    }
+                }
+            }
             // Track bracket depth
             if (t == .l_paren or t == .l_bracket or t == .l_brace) {
                 depth += 1;
