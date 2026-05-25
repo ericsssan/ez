@@ -461,6 +461,10 @@ fn checkNullishCoalesce(lhs: NodeIndex, ctx: *const LintContext) void {
     if (isDirectArrayIndexedAccess(n, ctx)) return;
     if (isOptionalChain(n, ctx) and containsArrayIndexedAccess(n, ctx)) return;
     const ty = ctx.narrowedTypeOf(n);
+    if (isNeverType(ty, ctx)) {
+        ctx.reportWithMessageId(n, "never");
+        return;
+    }
     const nul = nullability(ty, ctx);
     switch (nul) {
         .never_nullish => ctx.reportWithMessageId(n, "neverNullish"),
