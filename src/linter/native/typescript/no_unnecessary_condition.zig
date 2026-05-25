@@ -497,6 +497,11 @@ fn isDirectArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
     const recv_ty = ctx.narrowedTypeOf(d.lhs);
     const kind = ctx.typeIdKind(recv_ty) orelse return false;
     if (kind != .array_t and kind != .readonly_array_t and kind != .tuple_t) return false;
+    // Tuple access with a numeric literal index is well-defined even
+    // under noUncheckedIndexedAccess — TS knows the exact element type.
+    if (kind == .tuple_t) {
+        if (ctx.nodeTag(d.rhs) == .number_literal) return false;
+    }
     // Don't bail when the element type is itself nullish — even with
     // noUncheckedIndexedAccess, the conclusion (always-nullish) holds.
     if (ctx.typeIdArrayElement(recv_ty)) |elem| {
@@ -576,9 +581,14 @@ fn containsArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
         if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
             const d = ctx.nodeData(n);
             const recv_ty = ctx.narrowedTypeOf(d.lhs);
-            if (ctx.typeIsArrayLikeOrUnresolved(recv_ty)) {
-                const kind = ctx.typeIdKind(recv_ty) orelse return false;
-                if (kind == .array_t or kind == .readonly_array_t or kind == .tuple_t) return true;
+            const kind = ctx.typeIdKind(recv_ty) orelse {
+                n = d.lhs;
+                continue;
+            };
+            if (kind == .array_t or kind == .readonly_array_t) return true;
+            // Tuple access with numeric-literal index is well-defined.
+            if (kind == .tuple_t) {
+                if (ctx.nodeTag(d.rhs) != .number_literal) return true;
             }
             n = d.lhs;
             continue;
