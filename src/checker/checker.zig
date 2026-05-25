@@ -3566,8 +3566,31 @@ pub const Checker = struct {
                     buf[n] = .{ .name = key_name, .type_id = val_ty };
                     n += 1;
                 },
-                // Bail on spread / computed / methods / accessors —
-                // structural type would not be sound.
+                .method_def => {
+                    // Object literal method shorthand `a() {}` — same
+                    // shape as class methods: lhs = key, rhs = MethodData.
+                    const pd = self.ast_ref.nodeData(p);
+                    if (pd.lhs == .none or pd.rhs == .none) continue;
+                    const key_name = self.staticPropertyKey(pd.lhs) orelse continue;
+                    const md = self.ast_ref.extraData(ast.MethodData, @intFromEnum(pd.rhs));
+                    const is_async = (md.modifiers & ast.ModifierBit.@"async") != 0;
+                    const fn_ty = self.buildFunctionType(
+                        md.params_start,
+                        md.params_end,
+                        md.return_type,
+                        .none,
+                        is_async,
+                    );
+                    buf[n] = .{
+                        .name = key_name,
+                        .type_id = fn_ty,
+                        .is_method = true,
+                        .is_fn_property = false,
+                    };
+                    n += 1;
+                },
+                // Bail on spread / computed / accessors — structural
+                // type would not be sound.
                 else => return tymod.ID_UNKNOWN,
             }
         }
