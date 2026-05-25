@@ -3505,6 +3505,26 @@ pub const Checker = struct {
         return self.store.arrayOf(elem_t) catch tymod.ID_ANY;
     }
 
+    fn fnFirstParamIsThisVoid(self: *Checker, fn_node: NodeIndex) bool {
+        const data = self.ast_ref.nodeData(fn_node);
+        if (data.lhs == .none) return false;
+        const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(data.lhs));
+        if (fd.params_end <= fd.params) return false;
+        if (fd.params_end > self.ast_ref.extra_data.len) return false;
+        const first_raw = self.ast_ref.extra_data[fd.params];
+        const first: NodeIndex = @enumFromInt(first_raw);
+        if (self.ast_ref.nodeTag(first) != .identifier) return false;
+        const tok = self.ast_ref.nodeMainToken(first);
+        if (!std.mem.eql(u8, self.ast_ref.tokenText(tok), "this")) return false;
+        const ann = self.ast_ref.nodeData(first).rhs;
+        if (ann == .none) return false;
+        if (self.ast_ref.nodeTag(ann) != .ts_type_annotation) return false;
+        const ty_node = self.ast_ref.nodeData(ann).lhs;
+        if (self.ast_ref.nodeTag(ty_node) != .ts_type_reference) return false;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ty_node));
+        return std.mem.eql(u8, name, "void");
+    }
+
     fn inferObjectLiteral(self: *Checker, node: NodeIndex) TypeId {
         // Walk the property list and build an object_t.  Spread/computed/
         // accessor properties bail out structurally — they widen the
@@ -3522,7 +3542,21 @@ pub const Checker = struct {
                     const pd = self.ast_ref.nodeData(p);
                     const key_name = self.staticPropertyKey(pd.lhs) orelse return tymod.ID_UNKNOWN;
                     const val_ty = self.typeOf(pd.rhs);
-                    buf[n] = .{ .name = key_name, .type_id = val_ty };
+                    const vt = self.ast_ref.nodeTag(pd.rhs);
+                    const is_plain_fn = vt == .fn_expr or vt == .async_fn_expr or
+                        vt == .generator_fn_expr or vt == .async_generator_fn_expr;
+                    const this_void = is_plain_fn and self.fnFirstParamIsThisVoid(pd.rhs);
+                    const is_fn = is_plain_fn and !this_void;
+                    // Object-literal `prop: function() {}` is a
+                    // PropertyAssignment in TS — `unbound-method` reports
+                    // it with messageId "unboundWithoutThisAnnotation",
+                    // NOT "unbound" (which is reserved for class fields).
+                    buf[n] = .{
+                        .name = key_name,
+                        .type_id = val_ty,
+                        .is_method = is_fn,
+                        .is_fn_property = false,
+                    };
                     n += 1;
                 },
                 .shorthand_property => {
