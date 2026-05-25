@@ -189,7 +189,7 @@ const no_new_object = @import("style/no_new_object.zig");
 const no_useless_rename = @import("correctness/no_useless_rename.zig");
 // v0.6 style rules
 const prefer_rest_params = @import("correctness/prefer_rest_params.zig");  // IR-generated via arguments-ref-is-restable-violation
-// const prefer_spread = @import("style/prefer_spread.zig");  // hand-written — disabled per IR-only constraint
+const prefer_spread = @import("style/prefer_spread.zig");
 // const no_useless_call = @import("style/no_useless_call.zig");  // hand-written — disabled per IR-only constraint
 // const max_params = @import("style/max_params.zig");  // hand-written — disabled per IR-only constraint
 // const prefer_arrow_callback = @import("style/prefer_arrow_callback.zig");  // hand-written — disabled per IR-only constraint
@@ -561,7 +561,7 @@ pub const all_rules = .{
     no_useless_rename,
     // Style v0.6 (13)
     prefer_rest_params,
-    // prefer_spread, // hand-written — disabled
+    prefer_spread,
     // no_useless_call, // runner >> native (runner 44, native 21, gap 23, 2 FP); fall back to JS runner
     // max_params, // runner >> native (runner 52, native 25, gap 28); fall back to JS runner
     // prefer_arrow_callback, // runner >> native (runner 105, native 63, gap 42, 14 FP); fall back to JS runner
