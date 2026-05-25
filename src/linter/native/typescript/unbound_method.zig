@@ -402,26 +402,28 @@ fn classHasStaticMethod(decl: NodeIndex, prop: []const u8, ctx: *const LintConte
 /// `static` by scanning a few tokens preceding the property key.
 fn propertyDefIsStatic(node: NodeIndex, ctx: *const LintContext) bool {
     const main = ctx.nodeMainToken(node);
-    var i: u32 = main;
+    if (main == 0) return false;
+    var i: u32 = main - 1;
     var steps: u32 = 0;
-    while (i > 0 and steps < 6) : ({ i -= 1; steps += 1; }) {
+    while (steps < 6) : (steps += 1) {
         const tag = ctx.tokenTag(i);
         if (tag == .kw_static) return true;
         switch (tag) {
             .kw_declare, .kw_abstract, .kw_override, .kw_readonly,
-            => continue,
+            => {},
             .identifier => {
                 const text = ctx.tokenText(i);
-                if (std.mem.eql(u8, text, "public") or
+                if (!(std.mem.eql(u8, text, "public") or
                     std.mem.eql(u8, text, "private") or
-                    std.mem.eql(u8, text, "protected"))
+                    std.mem.eql(u8, text, "protected")))
                 {
-                    continue;
+                    return false;
                 }
-                return false;
             },
             else => return false,
         }
+        if (i == 0) return false;
+        i -= 1;
     }
     return false;
 }
