@@ -66,6 +66,7 @@ const no_empty_static_block = @import("correctness/no_empty_static_block.zig");
 // const no_constant_binary_expression = @import("correctness/no_constant_binary_expression.zig");  // hand-written — disabled per IR-only constraint
 const no_div_regex = @import("style/no_div_regex.zig");
 const no_tabs = @import("style/no_tabs.zig");
+const linebreak_style = @import("style/linebreak_style.zig");
 const no_this_assignment = @import("style/no_this_assignment.zig");
 const no_negation_in_equality_check = @import("style/no_negation_in_equality_check.zig");
 // const array_callback_return = @import("correctness/array_callback_return.zig");  // hand-written — disabled per IR-only constraint
@@ -410,6 +411,7 @@ pub const all_rules = .{
     no_process_exit,
     no_div_regex,
     no_tabs,
+    linebreak_style,
     no_this_assignment,
     no_negation_in_equality_check,
     no_self_compare,
