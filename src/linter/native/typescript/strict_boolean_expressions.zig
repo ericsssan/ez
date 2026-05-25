@@ -650,7 +650,7 @@ fn walkType(id: TypeId, fam: *Family, ctx: *const LintContext, depth: u32) void 
         },
         .null_t => fam.has_null = true,
         .undefined_t, .void_t => fam.has_undef = true,
-        .object_t, .object_keyword, .array_t, .readonly_array_t, .tuple_t, .function_t => fam.has_object = true,
+        .object_t, .object_keyword, .array_t, .readonly_array_t, .tuple_t, .function_t, .symbol => fam.has_object = true,
         .never => fam.has_never = true,
         .error_t => fam.has_any = true,
         .type_ref => {
