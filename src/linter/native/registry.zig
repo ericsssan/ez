@@ -32,6 +32,7 @@ const for_direction = @import("correctness/for_direction.zig");  // IR-generated
 // const getter_return = @import("correctness/getter_return.zig");  // hand-written — disabled per IR-only constraint
 const no_async_promise_executor = @import("correctness/no_async_promise_executor.zig");
 const no_compare_neg_zero = @import("correctness/no_compare_neg_zero.zig");
+const no_constant_binary_expression = @import("correctness/no_constant_binary_expression.zig");
 const no_dupe_class_members = @import("correctness/no_dupe_class_members.zig");  // IR-generated via no-dupe-class-members-check handler
 // const no_dupe_else_if = @import("correctness/no_dupe_else_if.zig");  // hand-written — disabled per IR-only constraint
 const no_duplicate_case = @import("correctness/no_duplicate_case.zig");
@@ -419,6 +420,7 @@ pub const all_rules = .{
     // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
     // no_async_promise_executor, // hand-written — disabled
     no_compare_neg_zero,
+    no_constant_binary_expression,
     no_dupe_class_members,
     // no_dupe_else_if, // hand-written, 59 FP vs ESLint; fall back to JS runner
     // no_duplicate_case, // hand-written — disabled
