@@ -596,7 +596,11 @@ fn containsArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
             n = d.lhs;
             continue;
         }
-        if (tag == .member_expr or tag == .optional_member_expr) {
+        // Regular `.prop` resolves the property's declared type — the
+        // chain past this point is type-safe regardless of any earlier
+        // array index, so stop the walk.
+        if (tag == .member_expr) return false;
+        if (tag == .optional_member_expr) {
             n = ctx.nodeData(n).lhs;
             continue;
         }
