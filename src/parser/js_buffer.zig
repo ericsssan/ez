@@ -1760,6 +1760,16 @@ pub fn buildNodeSpans(
                     node_starts[i] = tok_starts[mt - 1];
                 }
             },
+            // `declare module/namespace Foo {}` — the `declare` keyword is
+            // consumed by parseStatement before calling parseNamespace/Module,
+            // so min_tok points to `module`/`namespace`.  ESTree rules expect
+            // the node range to start at `declare`.
+            .ts_module_decl, .ts_namespace_decl => {
+                const mt = min_tok[i];
+                if (mt > 0 and tok_tags[mt - 1] == .kw_declare) {
+                    node_starts[i] = tok_starts[mt - 1];
+                }
+            },
             // TS type annotation `: Type` — ESTree wraps the annotation in a
             // TSTypeAnnotation node whose range starts at `:` (the main_token).
             // min_tok only sees children (the type), so widen left to include `:`.

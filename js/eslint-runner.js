@@ -3395,6 +3395,11 @@ class SourceCode {
     if (parent && parent.type === 'MemberExpression' && !parent.computed && parent.property === node) {
       return false;
     }
+    // Not a variable reference: TSIndexSignature parameter name.
+    // e.g. `{ [module: string]: string }` — `module` is the index parameter, not a global.
+    if (parent && parent.type === 'TSIndexSignature' && Array.isArray(parent.parameters) && parent.parameters[0] === node) {
+      return false;
+    }
     const name = node.name;
     let s = this.getScope(node);
     while (s) {

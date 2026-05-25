@@ -52,7 +52,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         or lt == .computed_member_expr or lt == .optional_computed_member_expr;
     const rm = rt == .member_expr or rt == .optional_member_expr
         or rt == .computed_member_expr or rt == .optional_computed_member_expr;
-    if (lm and rm and ctx.nodeTokensEqual(left, right)) {
+    if (lm and rm and ctx.nodeSameReference(left, right)) {
         if (!ctx.isSimpleMemberChain(left) or !ctx.isSimpleMemberChain(right)) return;
         ctx.reportWithMessageIdAndData(right, "selfAssignment", &[_]@import("../../lint_context.zig").MessageDataEntry{
             .{ .key = "name", .val = ctx.sourceText(right) },

@@ -106,6 +106,6 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         }
         // Method-chain invocation check: <idNode>.<method>(...) — report outer call.
         const __mc_call = methodChainCall(ctx, __ref_identifier__, callMethods[0..]);
-        if (__mc_call != .none) ctx.report(__mc_call);
+        if (__mc_call != .none) ctx.reportWithMessageId(__mc_call, "noFunctionConstructor");
     }
 }

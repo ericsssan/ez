@@ -2768,7 +2768,8 @@ pub const LintContext = struct {
                     if (prop == .none) return false;
                     const ptag = self.ast.nodeTag(prop);
                     const prop_is_simple = ptag == .identifier
-                        or ptag == .number_literal or ptag == .string_literal;
+                        or ptag == .number_literal or ptag == .string_literal
+                        or ptag == .regex_literal or ptag == .bigint_literal;
                     if (!prop_is_simple) return false;
                     cur = self.ast.nodeData(cur).lhs;
                 },
@@ -2838,6 +2839,17 @@ pub const LintContext = struct {
     /// isn't a valid type string.  Returns .none when the shape doesn't
     /// match or the value is valid.
     /// True when valid-typeof's `requireStringLiterals` option is enabled.
+    /// Returns the correct messageId for a valid-typeof invalid sibling.
+    /// ESLint's logic: string literals and static template literals with a
+    /// wrong type name → "invalidValue"; non-string / dynamic template →
+    /// "notString" (only reachable when requireStringLiterals is set).
+    pub fn validTypeofSiblingMessageId(self: *const LintContext, sibling: NodeIndex) []const u8 {
+        const tag = self.ast.nodeTag(sibling);
+        if (tag == .string_literal) return "invalidValue";
+        if (tag == .template_literal and self.nodeStaticStringValue(sibling) != null) return "invalidValue";
+        return "notString";
+    }
+
     pub fn validTypeofRequireStringLiterals(self: *const LintContext) bool {
         const all = self.rule_options_all orelse return false;
         for (all) |item| {
@@ -4279,6 +4291,94 @@ pub const LintContext = struct {
             if (!std.mem.eql(u8, self.tokenText(at), self.tokenText(bt))) return false;
         }
         return true;
+    }
+
+    /// Returns the "static property key" of a node as a string — mirrors
+    /// ESLint's `astUtils.getStaticStringValue` used in `getStaticPropertyName`.
+    /// Returns null when the value isn't statically known.
+    ///
+    /// - string_literal: raw chars between quotes (≈ JS string value for unescaped)
+    /// - regex_literal: full source text (e.g. `/foo/gi`)
+    /// - number_literal / bigint_literal: source text
+    /// - null_literal: "null"
+    /// - template_literal (no expressions): raw between backticks
+    pub fn nodeStaticKeyValue(self: *const LintContext, n: NodeIndex) ?[]const u8 {
+        if (n == .none) return null;
+        const tag = self.ast.nodeTag(n);
+        const main = self.ast.nodeMainToken(n);
+        switch (tag) {
+            .string_literal => {
+                const raw = self.ast.tokenText(main);
+                if (raw.len < 2) return null;
+                return raw[1 .. raw.len - 1]; // strip quotes (raw, not decoded)
+            },
+            .regex_literal => return self.ast.tokenText(main), // full /pattern/flags
+            .number_literal, .bigint_literal => return self.ast.tokenText(main),
+            .null_literal => return "null",
+            .template_literal => {
+                const raw = self.ast.tokenText(main);
+                if (raw.len < 2 or raw[0] != '`' or raw[raw.len - 1] != '`') return null;
+                return raw[1 .. raw.len - 1];
+            },
+            else => return null,
+        }
+    }
+
+    /// Mirrors ESLint's `isSameReference` for member expressions with
+    /// static-key normalization: `a["b"] === a.b`, `a['/x/'] === a[/x/]`, etc.
+    /// Falls back to `nodeTokensEqual` for non-member or dynamic-key forms.
+    pub fn nodeSameReference(self: *const LintContext, a: NodeIndex, b: NodeIndex) bool {
+        if (a == .none or b == .none) return a == b;
+        const at = self.nodeTag(a);
+        const bt = self.nodeTag(b);
+        // Unwrap chain expressions (a?.b vs a.b)
+        const at_mem = at == .member_expr or at == .optional_member_expr
+            or at == .computed_member_expr or at == .optional_computed_member_expr;
+        const bt_mem = bt == .member_expr or bt == .optional_member_expr
+            or bt == .computed_member_expr or bt == .optional_computed_member_expr;
+        if (!(at_mem and bt_mem)) {
+            // Non-member: compare identifiers directly, or fall back to token equality.
+            if (at == .identifier and bt == .identifier) {
+                return std.mem.eql(u8, self.tokenText(self.nodeMainToken(a)),
+                                       self.tokenText(self.nodeMainToken(b)));
+            }
+            return self.nodeTokensEqual(a, b);
+        }
+        const ad = self.ast.nodeData(a);
+        const bd = self.ast.nodeData(b);
+        // Compare objects recursively.
+        if (!self.nodeSameReference(ad.lhs, bd.lhs)) return false;
+        // Get static property names of both sides.
+        const a_computed = at == .computed_member_expr or at == .optional_computed_member_expr;
+        const b_computed = bt == .computed_member_expr or bt == .optional_computed_member_expr;
+        if (a_computed != b_computed) {
+            // One non-computed (.b) vs computed (["b"]) — compare by key string.
+            const a_key: ?[]const u8 = if (a_computed)
+                self.nodeStaticKeyValue(ad.rhs)
+            else
+                self.tokenText(self.ast.nodeMainToken(ad.rhs)); // identifier name
+            const b_key: ?[]const u8 = if (b_computed)
+                self.nodeStaticKeyValue(bd.rhs)
+            else
+                self.tokenText(self.ast.nodeMainToken(bd.rhs));
+            const ak = a_key orelse return false;
+            const bk = b_key orelse return false;
+            return std.mem.eql(u8, ak, bk);
+        }
+        if (!a_computed) {
+            // Both non-computed: compare property identifier names.
+            const ak = self.tokenText(self.ast.nodeMainToken(ad.rhs));
+            const bk = self.tokenText(self.ast.nodeMainToken(bd.rhs));
+            return std.mem.eql(u8, ak, bk);
+        }
+        // Both computed: try static key comparison first.
+        const a_key = self.nodeStaticKeyValue(ad.rhs);
+        const b_key = self.nodeStaticKeyValue(bd.rhs);
+        if (a_key != null and b_key != null) {
+            return std.mem.eql(u8, a_key.?, b_key.?);
+        }
+        // Both dynamic: fall back to token equality on the property sub-tree.
+        return self.nodeTokensEqual(ad.rhs, bd.rhs);
     }
 
     /// True when `node`'s raw source text contains a line terminator
@@ -9614,6 +9714,15 @@ pub const LintContext = struct {
         const raw_body = raw[1 .. raw.len - 1];
         const decoded_pattern = (decodeJsStringLiteralMapped(arena, raw_body) catch return).bytes;
         if (regexPatternHasSyntaxError(decoded_pattern, flags_known, flags_body)) {
+            self.reportRegExpMessage(node, "Invalid regular expression");
+            return;
+        }
+        // Duplicate named groups in the same alternative path are a syntax
+        // error (ES2025 allows duplicates only in sibling alternation branches).
+        const dup_pat = regex_parser.parse(arena, decoded_pattern, .{
+            .flags = regex_parser.Flags.fromString(flags_body),
+        }) catch return;
+        if (regex_parser.hasDuplicateGroupNamesInSameAlternative(arena, &dup_pat) catch false) {
             self.reportRegExpMessage(node, "Invalid regular expression");
             return;
         }

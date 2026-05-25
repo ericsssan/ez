@@ -1136,6 +1136,7 @@ const _OVERRIDE_TYPES = [
   'TSUnknownKeyword',            // 18
   'TSVoidKeyword',               // 19
   'TSQualifiedName',             // 20 — member_expr in type position
+  'NewExpression',               // 21 — call_expr(ts_instantiation_expr(new_expr)) = new Foo<T>()
 ];
 
 // Compute the ESTree-shape `type` string for a node at construction time.
@@ -1281,6 +1282,21 @@ const NodeProto = {
     const ast = this._ast;
     const parentIdx = ast._resolvedParentData[this._i];
     if (parentIdx === NONE) { this._parent = null; return null; }
+
+    // Lazy fixup: nodes that are children of SYNTHETIC wrappers need their
+    // _parent set to the synthetic node rather than the real parent.
+    // (a) Type param inside TSTypeReference / TSInstantiationExpression:
+    //     accessing `typeArguments` sets _parent = TSTypeParameterInstantiation.
+    // (b) Return-type node inside TSFunctionType / TSConstructorType:
+    //     accessing `returnType` sets _parent = TSTypeAnnotation.
+    const parentTag = ast._nodeTags[parentIdx];
+    if (parentTag === T.ts_type_reference || parentTag === T.ts_instantiation_expr) {
+      _nodeViewRaw(ast, parentIdx).typeArguments; // side-effect: sets _parent on all type params
+      if (this._parent !== _PARENT_UNSET) return this._parent;
+    } else if (parentTag === T.ts_function_type || parentTag === T.ts_constructor_type) {
+      _nodeViewRaw(ast, parentIdx).returnType; // side-effect: sets _parent on the return type node
+      if (this._parent !== _PARENT_UNSET) return this._parent;
+    }
 
     // Pre-baked synthesis kind from Zig (see parent_builder.ParentKind).
     // Common case: kind === 0 → return resolved-parent NodeView directly.
@@ -1624,12 +1640,10 @@ const NodeProto = {
         // For TS overload/abstract methods: body is NONE.
         // Use type 'TSEmptyBodyFunctionExpression' (not 'FunctionExpression') so that
         // @typescript-eslint/no-useless-constructor skips it (its check is type === 'FunctionExpression').
-        // Use a body with body: [] so unicorn/prefer-class-fields won't crash on body.body access.
+        // Use body: null (matching @typescript-eslint/parser behavior) so that
+        // hasOverloadSignatures's `member.value.body == null` check works correctly.
         const isBodyless = md.body === NONE;
-        const body = isBodyless
-          ? { type: 'BlockStatement', body: [], start: myRange[1], end: myRange[1],
-              range: [myRange[1], myRange[1]], loc: { start: myLoc.end, end: myLoc.end } }
-          : nodeView(ast, md.body);
+        const body = isBodyless ? null : nodeView(ast, md.body);
         // Synthetic TSParameterProperty wrapping is no longer needed — the parser
         // now emits real ts_parameter_property AST nodes for modifier params.
         const synth = {
@@ -2019,7 +2033,17 @@ const NodeProto = {
       // call/new directly. Unwrap here for ESLint-rule compatibility.
       if (this._ast._nodeTags[idx] === T.ts_instantiation_expr) {
         const inner = this._ast.nodeLhs(idx);
-        if (inner !== NONE) idx = inner;
+        if (inner !== NONE) {
+          // `new Foo<T>()` pattern: call_expr(ts_instantiation_expr(new_expr(callee,NONE))).
+          // The new_expr has no args (NONE rhs) — args belong to the outer call_expr.
+          // Unwrap both wrappers to expose Foo (the identifier) as callee.
+          if (this._ast._nodeTags[inner] === T.new_expr && this._ast.nodeRhs(inner) === NONE) {
+            const newCallee = this._ast.nodeLhs(inner);
+            if (newCallee !== NONE) idx = newCallee;
+          } else {
+            idx = inner;
+          }
+        }
       }
       // Use nodeViewChain so optional chain callees are wrapped in ChainExpression.
       // ESLint rules (no-unsafe-optional-chaining, no-prototype-builtins, etc.) use
@@ -2655,7 +2679,20 @@ const NodeProto = {
       while (tEnd < src.length && src.charCodeAt(tEnd) !== 0x3E /* > */) tEnd++;
       if (tEnd < src.length) tEnd++; // include the `>`
     }
-    const synth = _syntheticNode('TSTypeParameterInstantiation', tStart, tEnd, { params, parent: this }, this._ast);
+    // For TSInstantiationExpression used as a call callee (f<T>(args)), the
+    // TSTypeParameterInstantiation's ESTree parent should be the CallExpression,
+    // matching what @typescript-eslint/parser produces.
+    let synthParent = this;
+    if (tag === T.ts_instantiation_expr && this._ast._parentData) {
+      const callerIdx = this._ast._parentData[this._i];
+      if (callerIdx !== undefined && callerIdx !== NONE) {
+        const callerTag = this._ast._nodeTags[callerIdx];
+        if (callerTag === T.call_expr || callerTag === T.optional_call_expr || callerTag === T.new_expr) {
+          synthParent = nodeView(this._ast, callerIdx);
+        }
+      }
+    }
+    const synth = _syntheticNode('TSTypeParameterInstantiation', tStart, tEnd, { params, parent: synthParent }, this._ast);
     // Set each param's parent to the TSTypeParameterInstantiation
     for (const p of params) p._parent = synth;
     _synthBundle.ta = synth;
@@ -3148,12 +3185,17 @@ const NodeProto = {
     // TSFunctionType / TSConstructorType: body field stores raw return type; wrap in synthetic TSTypeAnnotation.
     if (t === T.ts_function_type || t === T.ts_constructor_type) {
       if (lhs === NONE) return undefined;
+      const _synthBundle = _getSynth(this);
+      if (_synthBundle.rt !== undefined) return _synthBundle.rt;
       const d = ast.extraFnData(lhs);
-      if (d.body === NONE) return undefined;
+      if (d.body === NONE) { _synthBundle.rt = null; return undefined; }
       const innerNode = nodeView(ast, d.body);
-      if (!innerNode) return undefined;
-      return _syntheticNode('TSTypeAnnotation', innerNode.start, innerNode.end,
-        { typeAnnotation: innerNode }, ast);
+      if (!innerNode) { _synthBundle.rt = null; return undefined; }
+      const synth = _syntheticNode('TSTypeAnnotation', innerNode.start, innerNode.end,
+        { typeAnnotation: innerNode, parent: this }, ast);
+      innerNode._parent = synth;  // fix parent chain: return-type node → TSTypeAnnotation
+      _synthBundle.rt = synth;
+      return synth;
     }
     return undefined;
   },

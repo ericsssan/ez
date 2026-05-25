@@ -1984,51 +1984,90 @@ pub fn tokenizeWithBufAndBitmaps(
                 '/' => {
                     if (next1 == '/') {
                         const ce = lineCommentEndBM(bm.newline, p + 2, src, bm.has_high);
-                        try cm_s.append(alloc, p);
-                        try cm_e.append(alloc, ce);
-                        try cm_k.append(alloc, 0);
-                        saw_nl = true;
-                        skip_until = ce;
-                        if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
-                        continue;
+                        // In JSX mode: if the line comment body contains `</` (closing tag
+                        // pattern), this `//` is inside JSX text content, not JS code.
+                        // Skip both slash chars without treating them as a comment so the
+                        // parser still sees the closing `</tag>` on the same line.
+                        if (language.isJsx()) {
+                            var k: u32 = p + 2;
+                            var jsx_text_comment = false;
+                            while (k + 1 < ce) : (k += 1) {
+                                if (src[k] == '<' and src[k + 1] == '/') { jsx_text_comment = true; break; }
+                            }
+                            if (jsx_text_comment) {
+                                // Clear the bit for the second `/` so the visit loop skips it.
+                                const p1 = p + 1;
+                                if (p1 < word_off + 64) {
+                                    visit &= ~(@as(u64, 1) << @as(u6, @intCast(p1 - word_off)));
+                                } else {
+                                    skip_until = p + 2;
+                                }
+                                continue; // skip first `/` without emitting; rest of line is visible
+                            } else {
+                                try cm_s.append(alloc, p);
+                                try cm_e.append(alloc, ce);
+                                try cm_k.append(alloc, 0);
+                                saw_nl = true;
+                                skip_until = ce;
+                                if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
+                                continue;
+                            }
+                        } else {
+                            try cm_s.append(alloc, p);
+                            try cm_e.append(alloc, ce);
+                            try cm_k.append(alloc, 0);
+                            saw_nl = true;
+                            skip_until = ce;
+                            if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
+                            continue;
+                        }
                     }
                     if (next1 == '*') {
                         const res = blockCommentEndBM(src, bm.structural, bm.newline, p, n, bm.has_high);
                         if (res.has_nl) { saw_nl = true; }
-                        // Unterminated block comment: emit .invalid, stop tokenizing.
+                        // Unterminated block comment: in JSX mode, `/*` inside JSX text content
+                        // is literal text (not a comment). Emit `/` as a slash token and let
+                        // the `*` be handled separately, so `<span>/*</span>` parses correctly.
                         if (res.end >= n and !(n >= 2 and src[n-2] == '*' and src[n-1] == '/')) {
-                            tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = res.end - p; nl_ptr[tok_n] = saw_nl;
-                            tok_n += 1;
-                            skip_until = n;
-                            wi = bm.ident.len; // terminate outer word loop
-                            break; // break inner visit loop
-                        }
-                        try cm_s.append(alloc, p);
-                        try cm_e.append(alloc, res.end);
-                        try cm_k.append(alloc, 1);
-                        // Newlines inside block comments must still register in `ls`
-                        // — `skip_until` would otherwise hide them from the bitmap walk,
-                        // leaving line numbers under-counted (loc.start.line wrong).
-                        if (res.has_nl) {
-                            var q: u32 = p + 2;
-                            while (q < res.end) : (q += 1) {
-                                const c = src[q];
-                                if (c == '\n') { try ls.append(alloc, q + 1); at_line_start = true; }
-                                else if (c == '\r') {
-                                    const next_q = if (q + 1 < res.end and src[q + 1] == '\n') q + 2 else q + 1;
-                                    try ls.append(alloc, next_q);
-                                    at_line_start = true;
-                                    q = next_q - 1; // -1 since loop increments
-                                } else if (c == 0xE2 and q + 2 < res.end and src[q + 1] == 0x80 and (src[q + 2] == 0xA8 or src[q + 2] == 0xA9)) {
-                                    try ls.append(alloc, q + 3);
-                                    at_line_start = true;
-                                    q += 2;
+                            if (language.isJsx()) {
+                                // Treat as a literal `/` — JSX text content is not JS expression context.
+                                tag = .slash; end = p + 1;
+                                // (fall through to emit as .slash below)
+                            } else {
+                                tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = res.end - p; nl_ptr[tok_n] = saw_nl;
+                                tok_n += 1;
+                                skip_until = n;
+                                wi = bm.ident.len; // terminate outer word loop
+                                break; // break inner visit loop
+                            }
+                        } else {
+                            try cm_s.append(alloc, p);
+                            try cm_e.append(alloc, res.end);
+                            try cm_k.append(alloc, 1);
+                            // Newlines inside block comments must still register in `ls`
+                            // — `skip_until` would otherwise hide them from the bitmap walk,
+                            // leaving line numbers under-counted (loc.start.line wrong).
+                            if (res.has_nl) {
+                                var q: u32 = p + 2;
+                                while (q < res.end) : (q += 1) {
+                                    const c = src[q];
+                                    if (c == '\n') { try ls.append(alloc, q + 1); at_line_start = true; }
+                                    else if (c == '\r') {
+                                        const next_q = if (q + 1 < res.end and src[q + 1] == '\n') q + 2 else q + 1;
+                                        try ls.append(alloc, next_q);
+                                        at_line_start = true;
+                                        q = next_q - 1; // -1 since loop increments
+                                    } else if (c == 0xE2 and q + 2 < res.end and src[q + 1] == 0x80 and (src[q + 2] == 0xA8 or src[q + 2] == 0xA9)) {
+                                        try ls.append(alloc, q + 3);
+                                        at_line_start = true;
+                                        q += 2;
+                                    }
                                 }
                             }
+                            skip_until = res.end;
+                            if (res.end < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(res.end - word_off)); } else { visit = 0; }
+                            continue;
                         }
-                        skip_until = res.end;
-                        if (res.end < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(res.end - word_off)); } else { visit = 0; }
-                        continue;
                     }
                     // JSX: `>` and `<` precede tag content / closing tags, never a
                     // regex. `<div>/text</div>` would otherwise lex `/text</div>`

@@ -1046,7 +1046,7 @@
     },
     "@typescript-eslint/unified-signatures": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1057,7 +1057,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -1244,7 +1244,7 @@
     },
     "@typescript-eslint/consistent-generic-constructors": {
       "runner": {
-        "fn": 13,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1255,7 +1255,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 13,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -1303,7 +1303,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 19,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1749,7 +1749,7 @@
     "@typescript-eslint/explicit-module-boundary-types": {
       "runner": {
         "fn": 3,
-        "fp": 3,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -1760,7 +1760,7 @@
       },
       "hybrid": {
         "fn": 3,
-        "fp": 3,
+        "fp": 2,
         "crash": 0
       }
     },
@@ -2234,8 +2234,8 @@
     },
     "@typescript-eslint/no-namespace": {
       "runner": {
-        "fn": 6,
-        "fp": 9,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -2245,8 +2245,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 9,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       }
     },
@@ -2397,7 +2397,7 @@
     "@typescript-eslint/adjacent-overload-signatures": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2408,7 +2408,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2491,14 +2491,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 4,
-        "fp": 19,
+        "fn": 3,
+        "fp": 16,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 4,
-        "fp": 19,
+        "fn": 3,
+        "fp": 16,
         "crash": 0
       }
     },
@@ -2666,9 +2666,9 @@
     },
     "@typescript-eslint/no-invalid-void-type": {
       "runner": {
-        "fn": 3,
-        "fp": 28,
-        "crash": 3
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       },
       "native": {
         "fn": 48,
@@ -2677,8 +2677,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
-        "fp": 28,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -3333,7 +3333,7 @@
     "jsdoc/require-returns": {
       "runner": {
         "fn": 2,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3344,7 +3344,7 @@
       },
       "hybrid": {
         "fn": 2,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -9385,13 +9385,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -9817,14 +9817,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 11,
-        "fp": 2,
+        "fn": 134,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 11,
-        "fp": 2,
+        "fn": 2,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -11126,9 +11126,9 @@
     },
     "no-extra-parens": {
       "runner": {
-        "fn": 2,
+        "fn": 1,
         "fp": 0,
-        "crash": 6
+        "crash": 0
       },
       "native": {
         "fn": 654,
@@ -11137,7 +11137,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       }
@@ -11401,14 +11401,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -12373,14 +12373,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 6,
-        "fp": 6,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 6,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -12931,13 +12931,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -13507,14 +13507,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -18367,13 +18367,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -19083,8 +19083,8 @@
     "unicorn/prefer-module": {
       "runner": {
         "fn": 0,
-        "fp": 1,
-        "crash": 4
+        "fp": 0,
+        "crash": 0
       },
       "native": {
         "fn": 104,
@@ -19094,7 +19094,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -19137,7 +19137,7 @@
     "unicorn/custom-error-definition": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -19148,7 +19148,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -19874,7 +19874,7 @@
     },
     "unicorn/no-immediate-mutation": {
       "runner": {
-        "fn": 3,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -19885,7 +19885,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       }
@@ -20361,8 +20361,8 @@
     "unicorn/prefer-string-raw": {
       "runner": {
         "fn": 0,
-        "fp": 4,
-        "crash": 1
+        "fp": 3,
+        "crash": 0
       },
       "native": {
         "fn": 22,
@@ -20372,7 +20372,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 4,
+        "fp": 3,
         "crash": 0
       }
     },
@@ -20828,9 +20828,9 @@
     },
     "react/jsx-no-comment-textnodes": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
-        "crash": 2
+        "crash": 0
       },
       "native": {
         "fn": 14,
@@ -20839,7 +20839,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -21352,7 +21352,7 @@
       "runner": {
         "fn": 2,
         "fp": 0,
-        "crash": 4
+        "crash": 0
       },
       "native": {
         "fn": 114,
@@ -22394,9 +22394,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10676,
-    "runnerCasesPerSec": 8712,
-    "nativeCasesPerSec": 69797,
-    "totalCases": 72119
+    "totalElapsedMs": 10478,
+    "runnerCasesPerSec": 8965,
+    "nativeCasesPerSec": 69859,
+    "totalCases": 72082
   }
 }

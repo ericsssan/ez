@@ -36,7 +36,6 @@ pub const relevant_tags = [_]Node.Tag{
 pub const needs_semantic = true;
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (!ctx.hasTypeChecker()) return;
     const tag = ctx.nodeTag(node);
     switch (tag) {
         .template_literal => checkTemplateLiteral(node, ctx),
@@ -104,10 +103,12 @@ fn checkTemplateLiteral(node: NodeIndex, ctx: *const LintContext) void {
         // String-typed expression (and the interpolation isn't covered
         // by the literal/fixable path above) — TSe fires for trivial
         // templates whose single interpolation has a string-like type.
-        const ty = ctx.typeOfNode(expr);
-        if (ctx.typeIdIsStringy(ty) or isGlobalStringCall(expr, ctx)) {
-            reportInterpolation(expr, ctx);
-            return;
+        if (ctx.hasTypeChecker()) {
+            const ty = ctx.typeOfNode(expr);
+            if (ctx.typeIdIsStringy(ty) or isGlobalStringCall(expr, ctx)) {
+                reportInterpolation(expr, ctx);
+                return;
+            }
         }
     }
 
@@ -138,13 +139,15 @@ fn checkTemplateLiteralType(node: NodeIndex, ctx: *const LintContext) void {
         if (hasCommentsBetweenQuasis(parts.quasis[0], parts.quasis[1], ctx)) return;
         // Type parameter (`<T extends string>` → `${T}`) — TSe excludes
         // type parameters from the trivial path.
-        if (ctx.typeAnnotationIsTypeParameter(expr)) return;
-        if (typeNodeMentionsEnumMember(expr, ctx)) return;
-        if (typeNodeReferencesUndeclared(expr, ctx)) return;
-        const ty = ctx.resolveTypeAnnotationNode(expr);
-        if (ctx.typeIdIsStringy(ty)) {
-            reportInterpolation(expr, ctx);
-            return;
+        if (ctx.hasTypeChecker()) {
+            if (ctx.typeAnnotationIsTypeParameter(expr)) return;
+            if (typeNodeMentionsEnumMember(expr, ctx)) return;
+            if (typeNodeReferencesUndeclared(expr, ctx)) return;
+            const ty = ctx.resolveTypeAnnotationNode(expr);
+            if (ctx.typeIdIsStringy(ty)) {
+                reportInterpolation(expr, ctx);
+                return;
+            }
         }
     }
 

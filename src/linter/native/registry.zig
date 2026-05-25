@@ -91,7 +91,7 @@ const no_empty_character_class = @import("suspicious/no_empty_character_class.zi
 const no_implied_eval = @import("suspicious/no_implied_eval.zig");
 const no_label_var = @import("correctness/no_label_var.zig");  // IR-generated via identifier-shadows-binding op
 // const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // hand-written — disabled per IR-only constraint
-const no_misleading_character_class = @import("correctness/no_misleading_character_class.zig");  // regex_parser + unicode_marks + JS-string source map for the RegExp call form
+// const no_misleading_character_class = @import("correctness/no_misleading_character_class.zig");  // runner > native (9 hybrid gaps vs 2 with runner; missing: variable tracking, ZWJ seq column precision)
 // const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");  // hand-written — disabled per IR-only constraint
 const no_multi_str = @import("suspicious/no_multi_str.zig");
 const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
@@ -479,7 +479,7 @@ pub const all_rules = .{
     // no_implied_eval, // runner >> native (runner 173, native 103, gap 70); fall back to JS runner
     no_label_var,
     // no_lone_blocks, // hand-written — disabled
-    no_misleading_character_class,
+    // no_misleading_character_class, // runner > native (9 hybrid gaps vs 2; missing variable tracking + ZWJ precision)
     // no_mixed_spaces_and_tabs, // hand-written — disabled
     // no_multi_str, // hand-written — disabled
     no_new_wrappers,

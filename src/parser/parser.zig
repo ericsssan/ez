@@ -2129,7 +2129,8 @@ pub const Parser = struct {
                     }
                 },
                 .kw_type => {
-                    if (self.peekAt(1) == .identifier) {
+                    const type_p1 = self.peekAt(1);
+                    if (type_p1 == .identifier or type_p1.isKeyword()) {
                         return typescript.parseTypeAliasDeclaration(self);
                     }
                 },
@@ -3202,7 +3203,9 @@ pub const Parser = struct {
                 // `for(let of ...)` and `for(let.a of ...)` are prohibited in for-of:
                 // "It is a Syntax Error if the first token of LHS is `let`" (13.7.5.1)
                 // Note: `for(let in ...)` IS valid — `let` as identifier in for-in.
-                if (is_for_of) {
+                // The `let` prohibition only applies when `let` is the FIRST token (unparenthesized).
+                // `for ((let.foo) of bar)` is valid — `(` is the first token, not `let`.
+                if (is_for_of and init_tag != .grouping_expr) {
                     var check_node = unwrapped.node;
                     var check_tag = unwrapped.tag;
                     while (check_tag == .member_expr or check_tag == .computed_member_expr) {
@@ -5114,11 +5117,25 @@ pub const Parser = struct {
                 // TS abstract/declare computed methods may have no body
                 if (self.is_ts and self.peek() != .l_brace) {
                     _ = self.eat(.semicolon);
-                    const prop_extra = try self.addExtra(ast.PropertyData, .{});
+                    const computed_no_body_extra = try self.addExtra(ast.MethodData, .{
+                        .params_start = params.start,
+                        .params_end = params.end,
+                        .body = .none,
+                        .return_type = computed_method_return_type,
+                        .modifiers = packMemberModifiers(ts_mod_flags, is_static, is_async_method, is_generator_method),
+                        .type_params = computed_class_type_params.start,
+                        .type_params_end = computed_class_type_params.end,
+                    });
+                    const computed_no_body_tag: Node.Tag = if (is_getter)
+                        .computed_getter_def
+                    else if (is_setter)
+                        .computed_setter_def
+                    else
+                        .computed_method_def;
                     return self.addNode(.{
-                        .tag = .computed_property_def,
+                        .tag = computed_no_body_tag,
                         .main_token = computed_main_tok,
-                        .data = .{ .lhs = key_expr, .rhs = NodeIndex.fromInt(prop_extra) },
+                        .data = .{ .lhs = key_expr, .rhs = NodeIndex.fromInt(computed_no_body_extra) },
                     });
                 }
 

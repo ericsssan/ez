@@ -74,3 +74,4 @@ debug/
 .ez-dist/
 tests/differential/.oxlint-rules-cache.txt
 src/jsc/runner-iife.js
+.envrc

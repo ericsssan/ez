@@ -46,6 +46,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         ctx.reportSpanWithDataAndSuggestions(span, mid, &data, &sugg);
         return;
     }
-    const mid_def: []const u8 = if (require_strings) "notString" else "invalidValue";
-    ctx.reportWithMessageId(sibling, mid_def);
+    ctx.reportWithMessageId(sibling, ctx.validTypeofSiblingMessageId(sibling));
 }

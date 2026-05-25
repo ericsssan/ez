@@ -101,7 +101,8 @@ fn findOwner(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
 /// Position-based owner search for orphan type parameters.  The arrow
 /// function's main_token is `<` which sits just BEFORE the first type
 /// parameter identifier (e.g. byte 13 vs byte 14 for `<T>`).  Find the
-/// closest arrow_fn whose main_token precedes the type param's position.
+/// closest arrow_fn / ts_function_type / ts_constructor_type whose main
+/// token precedes the type param's position.
 fn findOwnerByPosition(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     const tp_tok = ctx.nodeMainToken(tp);
     const tp_pos = ctx.tokenStart(tp_tok);
@@ -112,10 +113,11 @@ fn findOwnerByPosition(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     while (i < total) : (i += 1) {
         const ni: NodeIndex = @enumFromInt(i);
         switch (ctx.nodeTag(ni)) {
-            .arrow_fn, .async_arrow_fn => {
+            .arrow_fn, .async_arrow_fn,
+            .ts_function_type, .ts_constructor_type => {
                 const m = ctx.nodeMainToken(ni);
                 const p = ctx.tokenStart(m);
-                // Pick the arrow whose `<` is as close to tp_pos as possible
+                // Pick the owner whose start is as close to tp_pos as possible
                 // without exceeding it (maximum p ≤ tp_pos).
                 if (p <= tp_pos and (best == .none or p > best_pos)) {
                     best = ni;
@@ -153,6 +155,7 @@ fn countFnLike(container: NodeIndex, name: []const u8, count: *u32, ctx: *const 
     countTypeParamConstraints(fd.type_params, fd.type_params_end, name, count, ctx);
     countParams(fd.params, fd.params_end, name, count, ctx);
     countReturnTypeNode(fd.return_type, name, count, ctx);
+    if (count.* < 2) countTypeofExpansion(fd.return_type, fd.params, fd.params_end, name, count, ctx);
 }
 
 fn countArrow(container: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {
@@ -161,6 +164,7 @@ fn countArrow(container: NodeIndex, name: []const u8, count: *u32, ctx: *const L
     const ad = ctx.extraData(ast.ArrowData, @intFromEnum(d.lhs));
     countParams(ad.params_start, ad.params_end, name, count, ctx);
     countReturnTypeNode(ad.return_type, name, count, ctx);
+    if (count.* < 2) countTypeofExpansion(ad.return_type, ad.params_start, ad.params_end, name, count, ctx);
 }
 
 fn countMethod(container: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {
@@ -178,6 +182,7 @@ fn countInterfaceSig(container: NodeIndex, name: []const u8, count: *u32, ctx: *
     countTypeParamConstraints(sd.type_params, sd.type_params_end, name, count, ctx);
     countParams(sd.params_start, sd.params_end, name, count, ctx);
     countReturnTypeNode(sd.return_type, name, count, ctx);
+    if (count.* < 2) countTypeofExpansion(sd.return_type, sd.params_start, sd.params_end, name, count, ctx);
 }
 
 fn countFnType(container: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {
@@ -189,6 +194,7 @@ fn countFnType(container: NodeIndex, name: []const u8, count: *u32, ctx: *const 
     countTypeParamConstraints(fd.type_params, fd.type_params_end, name, count, ctx);
     countParams(fd.params, fd.params_end, name, count, ctx);
     countReturnTypeNode(fd.body, name, count, ctx);
+    if (count.* < 2) countTypeofExpansion(fd.body, fd.params, fd.params_end, name, count, ctx);
 }
 
 fn countClass(container: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {
@@ -319,6 +325,86 @@ fn countParams(start: u32, end: u32, name: []const u8, count: *u32, ctx: *const 
     for (ctx.ast.extra_data[start..end]) |raw| {
         const param: NodeIndex = @enumFromInt(raw);
         countParam(param, name, count, ctx);
+    }
+}
+
+/// Return the type-annotation NodeIndex for the parameter named `param_name`.
+/// Returns .none if not found or the param has no type annotation.
+fn findParamType(ctx: *const LintContext, params_start: u32, params_end: u32, param_name: []const u8) NodeIndex {
+    if (params_end <= params_start or params_end > ctx.ast.extra_data.len) return .none;
+    for (ctx.ast.extra_data[params_start..params_end]) |raw| {
+        const param: NodeIndex = @enumFromInt(raw);
+        if (param == .none) continue;
+        var n = param;
+        if (ctx.nodeTag(n) == .assignment_pattern) n = ctx.nodeData(n).lhs;
+        if (n == .none) continue;
+        if (ctx.nodeTag(n) != .identifier) continue;
+        const nm = ctx.tokenText(ctx.nodeMainToken(n));
+        if (std.mem.eql(u8, nm, param_name)) return ctx.nodeData(n).rhs;
+    }
+    return .none;
+}
+
+/// Scan a return-type node for `typeof param` expressions.  When `typeof x`
+/// appears and `x` is a parameter whose type annotation contains `name`, count
+/// it as an additional usage — mirroring TypeScript's `typeof param` resolution.
+fn countTypeofExpansion(node: NodeIndex, params_start: u32, params_end: u32, name: []const u8, count: *u32, ctx: *const LintContext) void {
+    countTypeofExpansionDepth(node, params_start, params_end, name, count, ctx, 0);
+}
+
+fn countTypeofExpansionDepth(node: NodeIndex, params_start: u32, params_end: u32, name: []const u8, count: *u32, ctx: *const LintContext, depth: u32) void {
+    if (node == .none or count.* >= 2 or depth > 12) return;
+    const tag = ctx.nodeTag(node);
+    const d = ctx.nodeData(node);
+    switch (tag) {
+        .ts_typeof_type => {
+            // `typeof param` — d.lhs is a ts_type_reference (simple name) or identifier.
+            // Resolve to the inner identifier and check if it names a parameter.
+            const arg = d.lhs;
+            if (arg != .none) {
+                const id_node: NodeIndex = blk: {
+                    const at = ctx.nodeTag(arg);
+                    if (at == .identifier) break :blk arg;
+                    if (at == .ts_type_reference) {
+                        const inner = ctx.nodeData(arg).lhs;
+                        // simple name ref (no type args) — lhs=identifier, rhs=.none
+                        if (inner != .none and ctx.nodeTag(inner) == .identifier and
+                            ctx.nodeData(arg).rhs == .none) break :blk inner;
+                    }
+                    break :blk NodeIndex.none;
+                };
+                if (id_node != .none) {
+                    const id_name = ctx.tokenText(ctx.nodeMainToken(id_node));
+                    const param_ann = findParamType(ctx, params_start, params_end, id_name);
+                    if (param_ann != .none) countTypeNode(param_ann, name, count, ctx, false);
+                }
+            }
+        },
+        .ts_type_annotation,
+        .ts_parenthesized_type,
+        .ts_keyof_type,
+        .ts_array_type => countTypeofExpansionDepth(d.lhs, params_start, params_end, name, count, ctx, depth + 1),
+        .ts_union_type, .ts_intersection_type, .ts_tuple_type => {
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                if (count.* >= 2) return;
+                countTypeofExpansionDepth(@enumFromInt(raw), params_start, params_end, name, count, ctx, depth + 1);
+            }
+        },
+        .ts_type_reference => {
+            if (d.rhs != .none) {
+                const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+                if (sr.start < sr.end and sr.end <= ctx.ast.extra_data.len) {
+                    for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
+                        if (count.* >= 2) return;
+                        countTypeofExpansionDepth(@enumFromInt(raw), params_start, params_end, name, count, ctx, depth + 1);
+                    }
+                }
+            }
+        },
+        else => {},
     }
 }
 

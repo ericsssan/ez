@@ -1657,8 +1657,8 @@ pub fn parseInterfaceDeclaration(p: *Parser) Error!NodeIndex {
 pub fn parseTypeAliasDeclaration(p: *Parser) Error!NodeIndex {
     const type_tok = p.advance(); // consume `type`
 
-    // Type alias name
-    const name_tok = try p.expect(.identifier);
+    // Type alias name — contextual keywords (e.g. `module`, `from`, `of`) are valid names
+    const name_tok = try p.expectIdentifierOrKeyword();
 
     // Build the name Identifier IMMEDIATELY so end_tok matches name_tok.
     // Declare as TypeVariable so circular-reference rules can resolve it.
@@ -1706,8 +1706,8 @@ pub fn parseTypeAliasDeclaration(p: *Parser) Error!NodeIndex {
 pub fn parseEnumDeclaration(p: *Parser) Error!NodeIndex {
     const enum_tok = p.advance(); // consume `enum`
 
-    // Enum name
-    const name_tok = try p.expect(.identifier);
+    // Enum name — contextual keywords are valid enum names
+    const name_tok = try p.expectIdentifierOrKeyword();
 
     // Enum body: `{ members }`
     _ = try p.expect(.l_brace);
@@ -1989,18 +1989,19 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     }
 
     // ── Index signature: `[key: Type]: Type;` ────────────────
-    // Only treat as index signature if `[identifier :` pattern (colon inside brackets).
+    // Only treat as index signature if `[identifierOrKeyword :` pattern (colon inside brackets).
+    // Keyword names like `module`, `type`, `from` are valid index parameter names.
     // Otherwise it's a computed property `[expr]: Type;` handled below.
     if (p.peek() == .l_bracket and
-        ((p.peekAt(1) == .identifier and p.peekAt(2) == .colon) or
-        (p.peekAt(1) == .kw_readonly and p.peekAt(2) == .identifier and p.peekAt(3) == .colon)))
+        (((p.peekAt(1) == .identifier or p.peekAt(1).isKeyword()) and p.peekAt(2) == .colon) or
+        (p.peekAt(1) == .kw_readonly and (p.peekAt(2) == .identifier or p.peekAt(2).isKeyword()) and p.peekAt(3) == .colon)))
     {
         return parseIndexSignature(p);
     }
     // TS1096: `[a, b]: Type` — multiple parameters in index signature.
     // We detect `[identifier ,` as a malformed multi-param index signature.
     if (p.peek() == .l_bracket and
-        p.peekAt(1) == .identifier and p.peekAt(2) == .comma)
+        (p.peekAt(1) == .identifier or p.peekAt(1).isKeyword()) and p.peekAt(2) == .comma)
     {
         const bracket_tok = p.advance(); // consume `[`
         const param_ident = try p.parseIdentifier(); // consume first param
@@ -2028,7 +2029,7 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     if (p.peek() == .kw_readonly) {
         _ = p.advance(); // consume `readonly`
         // Check for index signature after readonly: `readonly [key: Type]: Type;`
-        if (p.peek() == .l_bracket and p.peekAt(1) == .identifier and p.peekAt(2) == .colon) {
+        if (p.peek() == .l_bracket and (p.peekAt(1) == .identifier or p.peekAt(1).isKeyword()) and p.peekAt(2) == .colon) {
             return parseIndexSignature(p);
         }
     }

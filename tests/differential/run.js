@@ -1054,7 +1054,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "consistent-type-definitions",
       "no-empty-interface",
       // "method-signature-style", // native span off-by-one vs runner; fall back
-      // "no-unnecessary-parameter-property-assignment", // native 28/37 vs runner 37/37
+      "no-unnecessary-parameter-property-assignment",
       "prefer-enum-initializers",
       "no-non-null-assertion",
       "prefer-ts-expect-error",

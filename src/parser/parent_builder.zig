@@ -115,6 +115,9 @@ pub const TypeOverride = enum(u8) {
     ts_unknown_keyword = 18,
     ts_void_keyword = 19,
     ts_qualified_name = 20,
+    /// `call_expr(ts_instantiation_expr(new_expr(callee,NONE),typeArgs),args)` —
+    /// the canonical parse of `new Foo<T>()`. Present to rules as NewExpression.
+    new_expression = 21,
 };
 
 /// Called by Parser.addNode to record parent→child edges incrementally.
@@ -352,6 +355,7 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
             sp(parents, rhs, idx);
         },
         .ts_type_assertion => {
+            sp(parents, lhs, idx);
             sp(parents, rhs, idx);
         },
         .conditional => {
@@ -385,6 +389,7 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
             spSub(parents, extra, ed.members_start, ed.members_end, idx);
         },
         .ts_enum_member => {
+            sp(parents, lhs, idx);
             sp(parents, rhs, idx);
         },
         .ts_namespace_decl, .ts_module_decl => {
@@ -618,6 +623,19 @@ pub fn buildTraversalAux(
                         if (computeTsTypeRefOverride(text)) |ov| {
                             type_overrides[i] = @intFromEnum(ov);
                         }
+                    }
+                }
+            },
+            // `new Foo<T>()` is parsed as call_expr(ts_instantiation_expr(new_expr(callee,NONE),typeArgs),args).
+            // Present it to ESLint rules as NewExpression so callee-type checks pass.
+            .call_expr => {
+                const lhs = data[i].lhs;
+                if (lhs != .none and tags[@intFromEnum(lhs)] == .ts_instantiation_expr) {
+                    const inner = data[@intFromEnum(lhs)].lhs;
+                    if (inner != .none and tags[@intFromEnum(inner)] == .new_expr and
+                        data[@intFromEnum(inner)].rhs == .none)
+                    {
+                        type_overrides[i] = @intFromEnum(TypeOverride.new_expression);
                     }
                 }
             },
@@ -1111,6 +1129,19 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
                             if (computeTsTypeRefOverride(text)) |ov| {
                                 type_overrides[i] = @intFromEnum(ov);
                             }
+                        }
+                    }
+                },
+                // `new Foo<T>()` is parsed as call_expr(ts_instantiation_expr(new_expr(callee,NONE),typeArgs),args).
+                // Present it to ESLint rules as NewExpression so callee-type checks pass.
+                .call_expr => {
+                    const lhs = data[i].lhs;
+                    if (lhs != .none and tags[@intFromEnum(lhs)] == .ts_instantiation_expr) {
+                        const inner = data[@intFromEnum(lhs)].lhs;
+                        if (inner != .none and tags[@intFromEnum(inner)] == .new_expr and
+                            data[@intFromEnum(inner)].rhs == .none)
+                        {
+                            type_overrides[i] = @intFromEnum(TypeOverride.new_expression);
                         }
                     }
                 },

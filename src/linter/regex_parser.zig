@@ -764,12 +764,57 @@ pub fn analyzeUselessBackrefs(arena: std.mem.Allocator, pat: *const Pattern) ![]
     try walkAlternatives(arena, pat.alternatives, &stack, &group_paths, &bref_paths);
     var out: std.ArrayList(UselessBackref) = .empty;
     for (pat.backrefs) |bref| {
-        const grp = bref.resolved orelse continue;
         const bp = bref_paths.get(bref) orelse continue;
-        const gp = group_paths.get(grp) orelse continue;
-        if (classifyBackref(bref, grp, bp, gp)) |kind| {
-            try out.append(arena, .{ .bref = bref, .group = grp, .kind = kind });
+
+        // Collect all groups this backreference resolves to.
+        // For ES2025 duplicate named capture groups, a \k<name> reference may
+        // bind to multiple same-named groups across alternation branches.
+        // Index backrefs always resolve to exactly one group.
+        var single_buf: [1]*Group = undefined;
+        const all_groups: []*Group = switch (bref.target) {
+            .index => blk: {
+                const g = bref.resolved orelse continue;
+                single_buf[0] = g;
+                break :blk single_buf[0..1];
+            },
+            .name => |n| blk: {
+                var matching = std.ArrayListUnmanaged(*Group).empty;
+                for (pat.groups) |g| {
+                    if (g.name) |gname| if (std.mem.eql(u8, gname, n)) {
+                        try matching.append(arena, g);
+                    };
+                }
+                break :blk try matching.toOwnedSlice(arena);
+            },
+        };
+        if (all_groups.len == 0) continue;
+
+        // ESLint algorithm: map every group to a problem (or null = no problem).
+        // If ANY group has no problem, the backref is valid — skip it.
+        // Otherwise prefer non-disjunctive problems over disjunctive ones.
+        var problems = try std.ArrayListUnmanaged(?UselessKind).initCapacity(arena, all_groups.len);
+        for (all_groups) |grp| {
+            const gp = group_paths.get(grp);
+            const p: ?UselessKind = if (gp) |gpp| classifyBackref(bref, grp, bp, gpp) else null;
+            try problems.append(arena, p);
         }
+
+        // If any group produces no problem (null), the backref can match — skip.
+        var all_have_problem = true;
+        for (problems.items) |p| if (p == null) { all_have_problem = false; break; };
+        if (!all_have_problem) continue;
+
+        // Prefer non-disjunctive problem; fall back to first (all-disjunctive).
+        var best_kind: UselessKind = problems.items[0].?;
+        var best_group: *Group = all_groups[0];
+        for (all_groups, 0..) |grp, i| {
+            if (problems.items[i]) |k| if (k != .disjunctive) {
+                best_kind = k;
+                best_group = grp;
+                break;
+            };
+        }
+        try out.append(arena, .{ .bref = bref, .group = best_group, .kind = best_kind });
     }
     return out.toOwnedSlice(arena);
 }
@@ -872,6 +917,62 @@ fn classifyBackref(
         };
     }
     return null;
+}
+
+/// Returns true when two or more groups share the same name AND are NOT in
+/// sibling alternation branches (i.e. they're sequential in the same
+/// alternative path).  ES2025 permits duplicate names only across sibling
+/// alternatives; anywhere else is a syntax error.  Used by no-invalid-regexp.
+pub fn hasDuplicateGroupNamesInSameAlternative(arena: std.mem.Allocator, pat: *const Pattern) !bool {
+    // Fast path: no named groups or no duplicates possible.
+    if (pat.groups.len < 2) return false;
+
+    // Collect names; skip unnamed.
+    var names = std.StringArrayHashMapUnmanaged(void).empty;
+    for (pat.groups) |g| {
+        if (g.name) |n| {
+            const result = try names.getOrPut(arena, n);
+            if (result.found_existing) break; // at least one dup
+        }
+    } else {
+        return false; // no duplicates found
+    }
+
+    // Build paths for all groups so we can classify duplicates.
+    var group_paths = std.AutoHashMapUnmanaged(*Group, []PathEntry).empty;
+    var bref_paths = std.AutoHashMapUnmanaged(*Backreference, []PathEntry).empty;
+    defer group_paths.deinit(arena);
+    defer bref_paths.deinit(arena);
+    var stack: std.ArrayList(PathEntry) = .empty;
+    try walkAlternatives(arena, pat.alternatives, &stack, &group_paths, &bref_paths);
+
+    // For each pair of groups that share a name, check if they're in sibling
+    // alternatives (disjunctive).  If any pair is NOT disjunctive, it's invalid.
+    for (pat.groups, 0..) |g1, i| {
+        const n1 = g1.name orelse continue;
+        for (pat.groups[i + 1 ..]) |g2| {
+            const n2 = g2.name orelse continue;
+            if (!std.mem.eql(u8, n1, n2)) continue;
+            // Same name: check if they're disjunctive (in sibling alternatives).
+            const gp1 = group_paths.get(g1) orelse continue;
+            const gp2 = group_paths.get(g2) orelse continue;
+            // Find LCA between the two group paths.
+            var lca: usize = 0;
+            while (lca < gp1.len and lca < gp2.len) : (lca += 1) {
+                const a = gp1[lca];
+                const b = gp2[lca];
+                const same =
+                    (a.group != null and b.group != null and a.group.? == b.group.?) or
+                    (a.alt != null and b.alt != null and a.alt.? == b.alt.?);
+                if (!same) break;
+            }
+            const cut1 = gp1[lca..];
+            // If cut1's first entry is an Alternative node, the groups are in
+            // sibling alternatives → valid ES2025 duplicate.  Otherwise invalid.
+            if (cut1.len == 0 or cut1[0].alt == null) return true;
+        }
+    }
+    return false;
 }
 
 // ── Tests ────────────────────────────────────────────────

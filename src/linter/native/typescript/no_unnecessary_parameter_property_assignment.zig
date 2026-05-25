@@ -22,23 +22,47 @@ pub const meta = RuleMeta{
     .lang = .ts_only,
 };
 
-pub const relevant_tags = [_]Node.Tag{.method_def};
+pub const relevant_tags = [_]Node.Tag{ .method_def, .constructor_def };
+
+const MAX_PROPS = 16;
+
+// Operators that the rule treats as "unnecessary" reassignments:
+//   =  ??=  &&=  ||=
+fn isUnnecessaryOp(tag: Node.Tag) bool {
+    return switch (tag) {
+        .assign, .nullish_assign, .logical_and_assign, .logical_or_assign => true,
+        else => false,
+    };
+}
+
+// Compound write operators (not in the unnecessary set): += -= *= etc.
+// Seeing one of these marks the property as "mutated before the redundant assign".
+fn isCompoundWrite(tag: Node.Tag) bool {
+    return switch (tag) {
+        .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign,
+        .exp_assign, .and_assign, .or_assign, .xor_assign,
+        .shl_assign, .shr_assign, .ushr_assign => true,
+        else => false,
+    };
+}
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    // Only constructor methods are interesting.
+    // Only constructor methods.
     const key = ctx.nodeData(node).lhs;
     if (key == .none or ctx.nodeTag(key) != .identifier) return;
     if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(key)), "constructor")) return;
-    // Collect parameter-property names (with their access modifier).
+
     const data = ctx.nodeData(node);
     if (data.rhs == .none) return;
     const md = ctx.extraData(ast.MethodData, @intFromEnum(data.rhs));
     if (md.body == .none or ctx.nodeTag(md.body) != .block_stmt) return;
-    var names: [16][]const u8 = undefined;
+
+    // Collect parameter-property names (at most MAX_PROPS).
+    var names: [MAX_PROPS][]const u8 = undefined;
     var n_names: usize = 0;
     if (md.params_end > md.params_start) {
         for (ctx.ast.extra_data[md.params_start..md.params_end]) |raw| {
-            if (n_names >= names.len) break;
+            if (n_names >= MAX_PROPS) break;
             const p: NodeIndex = @enumFromInt(raw);
             const name = paramPropertyName(p, ctx) orelse continue;
             names[n_names] = name;
@@ -46,24 +70,18 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         }
     }
     if (n_names == 0) return;
-    // Walk the constructor's BLOCK body for statements of shape
-    // `this.<name> = <init>;` where init resolves (after peeling
-    // casts / non-null) to the parameter identifier.
-    const body_data = ctx.nodeData(md.body);
-    const s = @intFromEnum(body_data.lhs);
-    const e = @intFromEnum(body_data.rhs);
-    if (e > s and e <= ctx.ast.extra_data.len) {
-        for (ctx.ast.extra_data[s..e]) |raw| {
-            const stmt: NodeIndex = @enumFromInt(raw);
-            checkStmt(stmt, names[0..n_names], ctx);
-        }
-    }
+
+    // Scan class field initializers: if one writes to this.<name>, the explicit
+    // assignment in the constructor restores the parameter value intentionally.
+    const class_field_bits: u16 = classFieldBits(node, names[0..n_names], ctx);
+
+    // Walk constructor body; track compound-written properties in assigned_before.
+    var assigned_before: u16 = 0;
+    walkBlock(md.body, names[0..n_names], &assigned_before, class_field_bits, 0, ctx);
 }
 
 fn paramPropertyName(p: NodeIndex, ctx: *const LintContext) ?[]const u8 {
     var inner = p;
-    // Either explicit `ts_parameter_property` wrapper or a bare
-    // identifier with a modifier keyword in the preceding tokens.
     if (ctx.nodeTag(inner) == .ts_parameter_property) {
         const inner_data = ctx.nodeData(inner);
         if (inner_data.lhs == .none) return null;
@@ -101,39 +119,237 @@ fn hasModifierBefore(id: NodeIndex, kw: []const u8, ctx: *const LintContext) boo
     return false;
 }
 
-fn checkStmt(stmt: NodeIndex, names: []const []const u8, ctx: *const LintContext) void {
-    if (ctx.nodeTag(stmt) != .expression_stmt) return;
-    const expr = ctx.nodeData(stmt).lhs;
-    if (expr == .none or ctx.nodeTag(expr) != .assign) return;
-    const lhs = ctx.nodeData(expr).lhs;
-    const rhs = ctx.nodeData(expr).rhs;
-    if (lhs == .none or rhs == .none) return;
-    if (ctx.nodeTag(lhs) != .member_expr) return;
-    const member_obj = ctx.nodeData(lhs).lhs;
-    if (member_obj == .none or ctx.nodeTag(member_obj) != .this_expr) return;
-    const prop_name = ctx.tokenText(ctx.nodeMainToken(lhs));
-    var found = false;
-    for (names) |n| if (std.mem.eql(u8, n, prop_name)) { found = true; break; };
-    if (!found) return;
-    // RHS, peeling non-null / casts.
-    var v = rhs;
-    while (true) {
-        const t = ctx.nodeTag(v);
-        if (t == .grouping_expr or t == .ts_non_null_expr) {
-            v = ctx.nodeData(v).lhs;
-            continue;
-        }
-        if (t == .ts_as_expr or t == .ts_satisfies_expr) {
-            v = ctx.nodeData(v).lhs;
-            continue;
-        }
-        if (t == .ts_type_assertion) {
-            v = ctx.nodeData(v).rhs;
-            continue;
-        }
-        break;
+// Returns the static property name if `lhs` is `this.foo` or `this['foo']`.
+fn propFromThisMember(lhs: NodeIndex, ctx: *const LintContext) ?[]const u8 {
+    const tag = ctx.nodeTag(lhs);
+    if (tag != .member_expr and tag != .computed_member_expr) return null;
+    const obj = ctx.nodeData(lhs).lhs;
+    if (obj == .none or ctx.nodeTag(obj) != .this_expr) return null;
+    return ctx.staticPropertyName(lhs);
+}
+
+fn nameIndex(name: []const u8, names: []const []const u8) ?usize {
+    for (names, 0..) |n, i| {
+        if (std.mem.eql(u8, n, name)) return i;
     }
-    if (ctx.nodeTag(v) != .identifier) return;
-    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(v)), prop_name)) return;
-    ctx.reportWithMessageId(expr, "unnecessaryAssign");
+    return null;
+}
+
+// Scan class field initializers for any assignment to this.<param_name>.
+// Returns a bitset: bit i set means names[i] was written in a class field.
+fn classFieldBits(ctor: NodeIndex, names: []const []const u8, ctx: *const LintContext) u16 {
+    var bits: u16 = 0;
+    const class_body = ctx.parentOf(ctor);
+    if (class_body == .none or ctx.nodeTag(class_body) != .class_body) return bits;
+    const body_data = ctx.nodeData(class_body);
+    const s = @intFromEnum(body_data.lhs);
+    const e = @intFromEnum(body_data.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return bits;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const member: NodeIndex = @enumFromInt(raw);
+        const mt = ctx.nodeTag(member);
+        if (mt != .property_def and mt != .computed_property_def) continue;
+        const pd = ctx.extraData(ast.PropertyData, @intFromEnum(ctx.nodeData(member).rhs));
+        if (pd.value == .none) continue;
+        scanExprForThisAssign(pd.value, names, &bits, ctx);
+    }
+    return bits;
+}
+
+// Recursively scan `expr` for any assignment whose LHS is this.<name>.
+fn scanExprForThisAssign(expr: NodeIndex, names: []const []const u8, bits: *u16, ctx: *const LintContext) void {
+    if (expr == .none) return;
+    const tag = ctx.nodeTag(expr);
+    const data = ctx.nodeData(expr);
+    if (isUnnecessaryOp(tag) or isCompoundWrite(tag)) {
+        if (data.lhs != .none) {
+            if (propFromThisMember(data.lhs, ctx)) |name| {
+                if (nameIndex(name, names)) |i| bits.* |= @as(u16, 1) << @intCast(i);
+            }
+        }
+        if (data.rhs != .none) scanExprForThisAssign(data.rhs, names, bits, ctx);
+        return;
+    }
+    switch (tag) {
+        .grouping_expr, .ts_non_null_expr, .ts_as_expr, .ts_satisfies_expr,
+        .logical_not, .bitwise_not, .typeof_expr, .void_expr, .delete_expr,
+        .unary_plus, .unary_minus,
+        .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec,
+        .await_expr, .yield_expr, .spread_element => {
+            if (data.lhs != .none) scanExprForThisAssign(data.lhs, names, bits, ctx);
+        },
+        .ts_type_assertion => {
+            if (data.rhs != .none) scanExprForThisAssign(data.rhs, names, bits, ctx);
+        },
+        .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
+        .bitwise_and, .bitwise_or, .bitwise_xor,
+        .logical_and, .logical_or, .nullish_coalesce,
+        .equal, .not_equal, .strict_equal, .strict_not_equal,
+        .less_than, .less_equal, .greater_than, .greater_equal,
+        .shift_left, .shift_right, .unsigned_shift_right,
+        .in_expr, .instanceof_expr, .sequence_expr => {
+            if (data.lhs != .none) scanExprForThisAssign(data.lhs, names, bits, ctx);
+            if (data.rhs != .none) scanExprForThisAssign(data.rhs, names, bits, ctx);
+        },
+        .member_expr, .computed_member_expr,
+        .optional_member_expr, .optional_computed_member_expr => {
+            if (data.lhs != .none) scanExprForThisAssign(data.lhs, names, bits, ctx);
+        },
+        .call_expr, .optional_call_expr => {
+            if (data.lhs != .none) {
+                var callee = data.lhs;
+                while (callee != .none and ctx.nodeTag(callee) == .grouping_expr) {
+                    callee = ctx.nodeData(callee).lhs;
+                }
+                if (callee != .none and
+                    (ctx.nodeTag(callee) == .arrow_fn or ctx.nodeTag(callee) == .async_arrow_fn))
+                {
+                    const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ctx.nodeData(callee).lhs));
+                    if (ad.body != .none) scanExprOrBlockForThisAssign(ad.body, names, bits, ctx);
+                } else {
+                    scanExprForThisAssign(data.lhs, names, bits, ctx);
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn scanExprOrBlockForThisAssign(node: NodeIndex, names: []const []const u8, bits: *u16, ctx: *const LintContext) void {
+    if (node == .none) return;
+    if (ctx.nodeTag(node) == .block_stmt) {
+        const d = ctx.nodeData(node);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e <= s or e > ctx.ast.extra_data.len) return;
+        for (ctx.ast.extra_data[s..e]) |raw| {
+            const stmt: NodeIndex = @enumFromInt(raw);
+            if (ctx.nodeTag(stmt) == .expression_stmt) {
+                const inner = ctx.nodeData(stmt).lhs;
+                if (inner != .none) scanExprForThisAssign(inner, names, bits, ctx);
+            }
+        }
+    } else {
+        scanExprForThisAssign(node, names, bits, ctx);
+    }
+}
+
+fn peelCasts(node: NodeIndex, ctx: *const LintContext) NodeIndex {
+    var v = node;
+    while (v != .none) {
+        switch (ctx.nodeTag(v)) {
+            .grouping_expr, .ts_non_null_expr, .ts_as_expr, .ts_satisfies_expr => {
+                v = ctx.nodeData(v).lhs;
+            },
+            .ts_type_assertion => {
+                v = ctx.nodeData(v).rhs;
+            },
+            else => break,
+        }
+    }
+    return v;
+}
+
+// Returns a bitmask of which names[i] are declared by var/let/const in `stmt`.
+fn declsInStmt(stmt: NodeIndex, names: []const []const u8, ctx: *const LintContext) u16 {
+    var bits: u16 = 0;
+    const tag = ctx.nodeTag(stmt);
+    if (tag != .var_decl and tag != .let_decl and tag != .const_decl) return bits;
+    const data = ctx.nodeData(stmt);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return bits;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const decl: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(decl) != .declarator) continue;
+        const binding = ctx.nodeData(decl).lhs;
+        if (binding == .none or ctx.nodeTag(binding) != .identifier) continue;
+        const name = ctx.tokenText(ctx.nodeMainToken(binding));
+        if (nameIndex(name, names)) |i| bits |= @as(u16, 1) << @intCast(i);
+    }
+    return bits;
+}
+
+// shadows: bitmask of parameter property names shadowed by local declarations.
+fn walkBlock(block: NodeIndex, names: []const []const u8, ab: *u16, cfb: u16, inherited_shadows: u16, ctx: *const LintContext) void {
+    const data = ctx.nodeData(block);
+    const s = @intFromEnum(data.lhs);
+    const e = @intFromEnum(data.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return;
+    // Collect declarations in this block to detect shadowed parameter names.
+    var shadows = inherited_shadows;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        shadows |= declsInStmt(@enumFromInt(raw), names, ctx);
+    }
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        walkStmt(@enumFromInt(raw), names, ab, cfb, shadows, ctx);
+    }
+}
+
+fn walkStmt(stmt: NodeIndex, names: []const []const u8, ab: *u16, cfb: u16, shadows: u16, ctx: *const LintContext) void {
+    if (stmt == .none) return;
+    switch (ctx.nodeTag(stmt)) {
+        .expression_stmt => {
+            const expr = ctx.nodeData(stmt).lhs;
+            if (expr != .none) walkExpr(expr, names, ab, cfb, shadows, ctx);
+        },
+        .block_stmt => walkBlock(stmt, names, ab, cfb, shadows, ctx),
+        else => {},
+    }
+}
+
+fn walkExpr(expr: NodeIndex, names: []const []const u8, ab: *u16, cfb: u16, shadows: u16, ctx: *const LintContext) void {
+    if (expr == .none) return;
+    const tag = ctx.nodeTag(expr);
+    const data = ctx.nodeData(expr);
+
+    if (isCompoundWrite(tag)) {
+        if (data.lhs != .none) {
+            if (propFromThisMember(data.lhs, ctx)) |name| {
+                if (nameIndex(name, names)) |i| ab.* |= @as(u16, 1) << @intCast(i);
+            }
+        }
+        return;
+    }
+
+    if (isUnnecessaryOp(tag)) {
+        if (data.lhs != .none and data.rhs != .none) {
+            if (propFromThisMember(data.lhs, ctx)) |name| {
+                if (nameIndex(name, names)) |i| {
+                    const v = peelCasts(data.rhs, ctx);
+                    if (ctx.nodeTag(v) == .identifier and
+                        std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(v)), name))
+                    {
+                        const mask = @as(u16, 1) << @intCast(i);
+                        if ((ab.* & mask) == 0 and (cfb & mask) == 0 and (shadows & mask) == 0) {
+                            ctx.reportWithMessageId(expr, "unnecessaryAssign");
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Arrow IIFE: (() => { ... })() — same this-binding, treat as inline body.
+    if (tag == .call_expr or tag == .optional_call_expr) {
+        if (data.lhs != .none) {
+            var callee = data.lhs;
+            while (callee != .none and ctx.nodeTag(callee) == .grouping_expr) {
+                callee = ctx.nodeData(callee).lhs;
+            }
+            if (callee != .none and
+                (ctx.nodeTag(callee) == .arrow_fn or ctx.nodeTag(callee) == .async_arrow_fn))
+            {
+                const ad = ctx.extraData(ast.ArrowData, @intFromEnum(ctx.nodeData(callee).lhs));
+                if (ad.body != .none) {
+                    if (ctx.nodeTag(ad.body) == .block_stmt) {
+                        walkBlock(ad.body, names, ab, cfb, shadows, ctx);
+                    } else {
+                        walkExpr(ad.body, names, ab, cfb, shadows, ctx);
+                    }
+                }
+            }
+        }
+    }
 }

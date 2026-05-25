@@ -56,16 +56,51 @@ fn nodeArgAt(c: *const LintContext, n: NodeIndex, idx: u32) NodeIndex {
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    if (!(((((ctx.nodeTag(node) == .call_expr) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "flat")) and (nodeArgsLenZero(ctx, node) or (((nodeArgsCount(ctx, node) == 1) and blk: { const __t = ctx.nodeTag(nodeArgAt(ctx, node, 0)); break :blk (__t == .number_literal or __t == .string_literal or __t == .boolean_literal or __t == .null_literal or __t == .regex_literal or __t == .bigint_literal); }) and (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(nodeArgAt(ctx, node, 0))), "1"))))) and ((ctx.nodeTag(ctx.nodeData(ctx.nodeData(node).lhs).lhs) == .call_expr) and (ctx.nodeTag(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs) == .member_expr or ctx.nodeTag(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs) == .optional_member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).rhs)), "map"))))) {
-        return;
+    if (ctx.nodeTag(node) != .call_expr) return;
+
+    // node.lhs must be member_expr ".flat"
+    const flat_member = ctx.nodeData(node).lhs;
+    if (ctx.nodeTag(flat_member) != .member_expr) return;
+    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(flat_member).rhs)), "flat")) return;
+
+    // .flat() takes 0 args or literal `1`
+    if (!(nodeArgsLenZero(ctx, node) or blk: {
+        if (nodeArgsCount(ctx, node) != 1) break :blk false;
+        const arg0 = nodeArgAt(ctx, node, 0);
+        const at = ctx.nodeTag(arg0);
+        const is_lit = at == .number_literal or at == .string_literal or
+            at == .boolean_literal or at == .null_literal or
+            at == .regex_literal or at == .bigint_literal;
+        break :blk is_lit and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(arg0)), "1");
+    })) return;
+
+    // flat_member.lhs (unwrap grouping) must be call_expr ".map(...)"
+    const flat_object = ctx.nodeSkipGrouping(ctx.nodeData(flat_member).lhs);
+    if (ctx.nodeTag(flat_object) != .call_expr) return;
+
+    const map_member = ctx.nodeData(flat_object).lhs;
+    const map_tag = ctx.nodeTag(map_member);
+    if (map_tag != .member_expr and map_tag != .optional_member_expr) return;
+    if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(map_member).rhs)), "map")) return;
+
+    // Exclude React.Children.map and Children.map
+    const map_object = ctx.nodeData(map_member).lhs;
+    if (ctx.nodeTag(map_object) == .identifier and
+        std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(map_object)), "Children")) return;
+    if (ctx.nodeTag(map_object) == .member_expr) {
+        const inner_prop_txt = ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(map_object).rhs));
+        const inner_obj = ctx.nodeData(map_object).lhs;
+        if (std.mem.eql(u8, inner_prop_txt, "Children") and
+            ctx.nodeTag(inner_obj) == .identifier and
+            std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(inner_obj)), "React")) return;
     }
-    if (blk: { break :blk (ctx.nodeTag(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs) == .member_expr and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs).rhs)), "Children") and ctx.nodeTag(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs).lhs) == .identifier and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs).lhs)), "React")) or (ctx.nodeTag(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs) == .identifier and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).lhs)), "Children")); }) {
-        return;
-    }
-    {
-        const __fix_text = std.fmt.allocPrint(ctx.allocator, "flatMap({s})", .{ ctx.argsTextBetweenParens(ctx.nodeData(ctx.nodeData(node).lhs).lhs) }) catch return;
-        defer ctx.allocator.free(__fix_text);
-        ctx.reportSpanWithFixAndMessageId(.{ .start = ctx.nodeSpan(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).rhs).start, .end = ctx.nodeSpan(node).end }, .{ .start = ctx.nodeSpan(ctx.nodeData(ctx.nodeData(ctx.nodeData(ctx.nodeData(node).lhs).lhs).lhs).rhs).start, .end = ctx.nodeSpan(node).end }, __fix_text, "prefer-array-flat-map");
-    }
-    return;
+
+    // Report: span from start of ".map" property to end of ".flat()" call.
+    const fix_text = std.fmt.allocPrint(ctx.allocator, "flatMap({s})", .{
+        ctx.argsTextBetweenParens(flat_object),
+    }) catch return;
+    defer ctx.allocator.free(fix_text);
+    const report_start = ctx.nodeSpan(ctx.nodeData(map_member).rhs).start;
+    const report_end = ctx.nodeSpan(node).end;
+    ctx.reportSpanWithFixAndMessageId(.{ .start = report_start, .end = report_end }, .{ .start = report_start, .end = report_end }, fix_text, "prefer-array-flat-map");
 }
