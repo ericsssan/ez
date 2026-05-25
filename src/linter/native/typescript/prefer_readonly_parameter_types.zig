@@ -255,14 +255,7 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
                 return true;
             }
             // Mutable built-in generics.
-            if (std.mem.eql(u8, name, "Array") or
-                std.mem.eql(u8, name, "Set") or
-                std.mem.eql(u8, name, "Map") or
-                std.mem.eql(u8, name, "WeakSet") or
-                std.mem.eql(u8, name, "WeakMap"))
-            {
-                return false;
-            }
+            if (isMutableBuiltin(name)) return false;
             // Built-in primitives / common readonly classes are leaf-readonly.
             if (std.mem.eql(u8, name, "string") or
                 std.mem.eql(u8, name, "number") or
@@ -407,11 +400,7 @@ fn innerOfReadonlyOk(node: NodeIndex, opts: Options, ctx: *const LintContext, de
             const name_node = d.lhs;
             if (name_node == .none) return true;
             const name = ctx.tokenText(ctx.nodeMainToken(name_node));
-            if (std.mem.eql(u8, name, "Array") or
-                std.mem.eql(u8, name, "Set") or
-                std.mem.eql(u8, name, "Map") or
-                std.mem.eql(u8, name, "WeakSet") or
-                std.mem.eql(u8, name, "WeakMap")) return false;
+            if (isMutableBuiltin(name)) return false;
             const decl = ctx.typeDeclNode(name);
             if (decl != .none) {
                 const dtag = ctx.nodeTag(decl);
@@ -460,6 +449,23 @@ fn interfaceIsDeeplyReadonly(decl: NodeIndex, opts: Options, ctx: *const LintCon
         if (!memberIsDeeplyReadonly(m, opts, ctx, depth + 1)) return false;
     }
     return true;
+}
+
+fn isMutableBuiltin(name: []const u8) bool {
+    // Built-in classes whose default shape has mutable members.
+    // These can't be "deeply readonly" without an explicit Readonly /
+    // ReadonlyArray wrapper.
+    const names = [_][]const u8{
+        "Array", "Set", "Map", "WeakSet", "WeakMap",
+        "Date", "RegExp",
+        "Int8Array", "Uint8Array", "Uint8ClampedArray",
+        "Int16Array", "Uint16Array",
+        "Int32Array", "Uint32Array",
+        "Float32Array", "Float64Array",
+        "BigInt64Array", "BigUint64Array",
+    };
+    inline for (names) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
 }
 
 fn interfaceExtendsList(decl: NodeIndex, ctx: *const LintContext) ?struct { start: u32, end: u32 } {
