@@ -172,6 +172,10 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
     if (node == .none or depth > 16) return true;
     const tag = ctx.nodeTag(node);
     const d = ctx.nodeData(node);
+    // Bail safely on deep self-recursive types — return true so a
+    // user-declared recursive interface like `{ readonly prop: Foo }`
+    // doesn't FP at the depth limit.
+    if (depth > 14) return true;
     switch (tag) {
         .ts_parenthesized_type => return typeNodeIsDeeplyReadonly(d.lhs, opts, ctx, depth + 1),
         .ts_type_annotation => return typeNodeIsDeeplyReadonly(d.lhs, opts, ctx, depth + 1),
@@ -416,6 +420,16 @@ fn innerOfReadonlyOk(node: NodeIndex, opts: Options, ctx: *const LintContext, de
 }
 
 fn interfaceIsDeeplyReadonly(decl: NodeIndex, opts: Options, ctx: *const LintContext, depth: u32) bool {
+    // Check the `extends` list: an interface extending a mutable type
+    // inherits that type's properties (e.g. `extends Array<X>` brings
+    // in Array's mutable methods).
+    if (interfaceExtendsList(decl, ctx)) |ext| {
+        const ext_data = ctx.ast.extra_data[ext.start..ext.end];
+        for (ext_data) |raw| {
+            const t: NodeIndex = @enumFromInt(raw);
+            if (!typeNodeIsDeeplyReadonly(t, opts, ctx, depth + 1)) return false;
+        }
+    }
     const members = ctx.interfaceDeclMembers(decl) orelse return true;
     if (members.end <= members.start or members.end > ctx.ast.extra_data.len) return true;
     for (ctx.ast.extra_data[members.start..members.end]) |raw| {
@@ -423,6 +437,16 @@ fn interfaceIsDeeplyReadonly(decl: NodeIndex, opts: Options, ctx: *const LintCon
         if (!memberIsDeeplyReadonly(m, opts, ctx, depth + 1)) return false;
     }
     return true;
+}
+
+fn interfaceExtendsList(decl: NodeIndex, ctx: *const LintContext) ?struct { start: u32, end: u32 } {
+    if (ctx.nodeTag(decl) != .ts_interface_decl) return null;
+    const d = ctx.nodeData(decl);
+    if (d.lhs == .none) return null;
+    const id = ctx.extraData(ast.InterfaceData, @intFromEnum(d.lhs));
+    if (id.extends_end <= id.extends_start) return null;
+    if (id.extends_end > ctx.ast.extra_data.len) return null;
+    return .{ .start = id.extends_start, .end = id.extends_end };
 }
 
 fn tupleElementsReadonly(node: NodeIndex, opts: Options, ctx: *const LintContext, depth: u32) bool {
