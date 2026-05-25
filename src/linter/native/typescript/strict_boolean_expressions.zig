@@ -657,6 +657,11 @@ fn walkType(id: TypeId, fam: *Family, ctx: *const LintContext, depth: u32) void 
             const name = ctx.typeIdRefName(id);
             if (name.len > 0 and ctx.typeNameIsEnum(name)) {
                 fam.has_enum = true;
+            } else if (name.len > 0 and isObjectFamilyBuiltin(name)) {
+                // Built-in object wrappers / well-known reference types
+                // (Object, Function, Date, RegExp, …) — always truthy
+                // object-family values.
+                fam.has_object = true;
             } else if (name.len > 0 and ctx.typeDeclNode(name) == .none) {
                 // Not a user-declared interface/alias/class — likely
                 // a type parameter (or external name we can't resolve).
@@ -670,6 +675,19 @@ fn walkType(id: TypeId, fam: *Family, ctx: *const LintContext, depth: u32) void 
         .type_param => fam.has_any = true,
         else => fam.has_other = true,
     }
+}
+
+fn isObjectFamilyBuiltin(name: []const u8) bool {
+    const list = [_][]const u8{
+        "Object", "Function", "Date", "RegExp",
+        "Array", "Map", "Set", "WeakMap", "WeakSet",
+        "Promise", "Error", "ArrayBuffer", "DataView",
+        "Int8Array", "Uint8Array", "Uint8ClampedArray",
+        "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
+        "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
+    };
+    inline for (list) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
 }
 
 fn messageFor(c: Class, opts: Options) ?[]const u8 {
