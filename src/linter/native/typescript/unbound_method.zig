@@ -579,6 +579,8 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
     // — there's no actual runtime destructuring that could lose `this`.
     if (patternIsInDeclarationOnly(node, ctx)) return;
     var source_ty: tymod.TypeId = tymod.ID_UNKNOWN;
+    var init_ty: tymod.TypeId = tymod.ID_UNKNOWN;
+    var have_init = false;
     var have_source = false;
     switch (ctx.nodeTag(parent)) {
         .declarator => {
@@ -607,10 +609,11 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
             }
             // Assignment-pattern parent: `{x}: T = default` — annotation
             // is on the obj_pattern; default lives in assignment_pattern.
-            if (!have_source and ctx.nodeTag(parent) == .assignment_pattern) {
-                if (patternAnnotationType(node, ctx)) |t| {
-                    source_ty = t;
-                    have_source = true;
+            if (ctx.nodeTag(parent) == .assignment_pattern) {
+                const pd = ctx.nodeData(parent);
+                if (pd.rhs != .none) {
+                    init_ty = ctx.typeOfNode(pd.rhs);
+                    have_init = true;
                 }
             }
         },
@@ -693,6 +696,19 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
                 ctx.reportWithMessageId(name_node, "unboundWithoutThisAnnotation");
                 continue;
             }
+        }
+        // ts-eslint's ObjectPattern handler: when there's an init
+        // expression, FIRST check the init's type — if it has a method
+        // matching the prop, fire with the init's messageId and skip
+        // the annotation.  Falling through, iterate annotation's
+        // union/intersection constituents.
+        if (have_init and ctx.typeIdObjectPropertyIsMethod(init_ty, name)) {
+            const msg: []const u8 = if (ctx.typeIdObjectPropertyIsFnProperty(init_ty, name))
+                "unbound"
+            else
+                "unboundWithoutThisAnnotation";
+            ctx.reportWithMessageId(name_node, msg);
+            continue;
         }
         if (ctx.typeIdObjectPropertyIsMethod(source_ty, name)) {
             const msg: []const u8 = if (ctx.typeIdObjectPropertyIsFnProperty(source_ty, name))
