@@ -43,6 +43,14 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const ignore_static = readIgnoreStatic(ctx);
 
+    // `super.foo` — receiver is the parent class's instance type.
+    if (ctx.nodeTag(d.lhs) == .super_expr) {
+        if (superClassInstanceHasMethod(node, prop, ctx)) {
+            ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
+            return;
+        }
+    }
+
     // Instance-method case: receiver's type has a method-defined prop.
     const recv_ty = ctx.typeOfNode(d.lhs);
     if (ctx.typeIdObjectPropertyIsMethod(recv_ty, prop)) {
@@ -85,6 +93,33 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
         return;
     }
+}
+
+fn superClassInstanceHasMethod(member_node: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    // Walk up to find the enclosing class.
+    var cur = ctx.parentOf(member_node);
+    var depth: u32 = 0;
+    while (cur != .none and depth < 32) : ({ cur = ctx.parentOf(cur); depth += 1; }) {
+        const tag = ctx.nodeTag(cur);
+        if (tag == .class_decl or tag == .class_expr) {
+            const d = ctx.nodeData(cur);
+            if (d.lhs == .none) return false;
+            const cd = ctx.extraData(ast.ClassData, @intFromEnum(d.lhs));
+            if (cd.super_class == .none) return false;
+            var s = cd.super_class;
+            while (ctx.nodeTag(s) == .grouping_expr) s = ctx.nodeData(s).lhs;
+            if (ctx.nodeTag(s) != .identifier) return false;
+            const parent_name = ctx.tokenText(ctx.nodeMainToken(s));
+            if (parent_name.len == 0) return false;
+            const parent_decl = ctx.classDeclByName(parent_name);
+            if (parent_decl == .none) {
+                // Built-in superclass?
+                return isKnownPrototypeMethod(parent_name, prop);
+            }
+            return classHasInstanceMethod(parent_decl, prop, ctx);
+        }
+    }
+    return false;
 }
 
 fn readIgnoreStatic(ctx: *const LintContext) bool {
@@ -686,7 +721,24 @@ fn isSafePosition(node: NodeIndex, ctx: *const LintContext) bool {
         .tagged_template => return pd.lhs == node,
         .logical_not, .delete_expr, .typeof_expr, .void_expr => return true,
         .equal, .not_equal, .strict_equal, .strict_not_equal, .instanceof_expr => return true,
-        .assign => return pd.lhs == node,
+        .assign => {
+            if (pd.lhs == node) return true;
+            // Special case: `this.x = super.y` saves the super method
+            // to a this-bound property — not a this-loss pattern.
+            const nd = ctx.nodeData(node);
+            if ((ctx.nodeTag(node) == .member_expr or ctx.nodeTag(node) == .optional_member_expr) and
+                nd.lhs != .none and ctx.nodeTag(nd.lhs) == .super_expr and
+                pd.lhs != .none)
+            {
+                var lhs = pd.lhs;
+                while (ctx.nodeTag(lhs) == .grouping_expr) lhs = ctx.nodeData(lhs).lhs;
+                if (ctx.nodeTag(lhs) == .member_expr or ctx.nodeTag(lhs) == .optional_member_expr) {
+                    const ld = ctx.nodeData(lhs);
+                    if (ld.lhs != .none and ctx.nodeTag(ld.lhs) == .this_expr) return true;
+                }
+            }
+            return false;
+        },
         .grouping_expr, .ts_as_expr, .ts_non_null_expr, .ts_type_assertion, .ts_satisfies_expr
         => return isSafePosition(parent, ctx),
         .logical_and => {
