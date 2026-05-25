@@ -496,7 +496,17 @@ fn isDirectArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
     const d = ctx.nodeData(node);
     const recv_ty = ctx.narrowedTypeOf(d.lhs);
     const kind = ctx.typeIdKind(recv_ty) orelse return false;
-    return kind == .array_t or kind == .readonly_array_t or kind == .tuple_t;
+    if (kind != .array_t and kind != .readonly_array_t and kind != .tuple_t) return false;
+    // Don't bail when the element type is itself nullish — even with
+    // noUncheckedIndexedAccess, the conclusion (always-nullish) holds.
+    if (ctx.typeIdArrayElement(recv_ty)) |elem| {
+        const ek = ctx.typeIdKind(elem) orelse return true;
+        switch (ek) {
+            .null_t, .undefined_t, .void_t => return false,
+            else => {},
+        }
+    }
+    return true;
 }
 
 fn checkOptionalChainReceiver(recv: NodeIndex, op_node: NodeIndex, ctx: *const LintContext) void {
