@@ -1358,11 +1358,13 @@ pub const Checker = struct {
             .ts_mapped_type => self.resolveMappedType(ty_node),
             .ts_template_literal_type => self.resolveTemplateLiteralType(ty_node),
             // Literal types in type position — parser keeps them as
-            // value-style literal nodes.
-            .string_literal => tymod.ID_STRING,
-            .number_literal => tymod.ID_NUMBER,
-            .boolean_literal => tymod.ID_BOOLEAN,
-            .bigint_literal => tymod.ID_BIGINT,
+            // value-style literal nodes.  Preserve the specific literal
+            // type so consumers (switch-exhaustiveness, etc.) see the
+            // exact value rather than the broad family.
+            .string_literal => self.literalString(ty_node),
+            .number_literal => self.literalNumber(ty_node),
+            .boolean_literal => self.literalBoolean(ty_node),
+            .bigint_literal => self.literalBigint(ty_node),
             .null_literal => tymod.ID_NULL,
             else => tymod.ID_UNKNOWN,
         };
