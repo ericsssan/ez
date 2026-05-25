@@ -533,7 +533,7 @@ fn checkOptionalChainReceiver(recv: NodeIndex, op_node: NodeIndex, ctx: *const L
         const op_tag = ctx.nodeTag(op_node);
         const main_tok = ctx.nodeMainToken(op_node);
         const qdot_tok: u32 = switch (op_tag) {
-            .optional_call_expr => main_tok,
+            .optional_call_expr, .optional_computed_member_expr => main_tok,
             else => if (main_tok > 0) main_tok - 1 else main_tok,
         };
         const start = ctx.tokenStart(qdot_tok);
