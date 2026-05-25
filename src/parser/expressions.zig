@@ -6717,6 +6717,7 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
             // Suppress declare emission during speculative params parse; replayed into the
             // arrow's function scope below (same pattern as typed non-generic arrows).
             var params_range = ast.SubRange{ .start = 0, .end = 0 };
+            var generic_arrow_return_type: ast.NodeIndex = .none;
             const arrow_ok = blk: {
                 _ = p.advance(); // consume `(`
                 const saved_suppress = p.suppress_param_declares;
@@ -6727,7 +6728,7 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
                 };
                 p.suppress_param_declares = saved_suppress;
                 params_range = pr;
-                _ = p.parseOptionalTypeAnnotation() catch break :blk false;
+                generic_arrow_return_type = p.parseOptionalTypeAnnotation() catch break :blk false;
                 if (p.peek() == .arrow and !p.isOnNewLine()) break :blk true;
                 break :blk false;
             };
@@ -6747,6 +6748,7 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
                     .params_start = params_range.start,
                     .params_end = params_range.end,
                     .body = body,
+                    .return_type = generic_arrow_return_type,
                 });
                 const generic_arrow_node = try p.addNode(.{
                     .tag = .arrow_fn,

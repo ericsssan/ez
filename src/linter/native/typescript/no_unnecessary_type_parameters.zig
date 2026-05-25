@@ -38,7 +38,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const name = ctx.tokenText(ctx.nodeMainToken(node));
             var count: u32 = 0;
             countInContainer(owner, name, &count, ctx);
-            if (count == 1) ctx.reportWithMessageId(node, "sole");
+            if (count <= 1) ctx.reportWithMessageId(node, "sole");
             return;
         }
         return;
@@ -51,7 +51,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const container = findOwner(node, ctx) orelse return;
     var count: u32 = 0;
     countInContainer(container, name, &count, ctx);
-    if (count == 1) {
+    if (count <= 1) {
         ctx.reportWithMessageId(node, "sole");
     }
 }
@@ -96,15 +96,16 @@ fn findOwner(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     return findOwnerByPosition(tp, ctx);
 }
 
-/// Position-based owner search for orphan type parameters.  Looks for
-/// the smallest arrow_fn/fn_expr whose main_token is positioned just
-/// after the type parameter's token span (typical `<T>(…) => …` shape).
+/// Position-based owner search for orphan type parameters.  The arrow
+/// function's main_token is `<` which sits just BEFORE the first type
+/// parameter identifier (e.g. byte 13 vs byte 14 for `<T>`).  Find the
+/// closest arrow_fn whose main_token precedes the type param's position.
 fn findOwnerByPosition(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
     const tp_tok = ctx.nodeMainToken(tp);
     const tp_pos = ctx.tokenStart(tp_tok);
     const total: u32 = @intCast(ctx.ast.nodes.len);
     var best: NodeIndex = .none;
-    var best_pos: u32 = std.math.maxInt(u32);
+    var best_pos: u32 = 0;
     var i: u32 = 0;
     while (i < total) : (i += 1) {
         const ni: NodeIndex = @enumFromInt(i);
@@ -112,7 +113,9 @@ fn findOwnerByPosition(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
             .arrow_fn, .async_arrow_fn => {
                 const m = ctx.nodeMainToken(ni);
                 const p = ctx.tokenStart(m);
-                if (p > tp_pos and p < best_pos) {
+                // Pick the arrow whose `<` is as close to tp_pos as possible
+                // without exceeding it (maximum p ≤ tp_pos).
+                if (p <= tp_pos and (best == .none or p > best_pos)) {
                     best = ni;
                     best_pos = p;
                 }
@@ -120,8 +123,7 @@ fn findOwnerByPosition(tp: NodeIndex, ctx: *const LintContext) ?NodeIndex {
             else => {},
         }
     }
-    if (best != .none) return best;
-    return null;
+    return if (best != .none) best else null;
 }
 
 /// Dispatch on container kind and walk its signature region.
@@ -182,12 +184,13 @@ fn countInterfaceSig(container: NodeIndex, name: []const u8, count: *u32, ctx: *
 
 fn countFnType(container: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {
     // ts_function_type / ts_constructor_type — lhs = extra index to FnData.
+    // Return type is in fd.body (fd.return_type is always .none for these nodes).
     const d = ctx.nodeData(container);
     if (d.lhs == .none) return;
     const fd = ctx.extraData(ast.FnData, @intFromEnum(d.lhs));
     countTypeParamConstraints(fd.type_params, fd.type_params_end, name, count, ctx);
     countParams(fd.params, fd.params_end, name, count, ctx);
-    countTypeNode(fd.return_type, name, count, ctx, false);
+    countTypeNode(fd.body, name, count, ctx, false);
 }
 
 fn countClass(container: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {
@@ -324,7 +327,13 @@ fn countParam(param: NodeIndex, name: []const u8, count: *u32, ctx: *const LintC
     if (param == .none) return;
     var n = param;
     if (ctx.nodeTag(n) == .assignment_pattern) n = ctx.nodeData(n).lhs;
-    if (ctx.nodeTag(n) == .rest_element) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) == .rest_element) {
+        // For function-type rest params (`...args: T`), the type annotation
+        // lives at rest_element.rhs (not in the inner identifier's rhs).
+        const rest_ann = ctx.nodeData(n).rhs;
+        countTypeNode(rest_ann, name, count, ctx, false);
+        return;
+    }
     if (ctx.nodeTag(n) == .identifier) {
         const ann = ctx.nodeData(n).rhs;
         countTypeNode(ann, name, count, ctx, false);
@@ -393,7 +402,9 @@ fn countTypeNodeDepth(node: NodeIndex, name: []const u8, count: *u32, ctx: *cons
             if (d.lhs == .none) return;
             const fd = ctx.extraData(ast.FnData, @intFromEnum(d.lhs));
             countParams(fd.params, fd.params_end, name, count, ctx);
-            countTypeNode(fd.return_type, name, count, ctx, in_property);
+            // ts_function_type / ts_constructor_type store return type in fd.body,
+            // not fd.return_type (fd.return_type is always .none for these nodes).
+            countTypeNode(fd.body, name, count, ctx, in_property);
             countTypeParamConstraints(fd.type_params, fd.type_params_end, name, count, ctx);
         },
         .ts_type_reference => {
@@ -416,13 +427,25 @@ fn countTypeNodeDepth(node: NodeIndex, name: []const u8, count: *u32, ctx: *cons
             }
         },
         .ts_union_type, .ts_intersection_type, .ts_tuple_type => {
-            if (d.lhs == .none) return;
-            const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.lhs));
-            if (sr.start < sr.end and sr.end <= ctx.ast.extra_data.len) {
-                for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
-                    const t: NodeIndex = @enumFromInt(raw);
-                    countTypeNodeDepth(t, name, count, ctx, in_property, depth + 1);
-                }
+            // lhs/rhs store start/end of the element SubRange directly (not a pointer).
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const t: NodeIndex = @enumFromInt(raw);
+                countTypeNodeDepth(t, name, count, ctx, in_property, depth + 1);
+            }
+        },
+        .ts_template_literal_type => {
+            // lhs/rhs = start/end of element SubRange: alternating
+            // template_element (text) and type-expression nodes.
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const elem: NodeIndex = @enumFromInt(raw);
+                if (ctx.nodeTag(elem) == .template_element) continue;
+                countTypeNodeDepth(elem, name, count, ctx, in_property, depth + 1);
             }
         },
         .ts_array_type => countTypeNodeDepth(d.lhs, name, count, ctx, in_property, depth + 1),
@@ -437,25 +460,51 @@ fn countTypeNodeDepth(node: NodeIndex, name: []const u8, count: *u32, ctx: *cons
             countTypeNodeDepth(d.rhs, name, count, ctx, in_property, depth + 1);
         },
         .ts_conditional_type => {
-            // lhs = extra index to ConditionalTypeData.  Walk all four parts.
-            // We don't know the exact layout; walk via extra data SubRange when valid.
-            // Fall back: skip.
+            // lhs/rhs = start/end of a 4-element slice: [check, extends, true, false].
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const t: NodeIndex = @enumFromInt(raw);
+                countTypeNodeDepth(t, name, count, ctx, in_property, depth + 1);
+            }
         },
         .ts_type_literal => {
-            // { members } — members are type-position element nodes.
-            if (d.lhs == .none) return;
-            const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.lhs));
-            if (sr.start < sr.end and sr.end <= ctx.ast.extra_data.len) {
-                for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
-                    const m: NodeIndex = @enumFromInt(raw);
-                    countInterfaceMember(m, name, count, ctx);
-                }
+            // lhs/rhs = start/end of member node SubRange directly (not a pointer).
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                countInterfaceMember(m, name, count, ctx);
             }
         },
         .ts_mapped_type => {
-            // mapped types declare an inner type param via ts_type_parameter
-            // — the inner visitor takes care of self-references; we just
-            // walk the contained type.  Layout extra SubRange; skip for now.
+            // lhs/rhs = start/end of slice: [key_param, constraint, as_type, value_type].
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (s >= e or e > ctx.ast.extra_data.len) return;
+            // items[0] = key_param (new binding — don't count as outer-name reference,
+            //   but check if it shadows `name` to guard value_type below).
+            const key_node: NodeIndex = @enumFromInt(ctx.ast.extra_data[s]);
+            const key_shadows = key_node != .none and
+                ctx.nodeTag(key_node) == .identifier and
+                std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(key_node)), name);
+            // items[1] = constraint (T in [K in T]) — always walk.
+            if (s + 1 < e) {
+                const constraint: NodeIndex = @enumFromInt(ctx.ast.extra_data[s + 1]);
+                countTypeNodeDepth(constraint, name, count, ctx, in_property, depth + 1);
+            }
+            // items[2] = as_type — walk if present.
+            if (s + 2 < e) {
+                const as_t: NodeIndex = @enumFromInt(ctx.ast.extra_data[s + 2]);
+                if (as_t != .none) countTypeNodeDepth(as_t, name, count, ctx, in_property, depth + 1);
+            }
+            // items[3] = value_type — walk unless key binding shadows `name`.
+            if (!key_shadows and s + 3 < e) {
+                const val_t: NodeIndex = @enumFromInt(ctx.ast.extra_data[s + 3]);
+                if (val_t != .none) countTypeNodeDepth(val_t, name, count, ctx, in_property, depth + 1);
+            }
         },
         else => {},
     }

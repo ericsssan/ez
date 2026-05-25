@@ -1035,7 +1035,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "restrict-template-expressions",
       "no-unnecessary-qualifier",
       "restrict-plus-operands",
-      // "no-unnecessary-type-parameters", // needs TS-checker type inference; native partial impl held in place
+      "no-unnecessary-type-parameters",
       "prefer-readonly",
       "return-await",
       "switch-exhaustiveness-check",

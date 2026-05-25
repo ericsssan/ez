@@ -2702,6 +2702,18 @@ const NodeProto = {
     return idx === NONE ? null : nodeView(this._ast, idx);
   },
 
+  /** TSIndexedAccessType.objectType / indexType — `T[K]`. lhs=objectType, rhs=indexType. */
+  get objectType() {
+    if (this._tag !== T.ts_indexed_access_type) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    return lhs === NONE ? null : nodeView(this._ast, lhs);
+  },
+  get indexType() {
+    if (this._tag !== T.ts_indexed_access_type) return undefined;
+    const rhs = this._ast.nodeRhs(this._i);
+    return rhs === NONE ? null : nodeView(this._ast, rhs);
+  },
+
   /**
    * node.typeParameters — TSTypeParameterDeclaration for generic declarations.
    * Used by: TSTypeAliasDeclaration, TSInterfaceDeclaration, function declarations, class declarations.
@@ -2803,9 +2815,19 @@ const NodeProto = {
    * node.constraint — TSTypeParameter constraint clause (`extends T`).
    */
   get constraint() {
-    if (this._tag !== T.ts_type_parameter) return undefined;
-    const lhs = this._ast.nodeLhs(this._i);
-    return lhs === NONE ? undefined : nodeView(this._ast, lhs);
+    const t = this._tag;
+    const ast = this._ast;
+    if (t === T.ts_type_parameter) {
+      const lhs = ast.nodeLhs(this._i);
+      return lhs === NONE ? undefined : nodeView(ast, lhs);
+    }
+    // TSMappedType.constraint — second slot in the extra-data range (`[K in T]` → T).
+    if (t === T.ts_mapped_type) {
+      const start = ast.nodeLhs(this._i);
+      const cid = ast._extraData[start + 1];
+      return (cid === NONE || cid === undefined) ? undefined : nodeView(ast, cid);
+    }
+    return undefined;
   },
 
   /**
@@ -3052,6 +3074,12 @@ const NodeProto = {
     if (t === T.ts_keyof_type) {
       const idx = ast.nodeLhs(this._i);
       return idx === NONE ? undefined : nodeView(ast, idx);
+    }
+    // TSMappedType.typeAnnotation — fourth slot in extra-data range (value type after `:`).
+    if (t === T.ts_mapped_type) {
+      const start = ast.nodeLhs(this._i);
+      const vid = ast._extraData[start + 3];
+      return (vid === NONE || vid === undefined) ? undefined : nodeView(ast, vid);
     }
     // RestElement: rhs = type annotation (e.g. `...[a]: string[]`)
     if (t === T.rest_element) {
@@ -3507,6 +3535,12 @@ const NodeProto = {
     // fails cleanly instead of throwing.
     if (t === T.static_block) return { type: 'Identifier', name: '', start: this.start, end: this.start };
     if (t === T.ts_parameter_property) return { type: 'Identifier', name: '', start: this.start, end: this.start };
+    // TSMappedType.key — first slot in the extra-data range (key identifier).
+    if (t === T.ts_mapped_type) {
+      const start = ast.nodeLhs(this._i);
+      const kid = ast._extraData[start];
+      return (kid === NONE || kid === undefined) ? null : nodeView(ast, kid);
+    }
     return null;
   },
 

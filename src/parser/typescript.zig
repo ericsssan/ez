@@ -1247,6 +1247,10 @@ fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
     const scratch_top = p.scratchLen();
     defer p.scratchPop(scratch_top);
 
+    // Open a block scope for the mapped type key parameter so that
+    // `getScope(key)` returns this scope and rules can find the key variable.
+    const mapped_scope_ev = try p.emitScopeOpen(.block, .none);
+
     // Skip optional +/- readonly modifier
     if (p.peek() == .plus or p.peek() == .minus) _ = p.advance();
     if (p.peek() == .kw_readonly) _ = p.advance();
@@ -1256,6 +1260,8 @@ fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
     // Parse the key type parameter
     const key_param = try p.parseIdentifier();
     try p.scratchPush(key_param);
+    // Declare the key as a type parameter in the mapped type's scope.
+    try p.emitDeclare(.type_param, key_param);
 
     _ = try p.expect(.kw_in);
 
@@ -1310,11 +1316,14 @@ fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
     const items = p.scratchSlice(scratch_top);
     const range = try p.addSlice(items);
 
-    return p.addNode(.{
+    try p.emitScopeClose(.none);
+    const result = try p.addNode(.{
         .tag = .ts_mapped_type,
         .main_token = brace_tok,
         .data = .{ .lhs = NodeIndex.fromInt(range.start), .rhs = NodeIndex.fromInt(range.end) },
     });
+    p.patchScopeOpenNode(mapped_scope_ev, result);
+    return result;
 }
 
 // =====================================================================
