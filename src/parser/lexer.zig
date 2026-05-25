@@ -2077,14 +2077,18 @@ pub fn tokenizeWithBufAndBitmaps(
                     else { tag = .slash; end = p + 1; }
                 },
                 '"', '\'' => {
-                    // JSX semantics differ for attribute strings vs JS expression
-                    // strings (inside `{}` or outside JSX). Always pass is_jsx=true
-                    // for the file-level mode (so `<` terminates `<>I'm</>` text
-                    // apostrophes), but only disable escape sequences when the
-                    // string is in attribute-value position — `prev_kind == .equal`
-                    // is the unambiguous discriminator there.
+                    // JSX semantics: two distinct string contexts within JSX files.
+                    // 1. JSX attribute value: `<div id="foo">` — prev token is `=`.
+                    //    Needs terminate-at-`<` AND no escape sequences.
+                    // 2. JSX text content: `<div>'</div>` — prev token is `>`.
+                    //    Needs terminate-at-`<` (so the scan stops before `</`)
+                    //    but `'` in text is not a true string delimiter — the
+                    //    terminate-at-`<` just prevents it from consuming the tag.
+                    // 3. JS expression inside `{}`: `{"<test>"}` — prev is `{` etc.
+                    //    Must NOT terminate at `<`; standard JS string semantics.
                     const jsx_attr = language.isJsx() and prev_kind == .equal;
-                    end = stringEndBMOptFull(src, bm.structural, bm.newline, p, n, language.isJsx(), jsx_attr);
+                    const jsx_text = language.isJsx() and prev_kind == .greater_than;
+                    end = stringEndBMOptFull(src, bm.structural, bm.newline, p, n, jsx_attr or jsx_text, jsx_attr);
                     tag = .string_literal;
                     // Strings with line continuations (`\<newline>`) span
                     // multiple source lines. Register those breaks in `ls`

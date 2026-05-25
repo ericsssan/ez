@@ -57,7 +57,7 @@ const no_class_assign = @import("correctness/no_class_assign.zig");
 // const require_await = @import("correctness/require_await.zig");  // hand-written — disabled per IR-only constraint
 const no_constructor_return = @import("correctness/no_constructor_return.zig");  // IR-generated via node-nearest-function-ancestor op
 const no_await_in_loop = @import("correctness/no_await_in_loop.zig");  // IR-generated via await-is-in-loop op
-// const no_promise_executor_return = @import("correctness/no_promise_executor_return.zig");  // hand-written — disabled per IR-only constraint
+const no_promise_executor_return = @import("correctness/no_promise_executor_return.zig");  // hand-written — arrow CFG gap bypass
 const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");  // IR-generated via loop-has-iteration-back-edge op
 const no_empty_static_block = @import("correctness/no_empty_static_block.zig");
 // const no_constructor_new = @import("correctness/no_constructor_new.zig");  // hand-written — disabled per IR-only constraint
@@ -70,7 +70,7 @@ const linebreak_style = @import("style/linebreak_style.zig");
 const no_confusing_arrow = @import("style/no_confusing_arrow.zig");
 const no_this_assignment = @import("style/no_this_assignment.zig");
 const no_negation_in_equality_check = @import("style/no_negation_in_equality_check.zig");
-// const array_callback_return = @import("correctness/array_callback_return.zig");  // hand-written — disabled per IR-only constraint
+const array_callback_return = @import("correctness/array_callback_return.zig");  // hand-written — arrow CFG gap bypass
 const no_useless_backreference = @import("correctness/no_useless_backreference.zig");  // IR-generated, backed by regex_parser
 const no_new_native_nonconstructor = @import("correctness/no_new_native_nonconstructor.zig");
 const no_buffer_constructor = @import("correctness/no_buffer_constructor.zig");
@@ -451,7 +451,7 @@ pub const all_rules = .{
     // require_await, // hand-written — disabled
     no_constructor_return,
     no_await_in_loop,
-    // no_promise_executor_return, // runner >> native (runner 124/124, native 121/124, 3 more FN); fall back
+    no_promise_executor_return,
     no_unreachable_loop,
     // no_empty_static_block, // hand-written — disabled
     // no_constructor_new, // hand-written — disabled
@@ -459,7 +459,7 @@ pub const all_rules = .{
     // Correctness v0.7 (5)
     // no_constant_binary_expression, // runner >> native (21% correct); fall back to JS runner
     // no_div_regex, // hand-written — disabled
-    // array_callback_return, // runner >> native (39% correct); fall back to JS runner
+    array_callback_return,
     no_useless_backreference,
     no_new_native_nonconstructor,
     no_buffer_constructor,
