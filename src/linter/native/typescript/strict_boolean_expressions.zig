@@ -71,7 +71,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             walkBoolCtx(d.lhs, opts, ctx, 0);
         },
         .logical_not => {
-            walkBoolCtx(d.lhs, opts, ctx, 0);
+            // Only fire from this entry point when the unary isn't
+            // already inside a containing bool-context expression
+            // (the outer entry handles descent in that case).
+            if (!parentIsBoolCtxEntry(node, ctx)) {
+                walkBoolCtx(d.lhs, opts, ctx, 0);
+            }
         },
         .logical_and, .logical_or => {
             // LHS is always tested for truthiness.  When this logical is
