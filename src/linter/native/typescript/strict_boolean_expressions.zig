@@ -374,7 +374,12 @@ fn walkBoolCtx(expr: NodeIndex, opts: Options, ctx: *const LintContext, depth: u
         walkBoolCtx(d.rhs, opts, ctx, depth + 1);
         return;
     }
-    if (tag == .logical_not) return; // ! result is boolean
+    if (tag == .logical_not) {
+        // `!x` — descend into the operand: that's where the boolean
+        // test on the value happens.  TS-eslint fires on `x` here.
+        walkBoolCtx(ctx.nodeData(n).lhs, opts, ctx, depth + 1);
+        return;
+    }
     checkBoolLeaf(n, opts, ctx);
 }
 

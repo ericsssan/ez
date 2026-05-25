@@ -610,6 +610,22 @@ fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
 /// array/tuple — those could be `T | undefined` under
 /// noUncheckedIndexedAccess.  Record/object computed access doesn't
 /// trigger the bail.
+fn typeIsArrayOrUnionOfArrays(id: tymod.TypeId, index_node: NodeIndex, ctx: *const LintContext) bool {
+    const kind = ctx.typeIdKind(id) orelse return false;
+    if (kind == .array_t or kind == .readonly_array_t) return true;
+    if (kind == .tuple_t) {
+        // Tuple access with numeric-literal index is well-defined.
+        if (ctx.nodeTag(index_node) == .number_literal) return false;
+        return true;
+    }
+    if (kind == .union_t) {
+        for (ctx.typeIdUnionMembers(id)) |m| {
+            if (typeIsArrayOrUnionOfArrays(m, index_node, ctx)) return true;
+        }
+    }
+    return false;
+}
+
 fn containsArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
     var n = node;
     var depth: u32 = 0;
@@ -618,15 +634,7 @@ fn containsArrayIndexedAccess(node: NodeIndex, ctx: *const LintContext) bool {
         if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
             const d = ctx.nodeData(n);
             const recv_ty = ctx.narrowedTypeOf(d.lhs);
-            const kind = ctx.typeIdKind(recv_ty) orelse {
-                n = d.lhs;
-                continue;
-            };
-            if (kind == .array_t or kind == .readonly_array_t) return true;
-            // Tuple access with numeric-literal index is well-defined.
-            if (kind == .tuple_t) {
-                if (ctx.nodeTag(d.rhs) != .number_literal) return true;
-            }
+            if (typeIsArrayOrUnionOfArrays(recv_ty, d.rhs, ctx)) return true;
             n = d.lhs;
             continue;
         }
