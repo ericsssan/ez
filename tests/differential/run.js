@@ -883,7 +883,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
                 options: meta.options || [],
                 languageOptions: langOpts,
                 filename: meta.filename,
-                hasCustomParser: false,
+                hasCustomParser: !!meta.hasCustomParser,
                 isTypeScript: !!meta.isTypeScript,
                 eslintResult: (meta.oracleDiags || (meta.oracleLines || []).map(line => ({ rule: fullName, line }))).map(d => ({ ...d, rule: fullName })),
                 eslintFixes: meta.oracleFixes || null,

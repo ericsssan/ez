@@ -2934,7 +2934,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
             p.in_async = true;
             defer p.in_function = saved_fn;
             defer p.in_async = saved_async;
-            const arrow_scope_ev = try p.emitScopeOpen(.function, .none);
+            const arrow_scope_ev = try p.emitScopeOpen(.arrow_function, .none);
             try p.emitParamDeclaresFromRange(params_range);
             const body = try parseArrowBody(p);
             try p.emitScopeClose(.none);
@@ -3141,7 +3141,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.in_async = false;
             defer p.in_function = saved_fn2;
             defer p.in_async = saved_async2;
-            const empty_arrow_ev = try p.emitScopeOpen(.function, .none);
+            const empty_arrow_ev = try p.emitScopeOpen(.arrow_function, .none);
             const body = try parseArrowBody(p);
             try p.emitScopeClose(.none);
             const params_range = try p.addSlice(&[_]u32{});
@@ -3182,7 +3182,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.in_async = false;
             defer p.in_function = saved_fn;
             defer p.in_async = saved_async_ts;
-            const typed_arrow_ev = try p.emitScopeOpen(.function, .none);
+            const typed_arrow_ev = try p.emitScopeOpen(.arrow_function, .none);
             try p.emitParamDeclaresFromRange(params_range);
             const body = try parseArrowBody(p);
             try p.emitScopeClose(.none);
@@ -3457,7 +3457,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         // Arrow scope — params were parsed as expression identifiers and
         // emitted reference events into the enclosing scope; those become
         // orphan refs, but the arrow body's own refs resolve correctly here.
-        const paren_arrow_ev = try p.emitScopeOpen(.function, .none);
+        const paren_arrow_ev = try p.emitScopeOpen(.arrow_function, .none);
         try p.emitParamDeclaresFromRange(params_range);
 
         // Arrow params: spec rejects duplicate parameter names always.
@@ -3595,7 +3595,7 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
     const params = try p.addSlice(&[_]u32{param_node.toInt()});
 
     // Arrow function scope: the parameter binds inside it.
-    const single_arrow_ev = try p.emitScopeOpen(.function, .none);
+    const single_arrow_ev = try p.emitScopeOpen(.arrow_function, .none);
     try p.emitDeclare(.parameter, param_node);
 
     // Reset decl_name_text: arrow body should not inherit outer binding name.
@@ -6740,7 +6740,7 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
                 p.in_async = false;
                 defer p.in_function = saved_fn;
                 defer p.in_async = saved_async_ts2;
-                const generic_arrow_ev = try p.emitScopeOpen(.function, .none);
+                const generic_arrow_ev = try p.emitScopeOpen(.arrow_function, .none);
                 try p.emitParamDeclaresFromRange(params_range);
                 const body = try parseArrowBody(p);
                 try p.emitScopeClose(.none);

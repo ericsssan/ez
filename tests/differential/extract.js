@@ -1268,6 +1268,7 @@ async function loadRuleCases(testsDir, baseName, { capturePrefix = null, capture
           sourceType: tc.languageOptions?.sourceType || null,
           ecmaVersion: tc.languageOptions?.ecmaVersion ?? null,
           isTypeScript: !!tc.isTypeScript,
+          hasCustomParser: !!tc.hasCustomParser,
           jsx,
           filename: tc.filename || null,                     // preserved for filename-dependent rules
           globals: tc.languageOptions?.globals || null,

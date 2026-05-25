@@ -67,7 +67,7 @@ function ruleNameFromRuleId(ruleId) {
 // TS def type strings match @typescript-eslint/scope-manager DefinitionType values:
 // 'Type' for type aliases/interfaces, 'TSEnumName' for enums, 'TSModuleName' for namespaces
 const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName','FunctionName','ClassName','TypeParameter'];
-const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with','class-field-initializer'];
+const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with','class-field-initializer',null/*elided*/,'function'/*arrow_function*/];
 let _tsServices = null;
 function tsServices() {
   if (!_tsServices) {
@@ -2296,7 +2296,7 @@ class SourceCode {
       }
     }
 
-    const isVarScope = kind === 0 || kind === 1 || kind === 2 || kind === 9 /* class_field_initializer */;
+    const isVarScope = kind === 0 || kind === 1 || kind === 2 || kind === 9 /* class_field_initializer */ || kind === 11 /* arrow_function */;
     const isStrict = this._computeIsStrict(kind, flags16, upper, block);
 
     // In script mode, the top-level scope (kind=1, "module") should appear as "global" to rules.
@@ -2413,7 +2413,7 @@ class SourceCode {
       let stmts = null;
       if (kind === 0 || kind === 1) {
         stmts = block.body;
-      } else if (kind === 2) {
+      } else if (kind === 2 || kind === 11 /* arrow_function */) {
         stmts = block.body && block.body.body;
       }
       if (stmts && stmts.length > 0) {

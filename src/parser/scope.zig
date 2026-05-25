@@ -52,6 +52,9 @@ pub const ScopeKind = enum(u8) {
     /// these — no ScopeId is created and references inside are attributed to
     /// the enclosing scope.  No matching scope_close is emitted.
     elided,
+    /// Arrow function scope — var-scope like `function` but no `arguments`
+    /// or `this` binding (arrow functions inherit those from the outer scope).
+    arrow_function,
 };
 
 // ── Scope Flags ────────────────────────────────────────────
@@ -160,6 +163,7 @@ pub const ScopeTree = struct {
     ///   - `global` and `module` are var-scopes with a `this` binding.
     ///   - `module` and `class` scopes are always strict.
     ///   - `function` scopes are var-scopes with `arguments` and `this`.
+    ///   - `arrow_function` scopes are var-scopes without `arguments` or `this`.
     pub fn addScope(
         self: *ScopeTree,
         scope_kind: ScopeKind,
@@ -195,6 +199,12 @@ pub const ScopeTree = struct {
                 scope_flags.is_var_scope = true; // var declarations hoist to static block, not beyond
             },
             .block, .catch_clause, .switch_stmt, .with_stmt, .elided => {},
+            .arrow_function => {
+                // Arrow functions are var-scopes (var hoists out), but do not
+                // provide their own `arguments` or `this` — those are inherited
+                // from the nearest enclosing non-arrow function.
+                scope_flags.is_var_scope = true;
+            },
             .class_field_initializer => {
                 // Treated as an implicit function scope: var declarations hoist here,
                 // this is available, always strict (class context).
