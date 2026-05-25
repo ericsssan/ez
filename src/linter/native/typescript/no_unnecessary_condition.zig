@@ -526,11 +526,16 @@ fn checkOptionalChainReceiver(recv: NodeIndex, op_node: NodeIndex, ctx: *const L
     const nul = nullability(ty, ctx);
     if (nul == .never_nullish) {
         // Report on the `?.` operator token of the outer chain — that's
-        // where TS-eslint anchors the diagnostic.  The opt_member's
-        // main_token is the property name; the `?.` is the token just
-        // before it.
+        // where TS-eslint anchors the diagnostic.  For optional_member_expr
+        // / optional_computed_member_expr main_token is the property /
+        // bracket token, so the `?.` is one token earlier.  For
+        // optional_call_expr main_token IS the `?.` itself.
+        const op_tag = ctx.nodeTag(op_node);
         const main_tok = ctx.nodeMainToken(op_node);
-        const qdot_tok = if (main_tok > 0) main_tok - 1 else main_tok;
+        const qdot_tok: u32 = switch (op_tag) {
+            .optional_call_expr => main_tok,
+            else => if (main_tok > 0) main_tok - 1 else main_tok,
+        };
         const start = ctx.tokenStart(qdot_tok);
         const len = ctx.tokenText(qdot_tok).len;
         const end: u32 = @intCast(start + len);
