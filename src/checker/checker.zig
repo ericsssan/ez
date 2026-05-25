@@ -815,6 +815,16 @@ pub const Checker = struct {
                 if (data.rhs != .none) return self.typeOf(data.rhs);
                 return tymod.ID_UNKNOWN;
             },
+            .rest_element => {
+                // `...a: T` — type annotation lives on the rest_element
+                // (parser stores `: T` in rhs).  Resolve and return.
+                const data = self.ast_ref.nodeData(parent);
+                if (data.rhs != .none and self.ast_ref.nodeTag(data.rhs) == .ts_type_annotation) {
+                    const ty_node = self.ast_ref.nodeData(data.rhs).lhs;
+                    return self.resolveTypeNode(ty_node);
+                }
+                return tymod.ID_UNKNOWN;
+            },
             // Function declarations: build a function_t from the
             // FnData (params + return).  Caller-side call inference
             // can then resolve the return type and check arg types.
