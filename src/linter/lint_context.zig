@@ -5093,6 +5093,18 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
+        // ts_keyof_type / TSTypeOperator (also covers `readonly`):
+        // main_token is the operator keyword; the inner type's range may
+        // need the brackets-extension treatment of ts_array_type /
+        // ts_tuple_type which nodeSpan applies recursively.
+        if (tag == .ts_keyof_type) {
+            const data = self.nodeData(index);
+            if (data.lhs != .none) {
+                const inner_span = self.nodeSpan(data.lhs);
+                if (inner_span.end > end) end = inner_span.end;
+            }
+            return .{ .start = first_start, .end = end };
+        }
         // ts_type_reference with type args (`Foo<T, U>`): the type args
         // are children but the closing `>` is no child's token.  If the
         // span ends inside `<...>`, scan forward for the matching `>`.
