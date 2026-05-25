@@ -584,13 +584,38 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
     // referring to a class declaration, destructured names match the
     // class's STATIC methods (not instance methods).
     var class_static_decl: NodeIndex = .none;
+    // Class.prototype source: destructured names match the class's
+    // INSTANCE methods.
+    var class_prototype_decl: NodeIndex = .none;
+    // Built-in static catalogue source: e.g. `const { all } = Promise`.
+    var builtin_class_name: ?[]const u8 = null;
     if (have_source) {
         const parent_data = ctx.nodeData(parent);
         const init_node = parent_data.rhs;
-        if (init_node != .none and ctx.nodeTag(init_node) == .identifier) {
-            const class_name = ctx.tokenText(ctx.nodeMainToken(init_node));
-            const decl = ctx.classDeclByName(class_name);
-            if (decl != .none) class_static_decl = decl;
+        if (init_node != .none) {
+            if (ctx.nodeTag(init_node) == .identifier) {
+                const class_name = ctx.tokenText(ctx.nodeMainToken(init_node));
+                const decl = ctx.classDeclByName(class_name);
+                if (decl != .none) {
+                    class_static_decl = decl;
+                } else if (isThisBindingPrototypeClass(class_name)) {
+                    builtin_class_name = class_name;
+                }
+            } else if (ctx.nodeTag(init_node) == .member_expr) {
+                // Recognize `X.prototype` for some class X in the file.
+                const md = ctx.nodeData(init_node);
+                if (md.rhs != .none) {
+                    const prop = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+                    if (std.mem.eql(u8, prop, "prototype") and
+                        md.lhs != .none and
+                        ctx.nodeTag(md.lhs) == .identifier)
+                    {
+                        const class_name = ctx.tokenText(ctx.nodeMainToken(md.lhs));
+                        const decl = ctx.classDeclByName(class_name);
+                        if (decl != .none) class_prototype_decl = decl;
+                    }
+                }
+            }
         }
     }
 
@@ -619,6 +644,18 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
                 else
                     "unboundWithoutThisAnnotation";
                 ctx.reportWithMessageId(name_node, msg);
+                continue;
+            }
+        }
+        if (class_prototype_decl != .none) {
+            if (classHasInstanceMethod(class_prototype_decl, name, ctx)) {
+                ctx.reportWithMessageId(name_node, "unboundWithoutThisAnnotation");
+                continue;
+            }
+        }
+        if (builtin_class_name) |bcls| {
+            if (isKnownStaticMethod(bcls, name)) {
+                ctx.reportWithMessageId(name_node, "unboundWithoutThisAnnotation");
                 continue;
             }
         }
