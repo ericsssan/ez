@@ -158,7 +158,10 @@ fn checkParam(param: NodeIndex, opts: Options, ctx: *const LintContext) void {
     // ts-eslint reports the parameter Identifier whose ESTree range
     // includes the typeAnnotation child.  Our identifier node ends at
     // the name; extend to the end of the annotation node.
-    const ps = ctx.nodeSpan(param);
+    // ts-eslint anchors on the INNER binding identifier, not the
+    // parameter-property wrapper, so the modifier (`private`,
+    // `readonly`, ...) isn't included in the diagnostic range.
+    const ps = ctx.nodeSpan(n);
     const ts = ctx.nodeSpan(ty_node);
     ctx.reportSpanWithMessageId(.{ .start = ps.start, .end = ts.end }, "shouldBeReadonly");
 }
