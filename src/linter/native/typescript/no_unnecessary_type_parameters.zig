@@ -14,6 +14,7 @@ const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
+const span_mod = @import("../../../parser/span.zig");
 
 pub const meta = RuleMeta{
     .name = "no-unnecessary-type-parameters",
@@ -29,6 +30,29 @@ pub const relevant_tags = [_]Node.Tag{
 
 pub const needs_semantic = false;
 
+/// Compute the correct source span for a ts_type_parameter node.
+/// nodeSpan(ts_type_parameter) may be wrong in two ways:
+/// - ts_type_literal constraints: closing `}` not tracked in node_max_toks
+/// - ts_intersection_type: main_token points past the end, inflating max_tok
+/// Correct end: use nodeSpan(constraint) or nodeSpan(default_type) directly,
+/// which invoke the correct depth-scan logic for those subtypes.
+fn typeParamSpan(node: NodeIndex, ctx: *const LintContext) span_mod.Span {
+    const main_tok = ctx.nodeMainToken(node);
+    const start = ctx.tokenStart(main_tok);
+    const d = ctx.nodeData(node);
+    // default_type (rhs) comes after constraint; if present, use its end.
+    if (d.rhs != .none) {
+        return .{ .start = start, .end = ctx.nodeSpan(d.rhs).end };
+    }
+    // constraint (lhs): use nodeSpan directly to invoke ts_type_literal /
+    // ts_union_type / ts_intersection_type depth-scan logic.
+    if (d.lhs != .none) {
+        return .{ .start = start, .end = ctx.nodeSpan(d.lhs).end };
+    }
+    // Plain `T` — no constraint or default.
+    return .{ .start = start, .end = ctx.tokenEnd(main_tok) };
+}
+
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Skip type params declared inside infer-types / mapped-types — those
     // aren't function/class type params and have different semantics.
@@ -38,7 +62,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const name = ctx.tokenText(ctx.nodeMainToken(node));
             var count: u32 = 0;
             countInContainer(owner, name, &count, ctx);
-            if (count <= 1) ctx.reportWithMessageId(node, "sole");
+            if (count <= 1) ctx.reportSpanWithMessageId(typeParamSpan(node, ctx), "sole");
             return;
         }
         return;
@@ -52,7 +76,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     var count: u32 = 0;
     countInContainer(container, name, &count, ctx);
     if (count <= 1) {
-        ctx.reportWithMessageId(node, "sole");
+        ctx.reportSpanWithMessageId(typeParamSpan(node, ctx), "sole");
     }
 }
 
