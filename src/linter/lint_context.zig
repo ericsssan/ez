@@ -712,9 +712,18 @@ pub const LintContext = struct {
             return false;
         }
         if (t.kind == .union_t or t.kind == .intersection_t) {
+            // Only "fn property" if EVERY member with this prop has it
+            // as a fn property — otherwise the actual runtime value
+            // could be the non-fn-property variant and reporting
+            // "unbound" instead of "unboundWithoutThisAnnotation"
+            // would be wrong.
+            var saw_any = false;
             for (c.store.idsOf(t.list_data)) |m| {
-                if (self.typeIdObjectPropertyIsFnProperty(m, name)) return true;
+                if (!self.typeIdObjectPropertyIsMethod(m, name)) continue;
+                saw_any = true;
+                if (!self.typeIdObjectPropertyIsFnProperty(m, name)) return false;
             }
+            return saw_any;
         }
         return false;
     }
