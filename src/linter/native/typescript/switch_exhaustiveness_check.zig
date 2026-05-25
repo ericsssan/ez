@@ -69,6 +69,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     var case_buf: [64]NodeIndex = undefined;
     var case_count: usize = 0;
     var has_default = false;
+    var default_node: NodeIndex = .none;
     const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
     if (sr.start < sr.end and sr.end <= ctx.ast.extra_data.len) {
         for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
@@ -77,6 +78,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const ctag = ctx.nodeTag(c);
             if (ctag == .switch_default) {
                 has_default = true;
+                default_node = c;
                 continue;
             }
             if (ctag != .switch_case) continue;
@@ -127,6 +129,18 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // and there's no default, fire once.
     if (has_non_finite and opts.require_default_for_non_union and !has_default) {
         ctx.reportWithMessageId(discriminant, "switchIsNotExhaustive");
+    }
+    // dangerousDefaultCase: when the switch IS exhaustive (no missing
+    // members, finite union, no non-finite parts) and a default exists,
+    // and the option allows reporting it.
+    if (!opts.allow_default_case_for_exhaustive and
+        has_default and
+        missing_count == 0 and
+        expected_count > 0 and
+        !has_non_finite and
+        default_node != .none)
+    {
+        ctx.reportWithMessageId(default_node, "dangerousDefaultCase");
     }
 }
 
