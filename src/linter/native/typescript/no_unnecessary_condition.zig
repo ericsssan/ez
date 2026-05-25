@@ -518,7 +518,12 @@ fn checkOptionalChainReceiver(recv: NodeIndex, op_node: NodeIndex, ctx: *const L
     if (recv == .none) return;
     var n = recv;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
-    if (containsComputedAccess(n, ctx)) return;
+    // Bail only when the immediate receiver IS a direct array indexed
+    // access (`a[i]?.foo` — the `?` could legitimately short-circuit
+    // under noUncheckedIndexedAccess).  When the access is followed by
+    // a property like `a[i].b?.c`, .b filters down to a concrete type
+    // that we CAN reason about.
+    if (isDirectArrayIndexedAccess(n, ctx)) return;
     const ty = chainCheckType(n, ctx);
     const nul = nullability(ty, ctx);
     if (nul == .never_nullish) {
