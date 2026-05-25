@@ -61,21 +61,58 @@ fn readOptions(ctx: *const LintContext) Options {
     return opts;
 }
 
-fn nameMatchesAllow(name: []const u8, opts: Options) bool {
+fn nameMatchesAllow(name: []const u8, opts: Options, ctx: *const LintContext) bool {
     const allow = opts.allow orelse return false;
     if (allow.* != .array) return false;
     for (allow.array.items) |item| {
         switch (item) {
             .string => |s| if (std.mem.eql(u8, s, name)) return true,
             .object => {
+                // Match the name first (string or string[]).
                 const n = item.object.get("name") orelse continue;
+                var name_ok = false;
                 switch (n) {
-                    .string => |s| if (std.mem.eql(u8, s, name)) return true,
-                    .array => for (n.array.items) |sn| {
-                        if (sn == .string and std.mem.eql(u8, sn.string, name)) return true;
+                    .string => |s| name_ok = std.mem.eql(u8, s, name),
+                    .array => {
+                        for (n.array.items) |sn| {
+                            if (sn == .string and std.mem.eql(u8, sn.string, name)) {
+                                name_ok = true;
+                                break;
+                            }
+                        }
                     },
                     else => {},
                 }
+                if (!name_ok) continue;
+                // `from` distinguishes types declared in file vs lib vs
+                // package.  We can only verify "file" (the source we're
+                // linting) — "lib"/"package" point at sources we don't
+                // model.  Conservatively skip non-file allows so the
+                // rule still fires when oracle expects it.
+                if (item.object.get("from")) |from| {
+                    if (from == .string) {
+                        const from_s = from.string;
+                        if (std.mem.eql(u8, from_s, "file")) {
+                            // `from: "file"` with a specific `path` would
+                            // need path comparison; skip to be conservative.
+                            if (item.object.get("path") != null) continue;
+                            // For "file", the name must refer to a
+                            // type declared in this file.
+                            if (ctx.typeDeclNode(name) == .none) continue;
+                        } else if (std.mem.eql(u8, from_s, "lib")) {
+                            // "lib" types are TS built-ins — match only
+                            // when the name doesn't resolve to a local
+                            // declaration in this file.
+                            if (ctx.typeDeclNode(name) != .none) continue;
+                        } else if (std.mem.eql(u8, from_s, "package")) {
+                            // We don't model package sources; skip
+                            // conservatively so local matches don't
+                            // accidentally allow.
+                            if (ctx.typeDeclNode(name) != .none) continue;
+                        }
+                    }
+                }
+                return true;
             },
             else => {},
         }
@@ -234,7 +271,7 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
             // Inspect the name and (if generic) the type args.
             const name_node = d.lhs;
             const name = if (name_node != .none) ctx.tokenText(ctx.nodeMainToken(name_node)) else &.{};
-            if (nameMatchesAllow(name, opts)) return true;
+            if (nameMatchesAllow(name, opts, ctx)) return true;
             // Readonly<X> / ReadonlyArray<X> / ReadonlySet<X> /
             // ReadonlyMap<K,V> — outer wrapper enforces readonly at
             // depth 1; check that the argument's INNER (next level)
