@@ -105,10 +105,11 @@ fn nameMatchesAllow(name: []const u8, opts: Options, ctx: *const LintContext) bo
                             // declaration in this file.
                             if (ctx.typeDeclNode(name) != .none) continue;
                         } else if (std.mem.eql(u8, from_s, "package")) {
-                            // We don't model package sources; skip
-                            // conservatively so local matches don't
-                            // accidentally allow.
-                            if (ctx.typeDeclNode(name) != .none) continue;
+                            // We can't verify a type's package origin.
+                            // Always skip so the rule still fires when
+                            // the user expects it (oracle treats the
+                            // package source as unverifiable too).
+                            continue;
                         }
                     }
                 }
