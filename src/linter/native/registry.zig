@@ -172,7 +172,7 @@ const no_shadow_restricted_names = @import("correctness/no_shadow_restricted_nam
 const no_undef_init = @import("style/no_undef_init.zig");  // IR-generated via no-undef-init-check handler
 const no_restricted_globals = @import("style/no_restricted_globals.zig");  // IR-generated via for-each-ref-by-option-name + checkGlobalObject
 // const no_param_reassign = @import("style/no_param_reassign.zig");  // hand-written — disabled per IR-only constraint
-// const no_plusplus = @import("style/no_plusplus.zig");  // hand-written — disabled per IR-only constraint
+const no_plusplus = @import("style/no_plusplus.zig");
 const no_proto = @import("style/no_proto.zig");
 const no_path_concat = @import("style/no_path_concat.zig");
 const no_return_assign = @import("style/no_return_assign.zig");  // IR-generated via no-return-assign-check op
@@ -544,7 +544,7 @@ pub const all_rules = .{
     no_undef_init,
     no_restricted_globals,
     // no_param_reassign, // runner >> native (runner 76, native 57, gap 21); fall back to JS runner
-    // no_plusplus, // hand-written — disabled
+    no_plusplus,
     no_proto,
     no_path_concat,
     no_return_assign,
