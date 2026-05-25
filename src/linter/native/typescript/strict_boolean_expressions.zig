@@ -391,9 +391,69 @@ fn checkBoolLeaf(expr: NodeIndex, opts: Options, ctx: *const LintContext) void {
     if (ty.eq(@import("../../../checker/types.zig").ID_UNKNOWN) and isUnannotatedParamRef(n, ctx)) {
         ty = @import("../../../checker/types.zig").ID_ANY;
     }
-    const classification = classify(ty, opts, ctx);
+    var classification = classify(ty, opts, ctx);
+    // Promote nullable_(string|number) to nullable_enum when the source
+    // expression carries enum origin — TS-eslint preserves enum-ness
+    // through types, but our checker collapses enum member literals to
+    // their primitive literal types.  Detect syntactically.
+    if (leafHasEnumOrigin(n, ctx)) {
+        classification = switch (classification) {
+            .nullable_string, .nullable_number => .nullable_enum,
+            else => classification,
+        };
+    }
     const msg = messageFor(classification, opts);
     if (msg) |m| ctx.reportWithMessageId(n, m);
+}
+
+/// True when the AST expression — directly or via a single-binding
+/// const reference — sources at least one of its values from an enum
+/// member access (\`EnumName.Member\`).
+fn leafHasEnumOrigin(node: NodeIndex, ctx: *const LintContext) bool {
+    return leafHasEnumOriginRec(node, ctx, 0);
+}
+
+fn leafHasEnumOriginRec(node: NodeIndex, ctx: *const LintContext, depth: u32) bool {
+    if (node == .none or depth > 8) return false;
+    var n = node;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    switch (tag) {
+        .member_expr, .optional_member_expr => {
+            const d = ctx.nodeData(n);
+            if (d.lhs != .none and ctx.nodeTag(d.lhs) == .identifier) {
+                const obj = ctx.tokenText(ctx.nodeMainToken(d.lhs));
+                if (obj.len > 0 and ctx.typeNameIsEnum(obj)) return true;
+            }
+            return false;
+        },
+        .conditional => {
+            const d = ctx.nodeData(n);
+            if (leafHasEnumOriginRec(d.lhs, ctx, depth + 1)) return true; // test (rare)
+            // Conditional uses extra_data for cons/alt; fall through to
+            // generic walk via narrowedTypeOf — easier to walk node's
+            // children explicitly.
+            // For conditional_expression: lhs = test, rhs = ConditionalData index.
+            // Walk consequent + alternate via extraData lookup.
+            const c_extra = ctx.extraData(ast.Conditional, @intFromEnum(d.rhs));
+            if (leafHasEnumOriginRec(c_extra.consequent, ctx, depth + 1)) return true;
+            if (leafHasEnumOriginRec(c_extra.alternate, ctx, depth + 1)) return true;
+            return false;
+        },
+        .logical_and, .logical_or, .nullish_coalesce => {
+            const d = ctx.nodeData(n);
+            if (leafHasEnumOriginRec(d.lhs, ctx, depth + 1)) return true;
+            if (leafHasEnumOriginRec(d.rhs, ctx, depth + 1)) return true;
+            return false;
+        },
+        .identifier => {
+            if (ctx.constInitializerOf(n)) |init_node| {
+                return leafHasEnumOriginRec(init_node, ctx, depth + 1);
+            }
+            return false;
+        },
+        else => return false,
+    }
 }
 
 fn isUnannotatedParamRef(n: NodeIndex, ctx: *const LintContext) bool {
