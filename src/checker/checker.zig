@@ -840,6 +840,11 @@ pub const Checker = struct {
                 // element type.  `arr.some(x => x)` → x has type arr's
                 // element.
                 if (self.contextualArrayPredicateParamType(binding)) |t| return t;
+                // Generic contextual typing: arrow callback passed to a
+                // function whose parameter has a function type.  Walk
+                // the callee's signature to find the matching arg slot's
+                // param type.
+                if (self.contextualCallbackParamType(binding)) |t| return t;
                 return tymod.ID_UNKNOWN;
             },
         }
@@ -929,6 +934,95 @@ pub const Checker = struct {
         const recv_ty = self.typeOf(md.lhs);
         const elem = self.elementTypeOf(recv_ty) orelse return null;
         return elem;
+    }
+
+    /// Generic contextual typing for arrow/fn-expr callbacks.
+    /// `bar(x => ...)` where `bar(cb: (arg: Foo) => void)`: the arrow's
+    /// `x` should get type `Foo` from the callee's signature.
+    fn contextualCallbackParamType(self: *Checker, binding: NodeIndex) ?TypeId {
+        const parents = self.ast_ref.parents;
+        if (parents.len == 0) return null;
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        // Walk up: binding → arrow_fn / fn_expr.
+        var cur = parents[binding.toInt()];
+        if (cur == NONE) return null;
+        var fn_node: NodeIndex = .none;
+        var depth: u32 = 0;
+        while (cur != NONE and depth < 8) : ({ cur = parents[cur]; depth += 1; }) {
+            const t = self.ast_ref.nodeTag(@enumFromInt(cur));
+            switch (t) {
+                .arrow_fn, .async_arrow_fn,
+                .fn_expr, .async_fn_expr,
+                => { fn_node = @enumFromInt(cur); break; },
+                else => {},
+            }
+        }
+        if (fn_node == .none) return null;
+        // The binding must be one of fn_node's parameters; find which slot.
+        const fn_tag = self.ast_ref.nodeTag(fn_node);
+        var pstart: u32 = 0;
+        var pend: u32 = 0;
+        switch (fn_tag) {
+            .arrow_fn, .async_arrow_fn => {
+                const fd_d = self.ast_ref.nodeData(fn_node);
+                if (fd_d.lhs == .none) return null;
+                const ad = self.ast_ref.extraData(ast.ArrowData, @intFromEnum(fd_d.lhs));
+                pstart = ad.params_start; pend = ad.params_end;
+            },
+            else => {
+                const fd_d = self.ast_ref.nodeData(fn_node);
+                if (fd_d.lhs == .none) return null;
+                const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(fd_d.lhs));
+                pstart = fd.params; pend = fd.params_end;
+            },
+        }
+        if (pend <= pstart or pend > self.ast_ref.extra_data.len) return null;
+        const params = self.ast_ref.extra_data[pstart..pend];
+        var param_slot: i32 = -1;
+        for (params, 0..) |raw, idx| {
+            var p_node: NodeIndex = @enumFromInt(raw);
+            if (self.ast_ref.nodeTag(p_node) == .ts_parameter_property) p_node = self.ast_ref.nodeData(p_node).lhs;
+            if (self.ast_ref.nodeTag(p_node) == .assignment_pattern) p_node = self.ast_ref.nodeData(p_node).lhs;
+            if (self.ast_ref.nodeTag(p_node) == .rest_element) p_node = self.ast_ref.nodeData(p_node).lhs;
+            if (p_node == binding) { param_slot = @intCast(idx); break; }
+        }
+        if (param_slot < 0) return null;
+        // The fn must be an argument to a call.
+        const fn_parent_raw = parents[fn_node.toInt()];
+        if (fn_parent_raw == NONE) return null;
+        const call_node: NodeIndex = @enumFromInt(fn_parent_raw);
+        if (self.ast_ref.nodeTag(call_node) != .call_expr) return null;
+        const cd = self.ast_ref.nodeData(call_node);
+        if (cd.rhs == .none) return null;
+        const sr = self.ast_ref.extraData(ast.SubRange, @intFromEnum(cd.rhs));
+        if (sr.start >= sr.end or sr.end > self.ast_ref.extra_data.len) return null;
+        // Find which arg slot our fn is.
+        const args = self.ast_ref.extra_data[sr.start..sr.end];
+        var arg_slot: i32 = -1;
+        for (args, 0..) |raw, idx| {
+            if (raw == fn_node.toInt()) { arg_slot = @intCast(idx); break; }
+        }
+        if (arg_slot < 0) return null;
+        // Resolve callee's function type → arg_slot-th param → its
+        // signature's param_slot-th param type.
+        const callee_ty = self.typeOf(cd.lhs);
+        const ct = self.store.get(callee_ty);
+        if (ct.kind != .function_t) return null;
+        const sigs = self.store.signaturesOf(ct.signatures);
+        if (sigs.len == 0) return null;
+        const sig = sigs[0];
+        const params_t = self.store.signatureParamsOf(sig);
+        if (@as(usize, @intCast(arg_slot)) >= params_t.len) return null;
+        const cb_ty = params_t[@intCast(arg_slot)];
+        // cb_ty should be a function type — take its param_slot-th param.
+        const cb_t = self.store.get(cb_ty);
+        if (cb_t.kind != .function_t) return null;
+        const cb_sigs = self.store.signaturesOf(cb_t.signatures);
+        if (cb_sigs.len == 0) return null;
+        const cb_sig = cb_sigs[0];
+        const cb_params = self.store.signatureParamsOf(cb_sig);
+        if (@as(usize, @intCast(param_slot)) >= cb_params.len) return null;
+        return cb_params[@intCast(param_slot)];
     }
 
     fn isArrayPredicateMethodName(name: []const u8) bool {

@@ -535,6 +535,71 @@ fn patternIsInDeclarationOnly(node: NodeIndex, ctx: *const LintContext) bool {
 /// pattern that's in parameter position.  The parser sets
 /// parents[ts_type_annotation] = obj_pattern_node — scan ts_type_annotation
 /// nodes whose parent is `pattern_node` and resolve their inner type.
+fn patternContextualType(pattern_node: NodeIndex, ctx: *const LintContext) ?tymod.TypeId {
+    // Walk up from the pattern: arrow_fn / fn_expr → call_expr.
+    // The pattern must be one of the fn's params; find its slot.
+    var fn_node: NodeIndex = .none;
+    var cur = ctx.parentOf(pattern_node);
+    var depth: u32 = 0;
+    // Step over assignment_pattern (default value wrapper).
+    while (cur != .none and depth < 8) : ({ cur = ctx.parentOf(cur); depth += 1; }) {
+        const t = ctx.nodeTag(cur);
+        switch (t) {
+            .arrow_fn, .async_arrow_fn,
+            .fn_expr, .async_fn_expr,
+            => { fn_node = cur; break; },
+            else => {},
+        }
+    }
+    if (fn_node == .none) return null;
+    // Find the pattern's param slot.
+    const fn_tag = ctx.nodeTag(fn_node);
+    var pstart: u32 = 0;
+    var pend: u32 = 0;
+    switch (fn_tag) {
+        .arrow_fn, .async_arrow_fn => {
+            const fd_d = ctx.nodeData(fn_node);
+            if (fd_d.lhs == .none) return null;
+            const ad = ctx.extraData(ast.ArrowData, @intFromEnum(fd_d.lhs));
+            pstart = ad.params_start; pend = ad.params_end;
+        },
+        else => {
+            const fd_d = ctx.nodeData(fn_node);
+            if (fd_d.lhs == .none) return null;
+            const fd = ctx.extraData(ast.FnData, @intFromEnum(fd_d.lhs));
+            pstart = fd.params; pend = fd.params_end;
+        },
+    }
+    if (pend <= pstart or pend > ctx.ast.extra_data.len) return null;
+    const params_data = ctx.ast.extra_data[pstart..pend];
+    var param_slot: i32 = -1;
+    for (params_data, 0..) |raw, idx| {
+        var p: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(p) == .ts_parameter_property) p = ctx.nodeData(p).lhs;
+        if (ctx.nodeTag(p) == .assignment_pattern) p = ctx.nodeData(p).lhs;
+        if (ctx.nodeTag(p) == .rest_element) p = ctx.nodeData(p).lhs;
+        if (p == pattern_node) { param_slot = @intCast(idx); break; }
+    }
+    if (param_slot < 0) return null;
+    // fn must be an arg to a call.
+    const cp = ctx.parentOf(fn_node);
+    if (cp == .none or ctx.nodeTag(cp) != .call_expr) return null;
+    const cd = ctx.nodeData(cp);
+    if (cd.rhs == .none) return null;
+    const sr = ctx.extraData(ast.SubRange, @intFromEnum(cd.rhs));
+    if (sr.start >= sr.end or sr.end > ctx.ast.extra_data.len) return null;
+    const args = ctx.ast.extra_data[sr.start..sr.end];
+    var arg_slot: i32 = -1;
+    for (args, 0..) |raw, idx| {
+        if (raw == fn_node.toInt()) { arg_slot = @intCast(idx); break; }
+    }
+    if (arg_slot < 0) return null;
+    // Look up the callee's function signature param[arg_slot] —
+    // it should itself be a function with a param at param_slot.
+    const callee_ty = ctx.typeOfNode(cd.lhs);
+    return ctx.callbackParamSlotType(callee_ty, @intCast(arg_slot), @intCast(param_slot));
+}
+
 fn patternAnnotationType(pattern_node: NodeIndex, ctx: *const LintContext) ?tymod.TypeId {
     const total = ctx.ast.nodes.len;
     var i: u32 = 0;
@@ -616,6 +681,15 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
                 if (pd.rhs != .none) {
                     init_ty = ctx.typeOfNode(pd.rhs);
                     have_init = true;
+                }
+            }
+            // No explicit annotation — try contextual typing.  When
+            // the pattern is an unannotated arrow/fn param, look up
+            // the contextual type from the callee.
+            if (!have_source) {
+                if (patternContextualType(node, ctx)) |t| {
+                    source_ty = t;
+                    have_source = true;
                 }
             }
         },

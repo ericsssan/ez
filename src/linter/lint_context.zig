@@ -770,16 +770,53 @@ pub const LintContext = struct {
     /// If `id` is a function_t whose (first) signature is an assertion
     /// (`asserts x` / `asserts x is X`), return the asserted param
     /// index + target type.  Otherwise null.
+    /// For a callee function type, return the param-type at
+    /// `param_slot` of the callback at `arg_slot`.
+    /// `bar: (cb: (arg: Foo) => void) => void` + arg_slot=0, param_slot=0
+    /// → Foo.
+    pub fn callbackParamSlotType(
+        self: *const LintContext,
+        callee_id: tymod.TypeId,
+        arg_slot: u32,
+        param_slot: u32,
+    ) ?tymod.TypeId {
+        const c = self.ensureChecker() orelse return null;
+        const t = c.store.get(callee_id);
+        if (t.kind != .function_t) return null;
+        const sigs = c.store.signaturesOf(t.signatures);
+        if (sigs.len == 0) return null;
+        const sig = sigs[0];
+        const params = c.store.signatureParamsOf(sig);
+        if (arg_slot >= params.len) return null;
+        const cb_ty = params[arg_slot];
+        const cb_t = c.store.get(cb_ty);
+        if (cb_t.kind != .function_t) return null;
+        const cb_sigs = c.store.signaturesOf(cb_t.signatures);
+        if (cb_sigs.len == 0) return null;
+        const cb_sig = cb_sigs[0];
+        const cb_params = c.store.signatureParamsOf(cb_sig);
+        if (param_slot >= cb_params.len) return null;
+        return cb_params[param_slot];
+    }
+
     pub fn functionAssertionInfo(self: *const LintContext, id: tymod.TypeId) ?AssertionInfo {
         const c = self.ensureChecker() orelse return null;
         const t = c.store.get(id);
         if (t.kind != .function_t) return null;
         const sigs = c.store.signaturesOf(t.signatures);
         if (sigs.len == 0) return null;
-        const s = sigs[0];
-        if (!s.is_assertion) return null;
-        if (s.predicate_param_index == 0xFFFF) return null;
-        return .{ .param_index = s.predicate_param_index, .target = s.predicate_target };
+        // For overloaded functions, only treat the call as an
+        // assertion when EVERY signature asserts the same parameter.
+        // Otherwise the overload-resolved signature might not assert
+        // and we'd FP.
+        const first = sigs[0];
+        if (!first.is_assertion) return null;
+        if (first.predicate_param_index == 0xFFFF) return null;
+        for (sigs[1..]) |s| {
+            if (!s.is_assertion) return null;
+            if (s.predicate_param_index != first.predicate_param_index) return null;
+        }
+        return .{ .param_index = first.predicate_param_index, .target = first.predicate_target };
     }
 
     /// Like AssertionInfo but for plain `x is X` type predicates (not
