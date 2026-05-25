@@ -209,7 +209,11 @@ fn checkPredicateReturnsOnCallback(cb: NodeIndex, body: NodeIndex, opts: Options
     const d = ctx.nodeData(body);
     const s = @intFromEnum(d.lhs);
     const e = @intFromEnum(d.rhs);
-    if (e <= s or e > ctx.ast.extra_data.len) return;
+    // Out-of-bounds range — give up.  Empty range (e == s) is legal:
+    // the for-loop below simply skips, leaving saw_return=false so we
+    // fall through to the no-return path which reports
+    // `conditionErrorNullish` (callback implicitly returns undefined).
+    if (e > ctx.ast.extra_data.len) return;
     var saw_return = false;
     var any_indeterminate = false;
     var combined_id: ?[]const u8 = null;
