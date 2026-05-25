@@ -542,6 +542,23 @@ fn checkOptionalChainReceiver(recv: NodeIndex, op_node: NodeIndex, ctx: *const L
 /// actually tests — i.e. the property's *declared* type (NOT the
 /// chain-result type, which has `undefined` added by upstream `?.`).
 /// `foo?.bar?.baz` checks `?.baz` against foo's bar-property type.
+fn constStringKey(key: NodeIndex, ctx: *const LintContext) ?[]const u8 {
+    var n = key;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    const tag = ctx.nodeTag(n);
+    if (tag == .string_literal) {
+        const raw = ctx.tokenText(ctx.nodeMainToken(n));
+        if (raw.len < 2) return null;
+        return raw[1 .. raw.len - 1];
+    }
+    if (tag == .identifier) {
+        if (ctx.constInitializerOf(n)) |init_node| {
+            return constStringKey(init_node, ctx);
+        }
+    }
+    return null;
+}
+
 fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
     const tag = ctx.nodeTag(n);
     if (tag == .optional_member_expr or tag == .member_expr) {
@@ -555,6 +572,23 @@ fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
         recv_ty = ctx.typeIdStripKinds(recv_ty, &kinds);
         const projected = ctx.projectPropertyPub(recv_ty, prop_name);
         if (!projected.eq(tymod.TypeId.none)) return projected;
+    }
+    // Computed member with string-literal key — equivalent to `.prop`,
+    // so project the property type the same way.
+    if (tag == .optional_computed_member_expr or tag == .computed_member_expr) {
+        const d = ctx.nodeData(n);
+        if (d.rhs != .none) {
+            // Constant string key (literal or const ref) lets us
+            // project the receiver's property.
+            const key_name = constStringKey(d.rhs, ctx);
+            if (key_name) |kn| {
+                var recv_ty = chainCheckType(d.lhs, ctx);
+                const kinds = [_]tymod.TypeKind{ .undefined_t, .null_t };
+                recv_ty = ctx.typeIdStripKinds(recv_ty, &kinds);
+                const projected = ctx.projectPropertyPub(recv_ty, kn);
+                if (!projected.eq(tymod.TypeId.none)) return projected;
+            }
+        }
     }
     // Call/optional-call: the chain's checked type is the return type
     // of the function being called.  `foo?.bar()?.baz` checks `?.baz`
