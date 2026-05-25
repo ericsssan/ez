@@ -3570,6 +3570,12 @@ fn parseArrowBody(p: *Parser) Error!NodeIndex {
 /// Build an arrow node for a single-parameter arrow: `ident => body`.
 /// `param_tok` is the identifier token for the parameter.
 fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Error!NodeIndex {
+    // For `async x => ...`, the `async` keyword is the actual start of
+    // the async_arrow_fn node — record it for nodeSpan / range
+    // computation.  Without this, the span begins at the parameter
+    // identifier and rules like `strict-boolean-expressions` anchor
+    // their `predicateCannotBeAsync` diagnostic at the wrong column.
+    const start_tok: TokenIndex = if (is_async and param_tok > 0) param_tok - 1 else param_tok;
     // Check strict-mode restrictions on the single parameter
     try p.checkStrictBinding(param_tok);
 
@@ -3614,7 +3620,7 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
     const fn_tag: Node.Tag = if (is_async) .async_arrow_fn else .arrow_fn;
     const arrow_node = try p.addNode(.{
         .tag = fn_tag,
-        .main_token = param_tok,
+        .main_token = start_tok,
         .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
     });
     p.patchScopeOpenNode(single_arrow_ev, arrow_node);
