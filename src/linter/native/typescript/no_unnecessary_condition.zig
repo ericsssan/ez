@@ -62,7 +62,15 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .conditional => {
             checkTruthiness(d.lhs, ctx);
         },
-        .logical_not => checkTruthiness(node, ctx),
+        .logical_not => {
+            // Only fire on the OUTERMOST `!` in a chain — `!!a` should
+            // report once on the full chain, not twice.
+            var p = ctx.parentOf(node);
+            while (p != .none and ctx.nodeTag(p) == .grouping_expr) p = ctx.parentOf(p);
+            if (p == .none or ctx.nodeTag(p) != .logical_not) {
+                checkTruthiness(node, ctx);
+            }
+        },
         .logical_and, .logical_or => {
             // LHS is tested for truthiness — but only when this logical
             // isn't the immediate operand of a higher-level chain walk
@@ -399,24 +407,32 @@ fn checkTruthiness(expr: NodeIndex, ctx: *const LintContext) void {
         return;
     }
     if (t == .logical_not) {
-        // `!x` flips the operand's truthiness.  Classify the operand,
-        // invert, and fire on the WHOLE `!x` expression (matches
+        // `!x` flips the operand's truthiness.  Reduce chained `!`s
+        // to their net effect and fire on the OUTER `!` node (matches
         // ts-eslint's report anchor).
-        const inner = ctx.nodeData(n).lhs;
+        var inner = ctx.nodeData(n).lhs;
+        var flips: u32 = 1; // outer `!` already applied
+        while (true) {
+            while (ctx.nodeTag(inner) == .grouping_expr) inner = ctx.nodeData(inner).lhs;
+            if (ctx.nodeTag(inner) == .logical_not) {
+                flips += 1;
+                inner = ctx.nodeData(inner).lhs;
+                continue;
+            }
+            break;
+        }
         if (inner == .none) return;
-        var inner_n = inner;
-        while (ctx.nodeTag(inner_n) == .grouping_expr) inner_n = ctx.nodeData(inner_n).lhs;
-        if (ctx.nodeTag(inner_n) == .logical_not) return; // !!x — let outer chain handle
-        if (containsArrayIndexedAccess(inner_n, ctx)) return;
-        const inner_ty = ctx.narrowedTypeOf(inner_n);
+        if (containsArrayIndexedAccess(inner, ctx)) return;
+        const inner_ty = ctx.narrowedTypeOf(inner);
         if (isNeverType(inner_ty, ctx)) {
             ctx.reportWithMessageId(n, "never");
             return;
         }
         const inner_tr = truthiness(inner_ty, ctx);
+        const invert = (flips % 2) == 1;
         switch (inner_tr) {
-            .always_truthy => ctx.reportWithMessageId(n, "alwaysFalsy"),
-            .always_falsy => ctx.reportWithMessageId(n, "alwaysTruthy"),
+            .always_truthy => ctx.reportWithMessageId(n, if (invert) "alwaysFalsy" else "alwaysTruthy"),
+            .always_falsy => ctx.reportWithMessageId(n, if (invert) "alwaysTruthy" else "alwaysFalsy"),
             else => {},
         }
         return;
