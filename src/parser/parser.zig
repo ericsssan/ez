@@ -5074,8 +5074,9 @@ pub const Parser = struct {
 
             // TS: optional marker and generic type params on computed members
             const computed_is_optional: u32 = if (self.is_ts and self.eat(.question) != null) 1 else 0;
+            var computed_class_type_params = ast.SubRange{ .start = 0, .end = 0 };
             if (self.is_ts and self.peek() == .less_than) {
-                _ = try typescript.parseTypeParameterList(self);
+                computed_class_type_params = try typescript.parseTypeParameterList(self);
             }
 
             if (self.peek() == .l_paren) {
@@ -5130,6 +5131,8 @@ pub const Parser = struct {
                     .body = body,
                     .return_type = computed_method_return_type,
                     .modifiers = packMemberModifiers(ts_mod_flags, is_static, is_async_method, is_generator_method),
+                    .type_params = computed_class_type_params.start,
+                    .type_params_end = computed_class_type_params.end,
                 });
 
                 const node_tag: Node.Tag = if (is_getter)
@@ -5206,6 +5209,7 @@ pub const Parser = struct {
         const member_is_optional: u32 = if (self.is_ts and self.eat(.question) != null) 1 else 0;
 
         // TS generic method: skip type parameters before `(`
+        var named_class_type_params = ast.SubRange{ .start = 0, .end = 0 };
         if (self.is_ts and self.peek() == .less_than) {
             // TS1092: Type parameters cannot appear on a constructor declaration.
             const key_tag_tp = self.node_tags_ptr[key.toInt()];
@@ -5213,7 +5217,7 @@ pub const Parser = struct {
             const is_ctor_tp = !is_static and !is_getter and !is_setter and
                 ((key_tag_tp == .identifier and std.mem.eql(u8, self.tokenText(key_tok_tp), "constructor")) or
                  (key_tag_tp == .string_literal and std.mem.eql(u8, self.getStringContent(self.tokenStart(key_tok_tp)), "constructor")));
-            _ = try typescript.parseTypeParameterList(self);
+            named_class_type_params = try typescript.parseTypeParameterList(self);
             if (is_ctor_tp) {
                 try self.emitDiagnostic(self.currentSpan(), "Type parameters cannot appear on a constructor declaration", .{});
             }
@@ -5453,6 +5457,8 @@ pub const Parser = struct {
                     .body = .none,
                     .return_type = method_return_type,
                     .modifiers = packMemberModifiers(ts_mod_flags, is_static, is_async_method, is_generator_method),
+                    .type_params = named_class_type_params.start,
+                    .type_params_end = named_class_type_params.end,
                 });
                 const no_body_tag: Node.Tag = if (is_getter)
                     .getter_def
@@ -5523,6 +5529,8 @@ pub const Parser = struct {
                 .body = body,
                 .return_type = method_return_type,
                 .modifiers = packMemberModifiers(ts_mod_flags, is_static, is_async_method, is_generator_method),
+                .type_params = named_class_type_params.start,
+                .type_params_end = named_class_type_params.end,
             });
 
             const node_tag: Node.Tag = if (is_getter)

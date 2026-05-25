@@ -641,6 +641,8 @@ pub const MethodData = struct {
     body: NodeIndex,
     return_type: NodeIndex = .none, // .none if no return type annotation
     modifiers: u32 = 0, // packed ModifierBit flags
+    type_params: ExtraIndex = 0,
+    type_params_end: ExtraIndex = 0,
 };
 
 /// Interface member signature data: call/construct/method signatures.

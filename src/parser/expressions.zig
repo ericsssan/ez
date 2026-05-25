@@ -4131,7 +4131,7 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     defer p.in_method = saved_method;
     defer p.in_class_field = saved_cf_am;
 
-    _ = try p.parseOptionalTypeParameters();
+    const async_method_type_params = try p.parseOptionalTypeParameters();
     const async_method_scope_ev = try p.emitScopeOpen(.function, .none);
     const params_range = try parseFormalParameters(p);
     const async_method_return_type = try p.parseOptionalTypeAnnotation();
@@ -4144,6 +4144,8 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
         .body = body,
         .return_type = async_method_return_type,
         .modifiers = ast.ModifierBit.@"async" | (if (is_generator) ast.ModifierBit.generator else 0),
+        .type_params = async_method_type_params.start,
+        .type_params_end = async_method_type_params.end,
     });
     const async_method_node = try p.addNode(.{
         .tag = if (is_computed) .computed_method_def else .method_def,
@@ -4179,7 +4181,7 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     defer p.in_method = saved_method;
     defer p.in_class_field = saved_cf_gm;
 
-    _ = try p.parseOptionalTypeParameters();
+    const gen_method_type_params = try p.parseOptionalTypeParameters();
     const gen_method_scope_ev = try p.emitScopeOpen(.function, .none);
     const params_range = try parseFormalParameters(p);
     p.in_return_type = true;
@@ -4194,6 +4196,8 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
         .body = body,
         .return_type = gen_method_return_type,
         .modifiers = ast.ModifierBit.generator,
+        .type_params = gen_method_type_params.start,
+        .type_params_end = gen_method_type_params.end,
     });
     const gen_method_node = try p.addNode(.{
         .tag = if (is_computed) .computed_method_def else .method_def,
@@ -4214,9 +4218,10 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
     _ = try p.expect(.r_bracket);
 
     // TS type parameters on computed method: [expr]<T>()
+    var comp_method_type_params = ast.SubRange{ .start = 0, .end = 0 };
     if (p.is_ts and p.peek() == .less_than) {
         const ts_mod = @import("typescript.zig");
-        _ = try ts_mod.parseTypeParameterList(p);
+        comp_method_type_params = try ts_mod.parseTypeParameterList(p);
     }
 
     // Computed method: [expr]() { }
@@ -4242,6 +4247,8 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
             .params_end = params_range.end,
             .body = body,
             .return_type = comp_method_return_type,
+            .type_params = comp_method_type_params.start,
+            .type_params_end = comp_method_type_params.end,
         });
         const comp_method_node = try p.addNode(.{
             .tag = .computed_method_def,
@@ -4303,8 +4310,9 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
     const key = try parsePropertyName(p);
 
     // TS generic method: name<T>() { }
+    var reg_method_type_params = ast.SubRange{ .start = 0, .end = 0 };
     if (p.is_ts and p.peek() == .less_than) {
-        _ = try p.parseOptionalTypeParameters();
+        reg_method_type_params = try p.parseOptionalTypeParameters();
     }
 
     // Method shorthand: name() { }
@@ -4331,6 +4339,8 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
             .params_end = params_range.end,
             .body = body,
             .return_type = obj_method_return_type,
+            .type_params = reg_method_type_params.start,
+            .type_params_end = reg_method_type_params.end,
         });
         const method_node = try p.addNode(.{
             .tag = .method_def,
