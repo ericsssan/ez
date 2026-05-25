@@ -3246,15 +3246,26 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         if (can_snapshot) {
             @memcpy(params_snapshot[0..params_count], p.scratch.items[scratch_top..]);
         }
-        _ = p.advance(); // eat ':'
+        const colon_tok = p.advance(); // eat ':'
         const typescript = @import("typescript.zig");
         const prev_in_rt_spec = p.in_return_type;
         p.in_return_type = true;
+        var ret_type_node: NodeIndex = .none;
         const type_ok = blk: {
-            _ = typescript.parseType(p) catch break :blk false;
+            ret_type_node = typescript.parseType(p) catch break :blk false;
             break :blk true;
         };
         p.in_return_type = prev_in_rt_spec;
+        // Wrap the parsed type in a ts_type_annotation so downstream
+        // consumers can peel it consistently with parseOptionalTypeAnnotation.
+        const ret_type_ann: NodeIndex = if (type_ok and ret_type_node != .none)
+            try p.addNode(.{
+                .tag = .ts_type_annotation,
+                .main_token = colon_tok,
+                .data = .{ .lhs = ret_type_node, .rhs = .none },
+            })
+        else
+            .none;
         if (type_ok and p.peek() == .arrow and !p.isOnNewLine()) {
             const params = p.scratchSlice(scratch_top);
             for (params) |node_raw| {
@@ -3298,6 +3309,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                     .params_start = params_range.start,
                     .params_end = params_range.end,
                     .body = body,
+                    .return_type = ret_type_ann,
                 });
                 return p.addNode(.{
                     .tag = .arrow_fn,
