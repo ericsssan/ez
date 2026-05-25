@@ -24,19 +24,17 @@ const Messages = enum {
     prefer_array_flat_map,
 };
 
-const ignored = [_][]const u8{ "React.Children", "Children" };
-
-fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
-    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
-    return false;
-}
-
 fn nodeArgsCount(c: *const LintContext, n: NodeIndex) usize {
     if (n == .none) return 0;
     const d = c.nodeData(n);
     if (d.rhs == .none) return 0;
     const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
     return c.extraSlice(sr).len;
+}
+
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
+    return false;
 }
 
 fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {

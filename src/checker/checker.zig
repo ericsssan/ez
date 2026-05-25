@@ -2808,7 +2808,8 @@ pub const Checker = struct {
                     _ = self.declared_type_cache.remove(name);
                     return null;
                 }
-                break :blk self.resolveTypeNode(ad.type_node);
+                const r = self.resolveTypeNode(ad.type_node);
+                break :blk r;
             },
             else => {
                 _ = self.declared_type_cache.remove(name);

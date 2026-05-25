@@ -51,6 +51,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!((((ctx.nodeTag(node) == .call_expr) and (nodeArgsCount(ctx, node) == 1) and (ctx.nodeTag(ctx.nodeData(node).lhs) == .member_expr or ctx.nodeTag(ctx.nodeData(node).lhs) == .optional_member_expr) and std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "flat")) and ctx.nodeNumericValueEquals(nodeArgAt(ctx, node, 0), 1)))) {
         return;
     }
-    ctx.reportWithFixAndMessageId(nodeArgAt(ctx, node, 0), ctx.nodeSpan(nodeArgAt(ctx, node, 0)), "", "no-unnecessary-array-flat-depth");
+    ctx.reportWithFixAndMessageId(nodeArgAt(ctx, node, 0), (.{ .start = ctx.nodeSpan(nodeArgAt(ctx, node, 0)).start, .end = ctx.nodeSpan(nodeArgAt(ctx, node, 0)).end }), "", "no-unnecessary-array-flat-depth");
     return;
 }

@@ -44,11 +44,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if ((std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(ctx.nodeData(ctx.nodeData(node).lhs).rhs)), "trimLeft"))) {
         const __fix_text = std.fmt.allocPrint(ctx.allocator, "{s}", .{ "trimStart" }) catch return;
         defer ctx.allocator.free(__fix_text);
-        ctx.reportWithFixAndMessageId(ctx.nodeData(ctx.nodeData(node).lhs).rhs, ctx.nodeSpan(ctx.nodeData(ctx.nodeData(node).lhs).rhs), __fix_text, "prefer-string-trim-start-end");
+        ctx.reportWithFixAndMessageId(ctx.nodeData(ctx.nodeData(node).lhs).rhs, (.{ .start = ctx.nodeSpan(ctx.nodeData(ctx.nodeData(node).lhs).rhs).start, .end = ctx.nodeSpan(ctx.nodeData(ctx.nodeData(node).lhs).rhs).end }), __fix_text, "prefer-string-trim-start-end");
     } else {
         const __fix_text = std.fmt.allocPrint(ctx.allocator, "{s}", .{ "trimEnd" }) catch return;
         defer ctx.allocator.free(__fix_text);
-        ctx.reportWithFixAndMessageId(ctx.nodeData(ctx.nodeData(node).lhs).rhs, ctx.nodeSpan(ctx.nodeData(ctx.nodeData(node).lhs).rhs), __fix_text, "prefer-string-trim-start-end");
+        ctx.reportWithFixAndMessageId(ctx.nodeData(ctx.nodeData(node).lhs).rhs, (.{ .start = ctx.nodeSpan(ctx.nodeData(ctx.nodeData(node).lhs).rhs).start, .end = ctx.nodeSpan(ctx.nodeData(ctx.nodeData(node).lhs).rhs).end }), __fix_text, "prefer-string-trim-start-end");
     }
     return;
 }
