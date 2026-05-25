@@ -186,7 +186,7 @@ const prefer_exponentiation_operator = @import("correctness/prefer_exponentiatio
 const symbol_description = @import("style/symbol_description.zig");
 const wrap_regex = @import("style/wrap_regex.zig");
 const no_new_object = @import("style/no_new_object.zig");
-// const no_useless_rename = @import("style/no_useless_rename.zig");  // hand-written — disabled per IR-only constraint
+const no_useless_rename = @import("correctness/no_useless_rename.zig");
 // v0.6 style rules
 const prefer_rest_params = @import("correctness/prefer_rest_params.zig");  // IR-generated via arguments-ref-is-restable-violation
 // const prefer_spread = @import("style/prefer_spread.zig");  // hand-written — disabled per IR-only constraint
@@ -558,7 +558,7 @@ pub const all_rules = .{
     symbol_description,
     wrap_regex,
     no_new_object,
-    // no_useless_rename, // runner >> native (runner 163, native 78, gap 85, 13 FP); fall back to JS runner
+    no_useless_rename,
     // Style v0.6 (13)
     prefer_rest_params,
     // prefer_spread, // hand-written — disabled
