@@ -981,6 +981,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "unicorn/prefer-array-flat-map": "prefer-array-flat-map",
       "unicorn/consistent-date-clone": "consistent-date-clone",
       "unicorn/require-number-to-fixed-digits-argument": "require-number-to-fixed-digits-argument",
+      "unicorn/no-zero-fractions": "no-zero-fractions",
       // "unicorn/throw-new-error": "throw-new-error", // unicorn rule actually fires beyond throw context
       // "unicorn/error-message": "error-message", // native covers missing/empty cases; "message-is-not-a-string" needs value analysis
       // "unicorn/prefer-array-some": "prefer-array-some", // native covers find/findLast subset only

@@ -366,7 +366,7 @@ const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declarati
 
 // ── Unicorn plugin rules ──────────────────────────────────────
 // const unicorn_no_array_for_each = @import("unicorn/no_array_for_each.zig");  // hand-written — disabled per IR-only constraint
-// const unicorn_no_zero_fractions = @import("unicorn/no_zero_fractions.zig");  // hand-written — disabled per IR-only constraint
+const unicorn_no_zero_fractions = @import("unicorn/no_zero_fractions.zig");
 const unicorn_throw_new_error = @import("unicorn/throw_new_error.zig");
 const unicorn_error_message = @import("unicorn/error_message.zig");
 const unicorn_prefer_array_some = @import("unicorn/prefer_array_some.zig");
@@ -737,7 +737,7 @@ pub const all_rules = .{
     // ts_explicit_module_boundary_types, // runner >> native (runner 144, native 117, gap 27, 21 FP); fall back to JS runner
     // Unicorn plugin (0 — both hand-written rules disabled)
     // unicorn_no_array_for_each, // hand-written, 282 FP vs ESLint; fall back to JS runner
-    // unicorn_no_zero_fractions, // hand-written, 173 FP vs ESLint; fall back to JS runner
+    unicorn_no_zero_fractions,
 };
 
 /// Total number of registered lint rules.
