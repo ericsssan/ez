@@ -178,7 +178,16 @@ fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Opt
         } else {
             // Expression-body arrow — TS-eslint also reports on the
             // arrow itself, not on the inner expression.
-            const klass = classify(ctx.narrowedTypeOf(ad.body), opts, ctx);
+            var klass = classify(ctx.narrowedTypeOf(ad.body), opts, ctx);
+            // Promote nullable_(string|number) → nullable_enum when
+            // the body has enum-member origin (matches TS-eslint's
+            // semantics through the type system).
+            if (leafHasEnumOrigin(ad.body, ctx)) {
+                klass = switch (klass) {
+                    .nullable_string, .nullable_number => .nullable_enum,
+                    else => klass,
+                };
+            }
             if (messageFor(klass, opts)) |id| ctx.reportWithMessageId(n, id);
         }
         return;
