@@ -342,9 +342,11 @@ fn typeIsBooleanish(id: @import("../../../checker/types.zig").TypeId, ctx: *cons
     return ctx.typeIdIsExactlyBoolean(id);
 }
 
-fn typeIsBigIntish(id: @import("../../../checker/types.zig").TypeId, _: *const LintContext) bool {
+fn typeIsBigIntish(id: @import("../../../checker/types.zig").TypeId, ctx: *const LintContext) bool {
     const tymod = @import("../../../checker/types.zig");
-    return id.eq(tymod.ID_BIGINT);
+    if (id.eq(tymod.ID_BIGINT)) return true;
+    const k = ctx.typeIdKind(id) orelse return false;
+    return k == .bigint or k == .bigint_literal;
 }
 
 fn typeIsEnumOrMember(node: NodeIndex, ctx: *const LintContext) bool {

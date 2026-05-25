@@ -485,7 +485,14 @@ pub const LintContext = struct {
     pub fn typeIdIsExactlyBoolean(self: *const LintContext, id: tymod.TypeId) bool {
         const c = self.ensureChecker() orelse return false;
         const t = c.store.get(id);
-        return t.kind == .boolean or t.kind == .boolean_literal;
+        if (t.kind == .boolean or t.kind == .boolean_literal) return true;
+        if (t.kind == .union_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (!self.typeIdIsExactlyBoolean(m)) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     /// True when the type id is a function type.
