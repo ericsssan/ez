@@ -41,17 +41,28 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Skip if this member-expr is in a "safe" position.
     if (isSafePosition(node, ctx)) return;
 
+    const ignore_static = readIgnoreStatic(ctx);
+
     // Instance-method case: receiver's type has a method-defined prop.
     const recv_ty = ctx.typeOfNode(d.lhs);
     if (ctx.typeIdObjectPropertyIsMethod(recv_ty, prop)) {
-        ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
+        const msg: []const u8 = if (ctx.typeIdObjectPropertyIsFnProperty(recv_ty, prop))
+            "unbound"
+        else
+            "unboundWithoutThisAnnotation";
+        ctx.reportWithMessageId(node, msg);
         return;
     }
     // Static-method case: receiver is an Identifier that resolves to a
     // class declaration which contains a `static` method_def named
     // `prop`.  Walk the class body syntactically.
     if (staticMethodAccess(d.lhs, prop, ctx)) {
-        ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
+        if (ignore_static) return;
+        const msg: []const u8 = if (classStaticIsFnProperty(d.lhs, prop, ctx))
+            "unbound"
+        else
+            "unboundWithoutThisAnnotation";
+        ctx.reportWithMessageId(node, msg);
         return;
     }
     // Built-in lib-class instance: `foo: Number; foo.toFixed`, `foo: Date;
@@ -64,6 +75,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // `Math.floor`, etc.  Receiver is an Identifier whose name is a
     // global builtin and the property is one of its known methods.
     if (isBuiltinStaticMethod(d.lhs, prop, ctx)) {
+        if (ignore_static) return;
         ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
         return;
     }
@@ -73,6 +85,13 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         ctx.reportWithMessageId(node, "unboundWithoutThisAnnotation");
         return;
     }
+}
+
+fn readIgnoreStatic(ctx: *const LintContext) bool {
+    const v = ctx.rule_options orelse return false;
+    if (v.* != .object) return false;
+    const x = v.object.get("ignoreStatic") orelse return false;
+    return x == .bool and x.bool;
 }
 
 fn prototypeAccessHasInstanceMethod(recv: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
@@ -341,24 +360,98 @@ fn isBuiltinStaticMethodByName(class_name: []const u8, prop: []const u8) bool {
 }
 
 fn classHasStaticMethod(decl: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    return classFindStaticMember(decl, prop, ctx) != null;
+}
+
+/// `property_def` doesn't store modifiers in PropertyData, so detect
+/// `static` by scanning a few tokens preceding the property key.
+fn propertyDefIsStatic(node: NodeIndex, ctx: *const LintContext) bool {
+    const main = ctx.nodeMainToken(node);
+    var i: u32 = main;
+    var steps: u32 = 0;
+    while (i > 0 and steps < 6) : ({ i -= 1; steps += 1; }) {
+        const tag = ctx.tokenTag(i);
+        if (tag == .kw_static) return true;
+        switch (tag) {
+            .kw_declare, .kw_abstract, .kw_override, .kw_readonly,
+            => continue,
+            .identifier => {
+                const text = ctx.tokenText(i);
+                if (std.mem.eql(u8, text, "public") or
+                    std.mem.eql(u8, text, "private") or
+                    std.mem.eql(u8, text, "protected"))
+                {
+                    continue;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+    return false;
+}
+
+const StaticMemberKind = enum { method_def, fn_property };
+
+fn classFindStaticMember(decl: NodeIndex, prop: []const u8, ctx: *const LintContext) ?StaticMemberKind {
     const d = ctx.nodeData(decl);
-    if (d.lhs == .none) return false;
+    if (d.lhs == .none) return null;
     const cd = ctx.extraData(ast.ClassData, @intFromEnum(d.lhs));
-    if (cd.body == .none) return false;
+    if (cd.body == .none) return null;
     const body_data = ctx.nodeData(cd.body);
     const s = @intFromEnum(body_data.lhs);
     const e = @intFromEnum(body_data.rhs);
-    if (e <= s or e > ctx.ast.extra_data.len) return false;
+    if (e <= s or e > ctx.ast.extra_data.len) return null;
     for (ctx.ast.extra_data[s..e]) |raw| {
         const m: NodeIndex = @enumFromInt(raw);
-        if (ctx.nodeTag(m) != .method_def) continue;
+        const mtag = ctx.nodeTag(m);
         const md_data = ctx.nodeData(m);
-        if (md_data.rhs == .none) continue;
-        const meth = ctx.extraData(ast.MethodData, @intFromEnum(md_data.rhs));
-        if ((meth.modifiers & ast.ModifierBit.@"static") == 0) continue;
-        if (md_data.lhs == .none) continue;
-        const k = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
-        if (std.mem.eql(u8, k, prop)) return true;
+        if (mtag == .method_def) {
+            if (md_data.rhs == .none) continue;
+            const meth = ctx.extraData(ast.MethodData, @intFromEnum(md_data.rhs));
+            if ((meth.modifiers & ast.ModifierBit.@"static") == 0) continue;
+            if (md_data.lhs == .none) continue;
+            const k = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
+            if (std.mem.eql(u8, k, prop)) return .method_def;
+        } else if (mtag == .property_def) {
+            if (md_data.lhs == .none) continue;
+            if (md_data.rhs == .none) continue;
+            if (!propertyDefIsStatic(m, ctx)) continue;
+            const k = ctx.tokenText(ctx.nodeMainToken(md_data.lhs));
+            if (!std.mem.eql(u8, k, prop)) continue;
+            const pd = ctx.extraData(ast.PropertyData, @intFromEnum(md_data.rhs));
+            if (pd.value == .none) continue;
+            const vt = ctx.nodeTag(pd.value);
+            if (vt == .fn_expr or vt == .async_fn_expr or
+                vt == .generator_fn_expr or vt == .async_generator_fn_expr)
+            {
+                return .fn_property;
+            }
+        }
+    }
+    return null;
+}
+
+fn classStaticIsFnProperty(recv: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {
+    return classStaticIsFnPropertyAlias(recv, prop, ctx, 0);
+}
+
+fn classStaticIsFnPropertyAlias(recv: NodeIndex, prop: []const u8, ctx: *const LintContext, depth: u32) bool {
+    if (depth > 4) return false;
+    var n = recv;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) != .identifier) return false;
+    const class_name = ctx.tokenText(ctx.nodeMainToken(n));
+    if (class_name.len == 0) return false;
+    const decl = ctx.classDeclByName(class_name);
+    if (decl != .none) {
+        if (classFindStaticMember(decl, prop, ctx)) |k| {
+            return k == .fn_property;
+        }
+        return false;
+    }
+    if (ctx.constInitializerOf(n)) |init_node| {
+        return classStaticIsFnPropertyAlias(init_node, prop, ctx, depth + 1);
     }
     return false;
 }
@@ -519,99 +612,52 @@ fn checkObjectPattern(node: NodeIndex, ctx: *const LintContext) void {
         if (name_node == .none) continue;
         if (ctx.nodeTag(name_node) != .identifier) continue;
         const name = ctx.tokenText(ctx.nodeMainToken(name_node));
-        if (class_static_decl != .none and
-            classHasStaticMethod(class_static_decl, name, ctx))
-        {
-            ctx.reportWithMessageId(name_node, "unboundWithoutThisAnnotation");
-            continue;
+        if (class_static_decl != .none) {
+            if (classFindStaticMember(class_static_decl, name, ctx)) |k| {
+                const msg: []const u8 = if (k == .fn_property)
+                    "unbound"
+                else
+                    "unboundWithoutThisAnnotation";
+                ctx.reportWithMessageId(name_node, msg);
+                continue;
+            }
         }
         if (ctx.typeIdObjectPropertyIsMethod(source_ty, name)) {
-            ctx.reportWithMessageId(name_node, "unboundWithoutThisAnnotation");
+            const msg: []const u8 = if (ctx.typeIdObjectPropertyIsFnProperty(source_ty, name))
+                "unbound"
+            else
+                "unboundWithoutThisAnnotation";
+            ctx.reportWithMessageId(name_node, msg);
         }
     }
 }
 
-/// Member-expressions in these positions don't lose `this` binding:
-///   - As the callee of a CallExpression: `obj.m()`.
-///   - As the receiver of a chained member call: `obj.m.bind(obj)`.
-///   - As the target of `delete` or `typeof`.
-///   - As the target of an assignment (writing into the object).
+/// Mirrors @typescript-eslint/unbound-method `isSafeUse`.
 fn isSafePosition(node: NodeIndex, ctx: *const LintContext) bool {
     const parent = ctx.parentOf(node);
     if (parent == .none) return false;
     const ptag = ctx.nodeTag(parent);
     const pd = ctx.nodeData(parent);
-    // Direct call: `obj.m()` — callee position.
-    if (ptag == .call_expr or ptag == .optional_call_expr or ptag == .new_expr) {
-        if (pd.lhs == node) return true;
-    }
-    // Member chain: `obj.m.bind`, `obj.m.call`, `obj.m.apply` — receiver
-    // position of a known binding helper.
-    if (ptag == .member_expr or ptag == .optional_member_expr) {
-        if (pd.lhs == node and pd.rhs != .none) {
-            const prop = ctx.tokenText(ctx.nodeMainToken(pd.rhs));
-            if (std.mem.eql(u8, prop, "bind") or
-                std.mem.eql(u8, prop, "call") or
-                std.mem.eql(u8, prop, "apply"))
-            {
-                return true;
-            }
-        }
-    }
-    // Delete / typeof / void are safe (they don't call the method).
-    if (ptag == .delete_expr or ptag == .typeof_expr or ptag == .void_expr) return true;
-    // Assignment LHS: `obj.m = ...`.
-    if (isWriteOpTag(ptag) and pd.lhs == node) return true;
-    // Equality compares — comparing against undefined/null/etc.: `obj.m === undefined`.
     switch (ptag) {
-        .equal, .not_equal, .strict_equal, .strict_not_equal => return true,
-        else => {},
+        .if_stmt, .while_stmt, .do_while_stmt, .for_stmt,
+        .switch_stmt,
+        .member_expr, .optional_member_expr,
+        .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec,
+        => return true,
+        .call_expr, .optional_call_expr, .new_expr => return pd.lhs == node,
+        .conditional => return pd.lhs == node,
+        .tagged_template => return pd.lhs == node,
+        .logical_not, .delete_expr, .typeof_expr, .void_expr => return true,
+        .equal, .not_equal, .strict_equal, .strict_not_equal, .instanceof_expr => return true,
+        .assign => return pd.lhs == node,
+        .grouping_expr, .ts_as_expr, .ts_non_null_expr, .ts_type_assertion, .ts_satisfies_expr
+        => return isSafePosition(parent, ctx),
+        .logical_and => {
+            if (pd.lhs == node) return true;
+            return isSafePosition(parent, ctx);
+        },
+        .logical_or, .nullish_coalesce => return isSafePosition(parent, ctx),
+        else => return false,
     }
-    // Conditional / boolean-context positions — `obj.m` used as a
-    // truthiness/null test isn't called, so `this` isn't lost.
-    switch (ptag) {
-        .if_stmt, .while_stmt, .do_while_stmt, .for_stmt => return true,
-        .conditional => return ctx.nodeData(parent).lhs == node, // cond only
-        .logical_not => return true,
-        .tagged_template => return true,
-        else => {},
-    }
-    // For && / || / ?? the operand is "safe" iff the whole logical is
-    // itself in a boolean-context ancestor — walk up to decide.
-    if (ptag == .logical_and or ptag == .logical_or or ptag == .nullish_coalesce) {
-        return ancestorIsBoolCtx(parent, ctx);
-    }
-    return false;
 }
 
-fn ancestorIsBoolCtx(node: NodeIndex, ctx: *const LintContext) bool {
-    var cur = ctx.parentOf(node);
-    while (cur != .none) {
-        const t = ctx.nodeTag(cur);
-        switch (t) {
-            .if_stmt, .while_stmt, .do_while_stmt, .for_stmt => return true,
-            .conditional => return ctx.nodeData(cur).lhs == node,
-            .logical_not => return true,
-            .logical_and, .logical_or, .nullish_coalesce => {},
-            .grouping_expr => {},
-            else => return false,
-        }
-        const nxt = ctx.parentOf(cur);
-        if (nxt == .none) return false;
-        cur = nxt;
-    }
-    return false;
-}
-
-fn isWriteOpTag(tag: Node.Tag) bool {
-    return switch (tag) {
-        .assign,
-        .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign,
-        .shl_assign, .shr_assign, .ushr_assign,
-        .and_assign, .or_assign, .xor_assign,
-        .logical_and_assign, .logical_or_assign, .nullish_assign,
-        .exp_assign,
-        => true,
-        else => false,
-    };
-}

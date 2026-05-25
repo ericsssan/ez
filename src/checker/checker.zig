@@ -2896,7 +2896,7 @@ pub const Checker = struct {
                     break :blk vt == .fn_expr or vt == .async_fn_expr or
                         vt == .generator_fn_expr or vt == .async_generator_fn_expr;
                 } else false;
-                return .{ .name = name, .type_id = ty, .is_method = is_method_like };
+                return .{ .name = name, .type_id = ty, .is_method = is_method_like, .is_fn_property = is_method_like };
             },
             .method_def, .getter_def, .setter_def => {
                 if (data.lhs == .none) return null;

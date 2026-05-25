@@ -98,6 +98,11 @@ pub const ObjectProp = struct {
     /// `unbound-method` to detect potential this-loss when methods are
     /// passed around.
     is_method: bool = false,
+    /// True when the property is a class field whose initializer is a
+    /// `function() {}` expression — distinguishes the two messageIds in
+    /// `@typescript-eslint/unbound-method`: fn-property → "unbound",
+    /// method_def → "unboundWithoutThisAnnotation".
+    is_fn_property: bool = false,
 };
 
 pub const Signature = struct {

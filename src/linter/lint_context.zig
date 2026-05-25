@@ -693,6 +693,25 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// True when `name` resolves to a class field initialized to a
+    /// `function() {}` expression (rather than a `method() {}` declaration).
+    pub fn typeIdObjectPropertyIsFnProperty(self: *const LintContext, id: tymod.TypeId, name: []const u8) bool {
+        const c = self.ensureChecker() orelse return false;
+        const t = c.store.get(id);
+        if (t.kind == .object_t) {
+            for (c.store.propsOf(t.object_props)) |p| {
+                if (std.mem.eql(u8, p.name, name)) return p.is_fn_property;
+            }
+            return false;
+        }
+        if (t.kind == .union_t or t.kind == .intersection_t) {
+            for (c.store.idsOf(t.list_data)) |m| {
+                if (self.typeIdObjectPropertyIsFnProperty(m, name)) return true;
+            }
+        }
+        return false;
+    }
+
     /// Returns the object-type properties as a slice of ObjectProp.
     /// Returns an empty slice for non-object types.  Borrows from the
     /// type-store; treat as read-only and don't retain past the

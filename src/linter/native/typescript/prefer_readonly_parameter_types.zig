@@ -39,6 +39,7 @@ const Options = struct {
     treat_methods_as_readonly: bool = false,
     ignore_inferred_types: bool = false,
     check_parameter_properties: bool = true,
+    allow: ?*const std.json.Value = null,
 };
 
 fn readOptions(ctx: *const LintContext) Options {
@@ -54,7 +55,32 @@ fn readOptions(ctx: *const LintContext) Options {
     if (v.object.get("checkParameterProperties")) |x| if (x == .bool) {
         opts.check_parameter_properties = x.bool;
     };
+    if (v.object.getPtr("allow")) |a| {
+        if (a.* == .array) opts.allow = a;
+    }
     return opts;
+}
+
+fn nameMatchesAllow(name: []const u8, opts: Options) bool {
+    const allow = opts.allow orelse return false;
+    if (allow.* != .array) return false;
+    for (allow.array.items) |item| {
+        switch (item) {
+            .string => |s| if (std.mem.eql(u8, s, name)) return true,
+            .object => {
+                const n = item.object.get("name") orelse continue;
+                switch (n) {
+                    .string => |s| if (std.mem.eql(u8, s, name)) return true,
+                    .array => for (n.array.items) |sn| {
+                        if (sn == .string and std.mem.eql(u8, sn.string, name)) return true;
+                    },
+                    else => {},
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
@@ -196,6 +222,7 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
             // Inspect the name and (if generic) the type args.
             const name_node = d.lhs;
             const name = if (name_node != .none) ctx.tokenText(ctx.nodeMainToken(name_node)) else &.{};
+            if (nameMatchesAllow(name, opts)) return true;
             // Readonly<X> / ReadonlyArray<X> / ReadonlySet<X> /
             // ReadonlyMap<K,V> — outer wrapper enforces readonly at
             // depth 1; check that the argument's INNER (next level)
