@@ -155,7 +155,12 @@ fn checkParam(param: NodeIndex, opts: Options, ctx: *const LintContext) void {
     // Prefer syntactic AST inspection — type-resolution discards
     // readonly modifiers on most paths.
     if (typeNodeIsDeeplyReadonly(ty_node, opts, ctx, 0)) return;
-    ctx.reportWithMessageId(param, "shouldBeReadonly");
+    // ts-eslint reports the parameter Identifier whose ESTree range
+    // includes the typeAnnotation child.  Our identifier node ends at
+    // the name; extend to the end of the annotation node.
+    const ps = ctx.nodeSpan(param);
+    const ts = ctx.nodeSpan(ty_node);
+    ctx.reportSpanWithMessageId(.{ .start = ps.start, .end = ts.end }, "shouldBeReadonly");
 }
 
 /// Walk a TS type-annotation AST node, checking that every nested
