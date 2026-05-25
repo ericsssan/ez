@@ -399,11 +399,10 @@ fn innerOfReadonlyOk(node: NodeIndex, opts: Options, ctx: *const LintContext, de
             }
             return true;
         },
-        // For an inner type reference, only fail-fast on the mutable
-        // built-in collections (`Array`, `Set`, `Map`, `WeakSet`,
-        // `WeakMap`) — interfaces/aliases need full deeply-readonly
-        // checks but we can't reliably distinguish a properly readonly
-        // alias body without risking recursive structures.
+        // Inner type reference: check user-declared interfaces for
+        // inherited mutability (extends Array<X> etc.) — and walk
+        // properties' VALUE types (NOT the propertyHasReadonly check,
+        // since the outer Readonly wrapper makes them readonly).
         .ts_type_reference => {
             const name_node = d.lhs;
             if (name_node == .none) return true;
@@ -413,6 +412,30 @@ fn innerOfReadonlyOk(node: NodeIndex, opts: Options, ctx: *const LintContext, de
                 std.mem.eql(u8, name, "Map") or
                 std.mem.eql(u8, name, "WeakSet") or
                 std.mem.eql(u8, name, "WeakMap")) return false;
+            const decl = ctx.typeDeclNode(name);
+            if (decl != .none) {
+                const dtag = ctx.nodeTag(decl);
+                if (dtag == .ts_interface_decl) {
+                    // Outer Readonly only makes prop keys readonly —
+                    // each prop's VALUE type still needs to be
+                    // deeply-readonly.  Check extends + members' value
+                    // types only (skip propertyHasReadonly).
+                    if (interfaceExtendsList(decl, ctx)) |ext| {
+                        for (ctx.ast.extra_data[ext.start..ext.end]) |raw| {
+                            const t: NodeIndex = @enumFromInt(raw);
+                            if (!typeNodeIsDeeplyReadonly(t, opts, ctx, depth + 1)) return false;
+                        }
+                    }
+                    const members = ctx.interfaceDeclMembers(decl) orelse return true;
+                    if (members.end > members.start and members.end <= ctx.ast.extra_data.len) {
+                        for (ctx.ast.extra_data[members.start..members.end]) |raw| {
+                            const m: NodeIndex = @enumFromInt(raw);
+                            if (!memberValueTypeIsDeeplyReadonly(m, opts, ctx, depth + 1)) return false;
+                        }
+                    }
+                    return true;
+                }
+            }
             return true;
         },
         else => return true, // primitives / others — lenient
