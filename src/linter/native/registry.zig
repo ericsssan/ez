@@ -182,7 +182,7 @@ const no_unneeded_ternary = @import("style/no_unneeded_ternary.zig");
 // const prefer_template = @import("style/prefer_template.zig");  // hand-written — disabled per IR-only constraint
 // v0.5 style rules
 // const object_shorthand = @import("style/object_shorthand.zig");  // hand-written — disabled per IR-only constraint
-// const prefer_exponentiation_operator = @import("style/prefer_exponentiation_operator.zig");  // hand-written — disabled per IR-only constraint
+const prefer_exponentiation_operator = @import("correctness/prefer_exponentiation_operator.zig");
 const symbol_description = @import("style/symbol_description.zig");
 const wrap_regex = @import("style/wrap_regex.zig");
 const no_new_object = @import("style/no_new_object.zig");
@@ -554,7 +554,7 @@ pub const all_rules = .{
     // prefer_template, // hand-written, 83 FP vs ESLint; fall back to JS runner
     // Style v0.5 (4)
     // object_shorthand, // runner >> native (55%, 3 FP); fall back to JS runner
-    // prefer_exponentiation_operator, // native 4 FN (2 more than runner: dynamic computed keys); fall back to runner
+    prefer_exponentiation_operator,
     symbol_description,
     wrap_regex,
     no_new_object,
