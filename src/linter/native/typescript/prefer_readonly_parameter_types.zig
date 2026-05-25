@@ -392,6 +392,22 @@ fn innerOfReadonlyOk(node: NodeIndex, opts: Options, ctx: *const LintContext, de
             }
             return true;
         },
+        // For an inner type reference, only fail-fast on the mutable
+        // built-in collections (`Array`, `Set`, `Map`, `WeakSet`,
+        // `WeakMap`) — interfaces/aliases need full deeply-readonly
+        // checks but we can't reliably distinguish a properly readonly
+        // alias body without risking recursive structures.
+        .ts_type_reference => {
+            const name_node = d.lhs;
+            if (name_node == .none) return true;
+            const name = ctx.tokenText(ctx.nodeMainToken(name_node));
+            if (std.mem.eql(u8, name, "Array") or
+                std.mem.eql(u8, name, "Set") or
+                std.mem.eql(u8, name, "Map") or
+                std.mem.eql(u8, name, "WeakSet") or
+                std.mem.eql(u8, name, "WeakMap")) return false;
+            return true;
+        },
         else => return true, // primitives / others — lenient
     }
 }
