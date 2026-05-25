@@ -194,7 +194,7 @@ const prefer_spread = @import("style/prefer_spread.zig");
 // const max_params = @import("style/max_params.zig");  // hand-written — disabled per IR-only constraint
 // const prefer_arrow_callback = @import("style/prefer_arrow_callback.zig");  // hand-written — disabled per IR-only constraint
 // const no_implicit_coercion = @import("style/no_implicit_coercion.zig");  // hand-written — disabled per IR-only constraint
-// const no_useless_concat = @import("style/no_useless_concat.zig");  // hand-written — disabled per IR-only constraint
+const no_useless_concat = @import("style/no_useless_concat.zig");
 // const arrow_body_style = @import("style/arrow_body_style.zig");  // hand-written — disabled per IR-only constraint
 // default-param-last IR-generated, unregistered (see registry array).
 // const default_param_last = @import("style/default_param_last.zig");
@@ -566,7 +566,7 @@ pub const all_rules = .{
     // max_params, // runner >> native (runner 52, native 25, gap 28); fall back to JS runner
     // prefer_arrow_callback, // runner >> native (runner 105, native 63, gap 42, 14 FP); fall back to JS runner
     // no_implicit_coercion, // hand-written — disabled
-    // no_useless_concat, // runner >> native (runner 20, native 14, gap 6, 2 FP); fall back to JS runner
+    no_useless_concat,
     // arrow_body_style, // runner >> native (runner 87, native 63, gap 24, 3 FP); fall back to JS runner
     // default_param_last, // IR-generated but native 81/96 < runner 96/96
     // (TS optional span + TSParameterProperty unsupported) — regresses
