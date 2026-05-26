@@ -24,8 +24,18 @@ const tymod = @import("types.zig");
 const TypeStore = tymod.TypeStore;
 const TypeId = tymod.TypeId;
 const Type = tymod.Type;
+const module_cache_mod = @import("module_cache.zig");
+pub const ModuleCache = module_cache_mod.ModuleCache;
 
 pub const EnumKind = enum(u8) { number, string, mixed };
+
+/// Describes where an imported name came from.
+pub const ImportEntry = struct {
+    /// Module specifier as written in source (e.g. "./foo" or "@pkg/bar").
+    module_specifier: []const u8,
+    /// The name exported from the source module (may differ when `import { A as B }`).
+    exported_name: []const u8,
+};
 
 pub const Checker = struct {
     gpa: std.mem.Allocator,
@@ -67,6 +77,35 @@ pub const Checker = struct {
     /// `void` without modelling the full Window / globalThis chain.
     global_value_types: std.StringHashMapUnmanaged(TypeId),
 
+    /// Set of TypeIds whose methods are "natively bound" — i.e. don't
+    /// depend on `this` and are always safe to call unbound.  Populated
+    /// during `buildGlobalValueTypes` for Math, JSON, etc.
+    natively_bound_type_ids: std.AutoHashMapUnmanaged(TypeId, void),
+
+    /// Maps local binding name → (module_specifier, exported_name) for
+    /// each named import in the file.  Populated by `buildKnownTypeNames`.
+    /// Used by `resolveDeclaredType` to look up cross-file types when a
+    /// name isn't declared locally.
+    import_map: std.StringHashMapUnmanaged(ImportEntry) = .empty,
+
+    /// Absolute path of the file being checked.  Empty string means
+    /// cross-file resolution is disabled.
+    file_path: []const u8 = "",
+
+    /// Optional per-lint-call cache of already-parsed imported modules.
+    /// Null when cross-file resolution is disabled (file_path is empty).
+    module_cache: ?*ModuleCache = null,
+
+    /// Additional interface declaration nodes for declaration merging.
+    /// When the same interface name appears more than once, extra declarations
+    /// (beyond the first in type_decl_nodes) are collected here so
+    /// buildInterfaceType can merge their members.
+    merged_iface_extra: std.ArrayListUnmanaged(struct { name: []const u8, node: NodeIndex }) = .empty,
+
+    /// Additional namespace/module declaration nodes for declaration merging.
+    /// Same pattern as merged_iface_extra but for namespace blocks.
+    merged_ns_extra: std.ArrayListUnmanaged(struct { name: []const u8, node: NodeIndex }) = .empty,
+
     pub fn init(
         gpa: std.mem.Allocator,
         ast_ref: *const Ast,
@@ -90,6 +129,7 @@ pub const Checker = struct {
             .declared_type_cache = .empty,
             .enum_kinds = .empty,
             .global_value_types = .empty,
+            .natively_bound_type_ids = .empty,
         };
         try self.buildKnownTypeNames();
         try self.buildGlobalValueTypes();
@@ -105,6 +145,10 @@ pub const Checker = struct {
         self.type_decl_nodes.deinit(self.gpa);
         self.declared_type_cache.deinit(self.gpa);
         self.global_value_types.deinit(self.gpa);
+        self.natively_bound_type_ids.deinit(self.gpa);
+        self.import_map.deinit(self.gpa);
+        self.merged_iface_extra.deinit(self.gpa);
+        self.merged_ns_extra.deinit(self.gpa);
     }
 
     // ── Public queries (LintContext-facing) ───────────────
@@ -557,8 +601,61 @@ pub const Checker = struct {
                 const lty = self.applyNarrowing(data.lhs, sym, ty, neg);
                 return self.applyNarrowing(data.rhs, sym, lty, neg);
             },
+            // Type predicate calls: `isFoo(x)` → narrow x to Foo.
+            .call_expr, .optional_call_expr => return self.applyPredicateNarrowing(t, sym, ty, neg),
             else => return ty,
         }
+    }
+
+    /// Type predicate narrowing: when `call_node` is `predFn(sym)` and
+    /// `predFn` has a `x is T` return signature, narrow `sym` to `T`.
+    fn applyPredicateNarrowing(
+        self: *Checker,
+        call_node: NodeIndex,
+        sym: symbol_mod.SymbolId,
+        ty: TypeId,
+        negate: bool,
+    ) TypeId {
+        const data = self.ast_ref.nodeData(call_node);
+        if (data.lhs == .none) return ty;
+        const callee_ty = self.typeOf(data.lhs);
+        const ct = self.store.get(callee_ty);
+        if (ct.kind != .function_t) return ty;
+        const sigs = self.store.signaturesOf(ct.signatures);
+        if (sigs.len == 0) return ty;
+        const sig = sigs[0];
+        if (sig.predicate_param_index == 0xFFFF) return ty;
+        if (sig.predicate_target == TypeId.none) return ty;
+        // Find the argument at predicate_param_index.
+        const args_range = self.safeSubRange(data.rhs) orelse return ty;
+        const extra = self.ast_ref.extra_data;
+        if (args_range.start > extra.len or args_range.end > extra.len) return ty;
+        const args_slice = extra[args_range.start..args_range.end];
+        if (sig.predicate_param_index >= args_slice.len) return ty;
+        const arg_node: NodeIndex = @enumFromInt(args_slice[sig.predicate_param_index]);
+        if (!self.identifierBindsToSym(arg_node, sym)) return ty;
+        const target = sig.predicate_target;
+        if (negate) return ty;
+        // True branch: narrow sym to predicate_target.
+        // For any/unknown: just return target directly.
+        if (tymod.isAny(&self.store, ty) or tymod.isUnknown(&self.store, ty)) return target;
+        // For a union: keep only members assignable to target.
+        const tt = self.store.get(ty);
+        if (tt.kind == .union_t) {
+            var buf: [16]TypeId = undefined;
+            var n: usize = 0;
+            for (self.store.idsOf(tt.list_data)) |m| {
+                if (tymod.isAssignableTo(&self.store, m, target)) {
+                    if (n >= buf.len) return target;
+                    buf[n] = m;
+                    n += 1;
+                }
+            }
+            if (n == 0) return target;
+            if (n == 1) return buf[0];
+            return self.store.unionOf(buf[0..n]) catch target;
+        }
+        return target;
     }
 
     /// `x instanceof Foo` — inside truthy branch, narrow x to Foo.
@@ -623,7 +720,17 @@ pub const Checker = struct {
         } else if (self.identifierBindsToSym(data.rhs, sym)) {
             sym_side = data.rhs;
             lit_side = data.lhs;
-        } else return ty;
+        } else {
+            // Try `<sym>.prop op <literal>` — discriminated union narrowing.
+            const keep_only_disc = (!is_neq) != negate;
+            if (self.isMemberAccessOfSym(data.lhs, sym)) |prop_name| {
+                return self.narrowDiscriminantProp(ty, prop_name, data.rhs, keep_only_disc);
+            }
+            if (self.isMemberAccessOfSym(data.rhs, sym)) |prop_name| {
+                return self.narrowDiscriminantProp(ty, prop_name, data.lhs, keep_only_disc);
+            }
+            return ty;
+        }
         _ = &sym_side;
         const removed = self.narrowKindFromLiteral(lit_side);
         if (removed == .none) return ty;
@@ -764,6 +871,100 @@ pub const Checker = struct {
         return s.toInt() == sym.toInt();
     }
 
+    /// Check if `node` is `<sym>.propName` (member_expr with sym as object).
+    /// Returns the property name string when it matches.
+    fn isMemberAccessOfSym(self: *Checker, node: NodeIndex, sym: symbol_mod.SymbolId) ?[]const u8 {
+        const tag = self.ast_ref.nodeTag(node);
+        if (tag != .member_expr and tag != .optional_member_expr) return null;
+        const data = self.ast_ref.nodeData(node);
+        if (!self.identifierBindsToSym(data.lhs, sym)) return null;
+        if (data.rhs == .none) return null;
+        const prop_tok = self.ast_ref.nodeMainToken(data.rhs);
+        const name = self.ast_ref.tokenText(prop_tok);
+        return if (name.len > 0) name else null;
+    }
+
+    /// Create a TypeId from a literal AST node for discriminant comparison.
+    fn literalNodeToTypeId(self: *Checker, node: NodeIndex) ?TypeId {
+        var n = node;
+        while (self.ast_ref.nodeTag(n) == .grouping_expr) n = self.ast_ref.nodeData(n).lhs;
+        return switch (self.ast_ref.nodeTag(n)) {
+            .string_literal => self.literalString(n),
+            .number_literal => self.literalNumber(n),
+            .boolean_literal => self.literalBoolean(n),
+            .null_literal => tymod.ID_NULL,
+            .identifier => blk: {
+                const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+                if (std.mem.eql(u8, name, "undefined")) break :blk tymod.ID_UNDEFINED;
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
+    /// Look up `prop_name` directly on a single non-union type.
+    fn directPropOf(self: *Checker, ty: TypeId, prop_name: []const u8) TypeId {
+        const t = self.store.get(ty);
+        switch (t.kind) {
+            .object_t => {
+                for (self.store.propsOf(t.object_props)) |p| {
+                    if (std.mem.eql(u8, p.name, prop_name)) return p.type_id;
+                }
+                return tymod.ID_UNKNOWN;
+            },
+            .type_ref => {
+                if (self.resolveDeclaredType(t.name)) |resolved| {
+                    if (!resolved.eq(ty)) return self.directPropOf(resolved, prop_name);
+                }
+                return tymod.ID_UNKNOWN;
+            },
+            .intersection_t => {
+                for (self.store.idsOf(t.list_data)) |m| {
+                    const r = self.directPropOf(m, prop_name);
+                    if (!r.eq(tymod.ID_UNKNOWN)) return r;
+                }
+                return tymod.ID_UNKNOWN;
+            },
+            else => return tymod.ID_UNKNOWN,
+        }
+    }
+
+    /// Narrow a union type by testing `sym.propName === litNode`.
+    /// Keeps only members whose `propName` property is assignable to the literal type.
+    fn narrowDiscriminantProp(
+        self: *Checker,
+        ty: TypeId,
+        prop_name: []const u8,
+        lit_node: NodeIndex,
+        keep_only: bool,
+    ) TypeId {
+        const lit_id = self.literalNodeToTypeId(lit_node) orelse return ty;
+        const t = self.store.get(ty);
+        if (t.kind != .union_t) {
+            const prop_ty = self.directPropOf(ty, prop_name);
+            if (prop_ty.eq(tymod.ID_UNKNOWN)) return ty;
+            const matches = tymod.isAssignableTo(&self.store, prop_ty, lit_id);
+            return if (keep_only == matches) ty else tymod.ID_NEVER;
+        }
+        var buf: [16]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.idsOf(t.list_data)) |m| {
+            const prop_ty = self.directPropOf(m, prop_name);
+            const matches = if (prop_ty.eq(tymod.ID_UNKNOWN))
+                true // unknown prop: can't narrow, keep member
+            else
+                tymod.isAssignableTo(&self.store, prop_ty, lit_id);
+            if (keep_only == matches) {
+                if (n >= buf.len) return ty;
+                buf[n] = m;
+                n += 1;
+            }
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return self.store.unionOf(buf[0..n]) catch ty;
+    }
+
     /// Find the symbol bound to an identifier reference, if any.
     fn symbolForIdentRef(self: *Checker, ident_node: NodeIndex) ?symbol_mod.SymbolId {
         const refs = &self.semantic.references;
@@ -793,7 +994,7 @@ pub const Checker = struct {
     /// reading the annotation attached to the identifier (parser stores
     /// the ts_type_annotation node in identifier.data.rhs), or by walking
     /// up to the declarator and falling back to the initializer.
-    fn declaredTypeAtBinding(self: *Checker, binding: NodeIndex) TypeId {
+    pub fn declaredTypeAtBinding(self: *Checker, binding: NodeIndex) TypeId {
         if (binding == .none) return tymod.ID_UNKNOWN;
         // Direct annotation on the identifier.
         if (self.ast_ref.nodeTag(binding) == .identifier) {
@@ -1024,9 +1225,22 @@ pub const Checker = struct {
             if (raw == fn_node.toInt()) { arg_slot = @intCast(idx); break; }
         }
         if (arg_slot < 0) return null;
+        // Peel ts_instantiation_expr from callee (`foo<T>(cb)` pattern) and
+        // capture explicit type arg nodes for substitution below.
+        var actual_callee = cd.lhs;
+        var explicit_type_arg_nodes: []const u32 = &.{};
+        if (self.ast_ref.nodeTag(actual_callee) == .ts_instantiation_expr) {
+            const inst_d = self.ast_ref.nodeData(actual_callee);
+            actual_callee = inst_d.lhs;
+            if (inst_d.rhs != .none) {
+                const ta_sr = self.ast_ref.extraData(ast.SubRange, @intFromEnum(inst_d.rhs));
+                if (ta_sr.start < ta_sr.end and ta_sr.end <= self.ast_ref.extra_data.len)
+                    explicit_type_arg_nodes = self.ast_ref.extra_data[ta_sr.start..ta_sr.end];
+            }
+        }
         // Resolve callee's function type → arg_slot-th param → its
         // signature's param_slot-th param type.
-        const callee_ty = self.typeOf(cd.lhs);
+        const callee_ty = self.typeOf(actual_callee);
         const ct = self.store.get(callee_ty);
         if (ct.kind != .function_t) return null;
         const sigs = self.store.signaturesOf(ct.signatures);
@@ -1043,7 +1257,34 @@ pub const Checker = struct {
         const cb_sig = cb_sigs[0];
         const cb_params = self.store.signatureParamsOf(cb_sig);
         if (@as(usize, @intCast(param_slot)) >= cb_params.len) return null;
-        return cb_params[@intCast(param_slot)];
+        var result = cb_params[@intCast(param_slot)];
+        // When we have explicit type args (e.g. `foo<string[]>(cb)`), substitute
+        // them into the result if it is an unresolved type_ref.
+        if (explicit_type_arg_nodes.len > 0 and self.store.get(result).kind == .type_ref) {
+            if (self.findCalleeFnDecl(actual_callee)) |fn_decl| {
+                const fd_lhs = self.ast_ref.nodeData(fn_decl).lhs;
+                const fn_fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(fd_lhs));
+                if (fn_fd.type_params < fn_fd.type_params_end and
+                    fn_fd.type_params_end <= self.ast_ref.extra_data.len)
+                {
+                    const tp_nodes = self.ast_ref.extra_data[fn_fd.type_params..fn_fd.type_params_end];
+                    var names_buf: [4][]const u8 = undefined;
+                    var vals_buf: [4]TypeId = undefined;
+                    var count: usize = 0;
+                    for (tp_nodes, 0..) |raw, ti| {
+                        if (count >= 4 or ti >= explicit_type_arg_nodes.len) break;
+                        const tp: NodeIndex = @enumFromInt(raw);
+                        if (self.ast_ref.nodeTag(tp) != .ts_type_parameter) continue;
+                        names_buf[count] = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(tp));
+                        const ta_node: NodeIndex = @enumFromInt(explicit_type_arg_nodes[ti]);
+                        vals_buf[count] = self.resolveTypeNode(ta_node);
+                        count += 1;
+                    }
+                    if (count > 0) result = self.substituteTypeId(result, names_buf[0..count], vals_buf[0..count]);
+                }
+            }
+        }
+        return result;
     }
 
     fn isArrayPredicateMethodName(name: []const u8) bool {
@@ -1654,9 +1895,10 @@ pub const Checker = struct {
             const member: NodeIndex = @enumFromInt(raw);
             const m_tag = self.ast_ref.nodeTag(member);
             if (m_tag == .ts_index_signature) {
-                // `[k: T]: V` — store the value type V under a sentinel
-                // name "[]" so inferComputedMember can find it when
-                // indexing the object with a non-literal key.
+                // `[k: T]: V` — store under a specific sentinel ("[]L" / "[]U")
+                // when the key type is Lowercase<string> / Uppercase<string>, and
+                // also always under the generic "[]" sentinel for inferComputedMember
+                // and other backward-compat callers.
                 const sig_data = self.ast_ref.nodeData(member);
                 if (sig_data.rhs == .none) continue;
                 const value_node = if (self.ast_ref.nodeTag(sig_data.rhs) == .ts_type_annotation)
@@ -1664,8 +1906,16 @@ pub const Checker = struct {
                 else
                     sig_data.rhs;
                 const value_ty = self.resolveTypeNode(value_node);
-                props_buf[prop_count] = .{ .name = "[]", .type_id = value_ty };
-                prop_count += 1;
+                const sentinel = self.indexSigSentinel(member);
+                if (prop_count < props_buf.len) {
+                    props_buf[prop_count] = .{ .name = sentinel, .type_id = value_ty };
+                    prop_count += 1;
+                }
+                // Emit generic "[]" for backward compat when key was specific.
+                if (!std.mem.eql(u8, sentinel, "[]") and prop_count < props_buf.len) {
+                    props_buf[prop_count] = .{ .name = "[]", .type_id = value_ty };
+                    prop_count += 1;
+                }
                 continue;
             }
             if (m_tag != .ts_property_signature and m_tag != .ts_method_signature) continue;
@@ -2028,19 +2278,61 @@ pub const Checker = struct {
         return null;
     }
 
-    /// Detect whether a `ts_mapped_type` node carries the `?` optional modifier
-    /// (`{ [K in T]?: V }`).  We scan tokens from the `{` main_token forward,
-    /// find the first `]`, and check if the token immediately after it is `?`.
-    fn mappedTypeHasOptionalModifier(self: *Checker, ty_node: NodeIndex) bool {
+    const MappedTypeModifiers = struct {
+        is_optional: bool,
+        remove_optional: bool,
+        is_readonly: bool,
+        remove_readonly: bool,
+    };
+
+    /// Scan the token stream of a `ts_mapped_type` node to extract
+    /// `readonly`/`-readonly`/`+?`/`-?` modifiers.
+    fn mappedTypeModifiers(self: *Checker, ty_node: NodeIndex) MappedTypeModifiers {
         const start_tok = self.ast_ref.nodeMainToken(ty_node);
         const token_tags = self.ast_ref.tokens.items(.tag);
         var i: usize = @intCast(start_tok);
-        while (i + 1 < token_tags.len) : (i += 1) {
-            if (token_tags[i] == .r_bracket) {
-                return token_tags[i + 1] == .question;
+        var result: MappedTypeModifiers = .{
+            .is_optional = false,
+            .remove_optional = false,
+            .is_readonly = false,
+            .remove_readonly = false,
+        };
+        // Scan from `{` looking for tokens before the first `[`.
+        while (i < token_tags.len) : (i += 1) {
+            const t = token_tags[i];
+            if (t == .l_bracket) break;
+            if (t == .kw_readonly) {
+                result.is_readonly = true;
+            } else if (t == .minus) {
+                // `-readonly` — check next token
+                if (i + 1 < token_tags.len and token_tags[i + 1] == .kw_readonly) {
+                    result.remove_readonly = true;
+                    i += 1;
+                }
+            } else if (t == .plus) {
+                // `+readonly` — check next token
+                if (i + 1 < token_tags.len and token_tags[i + 1] == .kw_readonly) {
+                    result.is_readonly = true;
+                    i += 1;
+                }
             }
         }
-        return false;
+        // Now find the first `]` and check the token after it.
+        while (i < token_tags.len) : (i += 1) {
+            if (token_tags[i] == .r_bracket) {
+                if (i + 1 >= token_tags.len) break;
+                const after = token_tags[i + 1];
+                if (after == .question) {
+                    result.is_optional = true;
+                } else if (after == .plus and i + 2 < token_tags.len and token_tags[i + 2] == .question) {
+                    result.is_optional = true;
+                } else if (after == .minus and i + 2 < token_tags.len and token_tags[i + 2] == .question) {
+                    result.remove_optional = true;
+                }
+                break;
+            }
+        }
+        return result;
     }
 
     fn resolveMappedType(self: *Checker, ty_node: NodeIndex) TypeId {
@@ -2052,8 +2344,19 @@ pub const Checker = struct {
         const as_type: NodeIndex = @enumFromInt(slice[2]);
         const value_type: NodeIndex = @enumFromInt(slice[3]);
         if (constraint == .none or value_type == .none) return tymod.ID_UNKNOWN;
-        // `as` clause not modelled — bail to keep semantics safe.
-        if (as_type != .none) return tymod.ID_UNKNOWN;
+        // `as` clause: `as never` → empty object; `as Expr` → open sentinel.
+        if (as_type != .none) {
+            const as_resolved = self.resolveTypeNode(as_type);
+            if (as_resolved.eq(tymod.ID_NEVER)) {
+                const empty = self.store.appendObjectProps(&.{}) catch return tymod.ID_UNKNOWN;
+                return self.store.add(.{ .kind = .object_t, .object_props = empty }) catch tymod.ID_UNKNOWN;
+            }
+            // Unknown as-expression — fall through with open sentinel.
+        }
+
+        const mods = self.mappedTypeModifiers(ty_node);
+        const is_optional = mods.is_optional;
+        const is_readonly = mods.is_readonly;
 
         var keys_buf: [16][]const u8 = undefined;
         const key_count_opt = self.collectStringLiteralKeys(constraint, &keys_buf, 0);
@@ -2061,8 +2364,12 @@ pub const Checker = struct {
             // Open constraint (e.g. `Lowercase<string>`) — emit a single "[]" sentinel
             // so callers can detect that any string key maps to the value type.
             const val_ty = self.resolveTypeNode(value_type);
-            const is_optional = mappedTypeHasOptionalModifier(self, ty_node);
-            const prop: tymod.ObjectProp = .{ .name = "[]", .type_id = val_ty, .optional = is_optional };
+            const prop: tymod.ObjectProp = .{
+                .name = "[]",
+                .type_id = val_ty,
+                .optional = is_optional,
+                .readonly = is_readonly,
+            };
             const list = self.store.appendObjectProps(&.{prop}) catch return tymod.ID_UNKNOWN;
             return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
         }
@@ -2088,7 +2395,12 @@ pub const Checker = struct {
             {
                 continue;
             }
-            props_buf[prop_count] = .{ .name = name, .type_id = val_ty };
+            props_buf[prop_count] = .{
+                .name = name,
+                .type_id = val_ty,
+                .optional = is_optional,
+                .readonly = is_readonly,
+            };
             prop_count += 1;
         }
         const list = self.store.appendObjectProps(props_buf[0..prop_count]) catch return tymod.ID_UNKNOWN;
@@ -2290,7 +2602,10 @@ pub const Checker = struct {
         var math_props_buf: [math_methods.len + 8]tymod.ObjectProp = undefined;
         var math_n: usize = 0;
         for (math_methods) |name| {
-            math_props_buf[math_n] = .{ .name = name, .type_id = num_fn };
+            // is_method=true so union fn_property checks see Math methods
+            // as real methods (not fn_properties), which matters when Math
+            // appears alongside a class that has a matching fn_property field.
+            math_props_buf[math_n] = .{ .name = name, .type_id = num_fn, .is_method = true };
             math_n += 1;
         }
         // Math constants — number-typed.
@@ -2301,6 +2616,7 @@ pub const Checker = struct {
         }
         const math_ty = try h.objType(math_props_buf[0..math_n]);
         try self.global_value_types.put(self.gpa, "Math", math_ty);
+        try self.natively_bound_type_ids.put(self.gpa, math_ty, {});
 
         // JSON — parse: any, stringify: string.
         const any_fn = try h.fnType(tymod.ID_ANY);
@@ -2311,6 +2627,7 @@ pub const Checker = struct {
         };
         const json_ty = try h.objType(&json_props);
         try self.global_value_types.put(self.gpa, "JSON", json_ty);
+        try self.natively_bound_type_ids.put(self.gpa, json_ty, {});
 
         // Number — global constructor + utilities; calling it returns number.
         const number_props = [_]tymod.ObjectProp{
@@ -2421,7 +2738,13 @@ pub const Checker = struct {
                     const id = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
                     const name = self.ast_ref.tokenText(id.name);
                     try self.known_type_names.put(self.gpa, name, {});
-                    try self.type_decl_nodes.put(self.gpa, name, ni);
+                    const gop = try self.type_decl_nodes.getOrPut(self.gpa, name);
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = ni;
+                    } else {
+                        // Declaration merging: store extra declaration for later.
+                        try self.merged_iface_extra.append(self.gpa, .{ .name = name, .node = ni });
+                    }
                 },
                 .ts_enum_decl => {
                     const ed = self.ast_ref.extraData(ast.EnumData, @intFromEnum(data.lhs));
@@ -2466,15 +2789,77 @@ pub const Checker = struct {
                     }
                 },
                 .ts_namespace_decl, .ts_module_decl => {
-                    if (data.lhs != .none) {
+                    if (data.lhs != .none and data.rhs != .none) {
+                        const tok = self.ast_ref.nodeMainToken(data.lhs);
+                        const ns_name = self.ast_ref.tokenText(tok);
+                        try self.known_type_names.put(self.gpa, ns_name, {});
+                        const gop = try self.type_decl_nodes.getOrPut(self.gpa, ns_name);
+                        if (!gop.found_existing) {
+                            gop.value_ptr.* = ni;
+                        } else {
+                            try self.merged_ns_extra.append(self.gpa, .{ .name = ns_name, .node = ni });
+                        }
+                    } else if (data.lhs != .none) {
                         const tok = self.ast_ref.nodeMainToken(data.lhs);
                         try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(tok), {});
                     }
                 },
-                .import_specifier, .import_default_specifier,
-                .import_namespace_specifier, .ts_type_parameter => {
+                .ts_type_parameter => {
                     const tok = self.ast_ref.nodeMainToken(ni);
                     try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(tok), {});
+                },
+                .import_decl => {
+                    const idata = self.ast_ref.extraData(ast.ImportData, @intFromEnum(data.lhs));
+                    // Get unquoted module specifier from the string_literal source node.
+                    const raw_module = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(idata.source));
+                    const module_spec: []const u8 = if (raw_module.len >= 2 and
+                        (raw_module[0] == '\'' or raw_module[0] == '"'))
+                        raw_module[1 .. raw_module.len - 1]
+                    else
+                        raw_module;
+                    if (idata.specifiers_end > idata.specifiers_start) {
+                        for (self.ast_ref.extra_data[idata.specifiers_start..idata.specifiers_end]) |raw_idx| {
+                            const spec_node: NodeIndex = @enumFromInt(raw_idx);
+                            const spec_tag = self.ast_ref.nodeTag(spec_node);
+                            const spec_d = self.ast_ref.nodeData(spec_node);
+                            switch (spec_tag) {
+                                .import_specifier => {
+                                    // data.lhs = imported_node (exported name), data.rhs = local_node
+                                    const exp_name = self.ast_ref.tokenText(
+                                        self.ast_ref.nodeMainToken(spec_d.lhs),
+                                    );
+                                    const local_name = self.ast_ref.tokenText(
+                                        self.ast_ref.nodeMainToken(spec_d.rhs),
+                                    );
+                                    try self.known_type_names.put(self.gpa, local_name, {});
+                                    try self.import_map.put(self.gpa, local_name, .{
+                                        .module_specifier = module_spec,
+                                        .exported_name = exp_name,
+                                    });
+                                },
+                                .import_default_specifier => {
+                                    // data.lhs = local_node; exported name is "default"
+                                    const local_name = self.ast_ref.tokenText(
+                                        self.ast_ref.nodeMainToken(spec_d.lhs),
+                                    );
+                                    try self.known_type_names.put(self.gpa, local_name, {});
+                                    try self.import_map.put(self.gpa, local_name, .{
+                                        .module_specifier = module_spec,
+                                        .exported_name = "default",
+                                    });
+                                },
+                                .import_namespace_specifier => {
+                                    // data.lhs = local namespace binding node
+                                    const local_name = self.ast_ref.tokenText(
+                                        self.ast_ref.nodeMainToken(spec_d.lhs),
+                                    );
+                                    try self.known_type_names.put(self.gpa, local_name, {});
+                                    // namespace imports: skip import_map — can't resolve individual members
+                                },
+                                else => {},
+                            }
+                        }
+                    }
                 },
                 else => {},
             }
@@ -2582,6 +2967,29 @@ pub const Checker = struct {
         // User-declared interface or class → resolve to its structural
         // shape (object_t with field/method ObjectProps).
         if (self.resolveDeclaredType(name)) |resolved| {
+            // Qualified type `A.B`: if `A` resolved to a namespace object_t,
+            // look up the property `B` on it — `A.B` is the member type, not
+            // the namespace type itself.
+            const ty_data = self.ast_ref.nodeData(ty_node);
+            if (ty_data.lhs != .none and self.ast_ref.nodeTag(ty_data.lhs) == .member_expr) {
+                const rt = self.store.get(resolved);
+                if (rt.kind == .object_t) {
+                    const member_data = self.ast_ref.nodeData(ty_data.lhs);
+                    if (member_data.rhs != .none) {
+                        const member_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(member_data.rhs));
+                        for (self.store.propsOf(rt.object_props)) |p| {
+                            if (std.mem.eql(u8, p.name, member_name)) return p.type_id;
+                        }
+                        // Member not found in namespace type — fall through to the
+                        // qualified-name heuristic which checks `known_type_names`.
+                        if (self.known_type_names.contains(member_name)) {
+                            var args_buf: [8]TypeId = undefined;
+                            const args = self.collectTypeArgs(ty_node, &args_buf);
+                            return self.store.typeRef(member_name, args) catch tymod.ID_ANY;
+                        }
+                    }
+                }
+            }
             // Type alias instantiation: if `Foo` is a generic alias
             // (`type Foo<T> = ...`) and the use site supplies type
             // args, substitute them through the body.
@@ -2733,7 +3141,255 @@ pub const Checker = struct {
             const list = self.store.appendObjectProps(&props) catch return null;
             return self.store.add(.{ .kind = .object_t, .object_props = list }) catch null;
         }
+        // NonNullable<T> — remove null and undefined from T's union members.
+        if (std.mem.eql(u8, name, "NonNullable")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            return self.removeNullUndefined(t);
+        }
+        // Awaited<T> — recursively unwrap Promise<T>.
+        if (std.mem.eql(u8, name, "Awaited")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            return self.resolveAwaited(t);
+        }
+        // ReturnType<F> — extract the return type from a function type.
+        if (std.mem.eql(u8, name, "ReturnType")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            return self.resolveReturnType(t);
+        }
+        // Parameters<F> — extract the parameter types of F as a tuple.
+        if (std.mem.eql(u8, name, "Parameters")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            return self.resolveParameters(t);
+        }
+        // Partial<T> — make every property of T optional.
+        if (std.mem.eql(u8, name, "Partial")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            return self.resolvePartial(t, true);
+        }
+        // Required<T> — make every property of T required (non-optional).
+        if (std.mem.eql(u8, name, "Required")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            return self.resolvePartial(t, false);
+        }
+        // Readonly<T> — structural alias (all props readonly, same shape).
+        if (std.mem.eql(u8, name, "Readonly")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            return self.resolveReadonly(t);
+        }
+        // Exclude<T, U> — union T minus members assignable to U.
+        if (std.mem.eql(u8, name, "Exclude")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            const u = if (args.len > 1) args[1] else return tymod.ID_UNKNOWN;
+            return self.resolveExclude(t, u);
+        }
+        // Extract<T, U> — union T keeping only members assignable to U.
+        if (std.mem.eql(u8, name, "Extract")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            const u = if (args.len > 1) args[1] else return tymod.ID_UNKNOWN;
+            return self.resolveExtract(t, u);
+        }
+        // Pick<T, K> — object type keeping only the keys in K.
+        if (std.mem.eql(u8, name, "Pick")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            const k = if (args.len > 1) args[1] else return tymod.ID_UNKNOWN;
+            return self.resolvePick(t, k);
+        }
+        // Omit<T, K> — object type without the keys in K.
+        if (std.mem.eql(u8, name, "Omit")) {
+            const t = if (args.len > 0) args[0] else return tymod.ID_UNKNOWN;
+            const k = if (args.len > 1) args[1] else return tymod.ID_UNKNOWN;
+            return self.resolveOmit(t, k);
+        }
         return null;
+    }
+
+    fn removeNullUndefined(self: *Checker, id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind != .union_t) {
+            if (t.kind == .null_t or t.kind == .undefined_t) return tymod.ID_NEVER;
+            return id;
+        }
+        var buf: [16]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.idsOf(t.list_data)) |m| {
+            const mt = self.store.get(m);
+            if (mt.kind == .null_t or mt.kind == .undefined_t) continue;
+            if (n < buf.len) { buf[n] = m; n += 1; }
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return self.store.unionOf(buf[0..n]) catch id;
+    }
+
+    fn resolveAwaited(self: *Checker, id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind == .type_ref and std.mem.eql(u8, t.name, "Promise")) {
+            const args = self.store.idsOf(t.list_data);
+            if (args.len > 0) return self.resolveAwaited(args[0]);
+        }
+        if (t.kind == .union_t) {
+            var buf: [8]TypeId = undefined;
+            var n: usize = 0;
+            for (self.store.idsOf(t.list_data)) |m| {
+                const a = self.resolveAwaited(m);
+                if (n < buf.len) { buf[n] = a; n += 1; }
+            }
+            if (n == 0) return id;
+            return self.store.unionOf(buf[0..n]) catch id;
+        }
+        return id;
+    }
+
+    fn resolveReturnType(self: *Checker, id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind == .function_t) {
+            const sigs = self.store.signaturesOf(t.signatures);
+            if (sigs.len > 0) return sigs[0].return_type;
+        }
+        if (t.kind == .union_t) {
+            var buf: [8]TypeId = undefined;
+            var n: usize = 0;
+            for (self.store.idsOf(t.list_data)) |m| {
+                const r = self.resolveReturnType(m);
+                if (!r.eq(tymod.ID_UNKNOWN) and n < buf.len) { buf[n] = r; n += 1; }
+            }
+            if (n == 1) return buf[0];
+            if (n > 1) return self.store.unionOf(buf[0..n]) catch id;
+        }
+        return tymod.ID_UNKNOWN;
+    }
+
+    fn resolveParameters(self: *Checker, id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind == .function_t) {
+            const sigs = self.store.signaturesOf(t.signatures);
+            if (sigs.len > 0) {
+                const params = self.store.signatureParamsOf(sigs[0]);
+                return self.store.tupleOf(params) catch tymod.ID_UNKNOWN;
+            }
+        }
+        return tymod.ID_UNKNOWN;
+    }
+
+    fn resolvePartial(self: *Checker, id: TypeId, make_optional: bool) TypeId {
+        const t = self.store.get(id);
+        if (t.kind != .object_t) return id;
+        const src_props = self.store.propsOf(t.object_props);
+        var new_props: std.ArrayList(tymod.ObjectProp) = .empty;
+        defer new_props.deinit(self.gpa);
+        for (src_props) |p| {
+            new_props.append(self.gpa, .{
+                .name = p.name,
+                .type_id = p.type_id,
+                .optional = make_optional,
+                .readonly = p.readonly,
+                .is_method = p.is_method,
+                .is_fn_property = p.is_fn_property,
+            }) catch continue;
+        }
+        const list = self.store.appendObjectProps(new_props.items) catch return id;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch id;
+    }
+
+    fn resolveReadonly(self: *Checker, id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind != .object_t) return id;
+        const src_props = self.store.propsOf(t.object_props);
+        var new_props: std.ArrayList(tymod.ObjectProp) = .empty;
+        defer new_props.deinit(self.gpa);
+        for (src_props) |p| {
+            new_props.append(self.gpa, .{
+                .name = p.name,
+                .type_id = p.type_id,
+                .optional = p.optional,
+                .readonly = true,
+                .is_method = p.is_method,
+                .is_fn_property = p.is_fn_property,
+            }) catch continue;
+        }
+        const list = self.store.appendObjectProps(new_props.items) catch return id;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch id;
+    }
+
+    fn resolveExclude(self: *Checker, id: TypeId, exclude_id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind != .union_t) {
+            if (self.simpleAssignable(id, exclude_id) == .yes) return tymod.ID_NEVER;
+            return id;
+        }
+        var buf: [16]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.idsOf(t.list_data)) |m| {
+            if (self.simpleAssignable(m, exclude_id) != .yes) {
+                if (n < buf.len) { buf[n] = m; n += 1; }
+            }
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return self.store.unionOf(buf[0..n]) catch id;
+    }
+
+    fn resolveExtract(self: *Checker, id: TypeId, extract_id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind != .union_t) {
+            if (self.simpleAssignable(id, extract_id) == .yes) return id;
+            return tymod.ID_NEVER;
+        }
+        var buf: [16]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.idsOf(t.list_data)) |m| {
+            if (self.simpleAssignable(m, extract_id) == .yes) {
+                if (n < buf.len) { buf[n] = m; n += 1; }
+            }
+        }
+        if (n == 0) return tymod.ID_NEVER;
+        if (n == 1) return buf[0];
+        return self.store.unionOf(buf[0..n]) catch id;
+    }
+
+    fn resolvePick(self: *Checker, id: TypeId, keys_id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind != .object_t) return id;
+        const src_props = self.store.propsOf(t.object_props);
+        var new_props: std.ArrayList(tymod.ObjectProp) = .empty;
+        defer new_props.deinit(self.gpa);
+        for (src_props) |p| {
+            if (self.typeContainsKey(keys_id, p.name)) {
+                new_props.append(self.gpa, p) catch continue;
+            }
+        }
+        const list = self.store.appendObjectProps(new_props.items) catch return id;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch id;
+    }
+
+    fn resolveOmit(self: *Checker, id: TypeId, keys_id: TypeId) TypeId {
+        const t = self.store.get(id);
+        if (t.kind != .object_t) return id;
+        const src_props = self.store.propsOf(t.object_props);
+        var new_props: std.ArrayList(tymod.ObjectProp) = .empty;
+        defer new_props.deinit(self.gpa);
+        for (src_props) |p| {
+            if (!self.typeContainsKey(keys_id, p.name)) {
+                new_props.append(self.gpa, p) catch continue;
+            }
+        }
+        const list = self.store.appendObjectProps(new_props.items) catch return id;
+        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch id;
+    }
+
+    /// True when `keys_type` (a string-literal union or single string literal)
+    /// includes `key`.  Used by Pick/Omit.
+    fn typeContainsKey(self: *const Checker, keys_type: TypeId, key: []const u8) bool {
+        const t = self.store.get(keys_type);
+        if (t.kind == .string_literal) {
+            return std.mem.eql(u8, t.literal_value.string, key);
+        }
+        if (t.kind == .union_t) {
+            for (self.store.idsOf(t.list_data)) |m| {
+                if (self.typeContainsKey(m, key)) return true;
+            }
+        }
+        return false;
     }
 
     /// Promise<T> structural shape — methods that no-floating-promises
@@ -2943,18 +3599,39 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Resolve a name that was imported from another file.
+    /// Returns null when cross-file resolution is disabled or the import can't be resolved.
+    fn resolveImportedType(self: *Checker, name: []const u8) ?TypeId {
+        const mc = self.module_cache orelse return null;
+        const entry = self.import_map.get(name) orelse return null;
+        const from_dir = std.fs.path.dirname(self.file_path) orelse ".";
+        return mc.resolveExportedType(
+            from_dir,
+            entry.module_specifier,
+            entry.exported_name,
+            &self.store,
+            self.gpa,
+        );
+    }
+
     /// type (e.g. an import or type alias to a non-structural type).
     fn resolveDeclaredType(self: *Checker, name: []const u8) ?TypeId {
         if (self.declared_type_cache.get(name)) |cached| {
             // Resolved or sentinel (recursion in progress).
             return cached;
         }
-        const decl = self.type_decl_nodes.get(name) orelse return null;
+        const decl = self.type_decl_nodes.get(name) orelse {
+            // Not declared locally — try cross-file import resolution.
+            const imported = self.resolveImportedType(name) orelse return null;
+            self.declared_type_cache.put(self.gpa, name, imported) catch {};
+            return imported;
+        };
         // Insert sentinel to break cycles (e.g. `interface Node { children: Node[] }`).
         self.declared_type_cache.put(self.gpa, name, tymod.ID_UNKNOWN) catch return null;
         const result = switch (self.ast_ref.nodeTag(decl)) {
             .ts_interface_decl => self.buildInterfaceType(decl),
             .class_decl => self.buildClassInstanceType(decl),
+            .ts_namespace_decl, .ts_module_decl => self.buildNamespaceType(decl),
             .ts_type_alias_decl => blk: {
                 // `type Foo = ...` — resolve the alias body to its
                 // TypeId.  Skip if the body recursively references
@@ -2978,6 +3655,108 @@ pub const Checker = struct {
         };
         self.declared_type_cache.put(self.gpa, name, result) catch {};
         return result;
+    }
+
+    /// Build an object_t from a namespace/module body.  Exported `const`/`let`
+    /// declarators and `function`/`class` declarations become ObjectProps on the
+    /// namespace value type.  Declaration-merged extras are folded in too.
+    fn buildNamespaceType(self: *Checker, decl: NodeIndex) TypeId {
+        var props: std.ArrayList(tymod.ObjectProp) = .empty;
+        defer props.deinit(self.gpa);
+
+        self.collectNamespaceProps(decl, &props);
+
+        const ns_name_tok = self.ast_ref.nodeMainToken(self.ast_ref.nodeData(decl).lhs);
+        const ns_name = self.ast_ref.tokenText(ns_name_tok);
+        for (self.merged_ns_extra.items) |entry| {
+            if (!std.mem.eql(u8, entry.name, ns_name)) continue;
+            self.collectNamespaceProps(entry.node, &props);
+        }
+
+        if (props.items.len == 0) return tymod.ID_UNKNOWN;
+        const prop_list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .object_t, .object_props = prop_list }) catch tymod.ID_UNKNOWN;
+    }
+
+    fn collectNamespaceProps(self: *Checker, decl: NodeIndex, props: *std.ArrayList(tymod.ObjectProp)) void {
+        const ns_data = self.ast_ref.nodeData(decl);
+        const body = ns_data.rhs;
+        if (body == .none) return;
+        if (self.ast_ref.nodeTag(body) != .block_stmt) return;
+        const bd = self.ast_ref.nodeData(body);
+        const start = @intFromEnum(bd.lhs);
+        const end = @intFromEnum(bd.rhs);
+        if (start >= end or end > self.ast_ref.extra_data.len) return;
+        for (self.ast_ref.extra_data[start..end]) |raw| {
+            const stmt: NodeIndex = @enumFromInt(raw);
+            self.collectNamespaceMemberProp(stmt, props);
+        }
+    }
+
+    fn collectNamespaceMemberProp(self: *Checker, stmt: NodeIndex, props: *std.ArrayList(tymod.ObjectProp)) void {
+        const stmt_tag = self.ast_ref.nodeTag(stmt);
+        switch (stmt_tag) {
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .ts_declare_function => {
+                const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(self.ast_ref.nodeData(stmt).lhs));
+                if (fd.name == .none) return;
+                const fn_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
+                const fn_ty = self.typeOf(stmt);
+                props.append(self.gpa, .{ .name = fn_name, .type_id = fn_ty, .is_method = true }) catch {};
+            },
+            .class_decl => {
+                const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(self.ast_ref.nodeData(stmt).lhs));
+                if (cd.name == .none) return;
+                const cls_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(cd.name));
+                const cls_ty = self.buildClassInstanceType(stmt);
+                props.append(self.gpa, .{ .name = cls_name, .type_id = cls_ty }) catch {};
+            },
+            .ts_enum_decl => {
+                const ed = self.ast_ref.extraData(ast.EnumData, @intFromEnum(self.ast_ref.nodeData(stmt).lhs));
+                const enum_name = self.ast_ref.tokenText(ed.name);
+                const enum_ty = self.store.typeRef(enum_name, &.{}) catch tymod.ID_UNKNOWN;
+                props.append(self.gpa, .{ .name = enum_name, .type_id = enum_ty }) catch {};
+            },
+            .ts_namespace_decl, .ts_module_decl => {
+                const ns_name_node = self.ast_ref.nodeData(stmt).lhs;
+                if (ns_name_node == .none) return;
+                const ns_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ns_name_node));
+                const ns_ty = self.resolveDeclaredType(ns_name) orelse tymod.ID_UNKNOWN;
+                props.append(self.gpa, .{ .name = ns_name, .type_id = ns_ty }) catch {};
+            },
+            .var_decl, .let_decl, .const_decl,
+            .export_named, .export_default_fn, .export_default_class => {
+                self.collectNamespaceDeclProps(stmt, props);
+            },
+            else => {},
+        }
+    }
+
+    fn collectNamespaceDeclProps(self: *Checker, stmt: NodeIndex, props: *std.ArrayList(tymod.ObjectProp)) void {
+        const stmt_tag = self.ast_ref.nodeTag(stmt);
+        if (stmt_tag == .export_named) {
+            // `export var/let/const/fn/class/enum X` — lhs = inner decl, rhs = .none.
+            const inner = self.ast_ref.nodeData(stmt).lhs;
+            if (inner != .none) self.collectNamespaceMemberProp(inner, props);
+            return;
+        }
+        if (stmt_tag == .export_default_fn or stmt_tag == .export_default_class) {
+            const inner = self.ast_ref.nodeData(stmt).lhs;
+            if (inner != .none) self.collectNamespaceMemberProp(inner, props);
+            return;
+        }
+        if (stmt_tag != .var_decl and stmt_tag != .let_decl and stmt_tag != .const_decl) return;
+        const d = self.ast_ref.nodeData(stmt);
+        const range = self.safeSubRange(d.lhs) orelse return;
+        for (self.ast_ref.extra_data[range.start..range.end]) |raw| {
+            const decl_node: NodeIndex = @enumFromInt(raw);
+            if (self.ast_ref.nodeTag(decl_node) != .declarator) continue;
+            const dd = self.ast_ref.nodeData(decl_node);
+            if (dd.lhs == .none or self.ast_ref.nodeTag(dd.lhs) != .identifier) continue;
+            const vname = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(dd.lhs));
+            const vty = if (dd.rhs != .none) self.typeOf(dd.rhs) else tymod.ID_UNKNOWN;
+            props.append(self.gpa, .{ .name = vname, .type_id = vty }) catch {};
+        }
     }
 
     /// Build an object_t from an interface declaration's body.  Each
@@ -3027,22 +3806,61 @@ pub const Checker = struct {
                 }
             }
         }
-        // Merge multiple "[]" index-signature props into one unioned "[]" prop.
-        // An interface may have multiple index signatures (e.g. Lowercase + Uppercase);
-        // we can't distinguish which applies to a given key name, so union all their
-        // value types so the result is as nullable as the most-nullable sig.
-        var idx_types_buf: [8]tymod.TypeId = undefined;
-        var idx_count: usize = 0;
-        var idx_opt: bool = false;
+        // Declaration merging: add members from any extra declarations with the same name.
+        const iface_name = self.ast_ref.tokenText(id.name);
+        for (self.merged_iface_extra.items) |entry| {
+            if (!std.mem.eql(u8, entry.name, iface_name)) continue;
+            const extra_data = self.ast_ref.nodeData(entry.node);
+            const extra_id = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(extra_data.lhs));
+            if (extra_id.body_end > extra_id.body_start) {
+                const extra_body = self.ast_ref.extra_data[extra_id.body_start..extra_id.body_end];
+                for (extra_body) |raw| {
+                    const member: NodeIndex = @enumFromInt(raw);
+                    if (self.interfaceMemberToProp(member)) |p| {
+                        props.append(self.gpa, p) catch {};
+                    }
+                }
+            }
+        }
+        // Merge index-signature props by sentinel kind:
+        //   "[]L" — Lowercase<string> key: kept as a specific sentinel
+        //   "[]U" — Uppercase<string> key: kept as a specific sentinel
+        //   "[]"  — generic key: kept as combined union of ALL index-sig types
+        // The specific sentinels allow chainCheckType to pick the right branch
+        // for all-lowercase / all-uppercase accessor names, avoiding spurious
+        // nullable unions when both Lowercase and Uppercase sigs coexist.
+        var idx_gen_buf: [8]tymod.TypeId = undefined;
+        var idx_gen_count: usize = 0;
+        var idx_gen_opt: bool = false;
+        var idx_low_buf: [8]tymod.TypeId = undefined;
+        var idx_low_count: usize = 0;
+        var idx_low_opt: bool = false;
+        var idx_up_buf: [8]tymod.TypeId = undefined;
+        var idx_up_count: usize = 0;
+        var idx_up_opt: bool = false;
         {
             var j: usize = 0;
             while (j < props.items.len) {
                 const p = props.items[j];
                 if (std.mem.eql(u8, p.name, "[]")) {
-                    if (idx_count < idx_types_buf.len) {
-                        idx_types_buf[idx_count] = p.type_id;
-                        idx_count += 1;
-                        if (p.optional) idx_opt = true;
+                    if (idx_gen_count < idx_gen_buf.len) {
+                        idx_gen_buf[idx_gen_count] = p.type_id;
+                        idx_gen_count += 1;
+                        if (p.optional) idx_gen_opt = true;
+                    }
+                    _ = props.orderedRemove(j);
+                } else if (std.mem.eql(u8, p.name, "[]L")) {
+                    if (idx_low_count < idx_low_buf.len) {
+                        idx_low_buf[idx_low_count] = p.type_id;
+                        idx_low_count += 1;
+                        if (p.optional) idx_low_opt = true;
+                    }
+                    _ = props.orderedRemove(j);
+                } else if (std.mem.eql(u8, p.name, "[]U")) {
+                    if (idx_up_count < idx_up_buf.len) {
+                        idx_up_buf[idx_up_count] = p.type_id;
+                        idx_up_count += 1;
+                        if (p.optional) idx_up_opt = true;
                     }
                     _ = props.orderedRemove(j);
                 } else {
@@ -3050,14 +3868,73 @@ pub const Checker = struct {
                 }
             }
         }
-        if (idx_count == 1) {
-            props.append(self.gpa, .{ .name = "[]", .type_id = idx_types_buf[0], .optional = idx_opt }) catch {};
-        } else if (idx_count > 1) {
-            const unioned = self.store.unionOf(idx_types_buf[0..idx_count]) catch tymod.ID_UNKNOWN;
-            props.append(self.gpa, .{ .name = "[]", .type_id = unioned, .optional = idx_opt }) catch {};
+        // Emit "[]L" and "[]U" as specific sentinels.
+        if (idx_low_count == 1) {
+            props.append(self.gpa, .{ .name = "[]L", .type_id = idx_low_buf[0], .optional = idx_low_opt }) catch {};
+        } else if (idx_low_count > 1) {
+            const u = self.store.unionOf(idx_low_buf[0..idx_low_count]) catch tymod.ID_UNKNOWN;
+            props.append(self.gpa, .{ .name = "[]L", .type_id = u, .optional = idx_low_opt }) catch {};
+        }
+        if (idx_up_count == 1) {
+            props.append(self.gpa, .{ .name = "[]U", .type_id = idx_up_buf[0], .optional = idx_up_opt }) catch {};
+        } else if (idx_up_count > 1) {
+            const u = self.store.unionOf(idx_up_buf[0..idx_up_count]) catch tymod.ID_UNKNOWN;
+            props.append(self.gpa, .{ .name = "[]U", .type_id = u, .optional = idx_up_opt }) catch {};
+        }
+        // Emit combined "[]" — union of ALL index-sig types for generic-key lookups.
+        {
+            var all_buf: [24]tymod.TypeId = undefined;
+            var all_count: usize = 0;
+            const all_opt = idx_gen_opt or idx_low_opt or idx_up_opt;
+            for (idx_gen_buf[0..idx_gen_count]) |tid| {
+                if (all_count < all_buf.len) { all_buf[all_count] = tid; all_count += 1; }
+            }
+            for (idx_low_buf[0..idx_low_count]) |tid| {
+                if (all_count < all_buf.len) { all_buf[all_count] = tid; all_count += 1; }
+            }
+            for (idx_up_buf[0..idx_up_count]) |tid| {
+                if (all_count < all_buf.len) { all_buf[all_count] = tid; all_count += 1; }
+            }
+            if (all_count == 1) {
+                props.append(self.gpa, .{ .name = "[]", .type_id = all_buf[0], .optional = all_opt }) catch {};
+            } else if (all_count > 1) {
+                const u = self.store.unionOf(all_buf[0..all_count]) catch tymod.ID_UNKNOWN;
+                props.append(self.gpa, .{ .name = "[]", .type_id = u, .optional = all_opt }) catch {};
+            }
         }
         const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
         return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+    }
+
+    /// Return the index-signature sentinel for an interface/type-literal member.
+    /// "[]"  = generic key (string/number/symbol)
+    /// "[]L" = Lowercase<string> key — only matches all-lowercase accessor names
+    /// "[]U" = Uppercase<string> key — only matches all-uppercase accessor names
+    fn indexSigSentinel(self: *Checker, member: NodeIndex) []const u8 {
+        const d = self.ast_ref.nodeData(member);
+        const key_param = d.lhs;
+        if (key_param == .none or self.ast_ref.nodeTag(key_param) != .identifier) return "[]";
+        const key_ann = self.ast_ref.nodeData(key_param).rhs;
+        if (key_ann == .none) return "[]";
+        const key_ty = if (self.ast_ref.nodeTag(key_ann) == .ts_type_annotation)
+            self.ast_ref.nodeData(key_ann).lhs
+        else
+            key_ann;
+        if (key_ty == .none or self.ast_ref.nodeTag(key_ty) != .ts_type_reference) return "[]";
+        const kt_data = self.ast_ref.nodeData(key_ty);
+        const name_node = kt_data.lhs;
+        if (name_node == .none or self.ast_ref.nodeTag(name_node) != .identifier) return "[]";
+        const type_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(name_node));
+        if (!std.mem.eql(u8, type_name, "Lowercase") and !std.mem.eql(u8, type_name, "Uppercase")) return "[]";
+        if (kt_data.rhs == .none) return "[]";
+        const sr = self.ast_ref.extraData(SubRange, @intFromEnum(kt_data.rhs));
+        if (sr.end != sr.start + 1 or sr.start >= self.ast_ref.extra_data.len) return "[]";
+        const arg: NodeIndex = @enumFromInt(self.ast_ref.extra_data[sr.start]);
+        if (self.ast_ref.nodeTag(arg) != .ts_type_reference) return "[]";
+        const arg_name_nd = self.ast_ref.nodeData(arg).lhs;
+        if (arg_name_nd == .none or self.ast_ref.nodeTag(arg_name_nd) != .identifier) return "[]";
+        if (!std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(arg_name_nd)), "string")) return "[]";
+        return if (std.mem.eql(u8, type_name, "Lowercase")) "[]L" else "[]U";
     }
 
     fn interfaceMemberToProp(self: *Checker, member: NodeIndex) ?tymod.ObjectProp {
@@ -3092,14 +3969,14 @@ pub const Checker = struct {
                 return .{ .name = name, .type_id = fn_ty };
             },
             .ts_index_signature => {
-                // Index signature: `[key: T]: V` — store under the sentinel "[]".
                 if (data.rhs == .none) return null;
                 const value_node = if (self.ast_ref.nodeTag(data.rhs) == .ts_type_annotation)
                     self.ast_ref.nodeData(data.rhs).lhs
                 else
                     data.rhs;
                 const value_ty = self.resolveTypeNode(value_node);
-                return .{ .name = "[]", .type_id = value_ty };
+                const sentinel = self.indexSigSentinel(member);
+                return .{ .name = sentinel, .type_id = value_ty };
             },
             else => return null,
         }
@@ -3458,7 +4335,7 @@ pub const Checker = struct {
         const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(self.ast_ref.nodeData(fn_decl).lhs));
         if (fd.type_params_end <= fd.type_params) return null;
         // Collect type-parameter names.
-        var tp_names_buf: [4][]const u8 = undefined;
+        var tp_names_buf: [8][]const u8 = undefined;
         var tp_count: usize = 0;
         const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
         if (fd.type_params_end <= ext_len) {
@@ -3472,11 +4349,26 @@ pub const Checker = struct {
         }
         if (tp_count == 0) return null;
         // Collect explicit type args from the call (e.g. `id<number>(x)`).
-        var bindings_buf: [4]TypeId = undefined;
+        var bindings_buf: [8]TypeId = undefined;
         var bound: usize = 0;
         while (bound < tp_count) : (bound += 1) bindings_buf[bound] = TypeId.none;
-        // Currently we don't parse explicit type arguments at call
-        // sites — fall back to pure inference from arg types.
+        // Read explicit type args from ts_instantiation_expr callee (e.g. `fn<T>(x)`).
+        {
+            var c = callee;
+            while (self.ast_ref.nodeTag(c) == .grouping_expr) c = self.ast_ref.nodeData(c).lhs;
+            if (self.ast_ref.nodeTag(c) == .ts_instantiation_expr) {
+                const inst_d = self.ast_ref.nodeData(c);
+                if (inst_d.rhs != .none) {
+                    const sr = self.ast_ref.extraData(ast.SubRange, @intFromEnum(inst_d.rhs));
+                    const type_args = self.ast_ref.extra_data[sr.start..sr.end];
+                    for (type_args, 0..) |raw, ti| {
+                        if (ti >= tp_count) break;
+                        const ta_node: NodeIndex = @enumFromInt(raw);
+                        bindings_buf[ti] = self.resolveTypeNode(ta_node);
+                    }
+                }
+            }
+        }
 
         // Walk params + args, matching type-ref names against the
         // type-parameter names to build bindings.
@@ -3548,9 +4440,35 @@ pub const Checker = struct {
                     return;
                 }
             }
-            // `Foo<T>` — recurse into the type arg list against the
-            // argument's type-args when possible (we don't yet model
-            // that mapping; leave as no-op).
+            // `Foo<T>` — check common patterns:
+            // - `Array<T>` or `ReadonlyArray<T>` matched against an array type
+            // - generic `Foo<T>` matched against a type_ref with same outer name
+            if ((std.mem.eql(u8, tname, "Array") or std.mem.eql(u8, tname, "ReadonlyArray")) and
+                (self.store.get(arg_ty).kind == .array_t or
+                 self.store.get(arg_ty).kind == .readonly_array_t or
+                 self.store.get(arg_ty).kind == .tuple_t))
+            {
+                const elems = self.store.idsOf(self.store.get(arg_ty).list_data);
+                const first_ta = self.firstTypeArg(n);
+                if (first_ta != .none and elems.len > 0) {
+                    self.matchTypeParam(first_ta, elems[0], names, bindings);
+                }
+                return;
+            }
+            const data = self.ast_ref.nodeData(n);
+            if (data.rhs != .none) {
+                const sr = self.safeSubRange(data.rhs) orelse return;
+                const type_arg_nodes = self.ast_ref.extra_data[sr.start..sr.end];
+                const arg_t = self.store.get(arg_ty);
+                if (arg_t.kind == .type_ref and std.mem.eql(u8, arg_t.name, tname)) {
+                    const arg_type_args = self.store.idsOf(arg_t.list_data);
+                    for (type_arg_nodes, 0..) |raw, ai| {
+                        if (ai >= arg_type_args.len) break;
+                        const ta_node: NodeIndex = @enumFromInt(raw);
+                        self.matchTypeParam(ta_node, arg_type_args[ai], names, bindings);
+                    }
+                }
+            }
             return;
         }
         if (tag == .ts_array_type) {
@@ -3563,6 +4481,16 @@ pub const Checker = struct {
                     const inner = self.ast_ref.nodeData(n).lhs;
                     self.matchTypeParam(inner, elems[0], names, bindings);
                 }
+            }
+            return;
+        }
+        // `readonly T[]` — ts_keyof_type with "readonly" main_token wrapping a ts_array_type.
+        // Strip the readonly and recurse into the inner array type.
+        if (tag == .ts_keyof_type) {
+            const main_tok = self.ast_ref.nodeMainToken(n);
+            if (std.mem.eql(u8, self.ast_ref.tokenText(main_tok), "readonly")) {
+                const inner = self.ast_ref.nodeData(n).lhs;
+                if (inner != .none) self.matchTypeParam(inner, arg_ty, names, bindings);
             }
             return;
         }
@@ -3584,7 +4512,9 @@ pub const Checker = struct {
     /// callee isn't a simple identifier or we can't find a fn-decl.
     fn findCalleeFnDecl(self: *Checker, callee: NodeIndex) ?NodeIndex {
         var c = callee;
-        while (self.ast_ref.nodeTag(c) == .grouping_expr) c = self.ast_ref.nodeData(c).lhs;
+        while (self.ast_ref.nodeTag(c) == .grouping_expr or
+               self.ast_ref.nodeTag(c) == .ts_instantiation_expr)
+            c = self.ast_ref.nodeData(c).lhs;
         if (self.ast_ref.nodeTag(c) != .identifier) return null;
         const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(c));
         if (name.len == 0) return null;
@@ -3593,12 +4523,34 @@ pub const Checker = struct {
         while (i < total) : (i += 1) {
             const ni: NodeIndex = @enumFromInt(i);
             const t = self.ast_ref.nodeTag(ni);
-            if (t != .fn_decl and t != .async_fn_decl and t != .ts_declare_function and
-                t != .generator_fn_decl and t != .async_generator_fn_decl) continue;
-            const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(self.ast_ref.nodeData(ni).lhs));
-            if (fd.name == .none) continue;
-            const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
-            if (std.mem.eql(u8, dn, name)) return ni;
+            if (t == .fn_decl or t == .async_fn_decl or t == .ts_declare_function or
+                t == .generator_fn_decl or t == .async_generator_fn_decl)
+            {
+                const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(self.ast_ref.nodeData(ni).lhs));
+                if (fd.name == .none) continue;
+                const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
+                if (std.mem.eql(u8, dn, name)) return ni;
+                continue;
+            }
+            // const/let declarator: `const name: <T>(...) => ...`
+            // Return the ts_function_type node — it has the same FnData layout
+            // so inferGenericReturn can extract type params and params from it.
+            if (t == .declarator) {
+                const dd = self.ast_ref.nodeData(ni);
+                if (dd.lhs == .none or self.ast_ref.nodeTag(dd.lhs) != .identifier) continue;
+                const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(dd.lhs));
+                if (!std.mem.eql(u8, dn, name)) continue;
+                const id_d = self.ast_ref.nodeData(dd.lhs);
+                if (id_d.rhs == .none or self.ast_ref.nodeTag(id_d.rhs) != .ts_type_annotation) continue;
+                const ann_inner = self.ast_ref.nodeData(id_d.rhs).lhs;
+                if (ann_inner == .none or self.ast_ref.nodeTag(ann_inner) != .ts_function_type) continue;
+                // Only return if the function type is generic (has type params) —
+                // otherwise there is nothing to substitute.
+                const fn_d = self.ast_ref.nodeData(ann_inner);
+                const fn_fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(fn_d.lhs));
+                if (fn_fd.type_params_end <= fn_fd.type_params) continue;
+                return ann_inner;
+            }
         }
         return null;
     }
@@ -4194,9 +5146,14 @@ pub const Checker = struct {
                 }
             }
         }
-        // Primitive apparent types: number / string / boolean have
-        // prototype methods we should model eventually.  For now we
-        // only model array / promise / object.
+        // String prototype.
+        if (obj.kind == .string or obj.kind == .string_literal) {
+            if (self.stringPrototypeProperty(prop_name)) |ty| return ty;
+        }
+        // Number prototype.
+        if (obj.kind == .number or obj.kind == .number_literal) {
+            if (self.numberPrototypeProperty(prop_name)) |ty| return ty;
+        }
         return tymod.ID_UNKNOWN;
     }
 
@@ -4361,6 +5318,35 @@ pub const Checker = struct {
             .intersection_t => return self.substituteList(id, t, keys, vals, .intersection_t),
             .array_t, .readonly_array_t, .tuple_t => return self.substituteArrayLike(id, t, keys, vals),
             .object_t => return self.substituteObject(id, t, keys, vals),
+            .function_t => {
+                // Substitute type params into each signature's param types and return type.
+                const sigs = self.store.signaturesOf(t.signatures);
+                if (sigs.len == 0) return id;
+                var changed = false;
+                var new_sigs_buf: [4]tymod.Signature = undefined;
+                if (sigs.len > new_sigs_buf.len) return id;
+                for (sigs, 0..) |sig, si| {
+                    const old_params = self.store.signatureParamsOf(sig);
+                    var new_params_buf: [8]TypeId = undefined;
+                    if (old_params.len > new_params_buf.len) return id;
+                    for (old_params, 0..) |p, pi| {
+                        new_params_buf[pi] = self.substituteTypeId(p, keys, vals);
+                        if (!new_params_buf[pi].eq(p)) changed = true;
+                    }
+                    const new_ret = self.substituteTypeId(sig.return_type, keys, vals);
+                    if (!new_ret.eq(sig.return_type)) changed = true;
+                    const pr = self.store.appendSignatureParams(new_params_buf[0..old_params.len]) catch return id;
+                    new_sigs_buf[si] = .{
+                        .params_start = pr.start,
+                        .params_end = pr.end,
+                        .return_type = new_ret,
+                        .is_async = sig.is_async,
+                    };
+                }
+                if (!changed) return id;
+                const sl = self.store.appendSignatures(new_sigs_buf[0..sigs.len]) catch return id;
+                return self.store.add(.{ .kind = .function_t, .signatures = sl }) catch id;
+            },
             else => return id,
         }
     }
@@ -4408,7 +5394,14 @@ pub const Checker = struct {
         var changed = false;
         for (props, 0..) |p, i| {
             const new_pty = self.substituteTypeId(p.type_id, keys, vals);
-            new_buf[i] = .{ .name = p.name, .type_id = new_pty };
+            new_buf[i] = .{
+                .name = p.name,
+                .type_id = new_pty,
+                .optional = p.optional,
+                .readonly = p.readonly,
+                .is_method = p.is_method,
+                .is_fn_property = p.is_fn_property,
+            };
             if (!new_pty.eq(p.type_id)) changed = true;
         }
         if (!changed) return id;
@@ -4492,6 +5485,61 @@ pub const Checker = struct {
         return tymod.ID_UNKNOWN;
     }
 
+    fn stringPrototypeProperty(self: *Checker, name: []const u8) ?TypeId {
+        if (std.mem.eql(u8, name, "length")) return tymod.ID_NUMBER;
+        // string returners
+        if (std.mem.eql(u8, name, "charAt") or
+            std.mem.eql(u8, name, "concat") or std.mem.eql(u8, name, "slice") or
+            std.mem.eql(u8, name, "substring") or std.mem.eql(u8, name, "toUpperCase") or
+            std.mem.eql(u8, name, "toLowerCase") or std.mem.eql(u8, name, "trim") or
+            std.mem.eql(u8, name, "trimStart") or std.mem.eql(u8, name, "trimEnd") or
+            std.mem.eql(u8, name, "repeat") or std.mem.eql(u8, name, "replace") or
+            std.mem.eql(u8, name, "replaceAll") or std.mem.eql(u8, name, "normalize") or
+            std.mem.eql(u8, name, "padStart") or std.mem.eql(u8, name, "padEnd") or
+            std.mem.eql(u8, name, "at") or std.mem.eql(u8, name, "toString") or
+            std.mem.eql(u8, name, "valueOf"))
+        {
+            return self.makeNullaryFn(tymod.ID_STRING);
+        }
+        // number returners
+        if (std.mem.eql(u8, name, "charCodeAt") or std.mem.eql(u8, name, "codePointAt") or
+            std.mem.eql(u8, name, "indexOf") or std.mem.eql(u8, name, "lastIndexOf") or
+            std.mem.eql(u8, name, "search"))
+        {
+            return self.makeNullaryFn(tymod.ID_NUMBER);
+        }
+        // boolean returners
+        if (std.mem.eql(u8, name, "includes") or std.mem.eql(u8, name, "startsWith") or
+            std.mem.eql(u8, name, "endsWith"))
+        {
+            return self.makeNullaryFn(tymod.ID_BOOLEAN);
+        }
+        // string[] returners
+        if (std.mem.eql(u8, name, "split")) {
+            const arr = self.store.arrayOf(tymod.ID_STRING) catch return null;
+            return self.makeNullaryFn(arr);
+        }
+        // RegExpMatchArray | null returners (match/matchAll)
+        if (std.mem.eql(u8, name, "match") or std.mem.eql(u8, name, "matchAll")) {
+            const arr = self.store.arrayOf(tymod.ID_STRING) catch tymod.ID_UNKNOWN;
+            const nullable = self.store.unionOf(&.{ arr, tymod.ID_NULL }) catch arr;
+            return self.makeNullaryFn(nullable);
+        }
+        return null;
+    }
+
+    fn numberPrototypeProperty(self: *Checker, name: []const u8) ?TypeId {
+        // number methods return string
+        if (std.mem.eql(u8, name, "toString") or std.mem.eql(u8, name, "toFixed") or
+            std.mem.eql(u8, name, "toExponential") or std.mem.eql(u8, name, "toPrecision") or
+            std.mem.eql(u8, name, "toLocaleString"))
+        {
+            return self.makeNullaryFn(tymod.ID_STRING);
+        }
+        if (std.mem.eql(u8, name, "valueOf")) return self.makeNullaryFn(tymod.ID_NUMBER);
+        return null;
+    }
+
     fn makeNullaryFn(self: *Checker, ret: TypeId) TypeId {
         const param_range = self.store.appendSignatureParams(&.{}) catch return tymod.ID_UNKNOWN;
         const sig: tymod.Signature = .{
@@ -4557,6 +5605,59 @@ pub const Checker = struct {
             if (args.len > 0) return args[0];
         }
         return inner;
+    }
+
+    /// True when the class/function declaration `decl_node` has a decorator
+    /// named `name` (i.e. `@name` or `@name(...)` appears immediately before
+    /// the declaration in the token stream).  Scans backward from the
+    /// declaration's main_token through `@`, identifier, `(...)` sequences.
+    pub fn hasDecoratorNamed(self: *const Checker, decl_node: NodeIndex, name: []const u8) bool {
+        if (decl_node == .none) return false;
+        const class_tok = self.ast_ref.nodeMainToken(decl_node);
+        if (class_tok == 0) return false;
+        const tokens = self.ast_ref.tokens;
+        var i: u32 = class_tok;
+        // Skip past any leading keywords (abstract, declare, export, async, default)
+        // that appear between decorators and the class/function keyword.
+        while (i > 0) {
+            const prev = i - 1;
+            const ttag = tokens.items(.tag)[prev];
+            switch (ttag) {
+                .kw_abstract, .kw_declare, .kw_export, .kw_async, .kw_default => i = prev,
+                else => break,
+            }
+        }
+        // Now scan backwards looking for @name patterns.
+        while (i > 0) {
+            var j = i - 1;
+            // Skip a decorator call's argument list: (...).
+            if (j > 0 and tokens.items(.tag)[j] == .r_paren) {
+                var depth: u32 = 1;
+                j -= 1;
+                while (j > 0 and depth > 0) : (j -= 1) {
+                    const t2 = tokens.items(.tag)[j];
+                    if (t2 == .r_paren) depth += 1;
+                    if (t2 == .l_paren) depth -= 1;
+                }
+            }
+            // Skip dotted member chains: .foo.bar
+            while (j > 0 and tokens.items(.tag)[j] == .identifier) {
+                if (j < 2) break;
+                if (tokens.items(.tag)[j - 1] == .dot) {
+                    j -= 2;
+                } else break;
+            }
+            // Check for identifier (decorator name).
+            if (j == 0 and tokens.items(.tag)[0] != .identifier) break;
+            if (tokens.items(.tag)[j] != .identifier) break;
+            // Check that the token before the identifier is `@`.
+            if (j == 0) break;
+            if (tokens.items(.tag)[j - 1] != .at_sign) break;
+            const dec_name = self.ast_ref.tokenText(j);
+            if (std.mem.eql(u8, dec_name, name)) return true;
+            i = j - 1; // move before the `@`
+        }
+        return false;
     }
 };
 
