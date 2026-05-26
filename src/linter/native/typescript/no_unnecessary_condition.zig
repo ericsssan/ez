@@ -897,6 +897,37 @@ fn effectiveLiteralType(node: NodeIndex, ctx: *const LintContext) tymod.TypeId {
 
 const Truthiness = enum { always_truthy, always_falsy, indeterminate };
 
+/// Returns the truthiness if `id` is composed entirely of literal types
+/// (no object types, no open-ended string/number/etc.).  Returns null
+/// when the type contains any non-literal member.  A "pure literal
+/// constraint" in an intersection dominates: `(string|number) & "foo"`
+/// narrows to `"foo"`, making the intersection always_truthy.
+fn pureLiteralTruthiness(id: TypeId, ctx: *const LintContext) ?Truthiness {
+    const kind = ctx.typeIdKind(id) orelse return null;
+    switch (kind) {
+        .string_literal, .number_literal, .bigint_literal, .boolean_literal => {
+            return singleTruthiness(id, kind, ctx);
+        },
+        .null_t, .undefined_t, .void_t => return .always_falsy,
+        .union_t => {
+            var saw_truthy = false;
+            var saw_falsy = false;
+            for (ctx.typeIdUnionMembers(id)) |m| {
+                const r = pureLiteralTruthiness(m, ctx) orelse return null;
+                switch (r) {
+                    .always_truthy => saw_truthy = true,
+                    .always_falsy => saw_falsy = true,
+                    .indeterminate => return null,
+                }
+            }
+            if (saw_truthy and !saw_falsy) return .always_truthy;
+            if (saw_falsy and !saw_truthy) return .always_falsy;
+            return .indeterminate;
+        },
+        else => return null,
+    }
+}
+
 fn truthiness(id: TypeId, ctx: *const LintContext) Truthiness {
     return truthinessDepth(id, ctx, 0);
 }
@@ -924,8 +955,19 @@ fn truthinessDepth(id: TypeId, ctx: *const LintContext, depth: u32) Truthiness {
         // structural brand markers and don't determine truthiness:
         // `string & {brand}` could still be "".  Look only at
         // primitive members.
+        //
+        // First, check for a "pure literal constraint" member — a member
+        // composed entirely of literal types (no object types).  Such a
+        // member narrows the intersection to those specific literal values,
+        // giving a definite truthiness even when other members are
+        // indeterminate (e.g. `string | number`).
+        // E.g. `(string|number) & ("foo"|123)` → always_truthy via "foo"|123.
+        for (ctx.typeIdUnionMembers(id)) |m| {
+            if (pureLiteralTruthiness(m, ctx)) |tr| return tr;
+        }
         var saw_truthy = false;
         var saw_falsy = false;
+        var saw_indeterminate = false;
         var saw_primitive = false;
         for (ctx.typeIdUnionMembers(id)) |m| {
             const mk = ctx.typeIdKind(m) orelse continue;
@@ -937,12 +979,15 @@ fn truthinessDepth(id: TypeId, ctx: *const LintContext, depth: u32) Truthiness {
             switch (truthinessDepth(m, ctx, depth + 1)) {
                 .always_truthy => saw_truthy = true,
                 .always_falsy => saw_falsy = true,
-                .indeterminate => {},
+                .indeterminate => saw_indeterminate = true,
             }
         }
         if (saw_primitive) {
-            if (saw_truthy and !saw_falsy) return .always_truthy;
-            if (saw_falsy and !saw_truthy) return .always_falsy;
+            // Only conclude always_truthy/falsy when ALL primitive members agree.
+            // If any member is indeterminate, the intersection could include
+            // falsy values (e.g. `string & { __brand }` includes "").
+            if (saw_truthy and !saw_falsy and !saw_indeterminate) return .always_truthy;
+            if (saw_falsy and !saw_truthy and !saw_indeterminate) return .always_falsy;
             return .indeterminate;
         }
         // All members are object-like — always truthy (objects are

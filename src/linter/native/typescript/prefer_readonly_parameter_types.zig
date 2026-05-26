@@ -10,6 +10,7 @@ const parser = @import("../../../parser/root.zig");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
+const token_mod = @import("../../../parser/token.zig");
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 const tymod = @import("../../../checker/types.zig");
@@ -397,9 +398,31 @@ fn typeNodeIsPrimitive(node: NodeIndex, ctx: *const LintContext) bool {
     if (tag == .string_literal or tag == .number_literal or
         tag == .bigint_literal or tag == .boolean_literal or
         tag == .null_literal or tag == .ts_template_literal_type) return true;
+    // A union of all-primitive members is itself primitive (e.g. `'a' | 'b'`).
+    // This handles branded-string aliases like `type S = 'a' | 'b'` in intersections.
+    if (tag == .ts_union_type) {
+        const d = ctx.nodeData(n);
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e > s and e <= ctx.ast.extra_data.len) {
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                const m: NodeIndex = @enumFromInt(raw);
+                if (!typeNodeIsPrimitive(m, ctx)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
     if (tag != .ts_type_reference) return false;
-    const name = ctx.tokenText(ctx.nodeMainToken(n));
-    return std.mem.eql(u8, name, "string") or
+    // In TS type position, literal types ('foo', 42, true, null) are stored
+    // as ts_type_reference nodes — the main token tag reveals the literal kind.
+    const main_tok = ctx.nodeMainToken(n);
+    const tok_tag = ctx.tokenTag(main_tok);
+    if (tok_tag == .string_literal or tok_tag == .number_literal or
+        tok_tag == .bigint_literal or tok_tag == .kw_true or
+        tok_tag == .kw_false or tok_tag == .kw_null) return true;
+    const name = ctx.tokenText(main_tok);
+    if (std.mem.eql(u8, name, "string") or
         std.mem.eql(u8, name, "number") or
         std.mem.eql(u8, name, "boolean") or
         std.mem.eql(u8, name, "bigint") or
@@ -407,7 +430,14 @@ fn typeNodeIsPrimitive(node: NodeIndex, ctx: *const LintContext) bool {
         std.mem.eql(u8, name, "null") or
         std.mem.eql(u8, name, "undefined") or
         std.mem.eql(u8, name, "void") or
-        std.mem.eql(u8, name, "never");
+        std.mem.eql(u8, name, "never")) return true;
+    // Follow type aliases that resolve to primitive-only types.
+    const decl = ctx.typeDeclNode(name);
+    if (decl != .none and ctx.nodeTag(decl) == .ts_type_alias_decl) {
+        const body = ctx.typeAliasBodyNode(name);
+        if (body != .none) return typeNodeIsPrimitive(body, ctx);
+    }
+    return false;
 }
 
 fn innerOfReadonlyOk(node: NodeIndex, opts: Options, ctx: *const LintContext, depth: u32) bool {

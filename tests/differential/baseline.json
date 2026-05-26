@@ -1808,13 +1808,13 @@
       },
       "native": {
         "fn": 3,
-        "fp": 1,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 3,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2041,14 +2041,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 4,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 4,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2114,13 +2114,13 @@
       },
       "native": {
         "fn": 7,
-        "fp": 1,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 7,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2203,14 +2203,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 5,
-        "fp": 1,
+        "fn": 3,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 5,
-        "fp": 1,
+        "fn": 3,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -22394,9 +22394,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10506,
-    "runnerCasesPerSec": 8842,
-    "nativeCasesPerSec": 70602,
+    "totalElapsedMs": 10545,
+    "runnerCasesPerSec": 8800,
+    "nativeCasesPerSec": 73268,
     "totalCases": 72082
   }
 }

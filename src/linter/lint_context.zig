@@ -814,17 +814,17 @@ pub const LintContext = struct {
         if (t.kind != .function_t) return null;
         const sigs = c.store.signaturesOf(t.signatures);
         if (sigs.len == 0) return null;
-        // For overloaded functions, only treat the call as an
-        // assertion when EVERY signature asserts the same parameter.
-        // Otherwise the overload-resolved signature might not assert
-        // and we'd FP.
+        // If ANY signature is non-asserting (e.g. an explicit `void`
+        // overload), the call cannot be treated as an assertion.
         const first = sigs[0];
         if (!first.is_assertion) return null;
         if (first.predicate_param_index == 0xFFFF) return null;
         for (sigs[1..]) |s| {
             if (!s.is_assertion) return null;
-            if (s.predicate_param_index != first.predicate_param_index) return null;
         }
+        // All overloads assert.  Use the first signature's param index —
+        // for arity-differing overloads (e.g. 1-param asserts[0] vs
+        // 2-param asserts[1]), this matches the minimal-arity call's target.
         return .{ .param_index = first.predicate_param_index, .target = first.predicate_target };
     }
 

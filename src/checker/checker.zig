@@ -330,6 +330,10 @@ pub const Checker = struct {
     fn typeOfNameByAstSearch(self: *Checker, name: []const u8) ?TypeId {
         const total: u32 = @intCast(self.ast_ref.nodes.len);
         var i: u32 = 0;
+        // For overloaded functions we prefer the implementation (fn_decl with
+        // a body) over bare overload-signature declarations.  Track the first
+        // declaration-without-body as a fallback.
+        var fn_decl_fallback: NodeIndex = .none;
         while (i < total) : (i += 1) {
             const ni: NodeIndex = @enumFromInt(i);
             const t = self.ast_ref.nodeTag(ni);
@@ -358,11 +362,15 @@ pub const Checker = struct {
                     if (fd.name == .none) continue;
                     const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
                     if (!std.mem.eql(u8, dn, name)) continue;
-                    return self.functionTypeFromFnDecl(ni);
+                    // Implementation with body → return immediately (most-general type).
+                    if (fd.body != .none) return self.functionTypeFromFnDecl(ni);
+                    // Overload signature without body → keep scanning for implementation.
+                    if (fn_decl_fallback == .none) fn_decl_fallback = ni;
                 },
                 else => {},
             }
         }
+        if (fn_decl_fallback != .none) return self.functionTypeFromFnDecl(fn_decl_fallback);
         return null;
     }
 
@@ -828,8 +836,21 @@ pub const Checker = struct {
             // Function declarations: build a function_t from the
             // FnData (params + return).  Caller-side call inference
             // can then resolve the return type and check arg types.
+            // For overload signatures (no body), collect ALL call-visible
+            // overloads so functionAssertionInfo can correctly detect
+            // whether a non-asserting overload exists.
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
-            .ts_declare_function => return self.functionTypeFromFnDecl(parent),
+            .ts_declare_function => {
+                const pdata = self.ast_ref.nodeData(parent);
+                if (pdata.lhs != .none) {
+                    const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(pdata.lhs));
+                    if (fd.body == .none and fd.name != .none) {
+                        const fn_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
+                        if (self.functionTypeFromAllOverloads(fn_name)) |t| return t;
+                    }
+                }
+                return self.functionTypeFromFnDecl(parent);
+            },
             .class_decl => return tymod.ID_UNKNOWN,
             // Function/method/getter/setter parameter, class field, etc.
             // We don't resolve these structurally yet — return unknown
@@ -1140,13 +1161,51 @@ pub const Checker = struct {
         var inner = d.lhs;
         if (inner == .none) return tymod.ID_UNKNOWN;
         while (self.ast_ref.nodeTag(inner) == .grouping_expr) inner = self.ast_ref.nodeData(inner).lhs;
-        if (self.ast_ref.nodeTag(inner) != .identifier) return tymod.ID_UNKNOWN;
+        const inner_tag = self.ast_ref.nodeTag(inner);
+        // In type position, `typeof A` has lhs = ts_type_reference (not .identifier).
+        // Accept either form — both carry the name in the main_token.
+        if (inner_tag != .identifier and inner_tag != .ts_type_reference) return tymod.ID_UNKNOWN;
         const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(inner));
         if (name.len == 0) return tymod.ID_UNKNOWN;
         // Find a declarator binding the same name and use its inferred type.
-        if (self.typeOfNameByAstSearch(name)) |t| return t;
+        if (self.typeOfNameByAstSearch(name)) |t| {
+            // `const x = Symbol(...)` — TypeScript treats `typeof x` as a unique
+            // symbol type (a finite singleton).  Our checker infers ID_UNKNOWN for
+            // the Symbol() call.  Return a string_literal carrying the variable name
+            // as a sentinel so switch-exhaustiveness-check can treat it as finite
+            // and match it against an identifier case `case x:`.
+            if (t.eq(tymod.ID_UNKNOWN) and self.constInitIsSymbolCall(name)) {
+                return self.store.stringLiteral(name) catch t;
+            }
+            return t;
+        }
         if (self.global_value_types.get(name)) |t| return t;
         return tymod.ID_UNKNOWN;
+    }
+
+    /// Returns true when `const <name> = Symbol(...)` exists in the AST —
+    /// i.e., a declarator whose lhs is the identifier `name` and whose rhs
+    /// is a call_expr whose callee is the global `Symbol` identifier.
+    fn constInitIsSymbolCall(self: *Checker, name: []const u8) bool {
+        const total: u32 = @intCast(self.ast_ref.nodes.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            if (self.ast_ref.nodeTag(ni) != .declarator) continue;
+            const data = self.ast_ref.nodeData(ni);
+            if (data.lhs == .none or data.rhs == .none) continue;
+            if (self.ast_ref.nodeTag(data.lhs) != .identifier) continue;
+            const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.lhs));
+            if (!std.mem.eql(u8, dn, name)) continue;
+            // rhs must be a call_expr whose callee is the `Symbol` identifier.
+            if (self.ast_ref.nodeTag(data.rhs) != .call_expr) continue;
+            const callee = self.ast_ref.nodeData(data.rhs).lhs;
+            if (callee == .none) continue;
+            if (self.ast_ref.nodeTag(callee) != .identifier) continue;
+            const callee_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(callee));
+            return std.mem.eql(u8, callee_name, "Symbol");
+        }
+        return false;
     }
 
     /// Build a function_t from an fn_decl / async_fn_decl / etc. node.
@@ -1182,6 +1241,21 @@ pub const Checker = struct {
         body_for_inference: NodeIndex,
         is_async: bool,
     ) TypeId {
+        const sig = self.buildSignatureRaw(params_start, params_end, return_type_node, body_for_inference, is_async) orelse return tymod.ID_UNKNOWN;
+        return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
+    }
+
+    /// Build a Signature (appending params to the store's param pool) without
+    /// creating a function_t TypeId.  Used to collect multiple signatures for
+    /// overloaded function declarations before merging them into one function_t.
+    fn buildSignatureRaw(
+        self: *Checker,
+        params_start: u32,
+        params_end: u32,
+        return_type_node: NodeIndex,
+        body_for_inference: NodeIndex,
+        is_async: bool,
+    ) ?tymod.Signature {
         // Resolve each param's type from its annotation.
         var param_buf: [16]tymod.TypeId = undefined;
         var count: usize = 0;
@@ -1263,10 +1337,8 @@ pub const Checker = struct {
         } else if (is_async and ret_ty.eq(tymod.ID_UNKNOWN)) {
             ret_ty = self.store.typeRef("Promise", &.{tymod.ID_UNKNOWN}) catch ret_ty;
         }
-        const param_range = self.store.appendSignatureParams(param_buf[0..count]) catch {
-            return tymod.ID_UNKNOWN;
-        };
-        const sig: tymod.Signature = .{
+        const param_range = self.store.appendSignatureParams(param_buf[0..count]) catch return null;
+        return .{
             .params_start = param_range.start,
             .params_end = param_range.end,
             .return_type = ret_ty,
@@ -1275,7 +1347,48 @@ pub const Checker = struct {
             .predicate_target = predicate_target,
             .is_assertion = is_assertion,
         };
-        return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
+    }
+
+    /// Build a function_t whose signatures are the union of ALL call-visible
+    /// overload declarations for `fn_name` (fn_decl / ts_declare_function nodes
+    /// with NO body).  The implementation signature (with body) is intentionally
+    /// excluded — TypeScript does not expose it as a call signature.
+    ///
+    /// Returns null when no call-visible overloads are found.
+    fn functionTypeFromAllOverloads(self: *Checker, fn_name: []const u8) ?TypeId {
+        const total: u32 = @intCast(self.ast_ref.nodes.len);
+        var sig_buf: [16]tymod.Signature = undefined;
+        var sig_count: usize = 0;
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            if (sig_count >= sig_buf.len) break;
+            const ni: NodeIndex = @enumFromInt(i);
+            const t = self.ast_ref.nodeTag(ni);
+            switch (t) {
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                .ts_declare_function => {
+                    const data = self.ast_ref.nodeData(ni);
+                    if (data.lhs == .none) continue;
+                    const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(data.lhs));
+                    if (fd.name == .none) continue;
+                    const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
+                    if (!std.mem.eql(u8, dn, fn_name)) continue;
+                    // Implementation signatures (with body) are not call-visible.
+                    if (fd.body != .none) continue;
+                    const is_async = switch (t) {
+                        .async_fn_decl, .async_generator_fn_decl => true,
+                        else => false,
+                    };
+                    const sig = self.buildSignatureRaw(fd.params, fd.params_end, fd.return_type, .none, is_async) orelse continue;
+                    sig_buf[sig_count] = sig;
+                    sig_count += 1;
+                },
+                else => {},
+            }
+        }
+        if (sig_count == 0) return null;
+        const sig_list = self.store.appendSignatures(sig_buf[0..sig_count]) catch return null;
+        return self.store.add(.{ .kind = .function_t, .signatures = sig_list }) catch null;
     }
 
     /// Return the identifier name of a function parameter binding.
@@ -2458,6 +2571,24 @@ pub const Checker = struct {
         // constraint type (an over-approximation that lets `t: T` where
         // `T extends Foo` behave as `t: Foo`).
         if (self.resolveTypeParameterConstraint(ty_node, name)) |c| return c;
+        // Qualified type name (e.g. `Namespace.Enum`): `name` is the first
+        // component; try the last component of the member_expr chain so
+        // `A.B` resolves to the same TypeId as bare `B` when `B` is a
+        // known type (enum, interface, class) declared inside the namespace.
+        {
+            const ty_data = self.ast_ref.nodeData(ty_node);
+            if (ty_data.lhs != .none and self.ast_ref.nodeTag(ty_data.lhs) == .member_expr) {
+                const member_data = self.ast_ref.nodeData(ty_data.lhs);
+                if (member_data.rhs != .none) {
+                    const last_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(member_data.rhs));
+                    if (self.known_type_names.contains(last_name)) {
+                        var args_buf: [8]TypeId = undefined;
+                        const args = self.collectTypeArgs(ty_node, &args_buf);
+                        return self.store.typeRef(last_name, args) catch tymod.ID_ANY;
+                    }
+                }
+            }
+        }
         // Generic args: collect for the typeRef payload.
         var args_buf: [8]TypeId = undefined;
         const args = self.collectTypeArgs(ty_node, &args_buf);

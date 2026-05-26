@@ -131,16 +131,32 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         ctx.reportWithMessageId(discriminant, "switchIsNotExhaustive");
     }
     // dangerousDefaultCase: when the switch IS exhaustive (no missing
-    // members, finite union, no non-finite parts) and a default exists,
-    // and the option allows reporting it.
+    // members, finite union, no non-finite parts) and a default exists
+    // (real `default:` clause OR a `// no default` comment), and the
+    // option disallows it.
     if (!opts.allow_default_case_for_exhaustive and
-        has_default and
         missing_count == 0 and
         expected_count > 0 and
-        !has_non_finite and
-        default_node != .none)
+        !has_non_finite)
     {
-        ctx.reportWithMessageId(default_node, "dangerousDefaultCase");
+        if (has_default and default_node != .none) {
+            ctx.reportWithMessageId(default_node, "dangerousDefaultCase");
+        } else if (!has_default) {
+            // `// no default` comment acts as a synthetic default for
+            // dangerousDefaultCase reporting (matches TSe behaviour).
+            if (noDefaultCommentOffset(node, ctx)) |off| {
+                const src = ctx.source();
+                // Find end of line (for `//`) or end of `/* ... */`.
+                var end = off + 2;
+                if (off + 1 < src.len and src[off + 1] == '/') {
+                    while (end < src.len and src[end] != '\n') end += 1;
+                } else {
+                    while (end + 1 < src.len and !(src[end] == '*' and src[end + 1] == '/')) end += 1;
+                    if (end + 1 < src.len) end += 2;
+                }
+                ctx.reportSpanWithMessageId(.{ .start = off, .end = @intCast(end) }, "dangerousDefaultCase");
+            }
+        }
     }
 }
 
@@ -155,23 +171,36 @@ const ExpectedValue = struct {
     enum_member_name: []const u8 = &.{},
 };
 
-/// Look for `// no default` / `/* no default */` (case-insensitive) in
-/// the switch statement's source range — TSe's `defaultCaseCommentPattern`
-/// honoured pattern (we recognise the common default value only; user
-/// patterns aren't regex-supported here).
-fn switchBodyHasNoDefaultComment(node: NodeIndex, ctx: *const LintContext) bool {
+const parser_span = @import("../../../parser/span.zig");
+const Span = parser_span.Span;
+
+/// Look for `// no default` / `/* no default */` (case-insensitive) in the
+/// switch statement's source range.  Returns the absolute byte offset of the
+/// comment-start (`//` or `/*`) when found, null otherwise.
+fn noDefaultCommentOffset(node: NodeIndex, ctx: *const LintContext) ?u32 {
     const src = ctx.source();
-    // The switch's range spans roughly from `switch` keyword to end.
     const start = ctx.ast.tokenStart(ctx.nodeMainToken(node));
-    var end: u32 = start;
-    if (start < src.len) {
-        // Cap scan at next-occurring `}` past the last case start (cheap).
-        end = @intCast(src.len);
+    if (start >= src.len) return null;
+    const slice = src[start..];
+
+    for ([_][]const u8{ "no default", "skip default" }) |needle| {
+        const rel = findInsensitive(slice, needle) orelse continue;
+        // Walk backwards from `rel` to find the comment-start (`//` or `/*`).
+        var i = rel;
+        while (i > 0) : (i -= 1) {
+            if (i + 1 <= slice.len) {
+                if (slice[i] == '/' and (i + 1 < slice.len) and
+                    (slice[i + 1] == '/' or slice[i + 1] == '*')) return @intCast(start + i);
+            }
+        }
+        // Fallback: point to "no default" itself.
+        return @intCast(start + rel);
     }
-    const slice = src[start..end];
-    // Find `no default` (case-insensitive) within a `//` or `/*...*/` comment.
-    return findInsensitive(slice, "no default") != null or
-        findInsensitive(slice, "skip default") != null;
+    return null;
+}
+
+fn switchBodyHasNoDefaultComment(node: NodeIndex, ctx: *const LintContext) bool {
+    return noDefaultCommentOffset(node, ctx) != null;
 }
 
 fn findInsensitive(haystack: []const u8, needle: []const u8) ?usize {
@@ -391,10 +420,19 @@ fn caseMatchesValue(case_expr: NodeIndex, exp: *const ExpectedValue, ctx: *const
     const tag = ctx.nodeTag(e);
     switch (exp.kind) {
         .str => {
-            if (tag != .string_literal) return false;
-            const raw = ctx.tokenText(ctx.nodeMainToken(e));
-            if (raw.len < 2) return false;
-            return std.mem.eql(u8, raw[1 .. raw.len - 1], exp.str_val);
+            if (tag == .string_literal) {
+                const raw = ctx.tokenText(ctx.nodeMainToken(e));
+                if (raw.len < 2) return false;
+                return std.mem.eql(u8, raw[1 .. raw.len - 1], exp.str_val);
+            }
+            // Unique-symbol sentinel: `typeof x` where `const x = Symbol(...)`.
+            // The sentinel encodes the variable name as the string value.
+            // A `case x:` (identifier) covers it when the name matches.
+            if (tag == .identifier) {
+                const txt = ctx.tokenText(ctx.nodeMainToken(e));
+                return std.mem.eql(u8, txt, exp.str_val);
+            }
+            return false;
         },
         .num => {
             return numericCaseEquals(e, exp.num_val, ctx);

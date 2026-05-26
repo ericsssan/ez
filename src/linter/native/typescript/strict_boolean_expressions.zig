@@ -422,6 +422,15 @@ fn checkBoolLeaf(expr: NodeIndex, opts: Options, ctx: *const LintContext) void {
     if (leafHasEnumOrigin(n, ctx)) {
         classification = switch (classification) {
             .nullable_string, .nullable_number => .nullable_enum,
+            // `boolean_ok` can arise when the enum member is an always-truthy
+            // literal (e.g. `ExampleEnum.This = 'one'`): classify sees
+            // `string_literal("one") | null` and returns `boolean_ok` because
+            // the literal can't be falsy.  Still a nullable enum — promote.
+            .boolean_ok => blk: {
+                var sub: Family = .{};
+                walkType(ty, &sub, ctx, 0);
+                break :blk if (sub.has_null or sub.has_undef) .nullable_enum else .boolean_ok;
+            },
             else => classification,
         };
     }
