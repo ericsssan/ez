@@ -23,7 +23,7 @@ pub const needs_semantic = true;
 
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {
-    unexpected,
+    unexpectedCall,
 };
 
 const allNonCallableGlobals = [_][]const u8{ "Math", "JSON", "Reflect", "Atomics", "Intl" };
@@ -63,7 +63,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
             continue;
         }
         if (((blk: { const __t = ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)); break :blk (__t == .call_expr or __t == .optional_call_expr); } or (ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)) == .new_expr)) and (ctx.calleeOf(ctx.parentOfSkipGrouping(__ref_identifier__)) == __ref_identifier__))) {
-            ctx.reportWithMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), "unexpected");
+            ctx.reportWithMessageId(ctx.parentOfSkipGrouping(__ref_identifier__), "unexpectedCall");
         }
     }
 }

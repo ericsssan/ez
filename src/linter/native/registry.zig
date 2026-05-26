@@ -36,7 +36,6 @@ const no_constant_binary_expression = @import("correctness/no_constant_binary_ex
 const no_dupe_class_members = @import("correctness/no_dupe_class_members.zig");  // IR-generated via no-dupe-class-members-check handler
 // const no_dupe_else_if = @import("correctness/no_dupe_else_if.zig");  // hand-written — disabled per IR-only constraint
 const no_duplicate_case = @import("correctness/no_duplicate_case.zig");
-// const no_empty_pattern = @import("correctness/no_empty_pattern.zig");  // hand-written — disabled per IR-only constraint
 const no_ex_assign = @import("correctness/no_ex_assign.zig");
 const no_fallthrough = @import("correctness/no_fallthrough.zig");
 const no_global_assign = @import("style/no_global_assign.zig");
@@ -91,7 +90,7 @@ const no_empty_character_class = @import("suspicious/no_empty_character_class.zi
 const no_implied_eval = @import("suspicious/no_implied_eval.zig");
 const no_label_var = @import("correctness/no_label_var.zig");  // IR-generated via identifier-shadows-binding op
 // const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // hand-written — disabled per IR-only constraint
-// const no_misleading_character_class = @import("correctness/no_misleading_character_class.zig");  // runner > native (9 hybrid gaps vs 2 with runner; missing: variable tracking, ZWJ seq column precision)
+const no_misleading_character_class = @import("correctness/no_misleading_character_class.zig");
 // const no_mixed_spaces_and_tabs = @import("suspicious/no_mixed_spaces_and_tabs.zig");  // hand-written — disabled per IR-only constraint
 const no_multi_str = @import("suspicious/no_multi_str.zig");
 const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
@@ -153,7 +152,6 @@ const no_bitwise = @import("style/no_bitwise.zig");  // IR-generated via option-
 const no_caller = @import("style/no_caller.zig");
 const no_continue = @import("style/no_continue.zig");
 // const no_else_return = @import("style/no_else_return.zig");  // hand-written — disabled per IR-only constraint
-// const no_eq_null = @import("style/no_eq_null.zig");  // hand-written — disabled per IR-only constraint
 // const no_extend_native = @import("style/no_extend_native.zig");  // hand-written — disabled per IR-only constraint
 // const no_extra_bind = @import("style/no_extra_bind.zig");  // hand-written — disabled per IR-only constraint
 const no_extra_boolean_cast = @import("style/no_extra_boolean_cast.zig");
@@ -161,12 +159,10 @@ const no_floating_decimal = @import("style/no_floating_decimal.zig");
 const no_iterator = @import("style/no_iterator.zig");
 // const no_labels = @import("style/no_labels.zig");  // hand-written — disabled per IR-only constraint
 // const no_lonely_if = @import("style/no_lonely_if.zig");  // IR codegen lacks fix; matches runner but worsens hybrid via fix-key mismatch
-// const no_multi_assign = @import("style/no_multi_assign.zig");  // hand-written — disabled per IR-only constraint
 const no_negated_condition = @import("style/no_negated_condition.zig");
 const no_nested_ternary = @import("style/no_nested_ternary.zig");
 const no_new = @import("style/no_new.zig");
 const no_new_func = @import("style/no_new_func.zig");
-// const no_new_object = @import("style/no_new_object.zig");  // hand-written — disabled per IR-only constraint
 const no_new_require = @import("style/no_new_require.zig");
 const no_process_env = @import("style/no_process_env.zig");
 const no_octal_escape = @import("suspicious/no_octal_escape.zig");  // IR-generated via node-raw-has-octal-escape
@@ -200,7 +196,7 @@ const prefer_spread = @import("style/prefer_spread.zig");
 const no_useless_concat = @import("style/no_useless_concat.zig");
 // const arrow_body_style = @import("style/arrow_body_style.zig");  // hand-written — disabled per IR-only constraint
 // default-param-last IR-generated, unregistered (see registry array).
-// const default_param_last = @import("style/default_param_last.zig");
+const default_param_last = @import("style/default_param_last.zig");
 // const logical_assignment_operators = @import("style/logical_assignment_operators.zig");  // hand-written — disabled per IR-only constraint
 // const prefer_object_spread = @import("style/prefer_object_spread.zig");  // hand-written — disabled per IR-only constraint
 // const no_warning_comments = @import("style/no_warning_comments.zig");  // hand-written — disabled per IR-only constraint
@@ -209,7 +205,6 @@ const no_useless_concat = @import("style/no_useless_concat.zig");
 // const complexity = @import("style/complexity.zig");  // hand-written — disabled per IR-only constraint
 // const max_statements = @import("style/max_statements.zig");  // hand-written — disabled per IR-only constraint
 // const dot_notation = @import("style/dot_notation.zig");  // hand-written — disabled per IR-only constraint
-// const no_confusing_arrow = @import("style/no_confusing_arrow.zig");  // hand-written — disabled per IR-only constraint
 const no_extra_label = @import("style/no_extra_label.zig");  // IR-generated via no-extra-label-check handler
 // const vars_on_top = @import("style/no_implicit_globals_style.zig");  // hand-written — disabled per IR-only constraint
 // const prefer_destructuring = @import("style/prefer_destructuring.zig");  // hand-written — disabled per IR-only constraint
@@ -430,14 +425,13 @@ pub const all_rules = .{
     no_dupe_class_members,
     // no_dupe_else_if, // hand-written, 59 FP vs ESLint; fall back to JS runner
     // no_duplicate_case, // hand-written — disabled
-    // no_empty_pattern, // runner >> native (runner 31, native 25, 6 FP!!); fall back
     no_ex_assign,
     no_fallthrough,
     no_global_assign,
     // no_inner_declarations, // native has 6 FP making hybrid 61 vs runner 67; fall back to JS runner
     // no_irregular_whitespace, // runner >> native (runner 280, native 275, 5 FN 2 FP); fall back
     no_new_symbol,
-    // no_obj_calls, // runner >> native (runner 107, native 84, 23 FN); fall back
+    no_obj_calls,
     no_prototype_builtins,
     // no_setter_return, // runner >> native (runner 164, native 135, gap 29); fall back to JS runner
     no_template_curly_in_string,
@@ -479,7 +473,7 @@ pub const all_rules = .{
     // no_implied_eval, // runner >> native (runner 173, native 103, gap 70); fall back to JS runner
     no_label_var,
     // no_lone_blocks, // hand-written — disabled
-    // no_misleading_character_class, // runner > native (9 hybrid gaps vs 2; missing variable tracking + ZWJ precision)
+    no_misleading_character_class,
     // no_mixed_spaces_and_tabs, // hand-written — disabled
     // no_multi_str, // hand-written — disabled
     no_new_wrappers,
@@ -528,20 +522,17 @@ pub const all_rules = .{
     no_caller,
     no_continue,
     // no_else_return, // hand-written, 82 FP vs ESLint; fall back to JS runner
-    // no_eq_null, // hand-written — disabled
     // no_extend_native, // hand-written — disabled
     // no_extra_bind, // hand-written — disabled
     no_extra_boolean_cast,
     no_floating_decimal,
     no_iterator,
     // no_labels, // hand-written — disabled
-    // no_lonely_if, // hand-written — disabled
-    // no_multi_assign, // native has 2 FP making hybrid 20 vs runner 31; fall back to JS runner
+    // no_lonely_if, // unicorn variant — 17.6% on corpus; fall back to JS runner
     no_negated_condition,
     no_nested_ternary,
     no_new,
     no_new_func,
-    // no_new_object, // hand-written — disabled
     no_new_require,
     no_process_env,
     no_octal_escape,
@@ -574,7 +565,7 @@ pub const all_rules = .{
     // no_implicit_coercion, // hand-written — disabled
     no_useless_concat,
     // arrow_body_style, // runner >> native (runner 87, native 63, gap 24, 3 FP); fall back to JS runner
-    // default_param_last, // IR-generated but native 81/96 < runner 96/96
+    default_param_last,
     // (TS optional span + TSParameterProperty unsupported) — regresses
     // hybrid; re-enable when TS param shapes are handled.
     // logical_assignment_operators, // runner >> native (48%, 3 FP); fall back to JS runner
@@ -585,7 +576,6 @@ pub const all_rules = .{
     // complexity, // runner >> native (42%); fall back to JS runner
     // max_statements, // runner >> native (runner 42, native 20, gap 22); fall back to JS runner
     // dot_notation, // runner >> native (runner 69, native 50, gap 19, 5 FP); fall back to JS runner
-    // no_confusing_arrow, // native has 6 FP making hybrid 24 vs runner 30; fall back to JS runner
     no_extra_label,
     // vars_on_top, // hand-written — disabled
     // prefer_destructuring, // runner >> native (runner 103, native 80, gap 23, 5 FP); fall back to JS runner

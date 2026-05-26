@@ -6671,7 +6671,21 @@ pub const LintContext = struct {
         while (j < rightmost_required.?) : (j += 1) {
             const p: NodeIndex = @enumFromInt(params[j]);
             if (!self.isRequiredParam(p)) {
-                self.reportWithMessageId(p, message_id);
+                // For TS parameter properties (`public a?: T`), combine the
+                // outer node's start (covers `public`) with the inner binding's
+                // end (covers the type annotation), matching @typescript-eslint.
+                if (self.nodeTag(p) == .ts_parameter_property) {
+                    const inner = self.nodeData(p).lhs;
+                    const outer_span = self.nodeSpan(p);
+                    const inner_span = self.nodeSpan(inner);
+                    const combined = @import("../parser/span.zig").Span{
+                        .start = outer_span.start,
+                        .end = if (inner_span.end > outer_span.end) inner_span.end else outer_span.end,
+                    };
+                    self.reportSpanWithMessageId(combined, message_id);
+                } else {
+                    self.reportWithMessageId(p, message_id);
+                }
             }
         }
     }
@@ -6683,10 +6697,10 @@ pub const LintContext = struct {
     pub fn functionParams(self: *const LintContext, fn_node: NodeIndex) []const u32 {
         if (fn_node == .none) return &.{};
         const d = self.nodeData(fn_node);
-        if (d.lhs == .none) return &.{};
         switch (self.ast.nodeTag(fn_node)) {
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => {
+                if (d.lhs == .none) return &.{};
                 const fd = self.extraData(ast_mod.FnData, @intFromEnum(d.lhs));
                 const start: usize = fd.params;
                 const end: usize = fd.params_end;
@@ -6694,9 +6708,19 @@ pub const LintContext = struct {
                 return self.ast.extra_data[start..end];
             },
             .arrow_fn, .async_arrow_fn => {
+                if (d.lhs == .none) return &.{};
                 const ad = self.extraData(ast_mod.ArrowData, @intFromEnum(d.lhs));
                 const start: usize = ad.params_start;
                 const end: usize = ad.params_end;
+                if (end <= start or end > self.ast.extra_data.len) return &.{};
+                return self.ast.extra_data[start..end];
+            },
+            .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def, .constructor_def => {
+                if (d.rhs == .none) return &.{};
+                const md = self.extraData(ast_mod.MethodData, @intFromEnum(d.rhs));
+                const start: usize = md.params_start;
+                const end: usize = md.params_end;
                 if (end <= start or end > self.ast.extra_data.len) return &.{};
                 return self.ast.extra_data[start..end];
             },
@@ -6716,6 +6740,14 @@ pub const LintContext = struct {
         if (tag == .identifier) {
             const d = self.nodeData(param);
             if (d.lhs == .root) return false;
+        }
+        // TS parameter property (`public a: T`, `protected b?: T`, `private c = 0`).
+        // rhs != .none means a default is present (not required).
+        // Otherwise delegate to the inner binding (lhs).
+        if (tag == .ts_parameter_property) {
+            const d = self.nodeData(param);
+            if (d.rhs != .none) return false;
+            return self.isRequiredParam(d.lhs);
         }
         return true;
     }

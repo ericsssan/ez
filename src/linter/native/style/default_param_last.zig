@@ -15,7 +15,7 @@ pub const meta = RuleMeta{
     .description = "Enforce default parameters to be last",
 };
 
-pub const relevant_tags = [_]Node.Tag{.fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl, .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr, .arrow_fn, .async_arrow_fn};
+pub const relevant_tags = [_]Node.Tag{.fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl, .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr, .arrow_fn, .async_arrow_fn, .method_def, .computed_method_def, .constructor_def};
 
 // messageIds (declared in rule meta.messages — carried for future use)
 const Messages = enum {

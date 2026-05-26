@@ -20,7 +20,7 @@ pub const meta = RuleMeta{
 };
 
 pub const relevant_tags = [_]Node.Tag{
-    .if_stmt, .while_stmt, .do_while_stmt, .for_stmt,
+    .if_stmt, .if_else_stmt, .while_stmt, .do_while_stmt, .for_stmt,
     .conditional, .logical_and, .logical_or, .logical_not,
     .nullish_coalesce, .nullish_assign,
     .logical_and_assign, .logical_or_assign,
@@ -39,7 +39,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const tag = ctx.nodeTag(node);
     const d = ctx.nodeData(node);
     switch (tag) {
-        .if_stmt => checkTruthiness(d.lhs, ctx),
+        .if_stmt, .if_else_stmt => checkTruthiness(d.lhs, ctx),
         .while_stmt => {
             // `while (true)` is exempt when `allowConstantLoopConditions`
             // is enabled.  Otherwise the condition (d.lhs) is tested.
@@ -495,7 +495,7 @@ fn parentTriggersChainWalk(node: NodeIndex, ctx: *const LintContext) bool {
         const t = ctx.nodeTag(p);
         switch (t) {
             .grouping_expr => p = ctx.parentOf(p),
-            .if_stmt, .while_stmt, .do_while_stmt => return true,
+            .if_stmt, .if_else_stmt, .while_stmt, .do_while_stmt => return true,
             .for_stmt => return true,
             .conditional => {
                 const d = ctx.nodeData(p);
@@ -606,6 +606,54 @@ fn constStringKey(key: NodeIndex, ctx: *const LintContext) ?[]const u8 {
     return null;
 }
 
+/// Project receiver's property type using a TypeScript literal key type.
+/// Returns `TypeId.none` when the key type is not a pure string-literal
+/// type/union, or when any member fails to resolve to a named property
+/// (e.g., falls through to an index-signature "[]" sentinel).
+/// This is intentionally conservative to avoid false positives on
+/// index-signature types where the receiver is nullable.
+fn projectByKeyLiteralType(recv_node: NodeIndex, key_ty: tymod.TypeId, ctx: *const LintContext) tymod.TypeId {
+    var recv_ty = chainCheckType(recv_node, ctx);
+    const strip_kinds = [_]tymod.TypeKind{ .undefined_t, .null_t };
+    recv_ty = ctx.typeIdStripKinds(recv_ty, &strip_kinds);
+    return projectByKeyLiteralTypeInner(recv_ty, key_ty, ctx);
+}
+
+fn projectByKeyLiteralTypeInner(recv_ty: tymod.TypeId, key_ty: tymod.TypeId, ctx: *const LintContext) tymod.TypeId {
+    const key_kind = ctx.typeIdKind(key_ty) orelse return tymod.TypeId.none;
+    if (key_kind == .string_literal) {
+        const val = ctx.typeIdStringLiteralValue(key_ty);
+        if (val.len == 0) return tymod.TypeId.none;
+        const proj = ctx.projectPropertyPub(recv_ty, val);
+        // Only accept a named-property hit; reject if the only match
+        // would be the index-signature sentinel "[]".
+        if (proj.eq(tymod.TypeId.none)) return tymod.TypeId.none;
+        // Confirm the matched property is NOT just the "[]" sentinel
+        // by checking that "[]" alone would return the same type AND
+        // the named property is distinct.  Simplest proxy: if "[]"
+        // also projects (same or different), we can't distinguish —
+        // but that would mean the index sig returned something, and
+        // TypeScript would have already applied named-property priority.
+        // Trust projectPropertyPub to prefer named over "[]".
+        return proj;
+    }
+    if (key_kind == .union_t) {
+        var buf: [16]tymod.TypeId = undefined;
+        var count: usize = 0;
+        for (ctx.typeIdUnionMembers(key_ty)) |m| {
+            const proj = projectByKeyLiteralTypeInner(recv_ty, m, ctx);
+            if (proj.eq(tymod.TypeId.none)) return tymod.TypeId.none;
+            if (count < buf.len) {
+                buf[count] = proj;
+                count += 1;
+            }
+        }
+        if (count == 0) return tymod.TypeId.none;
+        return buf[0];
+    }
+    return tymod.TypeId.none;
+}
+
 fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
     const tag = ctx.nodeTag(n);
     if (tag == .optional_member_expr or tag == .member_expr) {
@@ -619,6 +667,10 @@ fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
         recv_ty = ctx.typeIdStripKinds(recv_ty, &kinds);
         const projected = ctx.projectPropertyPub(recv_ty, prop_name);
         if (!projected.eq(tymod.TypeId.none)) return projected;
+        // Fallback: mapped/index-signature type uses "[]" sentinel for all keys.
+        // `a.a?.b` on `{[k in Lowercase<string>]: T}` → project "[]" → T.
+        const idx_ty = ctx.projectPropertyPub(recv_ty, "[]");
+        if (!idx_ty.eq(tymod.TypeId.none)) return idx_ty;
     }
     // Computed member with string-literal key — equivalent to `.prop`,
     // so project the property type the same way.
@@ -634,6 +686,15 @@ fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
                 recv_ty = ctx.typeIdStripKinds(recv_ty, &kinds);
                 const projected = ctx.projectPropertyPub(recv_ty, kn);
                 if (!projected.eq(tymod.TypeId.none)) return projected;
+            } else {
+                // Key is not a compile-time constant string — try the key's
+                // TypeScript type.  If it is a string-literal type (or a
+                // union thereof), attempt to project each named property.
+                // Only fire when ALL members resolve to named (non-index-sig)
+                // properties, matching tsc-eslint's indexed-access semantics.
+                const key_ty = ctx.typeOfNode(d.rhs);
+                const proj = projectByKeyLiteralType(d.lhs, key_ty, ctx);
+                if (!proj.eq(tymod.TypeId.none)) return proj;
             }
         }
     }

@@ -1304,6 +1304,15 @@ if (fs.existsSync(ESLINT_ROOT)) {
         const baseG = (baseLO.globals && Object.keys(baseLO.globals).length > 0) ? baseLO.globals : {};
         _nativeLangOpts = { ...baseLO, globals: { ...baseG, ...tc.globals } };
       }
+      // Merge JSX flag from tc.jsx / tc.parserOptions when not already in languageOptions.
+      // Cases with parserOptions:{ecmaFeatures:{jsx:true}} but no languageOptions would
+      // otherwise run the native linter in js mode, silently failing to parse JSX syntax.
+      const _tcJsx = tc.jsx || tc.parserOptions?.ecmaFeatures?.jsx;
+      if (_tcJsx && !_nativeLangOpts?.parserOptions?.ecmaFeatures?.jsx) {
+        const baseLO2 = _nativeLangOpts || {};
+        const basePO = baseLO2.parserOptions || {};
+        _nativeLangOpts = { ...baseLO2, parserOptions: { ...basePO, ecmaFeatures: { ...(basePO.ecmaFeatures || {}), jsx: true } } };
+      }
       const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options, _nativeRuleName, _isTsCase, _nativeLangOpts);
       const _ntDelta = Date.now() - _nt0;
       nativeOnlyMs += _ntDelta;

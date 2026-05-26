@@ -2028,6 +2028,21 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Detect whether a `ts_mapped_type` node carries the `?` optional modifier
+    /// (`{ [K in T]?: V }`).  We scan tokens from the `{` main_token forward,
+    /// find the first `]`, and check if the token immediately after it is `?`.
+    fn mappedTypeHasOptionalModifier(self: *Checker, ty_node: NodeIndex) bool {
+        const start_tok = self.ast_ref.nodeMainToken(ty_node);
+        const token_tags = self.ast_ref.tokens.items(.tag);
+        var i: usize = @intCast(start_tok);
+        while (i + 1 < token_tags.len) : (i += 1) {
+            if (token_tags[i] == .r_bracket) {
+                return token_tags[i + 1] == .question;
+            }
+        }
+        return false;
+    }
+
     fn resolveMappedType(self: *Checker, ty_node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(ty_node);
         const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
@@ -2041,7 +2056,17 @@ pub const Checker = struct {
         if (as_type != .none) return tymod.ID_UNKNOWN;
 
         var keys_buf: [16][]const u8 = undefined;
-        const key_count = self.collectStringLiteralKeys(constraint, &keys_buf, 0) orelse return tymod.ID_UNKNOWN;
+        const key_count_opt = self.collectStringLiteralKeys(constraint, &keys_buf, 0);
+        if (key_count_opt == null) {
+            // Open constraint (e.g. `Lowercase<string>`) — emit a single "[]" sentinel
+            // so callers can detect that any string key maps to the value type.
+            const val_ty = self.resolveTypeNode(value_type);
+            const is_optional = mappedTypeHasOptionalModifier(self, ty_node);
+            const prop: tymod.ObjectProp = .{ .name = "[]", .type_id = val_ty, .optional = is_optional };
+            const list = self.store.appendObjectProps(&.{prop}) catch return tymod.ID_UNKNOWN;
+            return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+        }
+        const key_count = key_count_opt.?;
         if (key_count == 0) return tymod.ID_UNKNOWN;
 
         const val_ty = self.resolveTypeNode(value_type);
@@ -2548,6 +2573,10 @@ pub const Checker = struct {
         // type X for the unsafe-* family).
         if (!self.known_type_names.contains(name)) {
             if (self.resolveTypeParameterConstraint(ty_node, name)) |c| return c;
+            // Built-in lib types (Record, Promise, Set, Map, …) are not
+            // user-declared so they never appear in known_type_names, but
+            // they still have structural shapes we can resolve.
+            if (self.resolveLibType(ty_node, name)) |resolved| return resolved;
             return tymod.ID_ERROR;
         }
         // User-declared interface or class → resolve to its structural
@@ -2748,13 +2777,13 @@ pub const Checker = struct {
     }
 
     fn buildSetLib(self: *Checker, t: TypeId, readonly: bool) TypeId {
-        _ = readonly;
-        return self.store.typeRef("Set", &.{t}) catch tymod.ID_UNKNOWN;
+        const name = if (readonly) "ReadonlySet" else "Set";
+        return self.store.typeRef(name, &.{t}) catch tymod.ID_UNKNOWN;
     }
 
     fn buildMapLib(self: *Checker, k: TypeId, v: TypeId, readonly: bool) TypeId {
-        _ = readonly;
-        return self.store.typeRef("Map", &.{ k, v }) catch tymod.ID_UNKNOWN;
+        const name = if (readonly) "ReadonlyMap" else "Map";
+        return self.store.typeRef(name, &.{ k, v }) catch tymod.ID_UNKNOWN;
     }
 
     fn appendTypeIdsToSigPool(self: *Checker, ids: []const TypeId) !u32 {
@@ -2998,6 +3027,35 @@ pub const Checker = struct {
                 }
             }
         }
+        // Merge multiple "[]" index-signature props into one unioned "[]" prop.
+        // An interface may have multiple index signatures (e.g. Lowercase + Uppercase);
+        // we can't distinguish which applies to a given key name, so union all their
+        // value types so the result is as nullable as the most-nullable sig.
+        var idx_types_buf: [8]tymod.TypeId = undefined;
+        var idx_count: usize = 0;
+        var idx_opt: bool = false;
+        {
+            var j: usize = 0;
+            while (j < props.items.len) {
+                const p = props.items[j];
+                if (std.mem.eql(u8, p.name, "[]")) {
+                    if (idx_count < idx_types_buf.len) {
+                        idx_types_buf[idx_count] = p.type_id;
+                        idx_count += 1;
+                        if (p.optional) idx_opt = true;
+                    }
+                    _ = props.orderedRemove(j);
+                } else {
+                    j += 1;
+                }
+            }
+        }
+        if (idx_count == 1) {
+            props.append(self.gpa, .{ .name = "[]", .type_id = idx_types_buf[0], .optional = idx_opt }) catch {};
+        } else if (idx_count > 1) {
+            const unioned = self.store.unionOf(idx_types_buf[0..idx_count]) catch tymod.ID_UNKNOWN;
+            props.append(self.gpa, .{ .name = "[]", .type_id = unioned, .optional = idx_opt }) catch {};
+        }
         const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
         return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
     }
@@ -3032,6 +3090,16 @@ pub const Checker = struct {
                     false,
                 );
                 return .{ .name = name, .type_id = fn_ty };
+            },
+            .ts_index_signature => {
+                // Index signature: `[key: T]: V` — store under the sentinel "[]".
+                if (data.rhs == .none) return null;
+                const value_node = if (self.ast_ref.nodeTag(data.rhs) == .ts_type_annotation)
+                    self.ast_ref.nodeData(data.rhs).lhs
+                else
+                    data.rhs;
+                const value_ty = self.resolveTypeNode(value_node);
+                return .{ .name = "[]", .type_id = value_ty };
             },
             else => return null,
         }
@@ -4026,6 +4094,11 @@ pub const Checker = struct {
             {
                 const args = self.store.idsOf(obj.list_data);
                 if (args.len > 0) return args[0];
+            }
+            // Record<K, V>: any key access returns V (the value type, arg[1]).
+            if (std.mem.eql(u8, obj.name, "Record")) {
+                const args = self.store.idsOf(obj.list_data);
+                if (args.len > 1) return args[1];
             }
         }
         // Union/intersection: walk members, take first concrete result.

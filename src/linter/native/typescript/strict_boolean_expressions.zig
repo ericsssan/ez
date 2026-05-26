@@ -20,7 +20,7 @@ pub const meta = RuleMeta{
 };
 
 pub const relevant_tags = [_]Node.Tag{
-    .if_stmt, .while_stmt, .do_while_stmt, .for_stmt,
+    .if_stmt, .if_else_stmt, .while_stmt, .do_while_stmt, .for_stmt,
     .conditional, .logical_and, .logical_or, .logical_not,
     .call_expr,
 };
@@ -59,7 +59,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const tag = ctx.nodeTag(node);
     const d = ctx.nodeData(node);
     switch (tag) {
-        .if_stmt, .while_stmt, .do_while_stmt => {
+        .if_stmt, .if_else_stmt, .while_stmt, .do_while_stmt => {
             walkBoolCtx(d.lhs, opts, ctx, 0);
         },
         .for_stmt => {
@@ -527,7 +527,7 @@ fn parentIsBoolCtxEntry(node: NodeIndex, ctx: *const LintContext) bool {
     while (cur != .none) {
         const tag = ctx.nodeTag(cur);
         switch (tag) {
-            .if_stmt, .while_stmt, .do_while_stmt => return true,
+            .if_stmt, .if_else_stmt, .while_stmt, .do_while_stmt => return true,
             .for_stmt => return true,
             .conditional => {
                 // We're in bool ctx only when we're the test (lhs).
