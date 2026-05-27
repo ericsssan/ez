@@ -21,7 +21,7 @@ const no_import_assign = @import("correctness/no_import_assign.zig");  // IR-gen
 const no_self_assign = @import("correctness/no_self_assign.zig");  // IR-generated via no-self-assign-check handler
 const no_self_compare = @import("suspicious/no_self_compare.zig");
 // const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");  // hand-written — disabled per IR-only constraint
-// const no_loss_of_precision = @import("correctness/no_loss_of_precision.zig");  // hand-written — disabled per IR-only constraint
+const no_loss_of_precision = @import("correctness/no_loss_of_precision.zig");
 const no_const_assign = @import("correctness/no_const_assign.zig");
 const no_empty_pattern = @import("correctness/no_empty_pattern.zig");
 const no_eq_null = @import("style/no_eq_null.zig");
@@ -52,6 +52,7 @@ const no_useless_catch = @import("correctness/no_useless_catch.zig");
 const no_class_assign = @import("correctness/no_class_assign.zig");
 // const no_unused_expressions = @import("correctness/no_unused_expressions.zig");  // hand-written — disabled per IR-only constraint
 // const no_useless_constructor = @import("correctness/no_useless_constructor.zig");  // hand-written — disabled per IR-only constraint
+const ts_no_useless_constructor = @import("typescript/no_useless_constructor.zig");
 // v0.6 correctness rules
 // const require_await = @import("correctness/require_await.zig");  // hand-written — disabled per IR-only constraint
 const no_constructor_return = @import("correctness/no_constructor_return.zig");  // IR-generated via node-nearest-function-ancestor op
@@ -133,7 +134,7 @@ const default_case = @import("style/default_case.zig");  // IR-generated via def
 // const radix = @import("suspicious/radix.zig");  // hand-written — disabled per IR-only constraint
 // const no_shadow = @import("suspicious/no_shadow.zig");  // hand-written — disabled per IR-only constraint
 // v0.6 suspicious rules
-// const no_loop_func = @import("suspicious/no_loop_func.zig");  // hand-written — disabled per IR-only constraint
+// const no_loop_func = @import("correctness/no_loop_func.zig");  // module-scope var refs untracked → hybrid fn=9 > runner fn=3
 // const no_implicit_globals = @import("suspicious/no_implicit_globals.zig");  // hand-written — disabled per IR-only constraint
 const no_process_exit = @import("suspicious/no_process_exit.zig");
 // const consistent_return = @import("suspicious/consistent_return.zig");  // hand-written — disabled per IR-only constraint
@@ -197,6 +198,7 @@ const no_useless_concat = @import("style/no_useless_concat.zig");
 // const arrow_body_style = @import("style/arrow_body_style.zig");  // hand-written — disabled per IR-only constraint
 // default-param-last IR-generated, unregistered (see registry array).
 const default_param_last = @import("style/default_param_last.zig");
+// const init_declarations = @import("style/init_declarations.zig");  // base=long span, @ts-eslint=short span; conflict prevents registration
 // const logical_assignment_operators = @import("style/logical_assignment_operators.zig");  // hand-written — disabled per IR-only constraint
 // const prefer_object_spread = @import("style/prefer_object_spread.zig");  // hand-written — disabled per IR-only constraint
 // const no_warning_comments = @import("style/no_warning_comments.zig");  // hand-written — disabled per IR-only constraint
@@ -211,7 +213,7 @@ const no_extra_label = @import("style/no_extra_label.zig");  // IR-generated via
 // v0.7 style rules
 // const camelcase = @import("style/camelcase.zig");  // hand-written — disabled per IR-only constraint
 // const prefer_numeric_literals = @import("style/prefer_numeric_literals.zig");  // hand-written — disabled per IR-only constraint
-// const prefer_regex_literals = @import("style/prefer_regex_literals.zig");  // hand-written — disabled per IR-only constraint
+const prefer_regex_literals = @import("style/prefer_regex_literals.zig");
 // const no_useless_return = @import("style/no_useless_return.zig");  // hand-written — disabled per IR-only constraint
 // const func_style = @import("style/func_style.zig");  // hand-written — disabled per IR-only constraint
 // const id_length = @import("style/id_length.zig");  // hand-written — disabled per IR-only constraint
@@ -253,12 +255,12 @@ const require_number_to_fixed_digits_argument = @import("style/require_number_to
 const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");
 const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
 const ts_no_empty_interface = @import("typescript/no_empty_interface.zig");
-// const ts_no_namespace = @import("typescript/no_namespace.zig");  // hand-written — disabled per IR-only constraint
+const ts_no_namespace = @import("typescript/no_namespace.zig");
 // const ts_no_unnecessary_type_assertion = @import("typescript/no_unnecessary_type_assertion.zig");  // hand-written — disabled per IR-only constraint
 // const ts_prefer_interface = @import("typescript/prefer_interface.zig");  // hand-written — disabled per IR-only constraint
 // const ts_no_require_imports = @import("typescript/no_require_imports.zig");  // hand-written — disabled per IR-only constraint
 // v0.5 TypeScript rules
-// const ts_ban_ts_comment = @import("typescript/ban_ts_comment.zig");  // hand-written — disabled per IR-only constraint
+const ts_ban_ts_comment = @import("typescript/ban_ts_comment.zig");
 const ts_no_this_alias = @import("typescript/no_this_alias.zig");
 const ts_no_restricted_types = @import("typescript/no_restricted_types.zig");
 const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
@@ -281,7 +283,14 @@ const ts_no_duplicate_enum_values = @import("typescript/no_duplicate_enum_values
 // v0.6 TypeScript rules
 const ts_no_useless_empty_export = @import("typescript/no_useless_empty_export.zig");
 const ts_no_extraneous_class = @import("typescript/no_extraneous_class.zig");
+const ts_consistent_indexed_object_style = @import("typescript/consistent_indexed_object_style.zig");
+const ts_prefer_for_of = @import("typescript/prefer_for_of.zig");
+const ts_adjacent_overload_signatures = @import("typescript/adjacent_overload_signatures.zig");
+const ts_consistent_generic_constructors = @import("typescript/consistent_generic_constructors.zig");
+const ts_no_invalid_void_type = @import("typescript/no_invalid_void_type.zig");
+const ts_sort_type_constituents = @import("typescript/sort_type_constituents.zig");
 const ts_consistent_type_definitions = @import("typescript/consistent_type_definitions.zig");
+// const ts_consistent_type_imports = @import("typescript/consistent_type_imports.zig");  // 6 FP (shadowing/React) + 13 FN; re-enable after fix
 const ts_method_signature_style = @import("typescript/method_signature_style.zig");
 const ts_no_unnecessary_parameter_property_assignment = @import("typescript/no_unnecessary_parameter_property_assignment.zig");
 const ts_prefer_enum_initializers = @import("typescript/prefer_enum_initializers.zig");
@@ -314,6 +323,7 @@ const ts_prefer_promise_reject_errors = @import("typescript/prefer_promise_rejec
 const ts_no_meaningless_void_operator = @import("typescript/no_meaningless_void_operator.zig");
 const ts_require_await = @import("typescript/require_await.zig");
 const ts_no_array_delete = @import("typescript/no_array_delete.zig");
+const ts_no_array_constructor = @import("typescript/no_array_constructor.zig");
 const ts_no_unsafe_unary_minus = @import("typescript/no_unsafe_unary_minus.zig");
 const ts_require_array_sort_compare = @import("typescript/require_array_sort_compare.zig");
 const ts_prefer_reduce_type_parameter = @import("typescript/prefer_reduce_type_parameter.zig");
@@ -349,21 +359,22 @@ const ts_no_unsafe_function_type = @import("typescript/no_unsafe_function_type.z
 const ts_no_wrapper_object_types = @import("typescript/no_wrapper_object_types.zig");
 // v0.8 TypeScript rules
 const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");
-// const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written — disabled per IR-only constraint
-// const ts_array_type = @import("typescript/array_type.zig");  // hand-written — disabled per IR-only constraint
+const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");  // hand-written
+const ts_array_type = @import("typescript/array_type.zig");  // hand-written
 const ts_prefer_namespace_keyword = @import("typescript/prefer_namespace_keyword.zig");
 const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig");
 // const ts_no_unnecessary_boolean_literal_compare = @import("typescript/no_unnecessary_boolean_literal_compare.zig");  // hand-written — disabled per IR-only constraint
-// const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");  // hand-written — disabled per IR-only constraint
+const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");
 const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");
 const ts_parameter_properties = @import("typescript/parameter_properties.zig");
 const ts_no_inferrable_types = @import("typescript/no_inferrable_types.zig");
 const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declaration_merging.zig");
+const ts_explicit_member_accessibility = @import("typescript/explicit_member_accessibility.zig");
 // const ts_explicit_function_return_type = @import("typescript/explicit_function_return_type.zig");  // hand-written — disabled per IR-only constraint
 // const ts_explicit_module_boundary_types = @import("typescript/explicit_module_boundary_types.zig");  // hand-written — disabled per IR-only constraint
 
 // ── Unicorn plugin rules ──────────────────────────────────────
-// const unicorn_no_array_for_each = @import("unicorn/no_array_for_each.zig");  // hand-written — disabled per IR-only constraint
+const unicorn_no_array_for_each = @import("unicorn/no_array_for_each.zig");
 const unicorn_no_zero_fractions = @import("unicorn/no_zero_fractions.zig");
 const unicorn_throw_new_error = @import("unicorn/throw_new_error.zig");
 const unicorn_error_message = @import("unicorn/error_message.zig");
@@ -395,7 +406,7 @@ pub const all_rules = .{
     no_self_assign,
     // no_self_compare, // hand-written — disabled
     // no_unsafe_optional_chaining, // runner >> native (runner 187, native 155, gap 32); fall back to JS runner
-    // no_loss_of_precision, // runner >> native (runner 125, native 114, 6 FN 5 FP); fall back
+    no_loss_of_precision,
     no_const_assign,
     no_empty_pattern,
     no_eq_null,
@@ -441,6 +452,7 @@ pub const all_rules = .{
     no_class_assign,
     // no_unused_expressions, // runner >> native (runner 124, native 107, 15 FN 3 FP); fall back
     // no_useless_constructor, // hand-written — disabled
+    ts_no_useless_constructor,
     // Correctness v0.6 (8)
     // require_await, // hand-written — disabled
     no_constructor_return,
@@ -504,7 +516,7 @@ pub const all_rules = .{
     // radix, // runner >> native (runner 54, native 31, 21 FN 2 FP); fall back
     // no_shadow, // runner >> native (runner 314/368, native 305/368, 9 more FN); fall back to runner
     // Suspicious v0.6 (6)
-    // no_loop_func, // runner >> native (runner 96, native 41, gap 55, 54 FP!); fall back to JS runner
+    // no_loop_func,  // module-scope var refs untracked → hybrid fn=9 > runner fn=3
     // no_implicit_globals, // runner >> native (runner 224, native 199, gap 25); fall back to JS runner
     // no_process_exit, // hand-written — disabled
     // consistent_return, // runner >> native (runner 43, native 23, gap 20); fall back to JS runner
@@ -566,6 +578,7 @@ pub const all_rules = .{
     no_useless_concat,
     // arrow_body_style, // runner >> native (runner 87, native 63, gap 24, 3 FP); fall back to JS runner
     default_param_last,
+    // init_declarations,  // base=long span, @ts-eslint=short span; conflict prevents registration
     // (TS optional span + TSParameterProperty unsupported) — regresses
     // hybrid; re-enable when TS param shapes are handled.
     // logical_assignment_operators, // runner >> native (48%, 3 FP); fall back to JS runner
@@ -582,7 +595,7 @@ pub const all_rules = .{
     // Style v0.7 (12)
     // camelcase, // runner >> native (runner 204, native 118, gap 86); fall back to JS runner
     // prefer_numeric_literals, // hand-written, 62 FP vs ESLint; fall back to JS runner
-    // prefer_regex_literals, // hand-written, 192 FP vs ESLint; fall back to JS runner
+    prefer_regex_literals,
     // no_useless_return, // runner >> native (runner 46, native 33, gap 13); fall back to JS runner
     // func_style, // runner >> native (runner 120, native 73, gap 47); fall back to JS runner
     // id_length, // runner >> native (runner 181, native 96, gap 85, 1 FP); fall back to JS runner
@@ -621,12 +634,12 @@ pub const all_rules = .{
     ts_no_non_null_assertion,
     ts_prefer_as_const,
     ts_no_empty_interface,
-    // ts_no_namespace, // hand-written — disabled
+    ts_no_namespace,
     // ts_no_unnecessary_type_assertion, // hand-written — disabled
     // ts_prefer_interface, // hand-written — disabled
     // ts_no_require_imports, // hand-written — disabled
     // TypeScript v0.5 (4)
-    // ts_ban_ts_comment, // runner >> native (runner 108, native 66, gap 42, 15 FP); fall back to JS runner
+    ts_ban_ts_comment,
     ts_no_this_alias,
     ts_no_restricted_types,
     ts_no_explicit_any,
@@ -649,7 +662,14 @@ pub const all_rules = .{
     // TypeScript v0.6 (5)
     ts_no_useless_empty_export,
     ts_no_extraneous_class,
+    ts_consistent_indexed_object_style,
+    ts_prefer_for_of,
+    ts_adjacent_overload_signatures,
+    ts_consistent_generic_constructors,
+    ts_no_invalid_void_type,
+    ts_sort_type_constituents,
     ts_consistent_type_definitions,
+    // ts_consistent_type_imports,  // 6 FP (shadowing/React) + 13 FN; re-enable after fix
     ts_method_signature_style,
     ts_no_unnecessary_parameter_property_assignment,
     ts_prefer_enum_initializers,
@@ -682,6 +702,7 @@ pub const all_rules = .{
     ts_no_meaningless_void_operator,
     ts_require_await,
     ts_no_array_delete,
+    ts_no_array_constructor,
     ts_no_unsafe_unary_minus,
     ts_require_array_sort_compare,
     ts_prefer_reduce_type_parameter,
@@ -716,12 +737,12 @@ pub const all_rules = .{
     ts_no_unsafe_function_type,
     ts_no_wrapper_object_types,
     ts_no_empty_object_type,
-    // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
-    // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner
+    ts_consistent_type_assertions,
+    ts_array_type,
     ts_prefer_namespace_keyword,
     ts_triple_slash_reference,
     // ts_no_unnecessary_boolean_literal_compare, // native has 21 FP making hybrid 22 vs runner 21 (FP worse); fall back to JS runner
-    // ts_no_dynamic_delete, // hand-written — disabled
+    ts_no_dynamic_delete,
     ts_prefer_ts_expect_error,
     ts_parameter_properties,
     unicorn_throw_new_error,
@@ -729,10 +750,10 @@ pub const all_rules = .{
     unicorn_prefer_array_some,
     ts_no_inferrable_types,
     ts_no_unsafe_declaration_merging,
+    ts_explicit_member_accessibility,
     // ts_explicit_function_return_type, // hand-written — disabled
     // ts_explicit_module_boundary_types, // runner >> native (runner 144, native 117, gap 27, 21 FP); fall back to JS runner
-    // Unicorn plugin (0 — both hand-written rules disabled)
-    // unicorn_no_array_for_each, // hand-written, 282 FP vs ESLint; fall back to JS runner
+    unicorn_no_array_for_each,
     unicorn_no_zero_fractions,
 };
 
