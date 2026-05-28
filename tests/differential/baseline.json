@@ -8390,7 +8390,7 @@
     },
     "array-callback-return": {
       "runner": {
-        "fn": 3,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -12638,7 +12638,7 @@
     },
     "require-atomic-updates": {
       "runner": {
-        "fn": 4,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
@@ -19064,8 +19064,8 @@
     },
     "unicorn/isolated-functions": {
       "runner": {
-        "fn": 2,
-        "fp": 9,
+        "fn": 0,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -22394,9 +22394,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10741,
-    "runnerCasesPerSec": 8439,
-    "nativeCasesPerSec": 69920,
+    "totalElapsedMs": 10962,
+    "runnerCasesPerSec": 8311,
+    "nativeCasesPerSec": 68712,
     "totalCases": 70308
   }
 }

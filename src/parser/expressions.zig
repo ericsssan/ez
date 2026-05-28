@@ -2831,7 +2831,8 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     const is_generator = p.peek() == .asterisk;
     if (is_generator) _ = p.advance();
 
-    // Optional name
+    // Optional name — for named function expressions (`async function foo() {}`)
+    // the name binds only inside the function's own scope (ESLint: fn-expr-name scope).
     const name_node: NodeIndex = if (p.peek() == .identifier) blk: {
         try p.checkStrictBinding(p.tokIdx());
         const name_tok = p.advance();
@@ -2841,6 +2842,14 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
             .data = .{ .lhs = .none, .rhs = .none },
         });
     } else .none;
+
+    // Open the function scope BEFORE parsing params so parameter declarations
+    // land inside the function scope, not the enclosing (module/block) scope.
+    // This matches parseFunctionDeclaration and the regular fn-expression path.
+    const fn_scope_ev = try p.emitScopeOpen(.function, .none);
+    if (name_node != .none) {
+        try p.emitDeclare(.fn_expr_name, name_node);
+    }
 
     // Set async/generator BEFORE parsing params — await/yield reserved in params
     const saved_fn = p.in_function;
@@ -2875,14 +2884,18 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     // TS ambient async function expressions can be bodyless
     if (p.is_ts and p.peek() != .l_brace) {
         _ = p.eat(.semicolon);
-        return p.addNode(.{
+        try p.emitScopeClose(.none);
+        const ts_node = try p.addNode(.{
             .tag = .ts_type_annotation,
             .main_token = async_tok,
             .data = .{ .lhs = name_node, .rhs = .none },
         });
+        p.patchScopeOpenNode(fn_scope_ev, ts_node);
+        return ts_node;
     }
 
     const body = try parseBlockBodyWithStrictChecks(p, params_range, name_node);
+    try p.emitScopeClose(.none); // close function scope
 
     const fn_tag: Node.Tag = if (is_generator) .async_generator_fn_expr else .async_fn_expr;
 
@@ -2895,11 +2908,13 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
         .type_params = async_fn_type_params.start,
         .type_params_end = async_fn_type_params.end,
     });
-    return p.addNode(.{
+    const fn_node = try p.addNode(.{
         .tag = fn_tag,
         .main_token = async_tok,
         .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
     });
+    p.patchScopeOpenNode(fn_scope_ev, fn_node);
+    return fn_node;
 }
 
 // ── async (...) → could be arrow params or just call ─────────────
