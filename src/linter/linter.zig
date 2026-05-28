@@ -220,6 +220,17 @@ pub fn lint(
     config: ?*const Config,
     language: Language,
 ) ![]const LintDiagnostic {
+    return lintWithPath(allocator, tree, semantic, config, language, "");
+}
+
+pub fn lintWithPath(
+    allocator: std.mem.Allocator,
+    tree: *const Ast,
+    semantic: *const SemanticResult,
+    config: ?*const Config,
+    language: Language,
+    file_path: []const u8,
+) ![]const LintDiagnostic {
     // The earlier illegal-instruction hazard on generator+class+yield combos
     // was traced to specific rule bugs (require-yield, extraData OOB) which
     // are now fixed — no need to force safety back on in the hot loop.
@@ -276,6 +287,12 @@ pub fn lint(
     var checker_storage: ?@import("../checker/root.zig").Checker = null;
     defer if (checker_storage) |*c| c.deinit();
 
+    // Per-lint-call module cache for cross-file type resolution.
+    // Only created when a file_path is provided.
+    const ModuleCache = @import("../checker/module_cache.zig").ModuleCache;
+    var mc_storage: ?ModuleCache = if (file_path.len > 0) ModuleCache.init(allocator) else null;
+    defer if (mc_storage) |*mc| mc.deinit();
+
     var ctx = LintContext{
         .ast = tree,
         .semantic = semantic,
@@ -288,6 +305,8 @@ pub fn lint(
         .node_max_toks = node_max_toks,
         .node_min_toks = node_min_toks,
         .checker_storage = &checker_storage,
+        .file_path = file_path,
+        .module_cache = if (mc_storage) |*mc| mc else null,
     };
 
     // ── Phase 1: AST node walk (CSR dispatch) ─────────────────

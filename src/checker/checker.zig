@@ -481,6 +481,13 @@ pub const Checker = struct {
                         ty = self.applyNarrowing(data.lhs, sym, ty, false);
                     }
                 },
+                .logical_or => {
+                    // `cond || use` — `use` runs only when cond is falsy.
+                    const data = self.ast_ref.nodeData(pn);
+                    if (self.descendsFrom(node, data.rhs)) {
+                        ty = self.applyNarrowing(data.lhs, sym, ty, true);
+                    }
+                },
                 else => {},
             }
             prev = p;
@@ -527,9 +534,21 @@ pub const Checker = struct {
                 } else if (statementIsEarlyExit(self, ifd.alternate) and !statementIsEarlyExit(self, ifd.consequent)) {
                     ty = self.applyNarrowing(sd.lhs, sym, ty, false);
                 }
+            } else if (stmt_tag == .expression_stmt) {
+                // Assignment narrowing: `x = expr;` updates sym's known type.
+                const sd = self.ast_ref.nodeData(stmt);
+                if (sd.lhs != .none) {
+                    var expr = sd.lhs;
+                    while (self.ast_ref.nodeTag(expr) == .grouping_expr)
+                        expr = self.ast_ref.nodeData(expr).lhs;
+                    if (self.ast_ref.nodeTag(expr) == .assign) {
+                        const ad = self.ast_ref.nodeData(expr);
+                        if (self.identifierBindsToSym(ad.lhs, sym)) {
+                            ty = self.typeOf(ad.rhs);
+                        }
+                    }
+                }
             }
-            // `cond && earlyExit()` as an expression statement is rare
-            // enough to skip.
         }
         return ty;
     }
@@ -600,6 +619,18 @@ pub const Checker = struct {
                 const data = self.ast_ref.nodeData(t);
                 const lty = self.applyNarrowing(data.lhs, sym, ty, neg);
                 return self.applyNarrowing(data.rhs, sym, lty, neg);
+            },
+            // Logical-or: when the condition is in a "negated" (falsy) context,
+            // both sides are falsy so we narrow by both.  In truthy context,
+            // only the alternative `if (!a || !b)` forms narrow, which we can't
+            // easily handle here — leave ty unchanged for the truthy case.
+            .logical_or => {
+                if (neg) {
+                    const data = self.ast_ref.nodeData(t);
+                    const lty = self.applyNarrowing(data.lhs, sym, ty, neg);
+                    return self.applyNarrowing(data.rhs, sym, lty, neg);
+                }
+                return ty;
             },
             // Type predicate calls: `isFoo(x)` → narrow x to Foo.
             .call_expr, .optional_call_expr => return self.applyPredicateNarrowing(t, sym, ty, neg),
@@ -2119,6 +2150,374 @@ pub const Checker = struct {
         }
     }
 
+    /// Resolve a type node with an active type-param substitution map.
+    /// Handles ts_type_reference (subst lookup first), ts_conditional_type
+    /// (via resolveConditionalTypeWithSubst), and composite types.  Falls
+    /// back to resolveTypeNode for everything else.
+    fn resolveTypeNodeWithSubst(
+        self: *Checker,
+        ty_node: NodeIndex,
+        keys: []const []const u8,
+        vals: []const TypeId,
+    ) TypeId {
+        if (ty_node == .none) return tymod.ID_ANY;
+        if (keys.len == 0) return self.resolveTypeNode(ty_node);
+        const tag = self.ast_ref.nodeTag(ty_node);
+        switch (tag) {
+            .ts_type_reference => {
+                const tok = self.ast_ref.nodeMainToken(ty_node);
+                const nm = self.ast_ref.tokenText(tok);
+                for (keys, vals) |k, v| {
+                    if (std.mem.eql(u8, k, nm)) return v;
+                }
+                return self.resolveTypeNode(ty_node);
+            },
+            .ts_conditional_type => return self.resolveConditionalTypeWithSubst(ty_node, keys, vals),
+            .ts_parenthesized_type => return self.resolveTypeNodeWithSubst(
+                self.ast_ref.nodeData(ty_node).lhs, keys, vals),
+            .ts_union_type => {
+                const data = self.ast_ref.nodeData(ty_node);
+                const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+                var buf: [16]TypeId = undefined;
+                const n = @min(slice.len, buf.len);
+                var i: usize = 0;
+                while (i < n) : (i += 1) {
+                    buf[i] = self.resolveTypeNodeWithSubst(@enumFromInt(slice[i]), keys, vals);
+                }
+                return self.store.unionOf(buf[0..n]) catch tymod.ID_UNKNOWN;
+            },
+            .ts_intersection_type => {
+                const data = self.ast_ref.nodeData(ty_node);
+                const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+                var buf: [16]TypeId = undefined;
+                const n = @min(slice.len, buf.len);
+                var i: usize = 0;
+                while (i < n) : (i += 1) {
+                    buf[i] = self.resolveTypeNodeWithSubst(@enumFromInt(slice[i]), keys, vals);
+                }
+                if (intersectionIsImpossible(&self.store, buf[0..n])) return tymod.ID_NEVER;
+                return self.store.intersectionOf(buf[0..n]) catch tymod.ID_UNKNOWN;
+            },
+            .ts_array_type => {
+                const elem = self.resolveTypeNodeWithSubst(
+                    self.ast_ref.nodeData(ty_node).lhs, keys, vals);
+                return self.store.arrayOf(elem) catch tymod.ID_ANY;
+            },
+            .ts_keyof_type => {
+                const op_tok = self.ast_ref.nodeMainToken(ty_node);
+                const op_text = self.ast_ref.tokenText(op_tok);
+                if (std.mem.eql(u8, op_text, "readonly")) {
+                    const inner = self.ast_ref.nodeData(ty_node).lhs;
+                    const inner_ty = self.resolveTypeNodeWithSubst(inner, keys, vals);
+                    const it = self.store.get(inner_ty);
+                    if (it.kind == .array_t) {
+                        const elems = self.store.idsOf(it.list_data);
+                        if (elems.len > 0) return self.store.readonlyArrayOf(elems[0]) catch inner_ty;
+                    }
+                    return inner_ty;
+                }
+                return self.resolveTypeNode(ty_node);
+            },
+            .ts_tuple_type => {
+                const data = self.ast_ref.nodeData(ty_node);
+                const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+                var buf: [16]TypeId = undefined;
+                const n = @min(slice.len, buf.len);
+                var i: usize = 0;
+                while (i < n) : (i += 1) {
+                    buf[i] = self.resolveTypeNodeWithSubst(@enumFromInt(slice[i]), keys, vals);
+                }
+                const list = self.store.appendTypeIds(buf[0..n]) catch return tymod.ID_UNKNOWN;
+                return self.store.add(.{ .kind = .tuple_t, .list_data = list }) catch tymod.ID_UNKNOWN;
+            },
+            else => return self.resolveTypeNode(ty_node),
+        }
+    }
+
+    /// Evaluate `T extends U ? A : B` with an active substitution map.
+    /// Supports distributive conditionals (T is a union) and `infer V` capture.
+    fn resolveConditionalTypeWithSubst(
+        self: *Checker,
+        ty_node: NodeIndex,
+        keys: []const []const u8,
+        vals: []const TypeId,
+    ) TypeId {
+        const data = self.ast_ref.nodeData(ty_node);
+        const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
+        if (slice.len < 4) return tymod.ID_UNKNOWN;
+        const check_node: NodeIndex = @enumFromInt(slice[0]);
+        const extends_node: NodeIndex = @enumFromInt(slice[1]);
+        const true_node: NodeIndex = @enumFromInt(slice[2]);
+        const false_node: NodeIndex = @enumFromInt(slice[3]);
+
+        const check_ty = self.resolveTypeNodeWithSubst(check_node, keys, vals);
+
+        // Distributive: union check type → map conditional over members.
+        const check_t = self.store.get(check_ty);
+        if (check_t.kind == .union_t) {
+            return self.distributeConditional(check_ty, extends_node, true_node, false_node, keys, vals);
+        }
+
+        var infer_keys_buf: [4][]const u8 = undefined;
+        var infer_vals_buf: [4]TypeId = undefined;
+        var infer_count: usize = 0;
+
+        const matched = self.matchConditionalExtends(
+            check_ty, extends_node, keys, vals,
+            &infer_keys_buf, &infer_vals_buf, &infer_count,
+        );
+
+        switch (matched) {
+            .yes => {
+                if (infer_count == 0) return self.resolveTypeNodeWithSubst(true_node, keys, vals);
+                var mk: [8][]const u8 = undefined;
+                var mv: [8]TypeId = undefined;
+                var nm: usize = 0;
+                for (keys, vals) |k, v| { if (nm >= mk.len) break; mk[nm] = k; mv[nm] = v; nm += 1; }
+                for (infer_keys_buf[0..infer_count], infer_vals_buf[0..infer_count]) |k, v| {
+                    if (nm >= mk.len) break;
+                    mk[nm] = k; mv[nm] = v; nm += 1;
+                }
+                return self.resolveTypeNodeWithSubst(true_node, mk[0..nm], mv[0..nm]);
+            },
+            .no => return self.resolveTypeNodeWithSubst(false_node, keys, vals),
+            .unknown => {
+                const a = blk: {
+                    if (infer_count == 0) break :blk self.resolveTypeNodeWithSubst(true_node, keys, vals);
+                    var mk: [8][]const u8 = undefined;
+                    var mv: [8]TypeId = undefined;
+                    var nm: usize = 0;
+                    for (keys, vals) |k, v| { if (nm >= mk.len) break; mk[nm] = k; mv[nm] = v; nm += 1; }
+                    for (infer_keys_buf[0..infer_count], infer_vals_buf[0..infer_count]) |k, v| {
+                        if (nm >= mk.len) break;
+                        mk[nm] = k; mv[nm] = v; nm += 1;
+                    }
+                    break :blk self.resolveTypeNodeWithSubst(true_node, mk[0..nm], mv[0..nm]);
+                };
+                const b = self.resolveTypeNodeWithSubst(false_node, keys, vals);
+                if (a.eq(b)) return a;
+                return self.store.unionOf(&.{ a, b }) catch tymod.ID_UNKNOWN;
+            },
+        }
+    }
+
+    /// Try to match `check_ty` against `extends_node`, capturing any
+    /// `infer V` bindings along the way.  Returns .yes/.no/.unknown.
+    fn matchConditionalExtends(
+        self: *Checker,
+        check_ty: TypeId,
+        extends_node: NodeIndex,
+        keys: []const []const u8,
+        vals: []const TypeId,
+        infer_keys: *[4][]const u8,
+        infer_vals: *[4]TypeId,
+        infer_count: *usize,
+    ) AssignResult {
+        var n = extends_node;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        const tag = self.ast_ref.nodeTag(n);
+
+        // `infer V` — always matches; capture the whole check_ty.
+        if (tag == .ts_infer_type) {
+            const param_node = self.ast_ref.nodeData(n).lhs;
+            if (param_node != .none and infer_count.* < infer_keys.len) {
+                infer_keys[infer_count.*] = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(param_node));
+                infer_vals[infer_count.*] = check_ty;
+                infer_count.* += 1;
+            }
+            return .yes;
+        }
+
+        // `Array<infer E>` / `ReadonlyArray<infer E>` pattern.
+        if (tag == .ts_type_reference) {
+            const nm = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+            if (std.mem.eql(u8, nm, "Array") or std.mem.eql(u8, nm, "ReadonlyArray")) {
+                const cht = self.store.get(check_ty);
+                if (cht.kind == .array_t or cht.kind == .readonly_array_t) {
+                    const first_arg = self.firstTypeArg(n);
+                    if (first_arg != .none) {
+                        var an = first_arg;
+                        while (self.ast_ref.nodeTag(an) == .ts_parenthesized_type) an = self.ast_ref.nodeData(an).lhs;
+                        if (self.ast_ref.nodeTag(an) == .ts_infer_type) {
+                            const param_node = self.ast_ref.nodeData(an).lhs;
+                            if (param_node != .none and infer_count.* < infer_keys.len) {
+                                const elems = self.store.idsOf(cht.list_data);
+                                infer_keys[infer_count.*] = self.ast_ref.tokenText(
+                                    self.ast_ref.nodeMainToken(param_node));
+                                infer_vals[infer_count.*] = if (elems.len > 0) elems[0] else tymod.ID_UNKNOWN;
+                                infer_count.* += 1;
+                            }
+                            return .yes;
+                        }
+                    }
+                }
+            }
+            // `Promise<infer R>` / `PromiseLike<infer R>` pattern.
+            if (std.mem.eql(u8, nm, "Promise") or std.mem.eql(u8, nm, "PromiseLike")) {
+                const cht = self.store.get(check_ty);
+                if (cht.kind == .type_ref and
+                    (std.mem.eql(u8, cht.name, "Promise") or std.mem.eql(u8, cht.name, "PromiseLike")))
+                {
+                    const first_arg = self.firstTypeArg(n);
+                    if (first_arg != .none) {
+                        var an = first_arg;
+                        while (self.ast_ref.nodeTag(an) == .ts_parenthesized_type) an = self.ast_ref.nodeData(an).lhs;
+                        if (self.ast_ref.nodeTag(an) == .ts_infer_type) {
+                            const param_node = self.ast_ref.nodeData(an).lhs;
+                            if (param_node != .none and infer_count.* < infer_keys.len) {
+                                const check_args = self.store.idsOf(cht.list_data);
+                                infer_keys[infer_count.*] = self.ast_ref.tokenText(
+                                    self.ast_ref.nodeMainToken(param_node));
+                                infer_vals[infer_count.*] = if (check_args.len > 0) check_args[0] else tymod.ID_UNKNOWN;
+                                infer_count.* += 1;
+                            }
+                            return .yes;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Function type `(...) => infer R` — capture the return type.
+        if (tag == .ts_function_type or tag == .ts_constructor_type) {
+            const cht = self.store.get(check_ty);
+            if (cht.kind == .function_t) {
+                const d = self.ast_ref.nodeData(n);
+                const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(d.lhs));
+                if (fd.body != .none) {
+                    var ret_n = fd.body;
+                    while (self.ast_ref.nodeTag(ret_n) == .ts_parenthesized_type)
+                        ret_n = self.ast_ref.nodeData(ret_n).lhs;
+                    if (self.ast_ref.nodeTag(ret_n) == .ts_infer_type) {
+                        const param_node = self.ast_ref.nodeData(ret_n).lhs;
+                        if (param_node != .none and infer_count.* < infer_keys.len) {
+                            const sigs = self.store.signaturesOf(cht.signatures);
+                            infer_keys[infer_count.*] = self.ast_ref.tokenText(
+                                self.ast_ref.nodeMainToken(param_node));
+                            infer_vals[infer_count.*] = if (sigs.len > 0) sigs[0].return_type else tymod.ID_UNKNOWN;
+                            infer_count.* += 1;
+                        }
+                        return .yes;
+                    }
+                }
+            }
+        }
+
+        // General case: resolve the extends type with substitution and compare.
+        const extends_ty = self.resolveTypeNodeWithSubst(n, keys, vals);
+        return self.simpleAssignable(check_ty, extends_ty);
+    }
+
+    /// Distribute `T extends U ? A : B` over each member of a union check type.
+    fn distributeConditional(
+        self: *Checker,
+        check_union_ty: TypeId,
+        extends_node: NodeIndex,
+        true_node: NodeIndex,
+        false_node: NodeIndex,
+        keys: []const []const u8,
+        vals: []const TypeId,
+    ) TypeId {
+        const check_t = self.store.get(check_union_ty);
+        const members = self.store.idsOf(check_t.list_data);
+        if (members.len == 0) return tymod.ID_UNKNOWN;
+
+        var result_buf: [16]TypeId = undefined;
+        var n_results: usize = 0;
+
+        for (members) |member_ty| {
+            if (n_results >= result_buf.len) break;
+
+            var infer_keys_buf: [4][]const u8 = undefined;
+            var infer_vals_buf: [4]TypeId = undefined;
+            var infer_count: usize = 0;
+
+            const matched = self.matchConditionalExtends(
+                member_ty, extends_node, keys, vals,
+                &infer_keys_buf, &infer_vals_buf, &infer_count,
+            );
+
+            const branch_ty: TypeId = switch (matched) {
+                .yes => blk: {
+                    if (infer_count == 0) break :blk self.resolveTypeNodeWithSubst(true_node, keys, vals);
+                    var mk: [8][]const u8 = undefined;
+                    var mv: [8]TypeId = undefined;
+                    var nm: usize = 0;
+                    for (keys, vals) |k, v| { if (nm >= mk.len) break; mk[nm] = k; mv[nm] = v; nm += 1; }
+                    for (infer_keys_buf[0..infer_count], infer_vals_buf[0..infer_count]) |k, v| {
+                        if (nm >= mk.len) break; mk[nm] = k; mv[nm] = v; nm += 1;
+                    }
+                    break :blk self.resolveTypeNodeWithSubst(true_node, mk[0..nm], mv[0..nm]);
+                },
+                .no => self.resolveTypeNodeWithSubst(false_node, keys, vals),
+                .unknown => blk: {
+                    const a = self.resolveTypeNodeWithSubst(true_node, keys, vals);
+                    const b = self.resolveTypeNodeWithSubst(false_node, keys, vals);
+                    if (a.eq(b)) break :blk a;
+                    break :blk self.store.unionOf(&.{ a, b }) catch tymod.ID_UNKNOWN;
+                },
+            };
+            result_buf[n_results] = branch_ty;
+            n_results += 1;
+        }
+
+        if (n_results == 0) return tymod.ID_UNKNOWN;
+        if (n_results == 1) return result_buf[0];
+        // Collapse `never` members — they arise from exclude-style conditionals.
+        var non_never: [16]TypeId = undefined;
+        var nn: usize = 0;
+        for (result_buf[0..n_results]) |r| {
+            if (!r.eq(tymod.ID_NEVER) and nn < non_never.len) {
+                non_never[nn] = r;
+                nn += 1;
+            }
+        }
+        if (nn == 0) return tymod.ID_NEVER;
+        if (nn == 1) return non_never[0];
+        return self.store.unionOf(non_never[0..nn]) catch tymod.ID_UNKNOWN;
+    }
+
+    /// True when `ty_node` (possibly parenthesized) is a ts_conditional_type.
+    fn isConditionalBody(self: *Checker, ty_node: NodeIndex) bool {
+        if (ty_node == .none) return false;
+        var n = ty_node;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        return self.ast_ref.nodeTag(n) == .ts_conditional_type;
+    }
+
+    /// Resolve a conditional type alias by building the substitution map from
+    /// the call-site type args and evaluating the body with resolveTypeNodeWithSubst.
+    /// Returns null when there are no type params / args, or args don't match.
+    fn resolveConditionalAliasWithArgs(
+        self: *Checker,
+        _: NodeIndex,
+        ref_node: NodeIndex,
+        ad: ast.TypeAliasData,
+    ) ?TypeId {
+        if (ad.type_params_end <= ad.type_params) return null;
+        const ref_rhs = self.ast_ref.nodeData(ref_node).rhs;
+        if (ref_rhs == .none) return null;
+        const arg_range = self.ast_ref.extraData(ast.SubRange, @intFromEnum(ref_rhs));
+        if (arg_range.end <= arg_range.start) return null;
+        var keys_buf: [4][]const u8 = undefined;
+        var vals_buf: [4]TypeId = undefined;
+        var nsub: usize = 0;
+        const tp_count = ad.type_params_end - ad.type_params;
+        const arg_count = arg_range.end - arg_range.start;
+        const n = @min(@min(tp_count, arg_count), keys_buf.len);
+        var i: u32 = 0;
+        while (i < n) : (i += 1) {
+            const tp: NodeIndex = @enumFromInt(self.ast_ref.extra_data[ad.type_params + i]);
+            const arg: NodeIndex = @enumFromInt(self.ast_ref.extra_data[arg_range.start + i]);
+            if (self.ast_ref.nodeTag(tp) != .ts_type_parameter) continue;
+            keys_buf[nsub] = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(tp));
+            vals_buf[nsub] = self.resolveTypeNode(arg);
+            nsub += 1;
+        }
+        if (nsub == 0) return null;
+        return self.resolveTypeNodeWithSubst(ad.type_node, keys_buf[0..nsub], vals_buf[0..nsub]);
+    }
+
     /// True when the type-position AST node references a name we
     /// can't resolve — type parameter (in scope) or `infer V`.
     fn typeNodeReferencesUnresolved(self: *Checker, node: NodeIndex) bool {
@@ -2991,12 +3390,20 @@ pub const Checker = struct {
                 }
             }
             // Type alias instantiation: if `Foo` is a generic alias
-            // (`type Foo<T> = ...`) and the use site supplies type
-            // args, substitute them through the body.
+            // (`type Foo<T> = ...`) and the use site supplies type args,
+            // substitute them through the body.  For conditional type
+            // bodies, resolve with the subst context directly so
+            // `infer V` and type-param substitution work correctly.
             const decl_opt = self.type_decl_nodes.get(name);
             if (decl_opt) |decl| {
                 if (self.ast_ref.nodeTag(decl) == .ts_type_alias_decl) {
-                    if (self.substituteAliasArgs(decl, ty_node, resolved)) |inst| return inst;
+                    const ta_dd = self.ast_ref.nodeData(decl);
+                    const ta_ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(ta_dd.lhs));
+                    if (self.isConditionalBody(ta_ad.type_node)) {
+                        if (self.resolveConditionalAliasWithArgs(decl, ty_node, ta_ad)) |inst| return inst;
+                    } else {
+                        if (self.substituteAliasArgs(decl, ty_node, resolved)) |inst| return inst;
+                    }
                 }
             }
             return resolved;

@@ -188,6 +188,14 @@ pub const LintContext = struct {
     /// "everything is any" in that case.
     checker_storage: ?*?Checker = null,
 
+    /// Absolute path of the file being linted.  Set by the linter when the
+    /// path is available; empty string disables cross-file type resolution.
+    file_path: []const u8 = "",
+
+    /// Per-lint-call module cache for cross-file type resolution.
+    /// Null when cross-file resolution is disabled or not yet created.
+    module_cache: ?*@import("../checker/module_cache.zig").ModuleCache = null,
+
     /// Per-node minimum/maximum main_token index over the node's full subtree.
     /// Used by `nodeSpan` so a node's diagnostic span covers from the first
     /// child token (`node_min_toks[i]`) to the last child token+len
@@ -362,7 +370,10 @@ pub const LintContext = struct {
     fn ensureChecker(self: *const LintContext) ?*Checker {
         const storage = self.checker_storage orelse return null;
         if (storage.* == null) {
-            storage.* = Checker.init(self.allocator, self.ast, self.semantic) catch return null;
+            var c = Checker.init(self.allocator, self.ast, self.semantic) catch return null;
+            c.file_path = self.file_path;
+            c.module_cache = self.module_cache;
+            storage.* = c;
         }
         return &(storage.*.?);
     }
@@ -717,8 +728,12 @@ pub const LintContext = struct {
             // could be the non-fn-property variant and reporting
             // "unbound" instead of "unboundWithoutThisAnnotation"
             // would be wrong.
+            // An `unknown` or `any` member means we cannot guarantee
+            // fn_property status (e.g. `Foo | unknown` from a conditional
+            // whose alternate branch isn't modelled).
             var saw_any = false;
             for (c.store.idsOf(t.list_data)) |m| {
+                if (m.eq(tymod.ID_UNKNOWN) or m.eq(tymod.ID_ANY)) return false;
                 if (!self.typeIdObjectPropertyIsMethod(m, name)) continue;
                 saw_any = true;
                 if (!self.typeIdObjectPropertyIsFnProperty(m, name)) return false;
@@ -726,6 +741,30 @@ pub const LintContext = struct {
             return saw_any;
         }
         return false;
+    }
+
+    /// True when `id` is the type of a global whose methods are natively
+    /// bound (Math, JSON, etc.) — i.e. they don't depend on `this`.
+    pub fn typeIdIsNativelyBound(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return false;
+        return c.natively_bound_type_ids.contains(id);
+    }
+
+    /// True when `id` represents a deeply-readonly type in the TypeStore —
+    /// i.e. no mutable array, writable object property, or mutable tuple.
+    /// Unresolved type_refs and any/unknown are treated as readonly
+    /// (conservative, avoids false positives).
+    pub fn typeIdIsDeeplyReadonly(self: *const LintContext, id: tymod.TypeId) bool {
+        const c = self.ensureChecker() orelse return true;
+        return typeIdReadonlyImpl(&c.store, id, 0);
+    }
+
+    /// Get the declared/contextual type for a parameter binding identifier
+    /// (declaration node, not a use-site reference).  Used for unannotated
+    /// callback parameters where `typeOfNode` doesn't reach contextual inference.
+    pub fn typeOfParamBinding(self: *const LintContext, n: NodeIndex) tymod.TypeId {
+        const c = self.ensureChecker() orelse return tymod.ID_UNKNOWN;
+        return c.declaredTypeAtBinding(n);
     }
 
     /// Returns the object-type properties as a slice of ObjectProp.
@@ -767,6 +806,23 @@ pub const LintContext = struct {
         const sigs = c.store.signaturesOf(t.signatures);
         if (sigs.len == 0) return null;
         return sigs[0].return_type;
+    }
+
+    /// Return all overload return types for a function_t. The slice lives
+    /// in the caller-provided buffer. Returns null when id is not a function_t.
+    pub fn functionAllReturnTypes(
+        self: *const LintContext,
+        id: tymod.TypeId,
+        buf: []tymod.TypeId,
+    ) ?[]tymod.TypeId {
+        const c = self.ensureChecker() orelse return null;
+        const t = c.store.get(id);
+        if (t.kind != .function_t) return null;
+        const sigs = c.store.signaturesOf(t.signatures);
+        if (sigs.len == 0) return null;
+        const n = @min(sigs.len, buf.len);
+        for (sigs[0..n], 0..) |sig, i| buf[i] = sig.return_type;
+        return buf[0..n];
     }
 
     /// Information about a function's assertion-style signature.
@@ -5116,7 +5172,7 @@ pub const LintContext = struct {
         // `)` because every nested grouping_expr's `end` lands at the same
         // inner `c` token, so a naive "next `)`" scan finds the same first
         // `)` for every level.
-        if (tag == .grouping_expr) {
+        if (tag == .grouping_expr or tag == .ts_parenthesized_type) {
             const open_pos = self.ast.tokenStart(main_tok);
             var depth: i32 = 1;
             var p: usize = open_pos + 1;
@@ -5267,10 +5323,26 @@ pub const LintContext = struct {
                     while (p < src.len and depth > 0) : (p += 1) {
                         const c = src[p];
                         if (c == '<') depth += 1
-                        else if (c == '>') depth -= 1;
+                        else if (c == '>' and (p == 0 or src[p - 1] != '=')) depth -= 1;
                     }
                     if (depth == 0 and @as(u32, @intCast(p)) > end) end = @intCast(p);
                 }
+            }
+            return .{ .start = first_start, .end = end };
+        }
+        // ts_instantiation_expr (`Generic<T>`, `foo<A, B>`): main_token is `<`,
+        // rhs is SubRange of type args.  The closing `>` isn't a tracked token.
+        if (tag == .ts_instantiation_expr) {
+            const data = self.nodeData(index);
+            if (data.rhs != .none) {
+                var depth: i32 = 1;
+                var p: usize = self.ast.tokenStart(main_tok) + 1; // start after `<`
+                while (p < src.len and depth > 0) : (p += 1) {
+                    const c = src[p];
+                    if (c == '<') depth += 1
+                    else if (c == '>' and (p == 0 or src[p - 1] != '=')) depth -= 1;
+                }
+                if (depth == 0 and @as(u32, @intCast(p)) > end) end = @intCast(p);
             }
             return .{ .start = first_start, .end = end };
         }
@@ -6012,6 +6084,45 @@ pub const LintContext = struct {
         return self.ast.nodeTag(parent) == .import_namespace_specifier;
     }
 
+    /// Find the symbol for which `id_node` is the declaration binding.
+    /// Returns null when not found or when the node is a reference (not a decl).
+    pub fn symbolForDeclNode(self: *const LintContext, id_node: NodeIndex) ?symbol_mod.SymbolId {
+        return self.findSymbolByDeclNode(id_node);
+    }
+
+    /// True when ALL references to `sym_id` are type-only (`type_read` kind)
+    /// AND the symbol has at least one reference.
+    /// Symbols with zero references are NOT considered type-only — they may be
+    /// value imports that are simply unused (handled by no-unused-vars instead).
+    /// Used by consistent-type-imports to detect imports that could be `import type`.
+    pub fn symbolIsTypeOnly(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
+        const range = self.semantic.symbols.getRefRange(sym_id);
+        if (range.isEmpty()) return false;
+        const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
+        for (sym_refs) |rid| {
+            if (!self.semantic.references.getKind(rid).isTypeRef()) return false;
+        }
+        return true;
+    }
+
+    /// True when `import_decl` node has a top-level `type` modifier:
+    /// `import type Foo from '...'` or `import type { Foo } from '...'`.
+    pub fn importDeclIsTypeOnly(self: *const LintContext, node: NodeIndex) bool {
+        const main_tok = self.ast.nodeMainToken(node);
+        if (main_tok + 1 >= self.ast.tokens.len) return false;
+        const next = self.tokenText(main_tok + 1);
+        return std.mem.eql(u8, next, "type");
+    }
+
+    /// True when an `import_specifier` node has an inline `type` qualifier:
+    /// `import { type Foo }` — the token before the specifier name is `type`.
+    pub fn importSpecifierIsTypeOnly(self: *const LintContext, node: NodeIndex) bool {
+        const main_tok = self.ast.nodeMainToken(node);
+        if (main_tok == 0) return false;
+        const prev = self.tokenText(main_tok - 1);
+        return std.mem.eql(u8, prev, "type");
+    }
+
     /// Walk parents from `id` upward to find the enclosing write-expression
     /// node — AssignmentExpression, UpdateExpression, UnaryExpression (for
     /// `delete X`), CallExpression (for mutation helpers like Object.assign),
@@ -6188,6 +6299,28 @@ pub const LintContext = struct {
             scope_id = parent;
         }
         return true;
+    }
+
+    /// Like `identifierShadowsBinding` but also considers the global scope,
+    /// which has nodeId=.none so `smallestEnclosingScope` never returns it.
+    /// This is needed for top-level code (e.g., `let RegExp; new RegExp(...)`)
+    /// where the global scope contains user-declared bindings.
+    pub fn identifierShadowsBindingOrGlobal(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        if (self.identifierShadowsBinding(n)) return true;
+        // identifierShadowsBinding misses the global scope because its nodeId=.none.
+        // Check the global scope (kind=.global) separately.
+        const name = self.tokenText(self.ast.nodeMainToken(n));
+        const scopes_t = &self.semantic.scopes;
+        const scope_count = scopes_t.len();
+        var i: u32 = 0;
+        while (i < scope_count) : (i += 1) {
+            const sid = scope_mod.ScopeId.fromInt(i);
+            const k = scopes_t.kind(sid);
+            if (k != .global and k != .module) continue;
+            if (self.scopeHasUserBindingNamed(sid, name)) return true;
+        }
+        return false;
     }
 
     /// Returns whether a node is reachable (entry reachability).
@@ -10436,7 +10569,49 @@ pub const LintContext = struct {
             .suggestions = sugg_slice,
         }) catch {};
     }
+
+    pub fn checkNoLossOfPrecision(self: *const LintContext, node: NodeIndex, message_id: []const u8) void {
+        if (self.ast.nodeTag(node) != .number_literal) return;
+        const tok = self.ast.nodeMainToken(node);
+        const text = self.ast.tokenText(tok);
+        if (numberLiteralLosesPrecision(text)) {
+            self.reportWithMessageId(node, message_id);
+        }
+    }
 };
+
+fn typeIdReadonlyImpl(store: *const tymod.TypeStore, id: tymod.TypeId, depth: u32) bool {
+    if (depth > 8) return true;
+    if (id.eq(tymod.ID_ANY) or id.eq(tymod.ID_UNKNOWN)) return true;
+    const t = store.get(id);
+    return switch (t.kind) {
+        .string, .number, .boolean, .null_t, .undefined_t,
+        .void_t, .never, .bigint, .symbol,
+        .string_literal, .number_literal, .boolean_literal,
+        .bigint_literal => true,
+        .array_t => false,
+        .readonly_array_t => blk: {
+            const elems = store.idsOf(t.list_data);
+            break :blk if (elems.len == 0) true else typeIdReadonlyImpl(store, elems[0], depth + 1);
+        },
+        .tuple_t => false,
+        .object_t => blk: {
+            for (store.propsOf(t.object_props)) |p| {
+                if (!p.readonly) break :blk false;
+                if (!typeIdReadonlyImpl(store, p.type_id, depth + 1)) break :blk false;
+            }
+            break :blk true;
+        },
+        .function_t => true,
+        .union_t, .intersection_t => blk: {
+            for (store.idsOf(t.list_data)) |m| {
+                if (!typeIdReadonlyImpl(store, m, depth + 1)) break :blk false;
+            }
+            break :blk true;
+        },
+        else => true, // type_ref, error_t — conservative, avoid FP
+    };
+}
 
 fn typeIdIsPromiseRefHelper(store: *const tymod.TypeStore, id: tymod.TypeId) bool {
     const t = store.get(id);
@@ -11055,4 +11230,227 @@ fn collectGlobalsEntries(
         const writable = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "writable");
         try list.append(allocator, .{ .name = name, .is_off = off, .is_writable = writable });
     }
+}
+
+fn numberLiteralLosesPrecision(raw: []const u8) bool {
+    var buf: [256]u8 = undefined;
+    var len: usize = 0;
+    for (raw) |c| {
+        if (c != '_' and len < buf.len) { buf[len] = c; len += 1; }
+    }
+    const text = buf[0..len];
+    if (text.len == 0) return false;
+
+    const is_base10 = blk: {
+        if (text.len >= 2 and text[0] == '0') {
+            const c1 = std.ascii.toLower(text[1]);
+            if (c1 == 'x' or c1 == 'b' or c1 == 'o') break :blk false;
+            // Legacy octal: 0 followed only by octal digits
+            var legacy = true;
+            for (text[1..]) |c| {
+                if (c < '0' or c > '7') { legacy = false; break; }
+            }
+            if (legacy) break :blk false;
+        }
+        break :blk true;
+    };
+
+    if (!is_base10) return nlpNotBaseTen(text);
+    return nlpBaseTen(text);
+}
+
+fn nlpNotBaseTen(text: []const u8) bool {
+    var base: u128 = 8;
+    var digits_start: usize = 1; // legacy octal: digits start right after leading 0
+    if (text.len >= 2) {
+        const c1 = std.ascii.toLower(text[1]);
+        if (c1 == 'b') { base = 2; digits_start = 2; } else if (c1 == 'x') { base = 16; digits_start = 2; } else if (c1 == 'o') { base = 8; digits_start = 2; }
+    }
+
+    var value: u128 = 0;
+    for (text[digits_start..]) |c| {
+        const d: u128 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => continue,
+        };
+        const next = value *% base +% d;
+        if (next < value) return true;
+        value = next;
+    }
+
+    const f64_val: f64 = @floatFromInt(value);
+    if (std.math.isInf(f64_val)) return true;
+    const back: u128 = @intFromFloat(f64_val);
+    return back != value;
+}
+
+// Mirrors ESLint's normalizeInteger: strips leading zeros, strips trailing zeros,
+// magnitude = (trimmed length) - 1.
+fn nlpNormalizeInteger(str: []const u8, coeff: *[128]u8, coeff_len: *usize, magnitude: *i64) void {
+    var start: usize = 0;
+    while (start < str.len and str[start] == '0') start += 1;
+    const trimmed = if (start == str.len) str else str[start..];
+    var end: usize = trimmed.len;
+    while (end > 1 and trimmed[end - 1] == '0') end -= 1;
+    const sig = trimmed[0..end];
+    const n = @min(sig.len, 128);
+    @memcpy(coeff[0..n], sig[0..n]);
+    coeff_len.* = n;
+    magnitude.* = @as(i64, @intCast(trimmed.len)) - 1;
+}
+
+// Mirrors ESLint's normalizeFloat: strips leading zeros from the whole string,
+// then handles three cases based on decimal position. Does NOT strip trailing zeros.
+fn nlpNormalizeFloat(str: []const u8, coeff: *[128]u8, coeff_len: *usize, magnitude: *i64) void {
+    var start: usize = 0;
+    while (start < str.len and str[start] == '0') start += 1;
+    const trimmed = if (start == str.len) str else str[start..];
+    const dot_idx = std.mem.indexOfScalar(u8, trimmed, '.');
+    if (dot_idx == null) {
+        const n = @min(trimmed.len, 128);
+        @memcpy(coeff[0..n], trimmed[0..n]);
+        coeff_len.* = n;
+        magnitude.* = @as(i64, @intCast(trimmed.len)) - 1;
+        return;
+    }
+    if (dot_idx.? == 0) {
+        // ".0123..." — strip leading zeros after the dot
+        const after_dot = trimmed[1..];
+        var sig_start: usize = 0;
+        while (sig_start < after_dot.len and after_dot[sig_start] == '0') sig_start += 1;
+        const sig = after_dot[sig_start..];
+        const n = @min(sig.len, 128);
+        @memcpy(coeff[0..n], sig[0..n]);
+        coeff_len.* = n;
+        // significantDigits.length - trimmedFloat.length
+        magnitude.* = @as(i64, @intCast(sig.len)) - @as(i64, @intCast(trimmed.len));
+        return;
+    }
+    // "123.456" — remove the dot; magnitude = dotIndex - 1
+    var n: usize = 0;
+    for (trimmed) |c| {
+        if (c != '.' and n < 128) { coeff[n] = c; n += 1; }
+    }
+    coeff_len.* = n;
+    magnitude.* = @as(i64, @intCast(dot_idx.?)) - 1;
+}
+
+fn nlpPow2Mul(val: u128, exp: u64) ?u128 {
+    if (val == 0) return 0;
+    if (exp >= 128) return null;
+    const e: u7 = @intCast(exp);
+    if (val > (~@as(u128, 0) >> e)) return null;
+    return val << e;
+}
+
+fn nlpPow5Mul(val: u128, exp: u64) ?u128 {
+    if (val == 0) return 0;
+    var result = val;
+    var i: u64 = 0;
+    while (i < exp) : (i += 1) {
+        const prev = result;
+        result *%= 5;
+        if (result / 5 != prev) return null;
+    }
+    return result;
+}
+
+fn nlpExactCompare(sig: u128, ne: i64, p: u128, nb: i64) bool {
+    const lhs_2: u64 = @intCast(@max(ne, 0) + @max(-nb, 0));
+    const lhs_5: u64 = @intCast(@max(-nb, 0));
+    const rhs_2: u64 = @intCast(@max(nb, 0) + @max(-ne, 0));
+    const rhs_5: u64 = @intCast(@max(nb, 0));
+    const lhs = nlpPow5Mul(nlpPow2Mul(sig, lhs_2) orelse return true, lhs_5) orelse return true;
+    const rhs = nlpPow5Mul(nlpPow2Mul(p, rhs_2) orelse return true, rhs_5) orelse return true;
+    return lhs != rhs;
+}
+
+fn nlpBaseTen(text: []const u8) bool {
+    // Parse as f64 first — catches infinity (e.g. 2e999).
+    const val = std.fmt.parseFloat(f64, text) catch return false;
+    if (!std.math.isFinite(val)) return true;
+    if (val == 0.0) return false;
+
+    // Split on 'e'/'E' to isolate the coefficient string.
+    var e_pos: usize = text.len;
+    for (text, 0..) |c, i| {
+        if (c == 'e' or c == 'E') { e_pos = i; break; }
+    }
+    const coeff_str = text[0..e_pos];
+    var raw_exp: i64 = 0;
+    if (e_pos < text.len) {
+        raw_exp = std.fmt.parseInt(i64, text[e_pos + 1 ..], 10) catch 0;
+    }
+
+    // Compute raw ScientificNotation (same logic as ESLint's convertNumberToScientificNotation).
+    var raw_coeff: [128]u8 = undefined;
+    var raw_coeff_len: usize = 0;
+    var raw_mag: i64 = 0;
+    if (std.mem.indexOfScalar(u8, coeff_str, '.') != null) {
+        nlpNormalizeFloat(coeff_str, &raw_coeff, &raw_coeff_len, &raw_mag);
+    } else {
+        nlpNormalizeInteger(coeff_str, &raw_coeff, &raw_coeff_len, &raw_mag);
+    }
+    raw_mag += raw_exp;
+
+    const n = raw_coeff_len;
+    if (n == 0) return false;
+    if (n > 100) return true;
+
+    // For > 15 sig figs, Zig's render disagrees with JS toPrecision — use exact integer comparison.
+    if (n > 15) {
+        const bits: u64 = @bitCast(val);
+        const mant_bits: u64 = bits & ((1 << 52) - 1);
+        const biased: u64 = (bits >> 52) & 0x7FF;
+        const sig_u128: u128 = if (biased == 0)
+            mant_bits
+        else
+            (@as(u128, 1) << 52) | mant_bits;
+        const ne: i64 = if (biased == 0) -1074 else @as(i64, @intCast(biased)) - 1023 - 52;
+
+        var p: u128 = 0;
+        for (coeff_str) |c| {
+            if (c < '0' or c > '9') continue;
+            const new_p = p *% 10 +% (c - '0');
+            if (new_p < p) return true; // p overflows u128 → definitely lossy
+            p = new_p;
+        }
+
+        var k: i64 = 0;
+        if (std.mem.indexOfScalar(u8, coeff_str, '.')) |dp|
+            k = @intCast(coeff_str.len - dp - 1);
+        const nb: i64 = raw_exp - k;
+
+        return nlpExactCompare(sig_u128, ne, p, nb);
+    }
+
+    // Format val with exactly n significant digits in scientific notation.
+    var fmt_buf: [200]u8 = undefined;
+    const stored_str = std.fmt.float.render(&fmt_buf, val, .{
+        .mode = .scientific,
+        .precision = n - 1,
+    }) catch return true;
+
+    // Parse the stored string (Zig scientific: "1.23e-4", "1.23e4", etc.)
+    var stored_e: usize = stored_str.len;
+    for (stored_str, 0..) |c, i| {
+        if (c == 'e') { stored_e = i; break; }
+    }
+    const stored_coeff_str = stored_str[0..stored_e];
+    var stored_exp: i64 = 0;
+    if (stored_e < stored_str.len) {
+        stored_exp = std.fmt.parseInt(i64, stored_str[stored_e + 1 ..], 10) catch 0;
+    }
+
+    var stored_coeff: [128]u8 = undefined;
+    var stored_coeff_len: usize = 0;
+    var stored_mag: i64 = 0;
+    // The rendered string is always float form; use normalizeFloat (parseAsFloat=true in ESLint).
+    nlpNormalizeFloat(stored_coeff_str, &stored_coeff, &stored_coeff_len, &stored_mag);
+    stored_mag += stored_exp;
+
+    return raw_mag != stored_mag or
+        !std.mem.eql(u8, raw_coeff[0..raw_coeff_len], stored_coeff[0..stored_coeff_len]);
 }

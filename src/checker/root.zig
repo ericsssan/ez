@@ -8,6 +8,7 @@
 
 pub const types = @import("types.zig");
 pub const Checker = @import("checker.zig").Checker;
+pub const ModuleCache = @import("module_cache.zig").ModuleCache;
 
 test {
     _ = types;
