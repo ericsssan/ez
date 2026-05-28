@@ -27,6 +27,8 @@ pub const relevant_tags = [_]Node.Tag{.root};
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     _ = node;
+    // Skip .d.ts definition files — export {} is meaningful there even when other exports exist.
+    if (ctx.language == .dts) return;
     // Walk top-level statements.  Track:
     //   - empty_export_nodes: every `export {}` we see
     //   - has_other_export: at least one other export-shaped node

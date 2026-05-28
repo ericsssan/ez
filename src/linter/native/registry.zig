@@ -290,7 +290,7 @@ const ts_consistent_generic_constructors = @import("typescript/consistent_generi
 const ts_no_invalid_void_type = @import("typescript/no_invalid_void_type.zig");
 const ts_sort_type_constituents = @import("typescript/sort_type_constituents.zig");
 const ts_consistent_type_definitions = @import("typescript/consistent_type_definitions.zig");
-// const ts_consistent_type_imports = @import("typescript/consistent_type_imports.zig");  // 6 FP (shadowing/React) + 13 FN; re-enable after fix
+const ts_consistent_type_imports = @import("typescript/consistent_type_imports.zig");
 const ts_method_signature_style = @import("typescript/method_signature_style.zig");
 const ts_no_unnecessary_parameter_property_assignment = @import("typescript/no_unnecessary_parameter_property_assignment.zig");
 const ts_prefer_enum_initializers = @import("typescript/prefer_enum_initializers.zig");
@@ -669,7 +669,7 @@ pub const all_rules = .{
     ts_no_invalid_void_type,
     ts_sort_type_constituents,
     ts_consistent_type_definitions,
-    // ts_consistent_type_imports,  // 6 FP (shadowing/React) + 13 FN; re-enable after fix
+    ts_consistent_type_imports,
     ts_method_signature_style,
     ts_no_unnecessary_parameter_property_assignment,
     ts_prefer_enum_initializers,

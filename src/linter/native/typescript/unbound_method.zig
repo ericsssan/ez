@@ -51,6 +51,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         }
     }
 
+    // Natively-bound statics (Math, JSON, etc.) — their methods do not
+    // depend on `this` and are always safe to extract.  Skip before the
+    // type-based check so that e.g. `[].map(Math.floor)` doesn't fire.
+    if (isNativelyBoundStaticAccess(d.lhs, prop, ctx)) return;
+
     // Instance-method case: receiver's type has a method-defined prop.
     const recv_ty = ctx.typeOfNode(d.lhs);
     if (ctx.typeIdObjectPropertyIsMethod(recv_ty, prop)) {
@@ -193,6 +198,24 @@ fn isBuiltinPrototypeMethod(recv_ty: tymod.TypeId, prop: []const u8, ctx: *const
         return isKnownPrototypeMethod(name, prop);
     }
     return false;
+}
+
+/// True when `recv.prop` is a static method on a global whose methods are
+/// natively bound (don't use `this`) — `Math.floor`, `JSON.stringify`, etc.
+/// These should never be reported even when extracted as unbound references.
+/// True when `recv.prop` accesses a method on a natively-bound global
+/// (Math, JSON, etc.) — directly or via an alias (`const foo = Math`).
+fn isNativelyBoundStaticAccess(recv: NodeIndex, _prop: []const u8, ctx: *const LintContext) bool {
+    _ = _prop;
+    var n = recv;
+    while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
+    // Fast path: literal identifier name.
+    if (ctx.nodeTag(n) == .identifier) {
+        const cls = ctx.tokenText(ctx.nodeMainToken(n));
+        if (std.mem.eql(u8, cls, "Math") or std.mem.eql(u8, cls, "JSON")) return true;
+    }
+    // Type-based path: catches aliases like `const foo = Math`.
+    return ctx.typeIdIsNativelyBound(ctx.typeOfNode(recv));
 }
 
 fn isBuiltinStaticMethod(recv: NodeIndex, prop: []const u8, ctx: *const LintContext) bool {

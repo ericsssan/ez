@@ -187,7 +187,14 @@ fn checkParam(param: NodeIndex, opts: Options, ctx: *const LintContext) void {
     const ann = ctx.nodeData(n).rhs;
     if (ann == .none) {
         if (opts.ignore_inferred_types) return;
-        return; // no annotation; nothing reliable to check
+        // No annotation — try contextual type inference via the checker.
+        // This catches callbacks like `foo<string[]>(arg => {})` where `arg`
+        // has no explicit annotation but is contextually typed as `string[]`.
+        const inferred_ty = ctx.typeOfParamBinding(n);
+        const inferred_is_unknown = inferred_ty.eq(tymod.ID_UNKNOWN) or inferred_ty.eq(tymod.ID_ANY);
+        if (inferred_is_unknown or ctx.typeIdIsDeeplyReadonly(inferred_ty)) return;
+        ctx.reportSpanWithMessageId(ctx.nodeSpan(n), "shouldBeReadonly");
+        return;
     }
     var ty_node = ann;
     if (ctx.nodeTag(ty_node) == .ts_type_annotation) ty_node = ctx.nodeData(ty_node).lhs;
@@ -339,6 +346,20 @@ fn typeNodeIsDeeplyReadonly(node: NodeIndex, opts: Options, ctx: *const LintCont
         .ts_function_type, .ts_constructor_type => return true, // functions OK
         .ts_mapped_type => return false, // approximate; mapped types may not be readonly
         .ts_conditional_type => return true, // approximate
+        // `typeof X` — when X is a class declaration, the constructor
+        // type has writable prototype methods, so NOT readonly.
+        // For other values (primitives, symbols, functions) treat as readonly.
+        .ts_typeof_type, .ts_type_query => {
+            var name_node = d.lhs;
+            if (name_node == .none) return true;
+            // The parser wraps the operand in a ts_type_reference; unwrap to get the identifier.
+            if (ctx.nodeTag(name_node) == .ts_type_reference) name_node = ctx.nodeData(name_node).lhs;
+            if (ctx.nodeTag(name_node) == .identifier) {
+                const name = ctx.tokenText(ctx.nodeMainToken(name_node));
+                if (ctx.classDeclByName(name) != .none) return false;
+            }
+            return true;
+        },
         else => return true, // primitives / unknown — lenient
     }
 }

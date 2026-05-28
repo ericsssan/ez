@@ -201,10 +201,22 @@ fn checkArrayPredicateCallback(callee: NodeIndex, args_rhs: NodeIndex, opts: Opt
         return;
     }
     if (tag == .identifier) {
-        // Named function reference — classify by its declared return type.
+        // Named function reference — classify using the union of all overload
+        // return types. For `f(n: number): string; f(s: string): boolean`, the
+        // combined return is `string | boolean` → conditionErrorOther.
         const callee_ty = ctx.typeOfNode(n);
-        const ret_ty = ctx.functionReturnType(callee_ty) orelse return;
-        const klass = classify(ret_ty, opts, ctx);
+        var ret_buf: [8]tymod.TypeId = undefined;
+        const ret_tys = ctx.functionAllReturnTypes(callee_ty, &ret_buf) orelse return;
+        var combined_klass: ?Class = null;
+        for (ret_tys) |rt| {
+            const k = classify(rt, opts, ctx);
+            if (combined_klass == null) {
+                combined_klass = k;
+            } else if (combined_klass.? != k) {
+                combined_klass = .mixed;
+            }
+        }
+        const klass = combined_klass orelse return;
         if (messageFor(klass, opts)) |id| ctx.reportWithMessageId(n, id);
         return;
     }
@@ -258,15 +270,51 @@ fn checkPredicateReturnsOnCallback(cb: NodeIndex, body: NodeIndex, opts: Options
         }
         return;
     }
-    // No return statement seen at the top level — the callback might
-    // still return via nested blocks/if/try.  Bail unless we're sure
-    // the function returns void.  Use the explicit return annotation
-    // if present: a callback annotated `: boolean` clearly returns;
-    // one without an annotation that we can prove has no nested
-    // returns implicitly returns `undefined`.
-    // No top-level return, no nested return — implicit undefined.
-    if (callbackHasAnyReturnRecursive(body, ctx)) return;
-    ctx.reportWithMessageId(cb, "conditionErrorNullish");
+    // No top-level return statements.
+    if (!callbackHasAnyReturnRecursive(body, ctx)) {
+        // No returns at all — implicit undefined.
+        ctx.reportWithMessageId(cb, "conditionErrorNullish");
+        return;
+    }
+    // Nested returns exist. If the last top-level statement is a plain
+    // `if` (no else), the callback has a fallthrough path that implicitly
+    // returns `undefined`. If the if body contains boolean returns, the
+    // combined type is `boolean | undefined` (nullable boolean).
+    if (e > s) {
+        const last_stmt: NodeIndex = @enumFromInt(ctx.ast.extra_data[e - 1]);
+        if (ctx.nodeTag(last_stmt) == .if_stmt) {
+            const if_d = ctx.nodeData(last_stmt);
+            if (containsBooleanReturnRecursive(if_d.rhs, opts, ctx)) {
+                ctx.reportWithMessageId(cb, "conditionErrorNullableBoolean");
+            }
+        }
+    }
+}
+
+fn containsBooleanReturnRecursive(body: NodeIndex, opts: Options, ctx: *const LintContext) bool {
+    if (body == .none) return false;
+    const tag = ctx.nodeTag(body);
+    if (tag == .return_stmt) {
+        const d = ctx.nodeData(body);
+        if (d.lhs == .none) return false;
+        const ty = ctx.narrowedTypeOf(d.lhs);
+        return classify(ty, opts, ctx) == .boolean_ok;
+    }
+    const d = ctx.nodeData(body);
+    if (tag == .block_stmt) {
+        const s = @intFromEnum(d.lhs);
+        const e = @intFromEnum(d.rhs);
+        if (e > s and e <= ctx.ast.extra_data.len) {
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                if (containsBooleanReturnRecursive(@enumFromInt(raw), opts, ctx)) return true;
+            }
+        }
+        return false;
+    }
+    if (tag == .if_stmt) {
+        return containsBooleanReturnRecursive(d.rhs, opts, ctx);
+    }
+    return false;
 }
 
 fn callbackReturnTypeAnnotation(cb: NodeIndex, ctx: *const LintContext) ?NodeIndex {

@@ -180,6 +180,7 @@ fn countFnLike(container: NodeIndex, name: []const u8, count: *u32, ctx: *const 
     countParams(fd.params, fd.params_end, name, count, ctx);
     countReturnTypeNode(fd.return_type, name, count, ctx);
     if (count.* < 2) countTypeofExpansion(fd.return_type, fd.params, fd.params_end, name, count, ctx);
+    if (count.* < 2 and fd.body != .none) bodyBoost(fd.body, fd.return_type, fd.params, fd.params_end, name, count, ctx);
 }
 
 fn countArrow(container: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {
@@ -189,6 +190,373 @@ fn countArrow(container: NodeIndex, name: []const u8, count: *u32, ctx: *const L
     countParams(ad.params_start, ad.params_end, name, count, ctx);
     countReturnTypeNode(ad.return_type, name, count, ctx);
     if (count.* < 2) countTypeofExpansion(ad.return_type, ad.params_start, ad.params_end, name, count, ctx);
+    if (count.* < 2 and ad.body != .none) bodyBoost(ad.body, ad.return_type, ad.params_start, ad.params_end, name, count, ctx);
+}
+
+/// After explicit-signature counting, scan the function body for evidence that
+/// `name` flows into the inferred return type, which the TypeScript checker sees
+/// but our static walk can't derive.  Sets count to 2 when found so the caller
+/// won't fire "sole".
+///
+/// Three checks:
+///   1. bodyHasTypeRef — finds explicit type references in body value positions:
+///      `as`-casts, instantiation type args, and nested arrow return types.
+///      Handles e.g. `return new Map<K, V>()`, `return [] as [T, T][]`.
+///   2. bodyPropagatesParam — checks whether the body directly returns (or wraps
+///      in an object literal) a parameter whose type annotation mentions `name`.
+///      Handles e.g. `return x` and `return { x }` where x: T.
+///   3. bodyCallsWithTypedParam — checks whether the body contains a call to a
+///      standalone function (not a method) where a T-typed parameter is an
+///      argument.  Handles e.g. `return f(x)` and `return () => f(x)` where
+///      x: T and f has a generic return type that instantiates with T.
+fn bodyBoost(body: NodeIndex, explicit_return_type: NodeIndex, params_start: u32, params_end: u32, name: []const u8, count: *u32, ctx: *const LintContext) void {
+    // Only scan the body when there is no explicit return type annotation.
+    // If the caller wrote `: T`, that was already counted in countReturnTypeNode;
+    // scanning the body would double-count (e.g. `as T` casts inside the body).
+    if (explicit_return_type != .none) return;
+    if (bodyHasTypeRef(body, name, ctx, 0)) { count.* = 2; return; }
+    var pnames: [8][]const u8 = undefined;
+    var pcnt: usize = 0;
+    collectTypedParamNames(params_start, params_end, name, ctx, &pnames, &pcnt);
+    if (pcnt > 0 and bodyPropagatesParam(body, pnames[0..pcnt], ctx)) count.* = 2;
+    if (count.* < 2 and pcnt > 0 and bodyCallsWithTypedParam(body, pnames[0..pcnt], ctx)) count.* = 2;
+}
+
+/// True if the body contains any call to a standalone function (callee is a
+/// plain identifier, not a method) where any direct argument is one of
+/// `typed_param_names`.  Recurses through arrows, arrays, objects, and blocks
+/// but NOT into nested function/method/class definitions.
+fn bodyCallsWithTypedParam(body: NodeIndex, typed_param_names: []const []const u8, ctx: *const LintContext) bool {
+    if (typed_param_names.len == 0) return false;
+    return bodyCallsWithTypedParamDepth(body, typed_param_names, ctx, 0);
+}
+
+fn bodyCallsWithTypedParamDepth(node: NodeIndex, typed_param_names: []const []const u8, ctx: *const LintContext, depth: u32) bool {
+    if (node == .none or depth > 16) return false;
+    const tag = ctx.nodeTag(node);
+    const d = ctx.nodeData(node);
+    switch (tag) {
+        // Stop at nested function/method/class definitions.
+        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+        .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+        .ts_declare_function, .method_def, .computed_method_def,
+        .getter_def, .computed_getter_def, .setter_def, .computed_setter_def,
+        .constructor_def, .class_decl, .class_expr,
+        .ts_interface_decl, .ts_type_alias_decl, .ts_enum_decl,
+        .ts_namespace_decl => return false,
+        // Recurse into arrow fn bodies — closure captures typed params.
+        .arrow_fn, .async_arrow_fn => {
+            if (d.lhs == .none) return false;
+            const ad = ctx.extraData(ast.ArrowData, @intFromEnum(d.lhs));
+            return bodyCallsWithTypedParamDepth(ad.body, typed_param_names, ctx, depth + 1);
+        },
+        // Standalone call: if callee is a plain identifier and any direct arg
+        // is a typed param, T flows through the callee's (generic) return type.
+        .call_expr, .optional_call_expr => {
+            const callee = d.lhs;
+            if (callee != .none) {
+                const ct = ctx.nodeTag(callee);
+                const is_standalone = ct == .identifier or ct == .grouping_expr or ct == .ts_non_null_expr;
+                if (is_standalone and d.rhs != .none) {
+                    const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+                    if (sr.start < sr.end and sr.end <= ctx.ast.extra_data.len) {
+                        for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
+                            const arg: NodeIndex = @enumFromInt(raw);
+                            if (arg == .none) continue;
+                            var a = arg;
+                            while (a != .none and ctx.nodeTag(a) == .grouping_expr) a = ctx.nodeData(a).lhs;
+                            if (a != .none and ctx.nodeTag(a) == .identifier) {
+                                const arg_name = ctx.tokenText(ctx.nodeMainToken(a));
+                                for (typed_param_names) |pn| {
+                                    if (std.mem.eql(u8, pn, arg_name)) return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (bodyCallsWithTypedParamDepth(callee, typed_param_names, ctx, depth + 1)) return true;
+            }
+            if (d.rhs != .none) {
+                const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+                if (sr.start < sr.end and sr.end <= ctx.ast.extra_data.len) {
+                    for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
+                        if (bodyCallsWithTypedParamDepth(@enumFromInt(raw), typed_param_names, ctx, depth + 1)) return true;
+                    }
+                }
+            }
+            return false;
+        },
+        // Block/static-block (inline SubRange: lhs=start, rhs=end)
+        .block_stmt, .static_block => {
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (e <= s or e > ctx.ast.extra_data.len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                if (bodyCallsWithTypedParamDepth(@enumFromInt(raw), typed_param_names, ctx, depth + 1)) return true;
+            }
+            return false;
+        },
+        // Array/object literals (inline SubRange: lhs=start, rhs=end)
+        .array_literal, .object_literal => {
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (e <= s or e > ctx.ast.extra_data.len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                if (bodyCallsWithTypedParamDepth(@enumFromInt(raw), typed_param_names, ctx, depth + 1)) return true;
+            }
+            return false;
+        },
+        // Object properties: recurse into the value (rhs)
+        .property, .computed_property => {
+            return if (d.rhs != .none) bodyCallsWithTypedParamDepth(d.rhs, typed_param_names, ctx, depth + 1) else false;
+        },
+        // member_expr: only recurse into the object (lhs); rhs is a property token
+        .member_expr, .optional_member_expr => {
+            return if (d.lhs != .none) bodyCallsWithTypedParamDepth(d.lhs, typed_param_names, ctx, depth + 1) else false;
+        },
+        .computed_member_expr, .optional_computed_member_expr => {
+            if (d.lhs != .none and bodyCallsWithTypedParamDepth(d.lhs, typed_param_names, ctx, depth + 1)) return true;
+            if (d.rhs != .none and bodyCallsWithTypedParamDepth(d.rhs, typed_param_names, ctx, depth + 1)) return true;
+            return false;
+        },
+        // Single-child nodes (lhs = the expression)
+        .return_stmt, .throw_stmt, .expression_stmt,
+        .ts_non_null_expr, .grouping_expr, .await_expr,
+        .yield_expr, .yield_delegate, .spread_element,
+        .unary_plus, .unary_minus, .bitwise_not, .logical_not,
+        .typeof_expr, .void_expr, .delete_expr,
+        .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec => {
+            return if (d.lhs != .none) bodyCallsWithTypedParamDepth(d.lhs, typed_param_names, ctx, depth + 1) else false;
+        },
+        // Skip pure type nodes and literals
+        .ts_type_annotation, .ts_type_reference, .ts_function_type,
+        .ts_constructor_type, .ts_array_type, .ts_union_type,
+        .ts_intersection_type, .ts_conditional_type, .ts_mapped_type,
+        .ts_type_literal, .ts_tuple_type, .ts_keyof_type,
+        .ts_parenthesized_type, .ts_typeof_type, .ts_infer_type,
+        .ts_template_literal_type, .ts_type_predicate, .ts_type_parameter,
+        .identifier, .number_literal, .string_literal, .boolean_literal,
+        .null_literal, .regex_literal, .bigint_literal, .template_element => return false,
+        else => return false,
+    }
+}
+
+/// Scan the body for explicit type references to `name` in value-expression
+/// "type positions": `as`-casts, instantiation type args, and nested arrow
+/// return type annotations.  Does NOT recurse into nested function/method
+/// bodies (their type params may shadow `name`).
+fn bodyHasTypeRef(node: NodeIndex, name: []const u8, ctx: *const LintContext, depth: u32) bool {
+    if (node == .none or depth > 16) return false;
+    const tag = ctx.nodeTag(node);
+    const d = ctx.nodeData(node);
+    switch (tag) {
+        // Stop at nested function/method/class definitions.
+        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+        .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+        .ts_declare_function, .method_def, .computed_method_def,
+        .getter_def, .computed_getter_def, .setter_def, .computed_setter_def,
+        .constructor_def, .class_decl, .class_expr,
+        .ts_interface_decl, .ts_type_alias_decl, .ts_enum_decl,
+        .ts_namespace_decl => return false,
+        // Nested arrow: check its return type annotation only (not body) —
+        // this handles the case where the outer arrow's body IS the inner
+        // arrow and the inner arrow has an explicit return type using `name`.
+        .arrow_fn, .async_arrow_fn => {
+            if (d.lhs == .none) return false;
+            const ad = ctx.extraData(ast.ArrowData, @intFromEnum(d.lhs));
+            return typeSubtreeContainsName(ad.return_type, name, ctx, 0);
+        },
+        // `expr as Type` / `expr satisfies Type`
+        .ts_as_expr, .ts_satisfies_expr => {
+            return typeSubtreeContainsName(d.rhs, name, ctx, 0) or
+                bodyHasTypeRef(d.lhs, name, ctx, depth + 1);
+        },
+        // `<Type>expr` (old-style TS cast)
+        .ts_type_assertion => {
+            return typeSubtreeContainsName(d.lhs, name, ctx, 0) or
+                bodyHasTypeRef(d.rhs, name, ctx, depth + 1);
+        },
+        // `expr<TypeArgs>` — instantiation expression
+        .ts_instantiation_expr => {
+            if (d.rhs != .none) {
+                const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+                if (sr.start < sr.end and sr.end <= ctx.ast.extra_data.len) {
+                    for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
+                        if (typeSubtreeContainsName(@enumFromInt(raw), name, ctx, 0)) return true;
+                    }
+                }
+            }
+            return bodyHasTypeRef(d.lhs, name, ctx, depth + 1);
+        },
+        // Block statement — inline SubRange (lhs=start, rhs=end)
+        .block_stmt, .static_block => {
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (e <= s or e > ctx.ast.extra_data.len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                if (bodyHasTypeRef(@enumFromInt(raw), name, ctx, depth + 1)) return true;
+            }
+            return false;
+        },
+        // Variable declarations — inline SubRange of declarators
+        .var_decl, .let_decl, .const_decl => {
+            const s = @intFromEnum(d.lhs);
+            const e = @intFromEnum(d.rhs);
+            if (e <= s or e > ctx.ast.extra_data.len) return false;
+            for (ctx.ast.extra_data[s..e]) |raw| {
+                if (bodyHasTypeRef(@enumFromInt(raw), name, ctx, depth + 1)) return true;
+            }
+            return false;
+        },
+        // Declarator: check only the initialiser (rhs), not the binding name (lhs)
+        .declarator => return if (d.rhs != .none) bodyHasTypeRef(d.rhs, name, ctx, depth + 1) else false,
+        // Call / new — lhs = callee (NodeIndex), rhs = indirect SubRange of args
+        .call_expr, .optional_call_expr, .new_expr => {
+            if (d.lhs != .none and bodyHasTypeRef(d.lhs, name, ctx, depth + 1)) return true;
+            if (d.rhs != .none) {
+                const sr = ctx.extraData(ast.SubRange, @intFromEnum(d.rhs));
+                if (sr.start < sr.end and sr.end <= ctx.ast.extra_data.len) {
+                    for (ctx.ast.extra_data[sr.start..sr.end]) |raw| {
+                        if (bodyHasTypeRef(@enumFromInt(raw), name, ctx, depth + 1)) return true;
+                    }
+                }
+            }
+            return false;
+        },
+        // Skip pure type nodes
+        .ts_type_annotation, .ts_type_reference, .ts_function_type,
+        .ts_constructor_type, .ts_array_type, .ts_union_type,
+        .ts_intersection_type, .ts_conditional_type, .ts_mapped_type,
+        .ts_type_literal, .ts_tuple_type, .ts_keyof_type,
+        .ts_parenthesized_type, .ts_typeof_type, .ts_infer_type,
+        .ts_template_literal_type, .ts_type_predicate, .ts_type_parameter => return false,
+        // obj.prop: only recurse into object (lhs); rhs encodes the property token
+        .member_expr, .optional_member_expr => return bodyHasTypeRef(d.lhs, name, ctx, depth + 1),
+        // Nodes where both lhs and rhs are expression NodeIndex
+        .computed_member_expr, .optional_computed_member_expr,
+        .if_stmt,       // lhs=condition, rhs=consequent
+        .while_stmt,    // lhs=condition, rhs=body
+        .do_while_stmt, // lhs=body, rhs=condition
+        .assignment_pattern,
+        .logical_and, .logical_or, .nullish_coalesce,
+        .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
+        .equal, .not_equal, .strict_equal, .strict_not_equal,
+        .less_than, .greater_than, .less_equal, .greater_equal,
+        .instanceof_expr, .in_expr,
+        .bitwise_and, .bitwise_or, .bitwise_xor,
+        .shift_left, .shift_right, .unsigned_shift_right,
+        .assign, .add_assign, .sub_assign, .mul_assign, .div_assign,
+        .mod_assign, .exp_assign, .and_assign, .or_assign, .xor_assign,
+        .shl_assign, .shr_assign, .ushr_assign,
+        .logical_and_assign, .logical_or_assign, .nullish_assign => {
+            if (d.lhs != .none and bodyHasTypeRef(d.lhs, name, ctx, depth + 1)) return true;
+            if (d.rhs != .none and bodyHasTypeRef(d.rhs, name, ctx, depth + 1)) return true;
+            return false;
+        },
+        // Single-child expression/statement nodes (lhs is the expression)
+        .return_stmt, .throw_stmt, .expression_stmt,
+        .ts_non_null_expr, .grouping_expr, .await_expr,
+        .yield_expr, .yield_delegate, .spread_element,
+        .unary_plus, .unary_minus, .bitwise_not, .logical_not,
+        .typeof_expr, .void_expr, .delete_expr,
+        .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec => {
+            return if (d.lhs != .none) bodyHasTypeRef(d.lhs, name, ctx, depth + 1) else false;
+        },
+        // Conservative default for complex/unknown nodes
+        else => return false,
+    }
+}
+
+/// True if the body directly "propagates" any of `typed_param_names` to its
+/// return value — either `return x` (direct identifier) or `return { x }`
+/// (object shorthand that includes the param).  Handles arrow expression bodies
+/// and block bodies with a `return` statement.
+fn bodyPropagatesParam(body: NodeIndex, typed_param_names: []const []const u8, ctx: *const LintContext) bool {
+    if (body == .none or typed_param_names.len == 0) return false;
+    const tag = ctx.nodeTag(body);
+    const d = ctx.nodeData(body);
+    // Arrow expression body — the expression IS the return value
+    if (tag != .block_stmt) return returnExprPropagates(body, typed_param_names, ctx);
+    // Block body: find `return expr`
+    const s = @intFromEnum(d.lhs);
+    const e = @intFromEnum(d.rhs);
+    if (e <= s or e > ctx.ast.extra_data.len) return false;
+    for (ctx.ast.extra_data[s..e]) |raw| {
+        const stmt: NodeIndex = @enumFromInt(raw);
+        if (ctx.nodeTag(stmt) != .return_stmt) continue;
+        const ret_val = ctx.nodeData(stmt).lhs;
+        if (returnExprPropagates(ret_val, typed_param_names, ctx)) return true;
+    }
+    return false;
+}
+
+fn returnExprPropagates(expr: NodeIndex, typed_param_names: []const []const u8, ctx: *const LintContext) bool {
+    if (expr == .none) return false;
+    var rv = expr;
+    while (ctx.nodeTag(rv) == .grouping_expr) rv = ctx.nodeData(rv).lhs;
+    const t = ctx.nodeTag(rv);
+    // `return x` — direct identifier
+    if (t == .identifier) {
+        const ident_name = ctx.tokenText(ctx.nodeMainToken(rv));
+        for (typed_param_names) |pn| {
+            if (std.mem.eql(u8, pn, ident_name)) return true;
+        }
+        return false;
+    }
+    // `return { x }` — object literal where a shorthand property matches
+    if (t == .object_literal) {
+        const od = ctx.nodeData(rv);
+        const ps = @intFromEnum(od.lhs);
+        const pe = @intFromEnum(od.rhs);
+        if (pe <= ps or pe > ctx.ast.extra_data.len) return false;
+        for (ctx.ast.extra_data[ps..pe]) |raw| {
+            const prop: NodeIndex = @enumFromInt(raw);
+            if (ctx.nodeTag(prop) != .shorthand_property) continue;
+            const ident = ctx.nodeData(prop).lhs;
+            if (ident == .none) continue;
+            const prop_name = ctx.tokenText(ctx.nodeMainToken(ident));
+            for (typed_param_names) |pn| {
+                if (std.mem.eql(u8, pn, prop_name)) return true;
+            }
+        }
+        return false;
+    }
+    // `return obj[param]` — indexed access where the key is a typed param.
+    // The inferred return type is T[K], which mentions the type parameter K.
+    if (t == .computed_member_expr or t == .optional_computed_member_expr) {
+        var key = ctx.nodeData(rv).rhs;
+        if (key != .none) {
+            while (ctx.nodeTag(key) == .grouping_expr) key = ctx.nodeData(key).lhs;
+            if (ctx.nodeTag(key) == .identifier) {
+                const key_name = ctx.tokenText(ctx.nodeMainToken(key));
+                for (typed_param_names) |pn| {
+                    if (std.mem.eql(u8, pn, key_name)) return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/// Collect identifier names of parameters whose type annotation contains `name`.
+fn collectTypedParamNames(params_start: u32, params_end: u32, name: []const u8, ctx: *const LintContext, out_names: [][]const u8, out_count: *usize) void {
+    out_count.* = 0;
+    if (params_end <= params_start or params_end > ctx.ast.extra_data.len) return;
+    for (ctx.ast.extra_data[params_start..params_end]) |raw| {
+        if (out_count.* >= out_names.len) return;
+        const param: NodeIndex = @enumFromInt(raw);
+        if (param == .none) continue;
+        var n = param;
+        if (ctx.nodeTag(n) == .assignment_pattern) n = ctx.nodeData(n).lhs;
+        if (n == .none) continue;
+        if (ctx.nodeTag(n) != .identifier) continue;
+        const ann = ctx.nodeData(n).rhs;
+        if (ann == .none) continue;
+        if (typeSubtreeContainsName(ann, name, ctx, 0)) {
+            out_names[out_count.*] = ctx.tokenText(ctx.nodeMainToken(n));
+            out_count.* += 1;
+        }
+    }
 }
 
 fn countMethod(container: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {

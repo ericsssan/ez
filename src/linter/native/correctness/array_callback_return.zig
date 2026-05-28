@@ -186,6 +186,95 @@ fn getArrayMethodName(node: NodeIndex, ctx: *const LintContext, is_async: bool) 
     }
 }
 
+fn lastStmtOfBlock(block: NodeIndex, ctx: *const LintContext) NodeIndex {
+    if (block == .none) return .none;
+    if (ctx.nodeTag(block) != .block_stmt) return .none;
+    const data = ctx.nodeData(block);
+    const sr = ast.SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+    const stmts = ctx.extraSlice(sr);
+    if (stmts.len == 0) return .none;
+    return @enumFromInt(stmts[stmts.len - 1]);
+}
+
+// True when stmt unconditionally exits (return/throw) through all code paths,
+// without crossing a function boundary. Used to detect "expectedAtEnd".
+fn statementAlwaysReturns(stmt: NodeIndex, ctx: *const LintContext) bool {
+    if (stmt == .none) return false;
+    const tag = ctx.nodeTag(stmt);
+    switch (tag) {
+        .return_stmt, .throw_stmt => return true,
+        .block_stmt => {
+            return statementAlwaysReturns(lastStmtOfBlock(stmt, ctx), ctx);
+        },
+        .if_stmt => return false, // no else: condition-false path falls through
+        .if_else_stmt => {
+            const data = ctx.nodeData(stmt);
+            const if_data = ctx.extraData(ast.IfData, @intFromEnum(data.rhs));
+            return statementAlwaysReturns(if_data.consequent, ctx) and
+                   statementAlwaysReturns(if_data.alternate, ctx);
+        },
+        .switch_stmt => return switchAlwaysReturns(stmt, ctx),
+        .try_stmt => {
+            const data = ctx.nodeData(stmt);
+            const try_body = data.lhs;
+            if (data.rhs == .none) return false;
+            const td = ctx.extraData(ast.TryData, @intFromEnum(data.rhs));
+            if (td.finally_body != .none) {
+                return statementAlwaysReturns(td.finally_body, ctx);
+            }
+            if (!statementAlwaysReturns(try_body, ctx)) return false;
+            if (td.catch_node == .none) return true;
+            const catch_body = ctx.nodeData(td.catch_node).rhs;
+            return statementAlwaysReturns(catch_body, ctx);
+        },
+        else => return false,
+    }
+}
+
+// A switch "always returns" when it has a default case and every case either
+// explicitly returns/throws or falls through (no break) to a case that does.
+fn switchAlwaysReturns(switch_node: NodeIndex, ctx: *const LintContext) bool {
+    const data = ctx.nodeData(switch_node);
+    if (data.rhs == .none) return false;
+    const sr = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
+    const cases = ctx.extraSlice(sr);
+    if (cases.len == 0) return false;
+
+    var has_default = false;
+    for (cases) |c| {
+        if (ctx.nodeTag(@enumFromInt(c)) == .switch_default) { has_default = true; break; }
+    }
+    if (!has_default) return false;
+
+    // Scan backward: propagate fall-through exit status from last case to first.
+    var next_exits: bool = false;
+    var i = cases.len;
+    while (i > 0) {
+        i -= 1;
+        const case_node: NodeIndex = @enumFromInt(cases[i]);
+        const case_data = ctx.nodeData(case_node);
+        var case_stmts: []const u32 = &.{};
+        if (case_data.rhs != .none) {
+            const case_sr = ctx.extraData(ast.SubRange, @intFromEnum(case_data.rhs));
+            case_stmts = ctx.extraSlice(case_sr);
+        }
+        const this_exits: bool = if (case_stmts.len == 0)
+            next_exits // empty case: fall-through
+        else blk: {
+            const last: NodeIndex = @enumFromInt(case_stmts[case_stmts.len - 1]);
+            break :blk if (ctx.nodeTag(last) == .break_stmt)
+                false // break exits switch but not function
+            else if (statementAlwaysReturns(last, ctx))
+                true
+            else
+                next_exits; // fall-through inherits next case's status
+        };
+        if (!this_exits) return false;
+        next_exits = this_exits;
+    }
+    return true;
+}
+
 fn isFunctionBoundary(tag: Node.Tag) bool {
     return switch (tag) {
         .fn_decl, .fn_expr, .arrow_fn,
@@ -320,10 +409,13 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         }
     }
 
-    // Non-forEach: if no return at all, the function never returns a value.
-    // Report "expectedInside" at the function head.
-    if (!is_foreach and !has_any_return) {
-        const head = functionHeadSpan(node, tag, ctx);
-        ctx.reportSpanWithMessageId(head, "expectedInside");
+    // Non-forEach: check whether all code paths return a value.
+    if (!is_foreach) {
+        const last = lastStmtOfBlock(body, ctx);
+        if (!statementAlwaysReturns(last, ctx)) {
+            const head = functionHeadSpan(node, tag, ctx);
+            const msg = if (has_any_return) "expectedAtEnd" else "expectedInside";
+            ctx.reportSpanWithMessageId(head, msg);
+        }
     }
 }

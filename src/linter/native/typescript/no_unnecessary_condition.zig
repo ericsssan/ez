@@ -654,6 +654,20 @@ fn projectByKeyLiteralTypeInner(recv_ty: tymod.TypeId, key_ty: tymod.TypeId, ctx
     return tymod.TypeId.none;
 }
 
+/// Returns "[]L" for all-lowercase names, "[]U" for all-uppercase, "[]" otherwise.
+fn idxSigSentinelForName(name: []const u8) []const u8 {
+    if (name.len == 0) return "[]";
+    var all_lower = true;
+    var all_upper = true;
+    for (name) |c| {
+        if (c < 'a' or c > 'z') all_lower = false;
+        if (c < 'A' or c > 'Z') all_upper = false;
+    }
+    if (all_lower) return "[]L";
+    if (all_upper) return "[]U";
+    return "[]";
+}
+
 fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
     const tag = ctx.nodeTag(n);
     if (tag == .optional_member_expr or tag == .member_expr) {
@@ -667,8 +681,14 @@ fn chainCheckType(n: NodeIndex, ctx: *const LintContext) tymod.TypeId {
         recv_ty = ctx.typeIdStripKinds(recv_ty, &kinds);
         const projected = ctx.projectPropertyPub(recv_ty, prop_name);
         if (!projected.eq(tymod.TypeId.none)) return projected;
-        // Fallback: mapped/index-signature type uses "[]" sentinel for all keys.
-        // `a.a?.b` on `{[k in Lowercase<string>]: T}` → project "[]" → T.
+        // For all-lowercase / all-uppercase keys, prefer the specific index-sig
+        // sentinel ("[]L" / "[]U") so Lowercase<string> and Uppercase<string>
+        // index signatures are treated independently, then fall back to "[]".
+        const specific_sentinel = idxSigSentinelForName(prop_name);
+        if (!std.mem.eql(u8, specific_sentinel, "[]")) {
+            const sp = ctx.projectPropertyPub(recv_ty, specific_sentinel);
+            if (!sp.eq(tymod.TypeId.none)) return sp;
+        }
         const idx_ty = ctx.projectPropertyPub(recv_ty, "[]");
         if (!idx_ty.eq(tymod.TypeId.none)) return idx_ty;
     }

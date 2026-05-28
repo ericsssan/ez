@@ -118,16 +118,7 @@ fn unionSpan(node: NodeIndex, ctx: *const LintContext) parser.span.Span {
     const first_n: NodeIndex = @enumFromInt(first_raw);
     const last_n: NodeIndex = @enumFromInt(last_raw);
     const fs = ctx.nodeSpan(first_n);
-    var ls = ctx.nodeSpan(last_n);
-    // `ts_parenthesized_type`'s max_tok doesn't cover the closing
-    // `)` — when the last member is a paren wrapper, walk forward
-    // through any trailing whitespace and consume the `)`.
-    if (ctx.nodeTag(last_n) == .ts_parenthesized_type) {
-        const src = ctx.ast.source;
-        var end = ls.end;
-        while (end < src.len and (src[end] == ' ' or src[end] == '\t')) end += 1;
-        if (end < src.len and src[end] == ')') ls.end = end + 1;
-    }
+    const ls = ctx.nodeSpan(last_n);
     return .{ .start = fs.start, .end = ls.end };
 }
 
