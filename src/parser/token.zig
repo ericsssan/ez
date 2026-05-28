@@ -518,10 +518,13 @@ pub const Language = enum {
     ts,
     jsx,
     tsx,
+    /// TypeScript declaration file (.d.ts). Treated as TS for rule filtering
+    /// but rules can gate on `ctx.language == .dts` to skip definition files.
+    dts,
 
-    /// Returns true for TypeScript languages (ts, tsx).
+    /// Returns true for TypeScript languages (ts, tsx, dts).
     pub inline fn isTs(self: Language) bool {
-        return self == .ts or self == .tsx;
+        return self == .ts or self == .tsx or self == .dts;
     }
 
     /// Returns true for JSX languages (jsx, tsx).
@@ -532,6 +535,7 @@ pub const Language = enum {
     /// Detect language from file extension.
     pub fn fromExtension(name: []const u8) ?Language {
         if (std.mem.endsWith(u8, name, ".tsx")) return .tsx;
+        if (std.mem.endsWith(u8, name, ".d.ts")) return .dts;
         if (std.mem.endsWith(u8, name, ".ts")) return .ts;
         if (std.mem.endsWith(u8, name, ".mts")) return .ts;
         if (std.mem.endsWith(u8, name, ".cts")) return .ts;

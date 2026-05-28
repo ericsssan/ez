@@ -859,7 +859,7 @@ fn resolveFullImpl(
                     while (j >= 0) : (j -= 1) {
                         const sk = kind_stack[@intCast(j)];
                         switch (sk) {
-                            .global, .module, .function, .static_block, .class_field_initializer => break :blk @intCast(j),
+                            .global, .module, .function, .static_block, .class_field_initializer, .arrow_function => break :blk @intCast(j),
                             else => {},
                         }
                     }
@@ -1193,7 +1193,7 @@ fn resolveFullImpl(
             var vsid = ref_scope;
             while (vsid.toInt() < scope_count) {
                 switch (kinds[vsid.toInt()]) {
-                    .global, .module, .function, .static_block, .class_field_initializer => break,
+                    .global, .module, .function, .static_block, .class_field_initializer, .arrow_function => break,
                     else => {
                         const p = scopes.parent(vsid);
                         if (!p.isValid() or p.toInt() == vsid.toInt()) break;
@@ -1222,7 +1222,7 @@ fn resolveFullImpl(
                 // Advance p to the next var-scope.
                 while (p.toInt() < scope_count) {
                     switch (kinds[p.toInt()]) {
-                        .global, .module, .function, .static_block, .class_field_initializer => break,
+                        .global, .module, .function, .static_block, .class_field_initializer, .arrow_function => break,
                         else => {
                             const pp = scopes.parent(p);
                             if (!pp.isValid() or pp.toInt() == p.toInt()) break;

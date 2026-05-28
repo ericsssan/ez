@@ -1779,6 +1779,15 @@ pub fn buildNodeSpans(
                     node_starts[i] = tok_starts[mt - 1];
                 }
             },
+            // TS inline type modifier: `export { type foo }` / `import { type foo }`.
+            // The `type` keyword is consumed before the identifier, so min_tok points to
+            // the identifier.  ESTree requires the specifier range to start at `type`.
+            .export_specifier, .import_specifier => {
+                const mt = min_tok[i];
+                if (mt > 0 and tok_tags[mt - 1] == .kw_type) {
+                    node_starts[i] = tok_starts[mt - 1];
+                }
+            },
             else => {},
         }
     }

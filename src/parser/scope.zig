@@ -200,9 +200,10 @@ pub const ScopeTree = struct {
             },
             .block, .catch_clause, .switch_stmt, .with_stmt, .elided => {},
             .arrow_function => {
-                // Arrow functions are var-scopes (var hoists out), but do not
-                // provide their own `arguments` or `this` — those are inherited
-                // from the nearest enclosing non-arrow function.
+                // Arrow functions ARE var-scopes — var declarations stop here,
+                // matching ES2015+ spec.  They do not provide `arguments` or
+                // `this`; those are inherited from the nearest enclosing
+                // non-arrow function.
                 scope_flags.is_var_scope = true;
             },
             .class_field_initializer => {
