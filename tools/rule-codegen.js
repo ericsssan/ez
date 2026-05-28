@@ -244,6 +244,7 @@ function emit(rule) {
   const hasNoExtraLabelCheck = rule.handlers.some(h => h.kind === "no-extra-label-check");
   const hasNoEmptyCheck = rule.handlers.some(h => h.kind === "no-empty-check");
   const hasNoSparseArraysCheck = rule.handlers.some(h => h.kind === "no-sparse-arrays-check");
+  const hasNoLossOfPrecisionCheck = rule.handlers.some(h => h.kind === "no-loss-of-precision-check");
   const hasForDirectionCheck = rule.handlers.some(h => h.kind === "for-direction-check");
   const hasValidTypeofCheck = rule.handlers.some(h => h.kind === "valid-typeof-check");
   const hasNoExtraSemiCheck = rule.handlers.some(h => h.kind === "no-extra-semi-check");
@@ -276,7 +277,7 @@ function emit(rule) {
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck || hasDefaultCaseCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasNoLossOfPrecisionCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck || hasDefaultCaseCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -304,6 +305,8 @@ function emit(rule) {
     relevantTags = ["block_stmt", "switch_stmt", "static_block"];
   } else if (hasNoSparseArraysCheck) {
     relevantTags = ["array_literal"];
+  } else if (hasNoLossOfPrecisionCheck) {
+    relevantTags = ["number_literal"];
   } else if (hasForDirectionCheck) {
     relevantTags = ["for_stmt"];
   } else if (hasValidTypeofCheck) {
@@ -754,6 +757,12 @@ function emit(rule) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    if (ctx.nodeTag(node) != .array_literal) return;`);
     out.push(`    ctx.checkNoSparseArrays(node, "${zigStr(h.messageId)}");`);
+    out.push(`}`);
+  } else if (hasNoLossOfPrecisionCheck) {
+    const h = rule.handlers.find(x => x.kind === "no-loss-of-precision-check");
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    if (ctx.nodeTag(node) != .number_literal) return;`);
+    out.push(`    ctx.checkNoLossOfPrecision(node, "${zigStr(h.messageId)}");`);
     out.push(`}`);
   } else if (hasForDirectionCheck) {
     const h = rule.handlers.find(x => x.kind === "for-direction-check");

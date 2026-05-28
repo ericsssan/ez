@@ -5,6 +5,12 @@ if (typeof Bun === "undefined") {
   process.exit(1);
 }
 
+// Some ESLint plugin rules have async handlers (e.g. jsdoc/imports-as-dependencies).
+// ESLint itself doesn't await rule return values, so these rejections are benign —
+// the rule still scores correctly from the synchronous side-effects. Suppress them
+// so they don't kill the process before the summary is printed.
+process.on("unhandledRejection", () => {});
+
 /**
  * Differential test — compares Ez's JS runner against ESLint+Espree.
  *
@@ -407,7 +413,7 @@ let _runnerParseMs = 0, _runnerPluginMs = 0;
 // Run native for a single corpus test case (in-process, no subprocess).
 // ruleConfig is a pre-built Uint8Array from buildNativeConfig for the target rule.
 // Returns [{rule,line}] on success, "skip" if case is unsupported, null on crash.
-function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions, nativeRuleName = null, isTs = false, tcLanguageOptions = null) {
+function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions, nativeRuleName = null, isTs = false, tcLanguageOptions = null, tcFilename = null) {
   if (hasCustomParser) return "skip";
   const _nativeName = nativeRuleName || ruleName;
   const isJsx = !!(tcLanguageOptions?.parserOptions?.ecmaFeatures?.jsx);
@@ -423,7 +429,13 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
       if (tcLanguageOptions) cfgObj.languageOptions = tcLanguageOptions;
       config = buildNativeConfig(cfgObj);
     }
-    const lang = isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
+    // Detect lang: prefer explicit tc.filename (carries .d.ts info) over isTs flag.
+    let lang;
+    if (tcFilename) {
+      lang = tcFilename.endsWith(".d.ts") ? "dts" : isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
+    } else {
+      lang = isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
+    }
     // Forward sourceType only when explicitly "module" — top-level await
     // requires module mode in the parser.  Leaving sourceType
     // undefined for "script"/missing lets lintSourceNative use its
@@ -687,7 +699,17 @@ function _mkKey(d) {
   // Prefer messageId (stable across ESLint versions and locales) when
   // both sides emit it. Fall back to message text only when one side
   // lacks the id.
-  const msgKey = d.messageId != null ? `id:${d.messageId}` : `m:${d.message ?? ""}`;
+  //
+  // Some plugins (e.g. unicorn) qualify their messageId with the short
+  // rule name: "no-array-for-each/error". Native rules emit just "error".
+  // Strip the "<shortName>/" prefix so both sides produce the same key.
+  let rawMsgId = d.messageId ?? null;
+  if (rawMsgId != null && d.rule != null) {
+    const shortName = d.rule.includes("/") ? d.rule.slice(d.rule.lastIndexOf("/") + 1) : d.rule;
+    const prefix = shortName + "/";
+    if (rawMsgId.startsWith(prefix)) rawMsgId = rawMsgId.slice(prefix.length);
+  }
+  const msgKey = rawMsgId != null ? `id:${rawMsgId}` : `m:${d.message ?? ""}`;
   return [
     d.rule,
     d.line ?? "",
@@ -982,6 +1004,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "unicorn/consistent-date-clone": "consistent-date-clone",
       "unicorn/require-number-to-fixed-digits-argument": "require-number-to-fixed-digits-argument",
       "unicorn/no-zero-fractions": "no-zero-fractions",
+      "unicorn/no-array-for-each": "no-array-for-each",
       // "unicorn/throw-new-error": "throw-new-error", // unicorn rule actually fires beyond throw context
       // "unicorn/error-message": "error-message", // native covers missing/empty cases; "message-is-not-a-string" needs value analysis
       // "unicorn/prefer-array-some": "prefer-array-some", // native covers find/findLast subset only
@@ -1027,6 +1050,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-base-to-string",
       "no-unnecessary-template-expression",
       "no-confusing-void-expression",
+      "ban-ts-comment",
       "ban-tslint-comment",
       "class-literal-property-style",
       "prefer-literal-enum-member",
@@ -1048,7 +1072,9 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-wrapper-object-types",
       "prefer-namespace-keyword",
       "no-inferrable-types",
-      // "no-useless-empty-export", // native 19/21 vs runner 21/21 (.d.ts files need filename detection)
+      "no-useless-empty-export",
+      "consistent-type-imports",
+      "consistent-indexed-object-style",
       "triple-slash-reference",
       "no-extraneous-class",
       "consistent-type-definitions",
@@ -1058,7 +1084,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "prefer-enum-initializers",
       "no-non-null-assertion",
       "prefer-ts-expect-error",
-      // "parameter-properties", // native 59/63 vs runner 63/63 (prefer:parameter-property not implemented)
+      "parameter-properties",
+      "no-loop-func",
       "no-this-alias",
       "no-restricted-types",
       "no-explicit-any",
@@ -1082,6 +1109,21 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "no-unsafe-type-assertion",
       "prefer-nullish-coalescing",
       "prefer-optional-chain",
+      "array-type",
+      "no-extra-non-null-assertion",
+      "consistent-type-assertions",
+      "no-dupe-class-members",
+      "no-dynamic-delete",
+      "no-useless-constructor",
+      "no-namespace",
+      "prefer-for-of",
+      "adjacent-overload-signatures",
+      "consistent-generic-constructors",
+      "no-invalid-void-type",
+      "default-param-last",
+      "init-declarations",
+      "sort-type-constituents",
+      "no-loss-of-precision",
     ]);
     const _nativeRuleName = (() => {
       if (ruleName.startsWith("@typescript-eslint/")) {
@@ -1176,7 +1218,10 @@ if (fs.existsSync(ESLINT_ROOT)) {
       // also skip the JS runner — the runner can't access TS's type
       // checker so its scores reflect missing type-info rather than rule
       // correctness.  Native runs against the same oracle.
-      const _skipRunner = nativeOnly || _ruleIsTypeAware;
+      // When EZ_RUN_NATIVE=1, any rule with a native impl skips the JS
+      // runner entirely — mirrors api.js which already filters native rules
+      // out of jsPlugins.  The hybrid block uses nativeResult directly.
+      const _skipRunner = nativeOnly || _ruleIsTypeAware || (nativeAvailable && _ruleHasNativeImpl);
       const _rt0 = _skipRunner ? 0 : performance.now();
       const runnerResult = _skipRunner ? [] : runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
       const _rtDelta = _skipRunner ? 0 : (performance.now() - _rt0);
@@ -1313,7 +1358,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
         const basePO = baseLO2.parserOptions || {};
         _nativeLangOpts = { ...baseLO2, parserOptions: { ...basePO, ecmaFeatures: { ...(basePO.ecmaFeatures || {}), jsx: true } } };
       }
-      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options, _nativeRuleName, _isTsCase, _nativeLangOpts);
+      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options, _nativeRuleName, _isTsCase, _nativeLangOpts, tc.filename || null);
       const _ntDelta = Date.now() - _nt0;
       nativeOnlyMs += _ntDelta;
       _ruleNativeMs += _ntDelta;

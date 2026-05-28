@@ -415,6 +415,10 @@ function validateRule(rule) {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       continue;
     }
+    if (h.kind === "no-loss-of-precision-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
     if (h.kind === "for-direction-check") {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       continue;

@@ -69,10 +69,11 @@ function ensureBufferBytes(totalBytes) {
 
 // ── Language enum ────────────────────────────────────────────────
 
-const LANG = { js: 0, ts: 1, jsx: 2, tsx: 3 };
+const LANG = { js: 0, ts: 1, jsx: 2, tsx: 3, dts: 4 };
 
 function detectLang(filename) {
   if (filename.endsWith(".tsx")) return LANG.tsx;
+  if (filename.endsWith(".d.ts")) return LANG.dts;
   if (filename.endsWith(".ts") || filename.endsWith(".mts") || filename.endsWith(".cts")) return LANG.ts;
   if (filename.endsWith(".jsx")) return LANG.jsx;
   return LANG.js;

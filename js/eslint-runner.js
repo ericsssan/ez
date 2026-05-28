@@ -615,7 +615,7 @@ function _findDefNode(declNode, defType) {
               cur._tag === T.computed_setter_def || cur._tag === T.computed_getter_def ||
               cur._tag === T.method_def || cur._tag === T.computed_method_def) {
             const synth = cur.value;
-            if (synth && synth.type === 'FunctionExpression') return synth;
+            if (synth && (synth.type === 'FunctionExpression' || synth.type === 'TSEmptyBodyFunctionExpression')) return synth;
           }
           return cur;
         }
@@ -918,6 +918,37 @@ const _varProto = {
         const refId = symRefBySym ? symRefBySym[j] : j;
         refs.push(sc._buildReference(refId));
       }
+      // Filter type_read refs inside type alias bodies where this variable's name
+      // is shadowed by a type parameter (e.g. `type T<Foo> = Foo` — the import
+      // `Foo` should have 0 references, since `Foo` in `= Foo` refers to the type param).
+      const taParamNames = sc._typeAliasParamNames;
+      if (taParamNames && taParamNames.size > 0 && refs.length > 0) {
+        const varName = this.name;
+        const nodeTags = ast._nodeTags;
+        const parentData = ast._parentData;
+        if (varName && nodeTags && parentData) {
+          const TA_TAG = 154; // T.ts_type_alias_decl
+          const TP_TAG = 211; // T.ts_type_parameter
+          const ROOT = 0xFFFFFFFF;
+          refs = refs.filter(ref => {
+            if (!ref._isTypeRef) return true;
+            const nodeIdx = ref.identifier ? ref.identifier._i : undefined;
+            if (nodeIdx === undefined || nodeIdx === 0 || nodeIdx === ROOT) return true;
+            let cur = parentData[nodeIdx];
+            while (cur !== ROOT && cur !== undefined && cur < ast.nodeCount) {
+              const tag = nodeTags[cur];
+              if (tag === TA_TAG) {
+                const params = taParamNames.get(cur);
+                return params ? !params.has(varName) : true;
+              }
+              // Stop at ts_type_parameter — its constraint/default are in the outer scope
+              if (tag === TP_TAG) return true;
+              cur = parentData[cur];
+            }
+            return true;
+          });
+        }
+      }
       const synth = this._synthRefs;
       if (synth !== null) {
         for (let k = 0; k < synth.length; k++) {
@@ -939,6 +970,25 @@ const _varProto = {
           }
         }
         this._synthRefs = null;
+      }
+      // Param type annotation synth refs: type_read refs in a constructor/function
+      // parameter type annotation that Zig attributed to the parameter itself should
+      // also appear in the outer import's references (TypeScript resolves these in
+      // the enclosing scope, not the function scope).
+      const synthParamAnnotRefs = sc._paramTypeAnnotSynthRefs?.get(this._symId);
+      if (synthParamAnnotRefs) {
+        for (const {refId, fromScopeId} of synthParamAnnotRefs) {
+          const r = sc._buildReference(refId);
+          const fixedRef = Object.assign(Object.create(Object.getPrototypeOf(r)), r);
+          fixedRef.resolved = this;
+          fixedRef.from = sc._buildScope(fromScopeId);
+          refs.push(fixedRef);
+        }
+      }
+      // JSX pragma extra refs (e.g. `React` in TSX files with JSX elements).
+      const extras = this._synthExtraRefs;
+      if (extras) {
+        for (const r of extras) refs.push(r);
       }
       this._refs = refs;
     }
@@ -2296,6 +2346,18 @@ class SourceCode {
       }
     }
 
+    // Detect `declare global { ... }` — Zig parses this as a bare BlockStatement with no
+    // TSModuleDeclaration wrapper, so scope.block.kind is undefined. The no-shadow rule's
+    // isGlobalAugmentation() checks scope.block.kind === "global"; synthesize it here.
+    if (block !== null && block.type === 'BlockStatement' && block.range) {
+      const pre = this.text.slice(Math.max(0, block.range[0] - 30), block.range[0]);
+      if (/\bdeclare\s+global\s*$/.test(pre.trimEnd())) {
+        const wrapped = Object.create(block);
+        Object.defineProperty(wrapped, 'kind', { value: 'global', writable: true, enumerable: true, configurable: true });
+        block = wrapped;
+      }
+    }
+
     const isVarScope = kind === 0 || kind === 1 || kind === 2 || kind === 9 /* class_field_initializer */ || kind === 11 /* arrow_function */;
     const isStrict = this._computeIsStrict(kind, flags16, upper, block);
 
@@ -2624,7 +2686,7 @@ class SourceCode {
             if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
             v.eslintExplicitGlobalComments.push(syntheticComment);
             v.eslintExplicitGlobal = true;
-            if (isWritable) v.writeable = true;
+            v.writeable = isWritable;
           } else {
             const globalVar = { name, defs: [], references: [], identifiers: [],
               scope: globalScopeRef, eslintUsed: false, writeable: isWritable,
@@ -2980,9 +3042,14 @@ class SourceCode {
         }
         v.references.push(ref);
         const ident = ref.identifier;
-        const parent = ident?.parent;
-        if (parent) {
-          v.defs.push({ type: 'ImplicitGlobalVariable', node: parent, name: ident });
+        let defNode = ident?.parent;
+        if (defNode) {
+          while ((defNode.type === 'ArrayPattern' || defNode.type === 'ObjectPattern' ||
+                  defNode.type === 'Property' || defNode.type === 'RestElement' ||
+                  defNode.type === 'AssignmentPattern') && defNode.parent) {
+            defNode = defNode.parent;
+          }
+          v.defs.push({ type: 'ImplicitGlobalVariable', node: defNode, name: ident });
         }
       }
       if (implMap.size > 0) {
@@ -3016,6 +3083,143 @@ class SourceCode {
           for (const scope of scopesToCheck) {
             const v = scope.set?.get(name);
             if (v) { v.eslintUsed = true; break; }
+          }
+        }
+      }
+    }
+
+    // ── TypeScript scope fixups ─────────────────────────────────────────────
+    // These pre-computations patch cases where Zig's scope analysis doesn't
+    // track TypeScript-specific scopes (type parameter scopes, parameter type
+    // annotation context). Results are consumed by _varProto.get references.
+
+    // (1) Type alias type parameter shadow map.
+    // For `type T<Foo> = Foo`, Zig resolves the `Foo` in `= Foo` to the import
+    // `Foo` (no type-param scope). Pre-build a map of type alias node index →
+    // Set<paramName> so _varProto.get references can filter these refs out.
+    {
+      const tags = ast._nodeTags;
+      const parentData = ast._parentData;
+      if (tags && parentData && ast._nodeStartPosArr && ast._nodeEndPosArr) {
+        const TA_TAG = T.ts_type_alias_decl; // 154
+        const TP_TAG = T.ts_type_parameter;  // 211
+        const src = ast.source;
+        const nodeCount = ast.nodeCount;
+        const typeAliasParamNames = new Map();
+        for (let i = 0; i < nodeCount; i++) {
+          if (tags[i] === TP_TAG) {
+            const parentIdx = parentData[i];
+            if (parentIdx !== 0xFFFFFFFF && parentIdx < nodeCount && tags[parentIdx] === TA_TAG) {
+              const s = ast._nodeStartPosArr[i], e = ast._nodeEndPosArr[i];
+              const text = src.slice(s, e);
+              const m = text.match(/^[a-zA-Z_$-￿][a-zA-Z_$0-9-￿]*/);
+              if (m) {
+                let names = typeAliasParamNames.get(parentIdx);
+                if (!names) { names = new Set(); typeAliasParamNames.set(parentIdx, names); }
+                names.add(m[0]);
+              }
+            }
+          }
+        }
+        this._typeAliasParamNames = typeAliasParamNames.size > 0 ? typeAliasParamNames : null;
+      }
+    }
+
+    // (2) Parameter type annotation synth refs.
+    // TypeScript resolves parameter type annotations in the enclosing scope, not
+    // the function scope. Zig resolves them to the parameter (same scope), causing
+    // FN for rules like consistent-type-imports. Build a map of outer-symId →
+    // [{refId, fromScopeId}] for supplemental refs to add to the outer variable.
+    {
+      const refKinds = ast._refKinds;
+      const refSymIds = ast._refSymbolIds;
+      const refScopeIds = ast._refScopeIds;
+      const symKinds = ast._symKinds;
+      const symScopeIds = ast._symScopeIds;
+      const scopeParents = ast._scopeParents;
+      const scopeBindStart = ast._scopeBindStart;
+      const scopeBindCount = ast._scopeBindCount;
+      const scopeSymIds = ast._scopeSymIds;
+      if (refKinds && refSymIds && refScopeIds && symKinds && symScopeIds &&
+          scopeParents && scopeBindStart && scopeBindCount && scopeSymIds) {
+        const NONE32 = 0xFFFFFFFF;
+        const paramTypeAnnotRefs = new Map();
+        for (let refId = 0; refId < refKinds.length; refId++) {
+          if (refKinds[refId] !== 5 /* type_read */) continue;
+          const symId = refSymIds[refId];
+          if (symId === NONE32) continue;
+          if (symKinds[symId] !== 6 /* parameter */) continue;
+          const paramScopeId = symScopeIds[symId];
+          if (paramScopeId === NONE32) continue;
+          const refScopeId = refScopeIds[refId];
+          if (refScopeId !== paramScopeId) continue;
+          // type_read ref from within the same scope as the parameter.
+          // Find the nearest outer binding with the same name.
+          const paramName = ast._symName(symId);
+          if (!paramName) continue;
+          let searchScopeId = scopeParents[paramScopeId];
+          let foundSymId = NONE32;
+          while (searchScopeId !== NONE32 && searchScopeId !== undefined) {
+            const bStart = scopeBindStart[searchScopeId];
+            const bCount = scopeBindCount[searchScopeId];
+            for (let bi = bStart; bi < bStart + bCount; bi++) {
+              const cSym = scopeSymIds[bi];
+              if (ast._symName(cSym) === paramName) { foundSymId = cSym; break; }
+            }
+            if (foundSymId !== NONE32) break;
+            searchScopeId = scopeParents[searchScopeId];
+          }
+          if (foundSymId !== NONE32) {
+            let list = paramTypeAnnotRefs.get(foundSymId);
+            if (!list) { list = []; paramTypeAnnotRefs.set(foundSymId, list); }
+            list.push({ refId, fromScopeId: searchScopeId });
+          }
+        }
+        this._paramTypeAnnotSynthRefs = paramTypeAnnotRefs.size > 0 ? paramTypeAnnotRefs : null;
+      }
+    }
+
+    // (3) JSX pragma synthetic value reference.
+    // @typescript-eslint/scope-manager creates a value reference to the JSX pragma
+    // ('React' by default) whenever a JSX element is encountered. This prevents
+    // consistent-type-imports from falsely flagging `import React from 'react'`
+    // as type-only when the file contains JSX. Add the same synthetic ref here.
+    {
+      const tags = ast._nodeTags;
+      if (tags) {
+        const jsxElemTag = T.jsx_element, jsxSelfTag = T.jsx_self_closing, jsxFragTag = T.jsx_fragment;
+        let hasJsx = false;
+        for (let i = 0; i < ast.nodeCount; i++) {
+          const t = tags[i];
+          if (t === jsxElemTag || t === jsxSelfTag || t === jsxFragTag) { hasJsx = true; break; }
+        }
+        if (hasJsx) {
+          const pragmaName = 'React';
+          const modScope = this._scopeCache ? this._scopeCache[1] : null;
+          const reactVar = (modScope && modScope.set ? modScope.set.get(pragmaName) : null)
+            || (globalScope && globalScope.set ? globalScope.set.get(pragmaName) : null);
+          if (reactVar) {
+            // Use the declaration identifier so parent-chain traversal in
+            // consistent-type-imports returns false (not type-only usage).
+            const declIdent = reactVar.identifiers && reactVar.identifiers[0]
+              ? reactVar.identifiers[0] : null;
+            const synthRef = {
+              identifier: declIdent,
+              from: modScope || globalScope,
+              resolved: reactVar,
+              kind: 0,
+              writeExpr: undefined,
+              _isTypeRef: false,
+              get isValueReference() { return true; },
+              get isTypeReference() { return false; },
+              isWrite() { return false; },
+              isRead() { return true; },
+              isReadOnly() { return true; },
+              isWriteOnly() { return false; },
+              isReadWrite() { return false; },
+            };
+            if (!reactVar._synthExtraRefs) reactVar._synthExtraRefs = [];
+            reactVar._synthExtraRefs.push(synthRef);
           }
         }
       }
