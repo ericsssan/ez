@@ -1146,12 +1146,12 @@ if (fs.existsSync(ESLINT_ROOT)) {
     // (projectService) to fire correctly.  The JS runner doesn't have
     // that available in this harness, so it produces meaningless FNs
     // that pollute the rule-level scoreboard and the global runner
-    // total.  Skip the JS-runner pass for these rules entirely once a
-    // native implementation is present — native runs against the same
-    // oracle.
+    // total.  Skip the JS-runner pass for these rules unconditionally —
+    // native runs against the same oracle and provides the authoritative
+    // score.  When no native implementation is present the rule is still
+    // excluded from runner totals (it would only produce noise).
     const _ruleIsTypeAware = ruleName.startsWith("@typescript-eslint/") &&
-      TS_AUTOROUTE_ALLOWLIST.has(ruleName.slice("@typescript-eslint/".length)) &&
-      _ruleHasNativeImpl;
+      TS_AUTOROUTE_ALLOWLIST.has(ruleName.slice("@typescript-eslint/".length));
     const nativeRuleConfig = nativeAvailable
       ? buildNativeConfig({ rules: { [_nativeRuleName]: "warn" } })
       : null;
