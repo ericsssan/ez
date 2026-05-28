@@ -441,7 +441,12 @@ function lintSourceNative(source, options = {}) {
     // Build a native config from the rules object so options (hoist, allow, etc.) are honoured.
     configBuf = buildNativeConfig({ rules: options.rules });
   }
-  const bytesWritten = b.lint(buf, sourceStart, sourceLen, langWithFlag, _lintOutBuf, configBuf);
+  // Pass the absolute file path when available so cross-module type resolution
+  // (ModuleCache) activates in the native linter.
+  const filePath = options.filename ?? "";
+  const bytesWritten = (filePath && b.lintWithPath)
+    ? b.lintWithPath(buf, sourceStart, sourceLen, langWithFlag, _lintOutBuf, configBuf, filePath)
+    : b.lint(buf, sourceStart, sourceLen, langWithFlag, _lintOutBuf, configBuf);
   const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
   return _parseDiags(bytesWritten, srcBytes);
 }

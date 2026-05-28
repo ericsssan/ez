@@ -88,6 +88,11 @@ pub const Checker = struct {
     /// name isn't declared locally.
     import_map: std.StringHashMapUnmanaged(ImportEntry) = .empty,
 
+    /// Maps `import * as NS` local binding name → module_specifier.
+    /// Used by `inferMemberOnNamespace` to resolve `NS.Member` lookups
+    /// through the module's exported types.
+    namespace_import_map: std.StringHashMapUnmanaged([]const u8) = .empty,
+
     /// Absolute path of the file being checked.  Empty string means
     /// cross-file resolution is disabled.
     file_path: []const u8 = "",
@@ -105,6 +110,10 @@ pub const Checker = struct {
     /// Additional namespace/module declaration nodes for declaration merging.
     /// Same pattern as merged_iface_extra but for namespace blocks.
     merged_ns_extra: std.ArrayListUnmanaged(struct { name: []const u8, node: NodeIndex }) = .empty,
+
+    /// Recursion counter for resolveConditionalTypeWithSubst / distributeConditional.
+    /// Prevents stack overflow on deeply nested generic conditional types.
+    subst_depth: u8 = 0,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -147,6 +156,7 @@ pub const Checker = struct {
         self.global_value_types.deinit(self.gpa);
         self.natively_bound_type_ids.deinit(self.gpa);
         self.import_map.deinit(self.gpa);
+        self.namespace_import_map.deinit(self.gpa);
         self.merged_iface_extra.deinit(self.gpa);
         self.merged_ns_extra.deinit(self.gpa);
     }
@@ -2100,14 +2110,25 @@ pub const Checker = struct {
             out[0] = switch (t.literal_value) { .string => |s| s, else => return 0 };
             return 1;
         }
+        // Boolean literals → "true" / "false".
+        if (t.kind == .boolean_literal) {
+            out[0] = switch (t.literal_value) { .boolean => |b| if (b) "true" else "false", else => return 0 };
+            return 1;
+        }
+        // Number literals — the literal_value stores the text representation.
+        if (t.kind == .number_literal) {
+            out[0] = switch (t.literal_value) { .string => |s| s, else => return 0 };
+            return 1;
+        }
         if (t.kind == .union_t) {
             var n: usize = 0;
             for (self.store.idsOf(t.list_data)) |m| {
-                const mt = self.store.get(m);
-                if (mt.kind != .string_literal) return 0;
-                if (n >= out.len) return 0;
-                out[n] = switch (mt.literal_value) { .string => |s| s, else => return 0 };
-                n += 1;
+                var tmp: [16][]const u8 = undefined;
+                const cnt = self.gatherStringLiteralOptions(m, &tmp) catch return 0;
+                if (cnt == 0) return 0;
+                if (n + cnt > out.len) return 0;
+                @memcpy(out[n..n + cnt], tmp[0..cnt]);
+                n += cnt;
             }
             return n;
         }
@@ -2206,8 +2227,9 @@ pub const Checker = struct {
             .ts_keyof_type => {
                 const op_tok = self.ast_ref.nodeMainToken(ty_node);
                 const op_text = self.ast_ref.tokenText(op_tok);
+                const inner = self.ast_ref.nodeData(ty_node).lhs;
                 if (std.mem.eql(u8, op_text, "readonly")) {
-                    const inner = self.ast_ref.nodeData(ty_node).lhs;
+                    // `readonly T[]` — resolve inner with subst, wrap as readonly array.
                     const inner_ty = self.resolveTypeNodeWithSubst(inner, keys, vals);
                     const it = self.store.get(inner_ty);
                     if (it.kind == .array_t) {
@@ -2216,7 +2238,9 @@ pub const Checker = struct {
                     }
                     return inner_ty;
                 }
-                return self.resolveTypeNode(ty_node);
+                // `keyof T` — resolve inner with subst then apply keyof.
+                const inner_ty = self.resolveTypeNodeWithSubst(inner, keys, vals);
+                return self.keyofOf(inner_ty);
             },
             .ts_tuple_type => {
                 const data = self.ast_ref.nodeData(ty_node);
@@ -2242,6 +2266,9 @@ pub const Checker = struct {
         keys: []const []const u8,
         vals: []const TypeId,
     ) TypeId {
+        if (self.subst_depth > 16) return tymod.ID_UNKNOWN;
+        self.subst_depth += 1;
+        defer self.subst_depth -= 1;
         const data = self.ast_ref.nodeData(ty_node);
         const slice = self.directRange(data.lhs, data.rhs) orelse return tymod.ID_UNKNOWN;
         if (slice.len < 4) return tymod.ID_UNKNOWN;
@@ -2403,6 +2430,41 @@ pub const Checker = struct {
             }
         }
 
+        // Tuple `[infer Head, ...infer Tail]` — match against a tuple/array check type.
+        if (tag == .ts_tuple_type) {
+            const cht = self.store.get(check_ty);
+            if (cht.kind == .tuple_t or cht.kind == .array_t) {
+                const check_elems = self.store.idsOf(cht.list_data);
+                const d = self.ast_ref.nodeData(n);
+                const slice = self.directRange(d.lhs, d.rhs) orelse {
+                    return .unknown;
+                };
+                var all_infer = true;
+                for (slice, 0..) |raw, ei| {
+                    var elem_n: NodeIndex = @enumFromInt(raw);
+                    while (self.ast_ref.nodeTag(elem_n) == .ts_parenthesized_type)
+                        elem_n = self.ast_ref.nodeData(elem_n).lhs;
+                    const elem_tag = self.ast_ref.nodeTag(elem_n);
+                    if (elem_tag == .ts_infer_type) {
+                        const param_node = self.ast_ref.nodeData(elem_n).lhs;
+                        if (param_node != .none and infer_count.* < infer_keys.len) {
+                            infer_keys[infer_count.*] = self.ast_ref.tokenText(
+                                self.ast_ref.nodeMainToken(param_node));
+                            // Bind to check_ty element at same index, or ID_UNKNOWN for rest.
+                            infer_vals[infer_count.*] = if (ei < check_elems.len)
+                                check_elems[ei]
+                            else
+                                tymod.ID_UNKNOWN;
+                            infer_count.* += 1;
+                        }
+                    } else {
+                        all_infer = false;
+                    }
+                }
+                if (all_infer) return .yes;
+            }
+        }
+
         // General case: resolve the extends type with substitution and compare.
         const extends_ty = self.resolveTypeNodeWithSubst(n, keys, vals);
         return self.simpleAssignable(check_ty, extends_ty);
@@ -2451,7 +2513,19 @@ pub const Checker = struct {
                 },
                 .no => self.resolveTypeNodeWithSubst(false_node, keys, vals),
                 .unknown => blk: {
-                    const a = self.resolveTypeNodeWithSubst(true_node, keys, vals);
+                    // Merge any infer bindings captured during the match before
+                    // resolving true_node (mirrors .yes handling above and the
+                    // analogous path in resolveConditionalTypeWithSubst).
+                    const a = if (infer_count == 0) self.resolveTypeNodeWithSubst(true_node, keys, vals) else a_blk: {
+                        var mk: [8][]const u8 = undefined;
+                        var mv: [8]TypeId = undefined;
+                        var nm: usize = 0;
+                        for (keys, vals) |k, v| { if (nm >= mk.len) break; mk[nm] = k; mv[nm] = v; nm += 1; }
+                        for (infer_keys_buf[0..infer_count], infer_vals_buf[0..infer_count]) |k, v| {
+                            if (nm >= mk.len) break; mk[nm] = k; mv[nm] = v; nm += 1;
+                        }
+                        break :a_blk self.resolveTypeNodeWithSubst(true_node, mk[0..nm], mv[0..nm]);
+                    };
                     const b = self.resolveTypeNodeWithSubst(false_node, keys, vals);
                     if (a.eq(b)) break :blk a;
                     break :blk self.store.unionOf(&.{ a, b }) catch tymod.ID_UNKNOWN;
@@ -3253,7 +3327,7 @@ pub const Checker = struct {
                                         self.ast_ref.nodeMainToken(spec_d.lhs),
                                     );
                                     try self.known_type_names.put(self.gpa, local_name, {});
-                                    // namespace imports: skip import_map — can't resolve individual members
+                                    try self.namespace_import_map.put(self.gpa, local_name, module_spec);
                                 },
                                 else => {},
                             }
@@ -4040,18 +4114,13 @@ pub const Checker = struct {
             .class_decl => self.buildClassInstanceType(decl),
             .ts_namespace_decl, .ts_module_decl => self.buildNamespaceType(decl),
             .ts_type_alias_decl => blk: {
-                // `type Foo = ...` — resolve the alias body to its
-                // TypeId.  Skip if the body recursively references
-                // `name`: the sentinel-based recursion break leaves
-                // ID_UNKNOWN holes that confuse downstream checks.
+                // `type Foo = ...` — resolve the alias body. The sentinel
+                // ID_UNKNOWN already in the cache breaks any recursive
+                // self-references, leaving ID_UNKNOWN holes at those positions.
+                // We keep (and cache) the partially-resolved result so
+                // consumers get a usable structural shape rather than null.
                 const dd = self.ast_ref.nodeData(decl);
                 const ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(dd.lhs));
-                if (self.typeNodeReferences(ad.type_node, name)) {
-                    // Remove the sentinel so the next lookup doesn't
-                    // see ID_UNKNOWN and think the alias resolved.
-                    _ = self.declared_type_cache.remove(name);
-                    return null;
-                }
                 const r = self.resolveTypeNode(ad.type_node);
                 break :blk r;
             },
@@ -4166,20 +4235,82 @@ pub const Checker = struct {
         }
     }
 
+    /// Recursively flatten all inherited props from a named type's
+    /// extends/super chain into `props`.  Caps at depth 6 and deduplicates
+    /// parent names (diamond inheritance safe).
+    fn flattenInheritedProps(
+        self: *Checker,
+        parent_name: []const u8,
+        depth: u8,
+        seen: *[8][]const u8,
+        seen_n: *u8,
+        props: *std.ArrayList(tymod.ObjectProp),
+    ) void {
+        if (depth > 6 or seen_n.* >= seen.len) return;
+        // Dedup: skip if already visited.
+        for (seen[0..seen_n.*]) |s| {
+            if (std.mem.eql(u8, s, parent_name)) return;
+        }
+        seen[seen_n.*] = parent_name;
+        seen_n.* += 1;
+
+        const parent_ty = self.resolveDeclaredType(parent_name) orelse return;
+        const pt = self.store.get(parent_ty);
+        if (pt.kind != .object_t) return;
+        for (self.store.propsOf(pt.object_props)) |p| {
+            props.append(self.gpa, p) catch {};
+        }
+        // Recurse into the parent's own extends/super chain.
+        const decl = self.type_decl_nodes.get(parent_name) orelse return;
+        switch (self.ast_ref.nodeTag(decl)) {
+            .ts_interface_decl => {
+                const d = self.ast_ref.nodeData(decl);
+                const id2 = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(d.lhs));
+                if (id2.extends_end <= id2.extends_start) return;
+                for (self.ast_ref.extra_data[id2.extends_start..id2.extends_end]) |raw| {
+                    var en: NodeIndex = @enumFromInt(raw);
+                    while (true) {
+                        const tt = self.ast_ref.nodeTag(en);
+                        if (tt == .grouping_expr or tt == .ts_instantiation_expr) {
+                            en = self.ast_ref.nodeData(en).lhs; continue;
+                        }
+                        break;
+                    }
+                    if (self.ast_ref.nodeTag(en) != .ts_type_reference and
+                        self.ast_ref.nodeTag(en) != .identifier) continue;
+                    const gname = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(en));
+                    self.flattenInheritedProps(gname, depth + 1, seen, seen_n, props);
+                }
+            },
+            .class_decl => {
+                const d = self.ast_ref.nodeData(decl);
+                const cd2 = self.ast_ref.extraData(ast.ClassData, @intFromEnum(d.lhs));
+                if (cd2.super_class == .none) return;
+                var sc = cd2.super_class;
+                while (self.ast_ref.nodeTag(sc) == .grouping_expr or
+                       self.ast_ref.nodeTag(sc) == .ts_instantiation_expr)
+                    sc = self.ast_ref.nodeData(sc).lhs;
+                if (self.ast_ref.nodeTag(sc) != .identifier) return;
+                const gname = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(sc));
+                self.flattenInheritedProps(gname, depth + 1, seen, seen_n, props);
+            },
+            else => {},
+        }
+    }
+
     /// Build an object_t from an interface declaration's body.  Each
     /// `ts_property_signature` / `ts_method_signature` becomes one
     /// ObjectProp.  Method signatures resolve to a function_t for that
-    /// method.  Extends clauses contribute their parent's props (one
-    /// level deep — we don't yet flatten through arbitrary inheritance
-    /// chains).
+    /// method.  Extends clauses are flattened through the full hierarchy.
     fn buildInterfaceType(self: *Checker, decl: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(decl);
         const id = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
         var props: std.ArrayList(tymod.ObjectProp) = .empty;
         defer props.deinit(self.gpa);
-        // Inherited props from `extends` clauses (one hop).
-        // The extends list stores NodeIndex per type reference.
+        // Inherit props through the full extends chain.
         if (id.extends_end > id.extends_start) {
+            var seen: [8][]const u8 = undefined;
+            var seen_n: u8 = 0;
             const extends = self.ast_ref.extra_data[id.extends_start..id.extends_end];
             for (extends) |raw| {
                 var ext_node: NodeIndex = @enumFromInt(raw);
@@ -4194,14 +4325,7 @@ pub const Checker = struct {
                 if (self.ast_ref.nodeTag(ext_node) != .ts_type_reference and
                     self.ast_ref.nodeTag(ext_node) != .identifier) continue;
                 const ext_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ext_node));
-                if (self.resolveDeclaredType(ext_name)) |ext_ty| {
-                    const t = self.store.get(ext_ty);
-                    if (t.kind == .object_t) {
-                        for (self.store.propsOf(t.object_props)) |p| {
-                            props.append(self.gpa, p) catch {};
-                        }
-                    }
-                }
+                self.flattenInheritedProps(ext_name, 0, &seen, &seen_n, &props);
             }
         }
         if (id.body_end > id.body_start) {
@@ -4398,7 +4522,7 @@ pub const Checker = struct {
         const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
         var props: std.ArrayList(tymod.ObjectProp) = .empty;
         defer props.deinit(self.gpa);
-        // Inherit instance props from the immediate superclass (one hop).
+        // Inherit instance props through the full superclass chain.
         if (cd.super_class != .none) {
             var sc = cd.super_class;
             while (self.ast_ref.nodeTag(sc) == .grouping_expr or
@@ -4409,15 +4533,10 @@ pub const Checker = struct {
             var inherited = false;
             if (self.ast_ref.nodeTag(sc) == .identifier) {
                 const parent_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(sc));
-                if (self.resolveDeclaredType(parent_name)) |parent_ty| {
-                    const pt = self.store.get(parent_ty);
-                    if (pt.kind == .object_t) {
-                        for (self.store.propsOf(pt.object_props)) |p| {
-                            props.append(self.gpa, p) catch {};
-                        }
-                        inherited = true;
-                    }
-                }
+                var seen: [8][]const u8 = undefined;
+                var seen_n: u8 = 0;
+                self.flattenInheritedProps(parent_name, 0, &seen, &seen_n, &props);
+                inherited = props.items.len > 0;
             }
             // Couldn't resolve the parent's structural shape (e.g. extends a
             // value of constructor type like `Constructable<X>`).  Be
@@ -4911,6 +5030,33 @@ pub const Checker = struct {
                     self.matchTypeParam(m, arg_ty, names, bindings);
                 }
             }
+            return;
+        }
+        // `(p: T) => U` matched against a function_t arg — bind param types and return type.
+        if (tag == .ts_function_type or tag == .ts_constructor_type) {
+            const at = self.store.get(arg_ty);
+            if (at.kind != .function_t) return;
+            const sig_ids = self.store.idsOf(at.list_data);
+            if (sig_ids.len == 0) return;
+            const ret_id = sig_ids[sig_ids.len - 1];
+            const fn_data = self.ast_ref.nodeData(n);
+            if (fn_data.lhs == .none) return;
+            const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(fn_data.lhs));
+            // Match parameter type annotations against param types in the arg function_t.
+            const param_type_ids = sig_ids[0..sig_ids.len - 1];
+            if (fd.params_end > fd.params and fd.params_end <= self.ast_ref.extra_data.len) {
+                const params = self.ast_ref.extra_data[fd.params..fd.params_end];
+                for (params, 0..) |raw, pi| {
+                    if (pi >= param_type_ids.len) break;
+                    const param: NodeIndex = @enumFromInt(raw);
+                    const pty_node = self.paramAnnotationNode(param) orelse continue;
+                    self.matchTypeParam(pty_node, param_type_ids[pi], names, bindings);
+                }
+            }
+            // Match return type annotation against the arg's return type.
+            if (fd.return_type != .none) {
+                self.matchTypeParam(fd.return_type, ret_id, names, bindings);
+            }
         }
     }
 
@@ -5327,8 +5473,31 @@ pub const Checker = struct {
         // nullish part for property lookup (`{a?:T} | undefined`'s `.a`
         // is `T | undefined`, not unknown).
         const lookup_ty = if (in_chain) self.stripNullishForLookup(obj_ty) else obj_ty;
+        // Namespace-import member: `import * as NS from 'mod'; NS.Member`
+        // When the receiver's type is unknown/error (i.e. not locally resolvable),
+        // check if the object is a namespace-import identifier and look up the
+        // member directly from the imported module's exports.
+        if (lookup_ty.eq(tymod.ID_UNKNOWN) or lookup_ty.eq(tymod.ID_ERROR)) {
+            const obj_node = data.lhs;
+            const obj_tag = self.ast_ref.nodeTag(obj_node);
+            if (obj_tag == .identifier) {
+                const obj_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(obj_node));
+                if (self.namespace_import_map.get(obj_name)) |mod_spec| {
+                    if (self.inferMemberOnNamespace(mod_spec, prop_name)) |resolved| {
+                        return self.maybeAddOptionalUndefined(resolved, obj_ty, in_chain);
+                    }
+                }
+            }
+        }
         const inner = self.memberOnApparentType(lookup_ty, prop_name, data.lhs);
         return self.maybeAddOptionalUndefined(inner, obj_ty, in_chain);
+    }
+
+    fn inferMemberOnNamespace(self: *Checker, module_spec: []const u8, member_name: []const u8) ?TypeId {
+        const mc = self.module_cache orelse return null;
+        if (self.file_path.len == 0) return null;
+        const from_dir = std.fs.path.dirname(self.file_path) orelse ".";
+        return mc.resolveExportedType(from_dir, module_spec, member_name, &self.store, self.gpa);
     }
 
     fn stripNullishForLookup(self: *Checker, ty: TypeId) TypeId {

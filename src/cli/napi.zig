@@ -1337,7 +1337,25 @@ pub export fn ez_lint(
     out_ptr: [*]u8,
     out_len: u32,
 ) u32 {
-    return lintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len, null) catch 0;
+    return lintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len, null, "") catch 0;
+}
+
+/// Same as ez_lint but accepts an absolute file path, enabling cross-module
+/// type resolution via ModuleCache.  path_ptr/path_len encode a UTF-8 string
+/// (no null terminator required).
+pub export fn ez_lint_with_path(
+    buf_ptr: [*]u8,
+    buf_len: u32,
+    source_start: u32,
+    source_len: u32,
+    lang_val: u8,
+    out_ptr: [*]u8,
+    out_len: u32,
+    path_ptr: [*]const u8,
+    path_len: u32,
+) u32 {
+    const file_path = path_ptr[0..path_len];
+    return lintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len, null, file_path) catch 0;
 }
 
 /// Build a null-separated `name\0name\0…` buffer from the default ES
@@ -1437,6 +1455,7 @@ fn lintImpl(
     out_ptr: [*]u8,
     out_len: u32,
     config: ?*const linter_root.config.Config,
+    file_path: []const u8,
 ) !u32 {
     if (source_start + source_len > buf_len) return 0;
     if (source_start < js_buffer.HEADER_SIZE) return 0;
@@ -1483,7 +1502,7 @@ fn lintImpl(
         })
     else
         semantic_mod.SemanticResult.initEmpty(arena);
-    const raw_diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config, language);
+    const raw_diagnostics = try linter_mod.lintWithPath(arena, &tree, &sem_result, config, language, file_path);
     const diagnostics = filterDiagsByDisables(arena, raw_diagnostics, source) catch raw_diagnostics;
 
     // Serialize diagnostics into the caller's output buffer.
@@ -2034,7 +2053,7 @@ fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         buf_ptr, @intCast(src_buf_len),
         source_start, source_len, @intCast(lang_val),
         out_ptr, @intCast(out_buf_len),
-        config_ptr,
+        config_ptr, "",
     ) catch 0;
 
     var js_result: n.Value = undefined;

@@ -86,16 +86,9 @@ pub const ModuleCache = struct {
         };
         errdefer sem.deinit(self.gpa);
 
-        var checker = Checker.init(self.gpa, &tree, &sem) catch {
-            sem.deinit(self.gpa);
-            tree.deinit(self.gpa);
-            self.gpa.free(source);
-            return null;
-        };
-        errdefer checker.deinit();
-
+        // Allocate the heap slot FIRST so ast/semantic live at stable addresses,
+        // then init the Checker with pointers into mod.* (not into stack vars).
         const mod = self.gpa.create(ParsedModule) catch {
-            checker.deinit();
             sem.deinit(self.gpa);
             tree.deinit(self.gpa);
             self.gpa.free(source);
@@ -106,7 +99,14 @@ pub const ModuleCache = struct {
             .source = source,
             .ast = tree,
             .semantic = sem,
-            .checker = checker,
+            .checker = undefined,
+        };
+        mod.checker = Checker.init(self.gpa, &mod.ast, &mod.semantic) catch {
+            mod.ast.deinit(self.gpa);
+            mod.semantic.deinit(self.gpa);
+            self.gpa.free(mod.source);
+            self.gpa.destroy(mod);
+            return null;
         };
 
         self.modules.put(self.gpa, abs_path, mod) catch {
