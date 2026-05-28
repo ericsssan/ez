@@ -8084,7 +8084,7 @@
     },
     "promise/always-return": {
       "runner": {
-        "fn": 14,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -8390,7 +8390,7 @@
     },
     "array-callback-return": {
       "runner": {
-        "fn": 42,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
@@ -9884,8 +9884,8 @@
     },
     "complexity": {
       "runner": {
-        "fn": 7,
-        "fp": 10,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -10298,8 +10298,8 @@
     },
     "no-promise-executor-return": {
       "runner": {
-        "fn": 45,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10389,7 +10389,7 @@
     "consistent-return": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10659,7 +10659,7 @@
     "no-useless-assignment": {
       "runner": {
         "fn": 0,
-        "fp": 5,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -11685,7 +11685,7 @@
     "no-constructor-return": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11702,7 +11702,7 @@
     },
     "getter-return": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -12603,7 +12603,7 @@
     "no-this-before-super": {
       "runner": {
         "fn": 4,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -13574,7 +13574,7 @@
     },
     "constructor-super": {
       "runner": {
-        "fn": 3,
+        "fn": 2,
         "fp": 4,
         "crash": 0
       },
@@ -13790,7 +13790,7 @@
     },
     "sonarjs/no-invariant-returns": {
       "runner": {
-        "fn": 10,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
@@ -17084,7 +17084,7 @@
     },
     "sonarjs/no-parameter-reassignment": {
       "runner": {
-        "fn": 13,
+        "fn": 11,
         "fp": 0,
         "crash": 0
       },
@@ -22394,9 +22394,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10330,
-    "runnerCasesPerSec": 8810,
-    "nativeCasesPerSec": 69982,
+    "totalElapsedMs": 10741,
+    "runnerCasesPerSec": 8439,
+    "nativeCasesPerSec": 69920,
     "totalCases": 70308
   }
 }

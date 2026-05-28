@@ -698,8 +698,8 @@ fn resolveFullImpl(
             }
             // A function body starts with a live control-flow path; save the
             // outer alive state so exit from the function restores it.
-            if (kind == .function or kind == .global or kind == .module or
-                kind == .static_block or kind == .class_field_initializer)
+            if (kind == .function or kind == .arrow_function or kind == .global or
+                kind == .module or kind == .static_block or kind == .class_field_initializer)
             {
                 if (fsp < fn_alive_stack.len) {
                     fn_alive_stack[fsp] = cfg_alive;
@@ -709,10 +709,10 @@ fn resolveFullImpl(
 
                 // CodePath entry.  For module/global the owner node is root(0);
                 // for functions/static-blocks/class-field-inits it's the owning
-                // construct (fn_decl, fn_expr, static_block_def, property, …).
+                // construct (fn_decl, fn_expr, arrow_fn, static_block_def, property, …).
                 const origin: Origin = switch (kind) {
                     .global, .module => .program,
-                    .function => .function,
+                    .function, .arrow_function => .function,
                     .static_block => .class_static_block,
                     .class_field_initializer => .class_field_initializer,
                     else => unreachable,
@@ -749,9 +749,9 @@ fn resolveFullImpl(
                     }
                 }
                 const closed_kind = kind_stack[sp];
-                if (closed_kind == .function or closed_kind == .global or
-                    closed_kind == .module or closed_kind == .static_block or
-                    closed_kind == .class_field_initializer)
+                if (closed_kind == .function or closed_kind == .arrow_function or
+                    closed_kind == .global or closed_kind == .module or
+                    closed_kind == .static_block or closed_kind == .class_field_initializer)
                 {
                     if (fsp > 0) {
                         fsp -= 1;
