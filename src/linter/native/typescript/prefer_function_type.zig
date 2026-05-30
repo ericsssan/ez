@@ -6,7 +6,7 @@
 // type form `(args) => ReturnType`.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -113,7 +113,7 @@ fn checkTypeLiteral(node: NodeIndex, ctx: *const LintContext) void {
     ctx.reportSpanWithMessageId(spanWithSemi(m, ctx), "functionTypeOverCallableType");
 }
 
-fn spanWithSemi(n: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+fn spanWithSemi(n: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     var sp = ctx.nodeSpan(n);
     const src = ctx.ast.source;
     // Extend through any unbalanced `{` opened inside our span — the

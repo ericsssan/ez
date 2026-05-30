@@ -9,7 +9,7 @@
 //   2) Class with an instance method named `new` returning its own type.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -55,7 +55,7 @@ fn checkInterface(node: NodeIndex, ctx: *const LintContext) void {
 /// Extend the node's span forward to include a trailing `;` if present.
 /// @typescript-eslint reports construct/method signatures with the
 /// terminating semicolon included; our nodes stop at the return type.
-fn signatureSpanWithSemi(n: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+fn signatureSpanWithSemi(n: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     var sp = ctx.nodeSpan(n);
     const src = ctx.ast.source;
     // Walk forward through trailing whitespace and `>` (for type args

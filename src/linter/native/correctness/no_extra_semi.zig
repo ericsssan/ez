@@ -3,7 +3,7 @@
 // Source rule: tests/conformance/eslint/lib/rules/no-extra-semi.js
 
 const std = @import("std");
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
@@ -54,7 +54,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (span.start > 0) {
         const prev = src[span.start - 1];
         if (prev == ';' or prev == '}') {
-            const fix_span = @import("../../../parser/span.zig").Span{ .start = span.start - 1, .end = span.end };
+            const fix_span = @import("es_parser").span.Span{ .start = span.start - 1, .end = span.end };
             const repl: []const u8 = if (prev == ';') ";" else "}";
             ctx.reportSpanWithFixAndMessageId(span, fix_span, repl, "unexpected");
             return;

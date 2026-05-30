@@ -9,7 +9,7 @@
 // function-type literal and suggest the method form.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -54,7 +54,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     }
 }
 
-fn signatureSpan(node: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+fn signatureSpan(node: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     var sp = ctx.nodeSpan(node);
     const src = ctx.ast.source;
     var end: u32 = @intCast(sp.end);

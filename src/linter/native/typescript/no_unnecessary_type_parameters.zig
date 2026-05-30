@@ -8,13 +8,13 @@
 // part of the signature region and are skipped.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const span_mod = @import("../../../parser/span.zig");
+const span_mod = @import("es_parser").span;
 
 pub const meta = RuleMeta{
     .name = "no-unnecessary-type-parameters",

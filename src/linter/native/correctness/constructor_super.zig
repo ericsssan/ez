@@ -3,7 +3,7 @@
 // Source rule: tests/conformance/eslint/lib/rules/constructor-super.js
 
 const std = @import("std");
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
@@ -16,7 +16,7 @@ pub const meta = RuleMeta{
     .description = "Require `super()` calls in constructors",
 };
 
-pub const relevant_tags = [_]Node.Tag{.method_def};
+pub const relevant_tags = [_]Node.Tag{ .method_def, .constructor_def };
 
 pub const needs_semantic = true;
 

@@ -3,7 +3,7 @@
 // Mirrors: tests/conformance/eslint/lib/rules/no-constant-binary-expression.js
 
 const std = @import("std");
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const Conditional = ast.Conditional;

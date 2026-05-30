@@ -14,7 +14,7 @@
 // too with messageId `unsafeComputedMemberAccess`.)
 
 const std = @import("std");
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
@@ -160,7 +160,7 @@ fn isMemberExpr(tag: Node.Tag) bool {
 /// Span of the property identifier / computed key — matches typescript-eslint's
 /// `node.property` location reporting.  For `obj.prop` returns the span of
 /// `prop`; for `obj[expr]` returns the span of `expr`.
-fn propertySpan(node: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+fn propertySpan(node: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
     switch (tag) {

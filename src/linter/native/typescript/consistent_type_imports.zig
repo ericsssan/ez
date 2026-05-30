@@ -11,11 +11,11 @@
 // disallowTypeAnnotations (default true): fire noImportTypeAnnotations on `import('mod')` in type position.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
-const Span = @import("../../../parser/span.zig").Span;
+const Span = @import("es_parser").span.Span;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 

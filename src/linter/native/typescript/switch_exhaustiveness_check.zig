@@ -13,7 +13,7 @@
 //   - `requireDefaultForNonUnion` (default false)
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -171,7 +171,7 @@ const ExpectedValue = struct {
     enum_member_name: []const u8 = &.{},
 };
 
-const parser_span = @import("../../../parser/span.zig");
+const parser_span = @import("es_parser").span;
 const Span = parser_span.Span;
 
 /// Look for `// no default` / `/* no default */` (case-insensitive) in the

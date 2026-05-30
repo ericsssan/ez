@@ -1,4 +1,4 @@
-const Severity = @import("../../parser/diagnostic.zig").Severity;
+const Severity = @import("es_parser").diagnostic.Severity;
 
 // ── Rule Category ──────────────────────────────────────────
 

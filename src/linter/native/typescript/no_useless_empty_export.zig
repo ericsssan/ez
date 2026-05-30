@@ -7,7 +7,7 @@
 // exists, `export {}` becomes noise.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -118,7 +118,7 @@ fn hasDeclareModifier(decl: NodeIndex, ctx: *const LintContext) bool {
     return false;
 }
 
-fn spanOfStmt(stmt: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+fn spanOfStmt(stmt: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     // main_token IS the `export` keyword.  Walk forward past `{}`
     // and the optional `;`.
     const main_tok = ctx.nodeMainToken(stmt);

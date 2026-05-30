@@ -11,13 +11,13 @@
 // itself begins with `tslint:`.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const Span = @import("../../../parser/span.zig").Span;
+const Span = @import("es_parser").span.Span;
 
 pub const meta = RuleMeta{
     .name = "ban-tslint-comment",

@@ -6,11 +6,11 @@
 // arrays, tuples, or objects with writable members → `shouldBeReadonly`.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
-const token_mod = @import("../../../parser/token.zig");
+const token_mod = @import("es_parser").token;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 const tymod = @import("../../../checker/types.zig");

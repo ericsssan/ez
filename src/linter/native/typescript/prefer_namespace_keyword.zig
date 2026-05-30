@@ -6,7 +6,7 @@
 // existing modules (e.g. `declare module "fs" { ... }`) are exempt.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -71,7 +71,7 @@ fn tokenText(tok: u32, ctx: *const LintContext) []const u8 {
     return ctx.ast.source[start .. start + len];
 }
 
-fn extendToDeclEnd(node: NodeIndex, sp: @import("../../../parser/span.zig").Span, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
+fn extendToDeclEnd(node: NodeIndex, sp: @import("es_parser").span.Span, ctx: *const LintContext) @import("es_parser").span.Span {
     var result = sp;
     // Use the LintContext span machinery which honors node_max_toks.
     const lp = ctx.nodeSpan(node);

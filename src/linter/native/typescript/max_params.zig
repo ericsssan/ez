@@ -6,7 +6,7 @@
 // leading `this: void` parameter doesn't count.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const TokenIndex = ast.TokenIndex;

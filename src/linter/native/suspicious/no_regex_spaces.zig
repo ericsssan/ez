@@ -3,7 +3,7 @@
 // Source rule: tests/conformance/eslint/lib/rules/no-regex-spaces.js
 
 const std = @import("std");
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;

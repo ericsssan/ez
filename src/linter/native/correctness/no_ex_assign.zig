@@ -2,12 +2,12 @@
 // Rule: no-ex-assign
 // Source rule: tests/conformance/eslint/lib/rules/no-ex-assign.js
 
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const ref_mod = @import("../../../parser/reference.zig");
+const ref_mod = @import("es_parser").reference;
 const ReferenceId = ref_mod.ReferenceId;
 
 pub const meta = RuleMeta{
