@@ -432,7 +432,8 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
     // Detect lang: prefer explicit tc.filename (carries .d.ts info) over isTs flag.
     let lang;
     if (tcFilename) {
-      lang = tcFilename.endsWith(".d.ts") ? "dts" : isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
+      const _isDts = tcFilename.endsWith(".d.ts") || tcFilename.endsWith(".d.mts") || tcFilename.endsWith(".d.cts");
+      lang = _isDts ? "dts" : isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
     } else {
       lang = isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
     }
@@ -512,7 +513,7 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
 
 // Per-rule runner call (forwards per-case options, sourceType, JSX mode).
 // rulePlugin: pre-created { meta, create } object shared across all cases of the same rule.
-function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false, tcFilename = null, rulePlugin = null) {
+function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false, tcFilename = null, rulePlugin = null, oracleSeverity = 2) {
   const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
   // Use the same filename as the oracle (tc.filename || "test.js") so filename-checking
   // rules (e.g. react/jsx-filename-extension) see the same path and produce matching results.
@@ -615,6 +616,7 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
       tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions, ..._testRuleCfg }, ecmaVersion, envGlobals: false,
       filename,
       languageOptions: { globals: tcGlobals || null, parserOptions: tcLanguageOptions.parserOptions },
+      ruleSeverities: { [ruleName]: oracleSeverity },
     });
     // Apply disable directives — the oracle (ESLint) applies them automatically.
     const reports = applyDisableDirectives(src, rawReports.filter(r => !r.crash));
@@ -1004,6 +1006,9 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "unicorn/consistent-date-clone": "consistent-date-clone",
       "unicorn/require-number-to-fixed-digits-argument": "require-number-to-fixed-digits-argument",
       "unicorn/no-zero-fractions": "no-zero-fractions",
+      "unicorn/prefer-node-protocol": "prefer-node-protocol",
+      "unicorn/prefer-math-min-max": "prefer-math-min-max",
+      "unicorn/no-static-only-class": "no-static-only-class",
       "unicorn/no-array-for-each": "no-array-for-each",
       // "unicorn/throw-new-error": "throw-new-error", // unicorn rule actually fires beyond throw context
       // "unicorn/error-message": "error-message", // native covers missing/empty cases; "message-is-not-a-string" needs value analysis
@@ -1121,7 +1126,6 @@ if (fs.existsSync(ESLINT_ROOT)) {
       "consistent-generic-constructors",
       "no-invalid-void-type",
       "default-param-last",
-      "init-declarations",
       "sort-type-constituents",
       "no-loss-of-precision",
     ]);
@@ -1223,7 +1227,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
       // out of jsPlugins.  The hybrid block uses nativeResult directly.
       const _skipRunner = nativeOnly || _ruleIsTypeAware || (nativeAvailable && _ruleHasNativeImpl);
       const _rt0 = _skipRunner ? 0 : performance.now();
-      const runnerResult = _skipRunner ? [] : runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
+      const _oracleSev = espreeResult.length > 0 ? (espreeResult[0].severity ?? 2) : 2;
+      const runnerResult = _skipRunner ? [] : runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin, _oracleSev);
       const _rtDelta = _skipRunner ? 0 : (performance.now() - _rt0);
       runnerOnlyMs += _rtDelta;
       _ruleRunnerMs += _rtDelta;
@@ -1557,7 +1562,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
         const tcr = allCases[fc.tcIdx];
         if (!tcr) continue;
         const st = tcr.languageOptions?.sourceType || defaultSourceType;
-        const r2 = runRunnerForRule(tcr.code, ruleName, ruleModule, tcr.options, st, tcr.languageOptions, isTypeScript || !!tcr.isTypeScript, tcr.filename, rulePlugin);
+        const _r2OracleSev = tcr.eslintResult?.length > 0 ? (tcr.eslintResult[0].severity ?? 2) : 2;
+        const r2 = runRunnerForRule(tcr.code, ruleName, ruleModule, tcr.options, st, tcr.languageOptions, isTypeScript || !!tcr.isTypeScript, tcr.filename, rulePlugin, _r2OracleSev);
         if (!r2) continue;
         const r2Normal = r2.filter(r => !r.crash);
         const r2Keys = new Set(r2Normal.map(r => `${r.rule}:${r.line}`));
