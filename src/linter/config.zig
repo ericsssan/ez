@@ -1,5 +1,5 @@
 const std = @import("std");
-const Severity = @import("../parser/diagnostic.zig").Severity;
+const Severity = @import("es_parser").diagnostic.Severity;
 const registry = @import("native/registry.zig");
 const Category = @import("native/rule.zig").Category;
 const linter = @import("linter.zig");

@@ -11,7 +11,7 @@
 //! it to a typed target fires.
 
 const std = @import("std");
-const parser = @import("../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const symbol_mod = parser.symbol;
 const Ast = ast.Ast;

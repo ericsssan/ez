@@ -24,9 +24,9 @@ const Io = std.Io;
 
 const ParallelRunner = @import("parallel.zig").ParallelRunner;
 
-const parser_root  = @import("../parser/root.zig");
+const parser_root  = @import("es_parser");
 const Lexer        = parser_root.Lexer;
-const Parser       = @import("../parser/parser.zig").Parser;
+const Parser       = @import("es_parser").Parser;
 const Language     = parser_root.token.Language;
 const AstType      = parser_root.ast.Ast;
 const TokenList    = AstType.TokenList;

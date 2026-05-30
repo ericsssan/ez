@@ -1,5 +1,5 @@
 const std = @import("std");
-const parser = @import("../parser/root.zig");
+const parser = @import("es_parser");
 const ast_mod = parser.ast;
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
@@ -268,7 +268,7 @@ pub fn lintWithPath(
         const parents: []const u32 = if (semantic.parent_indices.len == n)
             semantic.parent_indices
         else blk: {
-            const p = try @import("../parser/parent_builder.zig").buildParentsOnly(tree, allocator);
+            const p = try @import("es_parser").parent_builder.buildParentsOnly(tree, allocator);
             owned_parents = p;
             break :blk p;
         };
@@ -463,7 +463,7 @@ pub fn lintRulesByName(
         const parents: []const u32 = if (semantic.parent_indices.len == n)
             semantic.parent_indices
         else blk: {
-            const p = try @import("../parser/parent_builder.zig").buildParentsOnly(tree, allocator);
+            const p = try @import("es_parser").parent_builder.buildParentsOnly(tree, allocator);
             owned_parents = p;
             break :blk p;
         };

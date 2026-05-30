@@ -67,7 +67,7 @@ const Spec = extern struct {
     c:    u32,
 };
 
-// ── AST buffer header offsets (must match src/parser/js_buffer.zig Header layout + ──
+// ── AST buffer header offsets (must match es-parser src/js_buffer.zig Header layout + ──
 //    SemanticHeader for tag-grouped node IDs) ────────────────────────────────────────
 
 const H_NODE_COUNT          : u32 = 8;

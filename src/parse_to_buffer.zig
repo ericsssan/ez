@@ -15,15 +15,15 @@
 // the parallel path stays the production NAPI choice.
 
 const std = @import("std");
-const Lexer = @import("lexer.zig");
-const parser_mod = @import("parser.zig");
-const parent_builder = @import("parent_builder.zig");
-const semantic_mod = @import("semantic.zig");
-const event_resolver = @import("event_resolver.zig");
-const js_buffer = @import("js_buffer.zig");
-const token_mod = @import("token.zig");
-const linter_mod = @import("../linter/linter.zig");
-const Location = @import("./span.zig").Location;
+const Lexer = @import("es_parser").Lexer;
+const parser_mod = @import("es_parser");
+const parent_builder = @import("es_parser").parent_builder;
+const semantic_mod = @import("es_parser").semantic;
+const event_resolver = @import("es_parser").event_resolver;
+const js_buffer = @import("es_parser").js_buffer;
+const token_mod = @import("es_parser").token;
+const linter_mod = @import("linter/linter.zig");
+const Location = @import("es_parser").span.Location;
 
 const Language = token_mod.Language;
 const Parser = parser_mod.Parser;

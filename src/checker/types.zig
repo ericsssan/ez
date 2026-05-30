@@ -10,7 +10,7 @@
 //     struct stays small and uniform.
 
 const std = @import("std");
-const ast = @import("../parser/ast.zig");
+const ast = @import("es_parser").ast;
 
 pub const TypeId = enum(u32) {
     none = std.math.maxInt(u32),

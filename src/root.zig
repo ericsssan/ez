@@ -1,23 +1,23 @@
 //! Ez library root — re-exports all modules.
 
 // ── Parser module ─────────────────────────────────────────
-pub const ast = @import("parser/root.zig").ast;
-pub const token = @import("parser/root.zig").token;
-pub const span = @import("parser/root.zig").span;
-pub const diagnostic = @import("parser/root.zig").diagnostic;
-pub const debug = @import("parser/root.zig").debug;
+pub const ast = @import("es_parser").ast;
+pub const token = @import("es_parser").token;
+pub const span = @import("es_parser").span;
+pub const diagnostic = @import("es_parser").diagnostic;
+pub const debug = @import("es_parser").debug;
 
-pub const Lexer = @import("parser/root.zig").Lexer;
-pub const Parser = @import("parser/root.zig").Parser;
-pub const scope = @import("parser/root.zig").scope;
-pub const symbol = @import("parser/root.zig").symbol;
-pub const reference = @import("parser/root.zig").reference;
-pub const semantic = @import("parser/root.zig").semantic;
-pub const js_buffer = @import("parser/root.zig").js_buffer;
-pub const layout = @import("parser/root.zig").layout;
-pub const parent_builder = @import("parser/root.zig").parent_builder;
-pub const scope_events = @import("parser/root.zig").scope_events;
-pub const event_resolver = @import("parser/root.zig").event_resolver;
+pub const Lexer = @import("es_parser").Lexer;
+pub const Parser = @import("es_parser").Parser;
+pub const scope = @import("es_parser").scope;
+pub const symbol = @import("es_parser").symbol;
+pub const reference = @import("es_parser").reference;
+pub const semantic = @import("es_parser").semantic;
+pub const js_buffer = @import("es_parser").js_buffer;
+pub const layout = @import("es_parser").layout;
+pub const parent_builder = @import("es_parser").parent_builder;
+pub const scope_events = @import("es_parser").scope_events;
+pub const event_resolver = @import("es_parser").event_resolver;
 
 // ── Checker module ────────────────────────────────────────
 pub const checker = @import("checker/root.zig");
@@ -32,8 +32,8 @@ pub const inline_disable = @import("linter/root.zig").inline_disable;
 pub const eslint_compat = @import("linter/root.zig").eslint_compat;
 pub const gitignore = @import("linter/root.zig").gitignore;
 
-pub const parser_root = @import("parser/root.zig");
-pub const parse_to_buffer = @import("parser/parse_to_buffer.zig");
+pub const parser_root = @import("es_parser");
+pub const parse_to_buffer = @import("parse_to_buffer.zig");
 
 // ── CLI module ────────────────────────────────────────────
 pub const file_discovery = @import("cli/file_discovery.zig");
@@ -44,7 +44,7 @@ pub const diagnostic_formatter = @import("cli/diagnostic_formatter.zig");
 pub const napi = @import("cli/napi.zig");
 
 test {
-    _ = @import("parser/root.zig");
+    _ = @import("es_parser");
     _ = @import("checker/root.zig");
     _ = @import("linter/root.zig");
     _ = @import("cli/file_discovery.zig");

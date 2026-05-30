@@ -1,8 +1,8 @@
 const std = @import("std");
 const Io = std.Io;
-const parser_root = @import("parser/root.zig");
+const parser_root = @import("es_parser");
 const Lexer = parser_root.Lexer;
-const parser = @import("parser/parser.zig");
+const parser = @import("es_parser");
 const debug = parser_root.debug;
 const diagnostic = parser_root.diagnostic;
 const Token = parser_root.token;
@@ -13,8 +13,8 @@ const FileDiscovery = @import("cli/file_discovery.zig").FileDiscovery;
 const GitIgnore = linter_root.gitignore.GitIgnore;
 const ParallelRunner = @import("cli/parallel.zig").ParallelRunner;
 const DiagnosticFormatter = @import("cli/diagnostic_formatter.zig").DiagnosticFormatter;
-const Diagnostic = @import("parser/diagnostic.zig").Diagnostic;
-const layout = @import("parser/layout.zig");
+const Diagnostic = @import("es_parser").diagnostic.Diagnostic;
+const layout = @import("es_parser").layout;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;

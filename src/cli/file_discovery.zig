@@ -1,7 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const GitIgnore = @import("../linter/gitignore.zig").GitIgnore;
-const Language = @import("../parser/token.zig").Language;
+const Language = @import("es_parser").token.Language;
 const Config = @import("../linter/config.zig").Config;
 
 /// Directories that are always skipped during recursive discovery,

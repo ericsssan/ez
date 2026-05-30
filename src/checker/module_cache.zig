@@ -8,7 +8,7 @@
 /// state, no locking required.
 
 const std = @import("std");
-const parser_pkg = @import("../parser/root.zig");
+const parser_pkg = @import("es_parser");
 const Ast = parser_pkg.ast.Ast;
 const Language = parser_pkg.token.Language;
 const Lexer = parser_pkg.Lexer;

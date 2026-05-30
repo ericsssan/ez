@@ -1,5 +1,5 @@
 // NAPI shared library entry point.
-// Lives in src/ so that cli/napi.zig's relative imports (../parser/) resolve correctly.
+// Lives in src/ so that cli/napi.zig's relative imports resolve within the src/ module path.
 // Forces inclusion of all pub export functions from cli/napi.zig.
 const napi = @import("cli/napi.zig");
 const ffi_dispatcher = @import("cli/ffi_dispatcher.zig");
