@@ -612,6 +612,29 @@ class AstView {
       }
       this._shapeBits = bits;
     }
+
+    // Build node→symId index from ref arrays. Most identifier/property_ident
+    // nodes are symbol references; for those, _computeIdentifierName can return
+    // symNameCache[symId] directly — a pre-allocated string, zero source.slice().
+    // Non-reference identifiers (e.g. member-expression property names) fall
+    // through to the v15 source.slice() path.
+    this._nodeSymId = null;
+    if (this._semRefCount > 0 && this._refNodeIds && this._refSymbolIds) {
+      const nc = this.nodeCount;
+      const nodeSymId = new Uint32Array(nc).fill(NONE);
+      const refNodeIds = this._refNodeIds;
+      const refSymIds  = this._refSymbolIds;
+      const refCount   = this._semRefCount;
+      for (let r = 0; r < refCount; r++) {
+        const ni = refNodeIds[r];
+        // Take the first ref for each node; name is the same for all refs on the same node.
+        if (nodeSymId[ni] === NONE) nodeSymId[ni] = refSymIds[r];
+      }
+      this._nodeSymId = nodeSymId;
+      // Eagerly warm the sym name cache so _computeIdentifierName hits it immediately
+      // at _NodeView_LR construction time rather than triggering a lazy build mid-traversal.
+      this._buildSymNameCache();
+    }
   }
 
   /** Decoded source text (lazy). */
@@ -4609,16 +4632,24 @@ function _NodeView_LRN(ast, idx, tag, type) {  // ['left','right','name']
 //
 // Fallback (no v15 data): legacy _identAt scan + _resolveUnicodeEscapes.
 function _computeIdentifierName(ast, idx) {
+  // Fast path 1: sym cache hit — returns an already-allocated string, zero source.slice().
+  // Covers the majority of identifier/property_ident nodes that are symbol references.
+  const nodeSymId = ast._nodeSymId;
+  if (nodeSymId !== null) {
+    const symId = nodeSymId[idx];
+    if (symId !== NONE) return ast._symNameCache[symId];
+  }
+  // Fast path 2: v15 buffer ranges — one source.slice() with inlined escape check.
+  // Covers non-reference identifiers (property names in member expressions, etc.).
   const nameStarts = ast._nodeNameStarts;
   if (nameStarts !== null) {
     const start = nameStarts[idx];
     const end = ast._nodeNameEnds[idx];
     const name = ast.source.slice(start, end);
-    // Inline the escape check — avoids the function call for 99.9%+ of names.
     if (name.indexOf('\\') === -1) return name;
     return _resolveUnicodeEscapes(name);
   }
-  // Fallback: v15 arrays not present (old buffer).
+  // Legacy fallback: no v15 buffer (old binary).
   const tok = ast._mainTokens[idx];
   const pos = ast._tokStarts[tok];
   if (ast.source.charCodeAt(pos) === 35) { // '#' — private identifier
