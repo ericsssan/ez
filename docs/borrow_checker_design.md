@@ -433,7 +433,7 @@ Unannotated functions are treated conservatively — return `.plain`, take any v
 - Annotate the ~85 lifetime-bearing helpers in our codebase, fix anything Layer 1 catches
 
 ### Phase 2: Layer 2 skeleton
-- `tools/ez-borrow-check/cfg.zig` (Zig AST → CFG; reuse ideas from `src/parser/code_path.zig`)
+- `tools/ez-borrow-check/cfg.zig` (Zig AST → CFG; reuse ideas from `es-parser src/code_path.zig`)
 - `tools/ez-borrow-check/abstract_state.zig`
 - Transfer functions for the common ops, annotations parser
 
@@ -479,4 +479,4 @@ See `memory/project_bun_left_zig.md` for the full argument.  Summary: Bun ported
 - **HotSpot escape analysis**: Choi et al., "Escape Analysis for Java" (OOPSLA 1999)
 - **Move bytecode verifier**: `aptos-labs/aptos-core` → `third_party/move/move-bytecode-verifier/src/reference_safety/` — algorithmic engineering reference for abstract interpretation
 - **zlinter**: `KurtWagner/zlinter` — Layer 1 host
-- **Our `src/parser/code_path.zig`** — prior art for fixed-point CFG analysis in this codebase
+- **Our `es-parser src/code_path.zig`** — prior art for fixed-point CFG analysis in this codebase

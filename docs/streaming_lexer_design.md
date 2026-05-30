@@ -10,7 +10,7 @@ The win is "within-file pipelining" — useful for very large files (e.g., `type
 
 ## Current architecture (where streaming is blocked)
 
-`src/parser/lexer.zig`:
+`es-parser src/lexer.zig`:
 ```zig
 pub fn tokenizeWithLanguage(
     alloc: Allocator,
