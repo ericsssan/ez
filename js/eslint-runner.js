@@ -58,7 +58,7 @@ function ruleNameFromRuleId(ruleId) {
 }
 
 // ── Symbol BindingKind → ESLint def.type mapping ───────────────
-// Must match BindingKind enum in src/parser/symbol.zig (values in enum order).
+// Must match BindingKind enum in es-parser src/symbol.zig (values in enum order).
 // Indices match BindingKind enum order in symbol.zig:
 // 0=var, 1=let, 2=const, 3=function_decl, 4=function_decl_annex_b, 5=class_decl, 6=parameter, 7=catch_param,
 // 8=import_binding, 9=type_import_binding, 10=implicit_global,
@@ -488,6 +488,7 @@ const _FN_TAGS = new Set([
   T.method_def, T.getter_def, T.setter_def, T.constructor_def,
   T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
   T.ts_declare_function,
+  T.ts_function_type, T.ts_constructor_type,
 ]);
 const _CLASS_TAG_SET = new Set([T.class_decl, T.class_expr]);
 
@@ -668,7 +669,7 @@ function _tokType(tag) {
   return 'Punctuator';
 }
 
-// ── Scope flag bit positions (must match src/parser/scope.zig ScopeFlags) ─────
+// ── Scope flag bit positions (must match es-parser src/scope.zig ScopeFlags) ─────
 // packed struct(u16) { strict_mode, is_var_scope, has_use_strict, is_async, ... }
 const SF_STRICT_MODE    = 1;  // bit 0 — strict by any cause (module mode, use strict, class body)
 const SF_HAS_USE_STRICT = 4;  // bit 2 — has explicit 'use strict' directive in this scope
@@ -1414,7 +1415,9 @@ class SourceCode {
     const isJsxText = ast._nodeTags && this._getJsxTextTokFlags()[i] === 1;
     // TypeScript accessibility modifiers (public/private/protected) are tokenized as
     // identifiers in our lexer but ESLint/TSESLint expects them as "Keyword" tokens.
-    const isModifierKw = rawType === 'Identifier' && _TS_MODIFIER_KWS.has(value);
+    // Exception: when preceded by `@` (decorator), they stay as Identifier.
+    const isModifierKw = rawType === 'Identifier' && _TS_MODIFIER_KWS.has(value) &&
+      !(i > 0 && ast._tokTags[i - 1] === 134 /* at_sign */);
     const tok = {
       type: isJsxText ? 'JSXText' : isModifierKw ? 'Keyword' : (src.charCodeAt(start) === 35 /* # */ ? 'PrivateIdentifier' : rawType),
       value,
@@ -3304,6 +3307,16 @@ class SourceCode {
       if (tsId && tsId.type === 'Identifier') {
         tsId.parent = declNode;
         identNode = tsId;
+      }
+    }
+    // For TypeParameter def nodes (TSTypeParameter), def.name should be the
+    // synthetic Identifier node for the param name (just the name, not including
+    // constraint/default), not the TSTypeParameter itself which has a wider range.
+    if (defType === 'TypeParameter' && declNode.type === 'TSTypeParameter') {
+      const nameId = declNode.name;
+      if (nameId && nameId.type === 'Identifier') {
+        nameId.parent = declNode;
+        identNode = nameId;
       }
     }
 
