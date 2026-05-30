@@ -1,5 +1,5 @@
 const std = @import("std");
-const parser = @import("../parser/root.zig");
+const parser = @import("es_parser");
 const ast_mod = parser.ast;
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
@@ -8,7 +8,7 @@ const TokenIndex = ast_mod.TokenIndex;
 const ExtraIndex = ast_mod.ExtraIndex;
 const SubRange = ast_mod.SubRange;
 const regex_parser = @import("regex_parser.zig");
-const unicode_marks = @import("../parser/unicode_marks.zig");
+const unicode_marks = @import("unicode_marks.zig");
 const checker_mod = @import("../checker/root.zig");
 const Checker = checker_mod.Checker;
 const tymod = checker_mod.types;
@@ -118,32 +118,46 @@ pub const InlineGlobalEntry = struct {
 /// Built-in globals that ESLint treats as read-only by default — assigning to
 /// them is the canonical no-global-assign violation.  Mirrors the `builtin`
 /// set from the `globals` npm package + ECMAScript globals.
-pub const BUILTIN_READONLY_GLOBALS = [_][]const u8{
-    "undefined",     "NaN",            "Infinity",         "globalThis",
+/// ES5-only global builtins — always added regardless of ecmaVersion.
+pub const BUILTIN_ES5_GLOBALS = [_][]const u8{
+    "undefined",     "NaN",            "Infinity",
     "eval",          "isFinite",       "isNaN",            "parseFloat",
     "parseInt",      "decodeURI",      "decodeURIComponent",
     "encodeURI",     "encodeURIComponent",
-    "Object",        "Function",       "Boolean",          "Symbol",
+    "Object",        "Function",       "Boolean",          "Number",
+    "Math",          "Date",           "String",           "RegExp",
+    "Array",         "JSON",
     "Error",         "EvalError",      "RangeError",       "ReferenceError",
-    "SyntaxError",   "TypeError",      "URIError",         "AggregateError",
-    "Number",        "BigInt",         "Math",             "Date",
-    "String",        "RegExp",         "Array",            "Int8Array",
-    "Uint8Array",    "Uint8ClampedArray", "Int16Array",    "Uint16Array",
-    "Int32Array",    "Uint32Array",    "Float32Array",     "Float64Array",
-    "BigInt64Array", "BigUint64Array", "Map",              "Set",
-    "WeakMap",       "WeakSet",        "JSON",             "Promise",
-    "Reflect",       "Proxy",          "ArrayBuffer",      "SharedArrayBuffer",
-    "DataView",      "Atomics",        "FinalizationRegistry", "WeakRef",
+    "SyntaxError",   "TypeError",      "URIError",
+    // Object.prototype methods commonly used as bare globals in scripts.
+    "toString",      "hasOwnProperty", "valueOf",          "isPrototypeOf",
+    "propertyIsEnumerable", "toLocaleString",
+};
+
+/// ES2015+ global builtins — added when ecmaVersion >= 2015.
+pub const BUILTIN_ES2015_GLOBALS = [_][]const u8{
+    "Symbol",
+    "Int8Array",     "Uint8Array",     "Uint8ClampedArray", "Int16Array",
+    "Uint16Array",   "Int32Array",     "Uint32Array",    "Float32Array",
+    "Float64Array",  "ArrayBuffer",    "DataView",
+    "Map",           "Set",            "WeakMap",          "WeakSet",
+    "Promise",       "Reflect",        "Proxy",
+    "SharedArrayBuffer", "Atomics",
+    "BigInt",        "BigInt64Array",  "BigUint64Array",
+    "AggregateError", "FinalizationRegistry", "WeakRef",
     "Intl",          "console",
     // ES2024+ globals
     "Float16Array",  "Iterator",       "AsyncIterator",
     "AsyncDisposableStack", "DisposableStack", "SuppressedError",
-    // Object.prototype methods commonly used as bare globals in scripts
-    // (`toString()`, `hasOwnProperty()`) — ESLint's "builtin" env exposes
-    // these via the globalThis prototype chain.
-    "toString",      "hasOwnProperty", "valueOf",        "isPrototypeOf",
-    "propertyIsEnumerable", "toLocaleString",
 };
+
+/// ES2020+ global builtins — added when ecmaVersion >= 2020 or unspecified.
+pub const BUILTIN_ES2020_GLOBALS = [_][]const u8{
+    "globalThis",
+};
+
+/// All built-in globals (ES5 + ES2015+ + ES2020+) — used when ecmaVersion is unspecified.
+pub const BUILTIN_READONLY_GLOBALS = BUILTIN_ES5_GLOBALS ++ BUILTIN_ES2015_GLOBALS ++ BUILTIN_ES2020_GLOBALS;
 
 /// CommonJS readonly globals — only treated as readonly when `sourceType: "commonjs"`.
 /// In plain script mode `require = 0` is just an implicit global write (handled by
@@ -2718,9 +2732,8 @@ pub const LintContext = struct {
                 if (item.object.get("name")) |n| {
                     if (n == .string and std.mem.eql(u8, n.string, name)) return true;
                 }
-                // Form B: { globals: [...], checkGlobalObject, ... } — single
-                // options object listing all restricted names at once.  Each
-                // globals entry is either a string or { name, message }.
+                // Form B: { globals: [...], checkGlobalObject, ... } — ESLint v9
+                // single-object format listing all restricted names at once.
                 if (item.object.get("globals")) |g| {
                     if (g == .array) {
                         for (g.array.items) |gi| {
@@ -3590,7 +3603,7 @@ pub const LintContext = struct {
         // follows an identifier / literal / `)` / etc. is the legitimate
         // terminator of a PropertyDefinition and is not flagged.
         var depth: i32 = 0;
-        var prev_tok_tag: @import("../parser/token.zig").Tag = .l_brace;
+        var prev_tok_tag: @import("es_parser").token.Tag = .l_brace;
         var tok: TokenIndex = open_tok + 1;
         while (tok < close_tok) : (tok += 1) {
             const tt = self.ast.tokenTag(tok);
@@ -4271,7 +4284,7 @@ pub const LintContext = struct {
         return self.ast.tokenText(self.ast.nodeMainToken(member_rhs));
     }
 
-    pub fn tokenTag(self: *const LintContext, index: TokenIndex) @import("../parser/token.zig").Tag {
+    pub fn tokenTag(self: *const LintContext, index: TokenIndex) @import("es_parser").token.Tag {
         return self.ast.tokenTag(index);
     }
 
@@ -4344,6 +4357,31 @@ pub const LintContext = struct {
                 if (!both_dot_like) return false;
                 continue;
             }
+            if (!std.mem.eql(u8, self.tokenText(at), self.tokenText(bt))) return false;
+        }
+        return true;
+    }
+
+    /// Strict token-sequence equality — like `nodeTokensEqual` but withOUT
+    /// the `.`/`?.` normalization.  Mirrors ESLint's `astUtils.equalTokens`,
+    /// where `a?.b` and `a.b` are NOT equal (used by no-useless-call).
+    pub fn nodeTokensEqualStrict(self: *const LintContext, a: NodeIndex, b: NodeIndex) bool {
+        if (a == .none or b == .none) return a == b;
+        const ai = a.toInt();
+        const bi = b.toInt();
+        if (ai >= self.node_min_toks.len or bi >= self.node_min_toks.len) return false;
+        const a_first = self.node_min_toks[ai];
+        const a_last = self.node_max_toks[ai];
+        const b_first = self.node_min_toks[bi];
+        const b_last = self.node_max_toks[bi];
+        const a_len = a_last + 1 - a_first;
+        const b_len = b_last + 1 - b_first;
+        if (a_len != b_len) return false;
+        var k: u32 = 0;
+        while (k < a_len) : (k += 1) {
+            const at: u32 = a_first + k;
+            const bt: u32 = b_first + k;
+            if (self.ast.tokenTag(at) != self.ast.tokenTag(bt)) return false;
             if (!std.mem.eql(u8, self.tokenText(at), self.tokenText(bt))) return false;
         }
         return true;
@@ -5136,6 +5174,12 @@ pub const LintContext = struct {
     }
 
     pub fn nodeSpan(self: *const LintContext, index: NodeIndex) Span {
+        // Program (root): the whole source.  node_max_toks misses block/class
+        // closers, so it would stop short of the final `}`; ESTree's Program
+        // range spans the entire text.
+        if (self.ast.nodeTag(index) == .root) {
+            return .{ .start = 0, .end = @intCast(self.ast.source.len) };
+        }
         const main_tok = self.ast.nodeMainToken(index);
         const i = index.toInt();
         const first_tok = if (i < self.node_min_toks.len) self.node_min_toks[i] else main_tok;
@@ -5149,7 +5193,8 @@ pub const LintContext = struct {
         const tag0 = self.nodeTag(index);
         if (tag0 == .ts_module_decl or tag0 == .ts_namespace_decl
             or tag0 == .ts_interface_decl or tag0 == .ts_enum_decl
-            or tag0 == .ts_type_alias_decl or tag0 == .ts_declare_function) {
+            or tag0 == .ts_type_alias_decl or tag0 == .ts_declare_function
+            or tag0 == .var_decl or tag0 == .let_decl or tag0 == .const_decl) {
             const src0 = self.ast.source;
             // Walk backward over whitespace.  If we land at the end of
             // `declare`, back up to its start.
@@ -5346,6 +5391,22 @@ pub const LintContext = struct {
             }
             return .{ .start = first_start, .end = end };
         }
+        // A single declarator `x = init` / `x: T` — node_max_toks misses an
+        // init's closing paren/brace and a no-init binding's type annotation.
+        if (tag == .declarator) {
+            const dd = self.nodeData(index);
+            if (dd.rhs != .none) {
+                const init_span = self.nodeSpan(dd.rhs);
+                if (init_span.end > end) end = init_span.end;
+            } else if (dd.lhs != .none and self.ast.nodeTag(dd.lhs) == .identifier) {
+                const ann = self.nodeData(dd.lhs).rhs;
+                if (ann != .none) {
+                    const ann_span = self.nodeSpan(ann);
+                    if (ann_span.end > end) end = ann_span.end;
+                }
+            }
+            return .{ .start = first_start, .end = end };
+        }
         // Statements that include their trailing `;` in ESTree's `range` —
         // declarations, simple statements, and expression statements all
         // count.  If the next non-whitespace char past the existing end is
@@ -5381,13 +5442,40 @@ pub const LintContext = struct {
                         if (init != .none) {
                             const init_span = self.nodeSpan(init);
                             if (init_span.end > end) end = init_span.end;
+                        } else {
+                            // No initializer — extend through the binding's TS
+                            // type annotation if present (`declare var x: T`,
+                            // `let x: T`).  The binding identifier stores its
+                            // annotation node in `data.rhs`; the type subtree
+                            // doesn't always propagate into node_max_toks.
+                            const binding = dd.lhs;
+                            if (binding != .none and self.ast.nodeTag(binding) == .identifier) {
+                                const ann = self.nodeData(binding).rhs;
+                                if (ann != .none) {
+                                    const ann_span = self.nodeSpan(ann);
+                                    if (ann_span.end > end) end = ann_span.end;
+                                }
+                            }
                         }
                     }
                 }
             }
+            // Consume the trailing `;` — but NOT when the declaration is a
+            // `for` loop head.  There the `;` separates the for clauses (or,
+            // for for-in/for-of, there is none) and belongs to the for
+            // statement, so ESTree's VariableDeclaration range excludes it.
+            var in_for_head = false;
+            if (tag == .var_decl or tag == .let_decl or tag == .const_decl) {
+                const par = self.parentOf(index);
+                if (par != .none) {
+                    const ptag = self.ast.nodeTag(par);
+                    in_for_head = ptag == .for_stmt or ptag == .for_in_stmt or
+                        ptag == .for_of_stmt or ptag == .for_await_of_stmt;
+                }
+            }
             var p: usize = end;
             while (p < src.len and (src[p] == ' ' or src[p] == '\t')) p += 1;
-            if (p < src.len and src[p] == ';') end = @intCast(p + 1);
+            if (!in_for_head and p < src.len and src[p] == ';') end = @intCast(p + 1);
             return .{ .start = first_start, .end = end };
         }
         // fn_decl / fn_expr / etc. — body lives in extra-data (FnData.body),
@@ -5406,6 +5494,58 @@ pub const LintContext = struct {
                     if (body_span.end > end) end = body_span.end;
                 }
             }
+            return .{ .start = first_start, .end = end };
+        }
+        // Method-like members (object & class): extend the span through the
+        // body's closing `}` AND back over leading modifiers (`get`/`set`/
+        // `async`/`static`/`*`), which ESTree's MethodDefinition range includes
+        // but aren't tracked as child main tokens.
+        // Scoped to COMPUTED members — the only ones no-useless-computed-key
+        // reports.  Non-computed method/field spans are left untouched to avoid
+        // perturbing other rules (e.g. type-aware rules report on those nodes).
+        if (tag == .computed_method_def or tag == .computed_getter_def
+            or tag == .computed_setter_def or tag == .computed_property_def) {
+            const body = self.nodeBodyBlock(index);
+            if (body != .none) {
+                const body_span = self.nodeSpan(body);
+                if (body_span.end > end) end = body_span.end;
+            }
+            // Computed key `[k]`: include the closing `]` (a value-less field
+            // otherwise ends at the key).  A present value already extends past
+            // it via node_max_toks.
+            if (tag == .computed_property_def) {
+                const fkey = self.nodeData(index).lhs;
+                if (fkey != .none) {
+                    var p: usize = self.nodeSpan(fkey).end;
+                    while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\n' or src[p] == '\r')) p += 1;
+                    if (p < src.len and src[p] == ']' and p + 1 > end) end = @intCast(p + 1);
+                }
+            }
+            // Only move `first_start` to the START of an actual leading
+            // modifier — never into the whitespace between `{` and the key.
+            var scan: usize = first_start;
+            var new_start: usize = first_start;
+            outer: while (scan > 0) {
+                var ws = scan;
+                while (ws > 0 and (src[ws - 1] == ' ' or src[ws - 1] == '\t')) ws -= 1;
+                if (ws > 0 and src[ws - 1] == '*') {
+                    new_start = ws - 1;
+                    scan = ws - 1;
+                    continue;
+                }
+                const KWS = [_][]const u8{ "get", "set", "async", "static" };
+                for (KWS) |kw| {
+                    if (ws >= kw.len and std.mem.eql(u8, src[ws - kw.len .. ws], kw) and
+                        (ws == kw.len or !isIdentChar(src[ws - kw.len - 1])))
+                    {
+                        new_start = ws - kw.len;
+                        scan = ws - kw.len;
+                        continue :outer;
+                    }
+                }
+                break;
+            }
+            first_start = @intCast(new_start);
             return .{ .start = first_start, .end = end };
         }
         // class_decl / class_expr — body lives in extra-data (ClassData.body),
@@ -6592,6 +6732,1324 @@ pub const LintContext = struct {
     /// clause AND lacks a trailing "no default" comment after the last case,
     /// report at the switch.  Custom `commentPattern` option uses the
     /// literal-prefix substring approach shared with commentMatchesFallthrough.
+    /// no-lonely-if: report an `if` that is the sole statement of a block
+    /// which is the `else` (alternate) branch of an enclosing `if` — i.e.
+    /// `} else { if (...) ... }` could be `} else if (...) ...`.  Skips cases
+    /// where the braces are semantically necessary (the inner if would capture
+    /// a trailing `else` if unbraced — ESLint's `areBracesNecessary`).
+    pub fn checkLonelyIf(self: *const LintContext, node: NodeIndex, message_id: []const u8) void {
+        if (node == .none) return;
+        const parent = self.parentOf(node);
+        if (parent == .none or self.ast.nodeTag(parent) != .block_stmt) return;
+        // The block must hold exactly one statement, and it must be this `if`.
+        if (self.nodeBodyStmtCount(parent) != 1) return;
+        if (self.nodeBodyStmtAt(parent, 0) != node) return;
+        const gp = self.parentOf(parent);
+        if (gp == .none or self.ast.nodeTag(gp) != .if_else_stmt) return;
+        // `parent` must be the grandparent if's alternate (else branch).
+        const idata = self.extraData(ast_mod.IfData, @intFromEnum(self.ast.nodeData(gp).rhs));
+        if (idata.alternate != parent) return;
+        // areBracesNecessary, specialized to a single-IfStatement body:
+        //   hasUnsafeIf(thisIf) && (the token after the block is `else`)
+        if (self.hasUnsafeIf(node) and self.blockFollowedByElse(parent)) return;
+        self.reportWithMessageId(node, message_id);
+    }
+
+    /// True when `n` contains an `if` that, if its enclosing braces were
+    /// removed, would associate with an `else` appended after it: an
+    /// `if`-chain ending without an `else`, or a loop/labeled/with whose body
+    /// recurses to such an `if`.  Mirrors ESLint astUtils' `hasUnsafeIf`.
+    fn hasUnsafeIf(self: *const LintContext, start: NodeIndex) bool {
+        var cur = start;
+        while (cur != .none) {
+            switch (self.ast.nodeTag(cur)) {
+                .if_stmt => return true, // no alternate → unsafe
+                .if_else_stmt => {
+                    const id = self.extraData(ast_mod.IfData, @intFromEnum(self.ast.nodeData(cur).rhs));
+                    cur = id.alternate;
+                },
+                .while_stmt, .with_stmt, .for_stmt => cur = self.ast.nodeData(cur).rhs,
+                .for_in_stmt, .for_of_stmt, .for_await_of_stmt => {
+                    const d = self.ast.nodeData(cur);
+                    if (d.lhs == .none) return false;
+                    const fd = self.extraData(ast_mod.ForInOfData, @intFromEnum(d.lhs));
+                    cur = fd.body;
+                },
+                .labeled_stmt => cur = self.ast.nodeData(cur).lhs,
+                else => return false,
+            }
+        }
+        return false;
+    }
+
+    /// True when the first token past the given block's closing `}` is an
+    /// `else` keyword (comments are not in the token stream, so they're
+    /// skipped naturally).
+    fn blockFollowedByElse(self: *const LintContext, block: NodeIndex) bool {
+        const block_end = self.nodeSpan(block).end;
+        const start_tok = self.ast.nodeMainToken(block); // the `{`
+        const n_toks: u32 = @intCast(self.ast.tokens.items(.start).len);
+        var t: u32 = start_tok;
+        while (t < n_toks) : (t += 1) {
+            if (self.ast.tokenStart(t) >= block_end) {
+                return self.ast.tokenTag(t) == .kw_else;
+            }
+        }
+        return false;
+    }
+
+    /// no-useless-call: report `fn.call(thisArg, …)` / `fn.apply(thisArg, [..])`
+    /// that could be a direct call — `thisArg` token-equals the receiver of
+    /// `fn`, or `fn` has no receiver and `thisArg` is null/undefined.  Mirrors
+    /// ESLint's isCallOrNonVariadicApply + isValidThisArg.
+    pub fn checkNoUselessCall(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none) return;
+        const ntag = self.ast.nodeTag(node);
+        if (ntag != .call_expr and ntag != .optional_call_expr) return;
+        const callee = self.calleeOf(node);
+        if (callee == .none) return;
+        // callee must be a NON-computed member access `X.call` / `X.apply`.
+        const ctag = self.ast.nodeTag(callee);
+        if (ctag != .member_expr and ctag != .optional_member_expr) return;
+        const prop = self.ast.tokenText(self.ast.nodeMainToken(callee));
+        const is_call = std.mem.eql(u8, prop, "call");
+        const is_apply = std.mem.eql(u8, prop, "apply");
+        if (!is_call and !is_apply) return;
+        const data = self.nodeData(node);
+        if (data.rhs == .none) return; // no args → neither form qualifies
+        const sr = self.extraData(SubRange, @intFromEnum(data.rhs));
+        const args = self.extraSlice(sr);
+        if (is_call) {
+            if (args.len < 1) return; // `.call` needs ≥1 arg (thisArg)
+        } else {
+            // `.apply` qualifies only as `apply(thisArg, [literal array])`.
+            if (args.len != 2) return;
+            if (self.ast.nodeTag(@enumFromInt(args[1])) != .array_literal) return;
+        }
+        // applied = the object `fn` of `fn.call`; expectedThis = its receiver.
+        // Skip grouping wrappers — `(obj?.foo).call(...)` parens are not part
+        // of the receiver in ESTree.
+        const applied = self.nodeSkipGrouping(self.nodeData(callee).lhs);
+        var expected_this: NodeIndex = .none;
+        switch (self.ast.nodeTag(applied)) {
+            .member_expr, .computed_member_expr, .optional_member_expr, .optional_computed_member_expr =>
+                expected_this = self.nodeSkipGrouping(self.nodeData(applied).lhs),
+            else => {},
+        }
+        const this_arg = self.nodeSkipGrouping(@enumFromInt(args[0]));
+        // Use STRICT token equality (ESLint's equalTokens) here — unlike
+        // nodeTokensEqual, `a?.b` and `a.b` must NOT compare equal.
+        const valid = if (expected_this == .none)
+            self.isNullOrUndefinedNode(this_arg)
+        else
+            self.nodeTokensEqualStrict(expected_this, this_arg);
+        if (!valid) return;
+        self.reportWithMessageIdAndData(node, "unnecessaryCall", &[_]MessageDataEntry{
+            .{ .key = "name", .val = prop },
+        });
+    }
+
+    /// operator-assignment: in "always" mode (default) flag `x = x <op> y`
+    /// reducible to `x <op>= y`; in "never" mode flag any shorthand assignment
+    /// (`x <op>= y`) reducible to `x = x <op> y`.  Mirrors the rule's
+    /// verify/prohibit split + isCommutative/isNonCommutativeOperatorWithShorthand.
+    pub fn checkOperatorAssignment(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none) return;
+        const never = blk: {
+            const all = self.rule_options_all orelse break :blk false;
+            if (all.len == 0) break :blk false;
+            break :blk (all[0] == .string and std.mem.eql(u8, all[0].string, "never"));
+        };
+        const ntag = self.ast.nodeTag(node);
+        if (never) {
+            // Report compound assignments (NOT `=` and NOT logical `&&=`/`||=`/`??=`).
+            switch (ntag) {
+                .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign,
+                .exp_assign, .and_assign, .or_assign, .xor_assign,
+                .shl_assign, .shr_assign, .ushr_assign => {
+                    const op = self.ast.tokenText(self.ast.nodeMainToken(node));
+                    self.reportWithMessageIdAndData(node, "unexpected", &[_]MessageDataEntry{
+                        .{ .key = "operator", .val = op },
+                    });
+                },
+                else => {},
+            }
+            return;
+        }
+        // "always": `x = <binary>` where the binary repeats `x` on a shorthand op.
+        if (ntag != .assign) return;
+        const d = self.nodeData(node);
+        const left = d.lhs;
+        const right = self.nodeSkipGrouping(d.rhs); // `x = (x + y)` → unwrap parens
+        if (left == .none or right == .none) return;
+        const repl = shorthandAssignOp(self.ast.nodeTag(right)) orelse return;
+        const commutative = isCommutativeShorthandTag(self.ast.nodeTag(right));
+        const rd = self.nodeData(right);
+        // ESLint passes disableStaticComputedKey=true here, so `x.y` ≠ `x['y']`
+        // and dynamic computed keys (`x[fn()]`) are never same-reference.
+        const matched = self.sameReferenceStrict(left, rd.lhs) or
+            (commutative and self.sameReferenceStrict(left, rd.rhs));
+        if (!matched) return;
+        self.reportWithMessageIdAndData(node, "replaced", &[_]MessageDataEntry{
+            .{ .key = "operator", .val = repl },
+        });
+    }
+
+    /// Binary-op tag → its shorthand-assignment operator string ("+=" etc.),
+    /// or null when the operator has no shorthand form (comparisons, logical).
+    fn shorthandAssignOp(tag: Node.Tag) ?[]const u8 {
+        return switch (tag) {
+            .add => "+=",
+            .subtract => "-=",
+            .multiply => "*=",
+            .divide => "/=",
+            .modulo => "%=",
+            .exponentiate => "**=",
+            .bitwise_and => "&=",
+            .bitwise_or => "|=",
+            .bitwise_xor => "^=",
+            .shift_left => "<<=",
+            .shift_right => ">>=",
+            .unsigned_shift_right => ">>>=",
+            else => null,
+        };
+    }
+
+    fn isCommutativeShorthandTag(tag: Node.Tag) bool {
+        return switch (tag) {
+            .multiply, .bitwise_and, .bitwise_xor, .bitwise_or => true,
+            else => false,
+        };
+    }
+
+    /// member-reference kind: 0 = not a member, 1 = non-computed (`a.b`),
+    /// 2 = computed (`a[x]`).  Optional (`a?.b`) folds to the same kind as its
+    /// plain form — ESLint's isSameReference ignores the optional flag.
+    fn memberRefKind(tag: Node.Tag) u8 {
+        return switch (tag) {
+            .member_expr, .optional_member_expr => 1,
+            .computed_member_expr, .optional_computed_member_expr => 2,
+            else => 0,
+        };
+    }
+
+    fn isMemberLike(tag: Node.Tag) bool {
+        return memberRefKind(tag) != 0;
+    }
+
+    /// isSameReference with disableStaticComputedKey=true: structural equality
+    /// where `a.b` ≠ `a['b']` (computed-ness must match) and dynamic computed
+    /// keys are equal only if their key expressions are themselves same-ref.
+    fn sameReferenceStrict(self: *const LintContext, a_in: NodeIndex, b_in: NodeIndex) bool {
+        const a = self.nodeSkipGrouping(a_in);
+        const b = self.nodeSkipGrouping(b_in);
+        if (a == .none or b == .none) return false;
+        const ta = self.ast.nodeTag(a);
+        const tb = self.ast.nodeTag(b);
+        const ka = memberRefKind(ta);
+        const kb = memberRefKind(tb);
+        if (ka != 0 or kb != 0) {
+            if (ka != kb) return false; // one isn't a member, or computed mismatch
+            if (!self.sameReferenceStrict(self.nodeData(a).lhs, self.nodeData(b).lhs)) return false;
+            if (ka == 2) return self.sameReferenceStrict(self.nodeData(a).rhs, self.nodeData(b).rhs);
+            // non-computed: compare property names (the member's main token).
+            return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(a)),
+                self.ast.tokenText(self.ast.nodeMainToken(b)));
+        }
+        return switch (ta) {
+            .this_expr, .super_expr => tb == ta,
+            .identifier =>
+                tb == ta and std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(a)),
+                    self.ast.tokenText(self.ast.nodeMainToken(b))),
+            .string_literal, .number_literal, .bigint_literal, .null_literal,
+            .regex_literal, .boolean_literal =>
+                tb == ta and std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(a)),
+                    self.ast.tokenText(self.ast.nodeMainToken(b))),
+            else => false,
+        };
+    }
+
+    /// no-lone-blocks: report a redundant `{ }` block — one appearing where a
+    /// statement list is allowed and not serving as a control-flow body.  In
+    /// ES6+, a block that directly contains a block-scoped binding
+    /// (let/const/class, or a function declaration in strict mode) is meaningful
+    /// and spared, UNLESS it is the sole statement of an enclosing block.
+    /// Stateless reformulation of ESLint's loneBlocks-stack approach.
+    pub fn checkLoneBlock(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none or self.ast.nodeTag(node) != .block_stmt) return;
+        const parent = self.parentOf(node);
+        if (parent == .none) return;
+        const ptag = self.ast.nodeTag(parent);
+        const nested = (ptag == .block_stmt or ptag == .static_block);
+        var lone = nested or ptag == .root;
+        if (!lone and ptag == .switch_case) {
+            // Lone unless the block is the case's only statement.
+            const cd = self.ast.nodeData(parent);
+            if (cd.rhs == .none) {
+                lone = true;
+            } else {
+                const csr = self.extraData(SubRange, @intFromEnum(cd.rhs));
+                const cstmts = self.extraSlice(csr);
+                const sole = cstmts.len == 1 and @as(NodeIndex, @enumFromInt(cstmts[0])) == node;
+                lone = !sole;
+            }
+        }
+        if (!lone) return;
+        // Direct block-scoped binding → block is meaningful (ES6+).
+        var has_binding = false;
+        const count: i32 = @intCast(self.nodeBodyStmtCount(node));
+        var i: i32 = 0;
+        while (i < count) : (i += 1) {
+            switch (self.ast.nodeTag(self.nodeBodyStmtAt(node, i))) {
+                .let_decl, .const_decl, .class_decl => {
+                    has_binding = true;
+                    break;
+                },
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => {
+                    if (self.nodeInStrictContext(node)) {
+                        has_binding = true;
+                        break;
+                    }
+                },
+                else => {},
+            }
+        }
+        // Even with bindings, a block that is the SOLE statement of an
+        // enclosing block/static-block is redundant nesting.
+        const sole_child = nested and self.nodeBodyStmtCount(parent) == 1;
+        if (has_binding and !sole_child) return;
+        self.reportWithMessageId(node, if (nested) "redundantNestedBlock" else "redundantBlock");
+    }
+
+    /// True when `node` is in strict mode: module sourceType, `impliedStrict`
+    /// ecmaFeature, a class body (always strict), or a program-level
+    /// `"use strict"` directive.
+    fn nodeInStrictContext(self: *const LintContext, node: NodeIndex) bool {
+        if (self.getLanguageOptionString("sourceType")) |st| {
+            if (std.mem.eql(u8, st, "module")) return true;
+        }
+        if (self.languageOptionImpliedStrict()) return true;
+        // Any enclosing class makes the context strict.
+        var p = self.parentOf(node);
+        while (p != .none) : (p = self.parentOf(p)) {
+            switch (self.ast.nodeTag(p)) {
+                .class_body, .class_decl, .class_expr => return true,
+                else => {},
+            }
+        }
+        const root: NodeIndex = @enumFromInt(0);
+        if (self.ast.nodeTag(root) != .root) return false;
+        const d = self.ast.nodeData(root);
+        const sr: SubRange = .{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) };
+        for (self.extraSlice(sr)) |s_int| {
+            const s: NodeIndex = @enumFromInt(s_int);
+            if (self.ast.nodeTag(s) != .expression_stmt) break; // directives lead
+            const expr = self.ast.nodeData(s).lhs;
+            if (self.ast.nodeTag(expr) != .string_literal) break;
+            const raw = self.ast.tokenText(self.ast.nodeMainToken(expr));
+            if (raw.len >= 2 and std.mem.eql(u8, raw[1 .. raw.len - 1], "use strict")) return true;
+        }
+        return false;
+    }
+
+    /// Reads `parserOptions.ecmaFeatures.impliedStrict` (or the flattened
+    /// `ecmaFeatures.impliedStrict`) from languageOptions, if present.
+    fn languageOptionImpliedStrict(self: *const LintContext) bool {
+        const lo = self.language_options orelse return false;
+        if (lo.* != .object) return false;
+        const getObj = struct {
+            fn f(v: std.json.Value, key: []const u8) ?std.json.Value {
+                if (v != .object) return null;
+                return v.object.get(key);
+            }
+        }.f;
+        var ef: ?std.json.Value = null;
+        if (getObj(lo.*, "parserOptions")) |po| ef = getObj(po, "ecmaFeatures");
+        if (ef == null) ef = getObj(lo.*, "ecmaFeatures");
+        const ef_v = ef orelse return false;
+        const is_ = getObj(ef_v, "impliedStrict") orelse return false;
+        return is_ == .bool and is_.bool;
+    }
+
+    /// no-useless-computed-key: report a computed property/member key that is a
+    /// string/number literal and could be written plainly (`['x']`→`x`).  Spares
+    /// keys whose removal would change meaning: `__proto__` (object), and
+    /// `constructor`/`prototype` (class, static-dependent).  Mirrors ESLint's
+    /// hasUselessComputedKey across Property/MethodDefinition/PropertyDefinition.
+    pub fn checkUselessComputedKey(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none) return;
+        const tag = self.ast.nodeTag(node);
+        // Resolve the computed key node; bail for non-computed forms.
+        var key: NodeIndex = .none;
+        var is_class_field = false; // PropertyDefinition vs MethodDefinition (class)
+        switch (tag) {
+            .computed_property => {
+                // Object/pattern computed property `[k]: v` — key is lhs.
+                key = self.ast.nodeData(node).lhs;
+            },
+            .computed_property_def => {
+                key = self.ast.nodeData(node).lhs;
+                is_class_field = true;
+            },
+            .computed_method_def, .computed_getter_def, .computed_setter_def => {
+                key = self.ast.nodeData(node).lhs;
+            },
+            else => return,
+        }
+        if (key == .none) return;
+        key = self.nodeSkipGrouping(key); // `[('x')]` → 'x'
+        const ktag = self.ast.nodeTag(key);
+        const is_string = ktag == .string_literal;
+        if (!is_string and ktag != .number_literal) return; // only string/number literals
+
+        // Determine context from the parent (object vs class) for exclusions.
+        const parent = self.parentOf(node);
+        const ptag = if (parent == .none) Node.Tag.root else self.ast.nodeTag(parent);
+        const in_class = ptag == .class_body;
+        if (in_class and !self.getOptionBool("enforceForClassMembers", true)) return;
+
+        // Value-based exclusions apply only to string keys (numbers never match).
+        if (is_string) {
+            const val = self.nodeStaticKeyValue(key) orelse return;
+            if (in_class) {
+                const is_static = self.classMemberIsStatic(node);
+                if (is_class_field) {
+                    if (is_static) {
+                        if (std.mem.eql(u8, val, "constructor") or std.mem.eql(u8, val, "prototype")) return;
+                    } else if (std.mem.eql(u8, val, "constructor")) return;
+                } else {
+                    if (is_static) {
+                        if (std.mem.eql(u8, val, "prototype")) return;
+                    } else if (std.mem.eql(u8, val, "constructor")) return;
+                }
+            } else if (ptag == .object_literal) {
+                if (std.mem.eql(u8, val, "__proto__")) return;
+            }
+            // object_pattern (destructuring): no exclusion — always useless.
+        }
+
+        const span = self.nodeSpan(key);
+        const key_text = self.ast.source[span.start..span.end];
+        self.reportWithMessageIdAndData(node, "unnecessarilyComputedProperty", &[_]MessageDataEntry{
+            .{ .key = "property", .val = key_text },
+        });
+    }
+
+    /// prefer-object-has-own: report `Object.prototype.hasOwnProperty.call(o,p)`
+    /// / `Object.hasOwnProperty.call(...)` / `({}).hasOwnProperty.call(...)` —
+    /// reducible to `Object.hasOwn`.  Requires the global `Object` (not shadowed,
+    /// not disabled).  Mirrors the ESLint rule's structure + hasLeftHandObject.
+    pub fn checkPreferObjectHasOwn(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none) return;
+        const ntag = self.ast.nodeTag(node);
+        if (ntag != .call_expr and ntag != .optional_call_expr) return;
+        const callee = self.calleeOf(node);
+        if (!isMemberLike(self.ast.nodeTag(callee))) return;
+        if (!self.nodePropNameEquals(callee, "call")) return;
+        const callee_obj = self.nodeSkipGrouping(self.ast.nodeData(callee).lhs);
+        if (!isMemberLike(self.ast.nodeTag(callee_obj))) return;
+        if (!self.nodePropNameEquals(callee_obj, "hasOwnProperty")) return;
+        const base = self.nodeSkipGrouping(self.ast.nodeData(callee_obj).lhs);
+        if (!self.hasLeftHandObjectForHasOwn(base)) return;
+        if (!self.objectIsGlobalAt(node)) return;
+        self.reportWithMessageId(node, "useHasOwn");
+    }
+
+    fn hasLeftHandObjectForHasOwn(self: *const LintContext, base: NodeIndex) bool {
+        if (base == .none) return false;
+        const bt = self.ast.nodeTag(base);
+        // `({}).hasOwnProperty...` — empty object literal.
+        if (bt == .object_literal) {
+            const d = self.ast.nodeData(base);
+            return @intFromEnum(d.lhs) == @intFromEnum(d.rhs); // empty SubRange
+        }
+        // `Object.prototype.hasOwnProperty...` — peel `.prototype`.
+        var obj = base;
+        if (isMemberLike(bt) and self.nodePropNameEquals(base, "prototype")) {
+            obj = self.nodeSkipGrouping(self.ast.nodeData(base).lhs);
+        }
+        return self.ast.nodeTag(obj) == .identifier and
+            std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(obj)), "Object");
+    }
+
+    /// True when the bare name `Object` resolves to the global at `node` —
+    /// not shadowed by any enclosing user binding and not `/* global Object: off */`.
+    fn objectIsGlobalAt(self: *const LintContext, node: NodeIndex) bool {
+        if (self.globalIsOff("Object")) return false;
+        const scopes_t = &self.semantic.scopes;
+        var sid = self.smallestEnclosingScope(node);
+        while (sid != .none) {
+            if (self.scopeHasUserBindingNamed(sid, "Object")) return false;
+            const parent = scopes_t.parent(sid);
+            if (parent == sid) break;
+            sid = parent;
+        }
+        // Global/module scopes have nodeId=.none, missed above — check directly.
+        const scope_count = scopes_t.len();
+        var i: u32 = 0;
+        while (i < scope_count) : (i += 1) {
+            const gsid = scope_mod.ScopeId.fromInt(i);
+            const k = scopes_t.kind(gsid);
+            if (k != .global and k != .module) continue;
+            if (self.scopeHasUserBindingNamed(gsid, "Object")) return false;
+        }
+        return true;
+    }
+
+    /// prefer-object-spread: report `Object.assign({}, …)` (first arg an object
+    /// literal, no array/`...` spread arg, no accessor in object args) — reducible
+    /// to an object-spread literal.  Requires the global `Object`.
+    pub fn checkPreferObjectSpread(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none or self.ast.nodeTag(node) != .call_expr) return;
+        const callee = self.calleeOf(node);
+        if (!isMemberLike(self.ast.nodeTag(callee))) return;
+        if (!self.nodePropNameEquals(callee, "assign")) return;
+        const obj = self.nodeSkipGrouping(self.ast.nodeData(callee).lhs);
+        if (!self.isGlobalObjectRef(obj, node)) return;
+        const d = self.nodeData(node);
+        if (d.rhs == .none) return; // no args
+        const sr = self.extraData(SubRange, @intFromEnum(d.rhs));
+        const args = self.extraSlice(sr);
+        if (args.len < 1) return;
+        const first: NodeIndex = @enumFromInt(args[0]);
+        if (self.ast.nodeTag(first) != .object_literal) return;
+        // No `...spread` argument.
+        for (args) |a_int| {
+            if (self.ast.nodeTag(@enumFromInt(a_int)) == .spread_element) return;
+        }
+        // With >1 arg, bail if any object-literal arg has a getter/setter.
+        if (args.len > 1) {
+            for (args) |a_int| {
+                const a: NodeIndex = @enumFromInt(a_int);
+                if (self.ast.nodeTag(a) == .object_literal and self.objectLiteralHasAccessor(a)) return;
+            }
+        }
+        self.reportWithMessageId(node, if (args.len == 1) "useLiteralMessage" else "useSpreadMessage");
+    }
+
+    /// True when `n` denotes the pristine global `Object` — either the bare
+    /// identifier `Object` (not shadowed/off at `at`) or `<globalThis>.Object`
+    /// where the base is an unshadowed global (`globalThis`/`window`/`self`/`global`).
+    fn isGlobalObjectRef(self: *const LintContext, n: NodeIndex, at: NodeIndex) bool {
+        if (n == .none) return false;
+        const t = self.ast.nodeTag(n);
+        if (t == .identifier) {
+            return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(n)), "Object") and
+                self.objectIsGlobalAt(at);
+        }
+        if (isMemberLike(t) and self.nodePropNameEquals(n, "Object")) {
+            const base = self.nodeSkipGrouping(self.ast.nodeData(n).lhs);
+            if (self.ast.nodeTag(base) != .identifier) return false;
+            const bn = self.ast.tokenText(self.ast.nodeMainToken(base));
+            const is_gt = std.mem.eql(u8, bn, "globalThis") or std.mem.eql(u8, bn, "window") or
+                std.mem.eql(u8, bn, "self") or std.mem.eql(u8, bn, "global");
+            return is_gt and self.isGlobalReference(base);
+        }
+        return false;
+    }
+
+    fn objectLiteralHasAccessor(self: *const LintContext, obj: NodeIndex) bool {
+        const d = self.nodeData(obj);
+        const sr: SubRange = .{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) };
+        for (self.extraSlice(sr)) |p_int| {
+            switch (self.ast.nodeTag(@enumFromInt(p_int))) {
+                .getter_def, .setter_def, .computed_getter_def, .computed_setter_def => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    /// no-sequences: report a comma SequenceExpression except in a `for`
+    /// init/update, or when wrapped in parens that signal intent (a context
+    /// requiring its own parens — if/while/switch/do-while/with test, arrow
+    /// body — needs DOUBLE parens).  Reports at the first comma token.
+    pub fn checkNoSequences(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none or self.ast.nodeTag(node) != .sequence_expr) return;
+        const parent = self.parentOf(node);
+        const ptag = if (parent == .none) Node.Tag.root else self.ast.nodeTag(parent);
+        if (ptag == .for_stmt) {
+            const fd = self.extraData(ast_mod.ForData, @intFromEnum(self.ast.nodeData(parent).lhs));
+            if (fd.init == node or fd.update == node) return;
+        }
+        const d = self.nodeData(node);
+        const exprs = self.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+        if (exprs.len < 2) return;
+        const first_expr: NodeIndex = @enumFromInt(exprs[0]);
+        const last_expr: NodeIndex = @enumFromInt(exprs[exprs.len - 1]);
+        // Paren detection bounds the actual expressions — sequence_expr's own
+        // main_token/min_tok varies by creation path (the parenthesized path
+        // sets main_token to `(`), so we can't key off the node's tokens.
+        if (self.getOptionBool("allowInParentheses", true)) {
+            const fe_i = first_expr.toInt();
+            const need: u32 = if (self.sequenceRequiresExtraParens(node, parent, ptag)) 2 else 1;
+            if (fe_i < self.node_min_toks.len and
+                self.tokenPairsWrap(self.node_min_toks[fe_i], self.nodeLastToken(last_expr), need)) return;
+        }
+        const ntoks: u32 = @intCast(self.ast.tokens.items(.start).len);
+        var t: u32 = self.nodeLastToken(first_expr) + 1;
+        while (t < ntoks and self.ast.tokenTag(t) != .comma) t += 1;
+        if (t >= ntoks) return;
+        self.reportSpanWithMessageId(.{ .start = self.ast.tokenStart(t), .end = self.tokenEnd(t) }, "unexpectedCommaExpression");
+    }
+
+    /// True when `node`'s parent grammatically requires its own parens around
+    /// `node` (so a sequence there needs an EXTRA pair to read as intentional).
+    fn sequenceRequiresExtraParens(self: *const LintContext, node: NodeIndex, parent: NodeIndex, ptag: Node.Tag) bool {
+        if (parent == .none) return false;
+        const d = self.ast.nodeData(parent);
+        return switch (ptag) {
+            .if_stmt, .if_else_stmt, .while_stmt, .switch_stmt, .with_stmt => d.lhs == node,
+            .do_while_stmt => d.rhs == node,
+            .arrow_fn, .async_arrow_fn => blk: {
+                if (d.lhs == .none) break :blk false;
+                const ad = self.extraData(ast_mod.ArrowData, @intFromEnum(d.lhs));
+                break :blk ad.body == node;
+            },
+            else => false,
+        };
+    }
+
+    /// True when the token range [first, last] is wrapped in at least `n`
+    /// immediately-adjacent paren pairs (matching astUtils.isParenthesised[Twice]).
+    fn tokenPairsWrap(self: *const LintContext, first: TokenIndex, last: TokenIndex, n: u32) bool {
+        const ntoks: u32 = @intCast(self.ast.tokens.items(.start).len);
+        var k: u32 = 1;
+        while (k <= n) : (k += 1) {
+            if (first < k or last + k >= ntoks) return false;
+            if (self.ast.tokenTag(first - k) != .l_paren) return false;
+            if (self.ast.tokenTag(last + k) != .r_paren) return false;
+        }
+        return true;
+    }
+
+    /// max-classes-per-file: report the Program when the file declares more
+    /// than `max` (default 1) classes.  Option is a number or {max, ignoreExpressions}.
+    pub fn checkMaxClassesPerFile(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none or self.ast.nodeTag(node) != .root) return;
+        var max: i64 = 1;
+        var ignore_expr = false;
+        if (self.rule_options_all) |all| {
+            if (all.len > 0) {
+                const o = all[0];
+                if (o == .integer) {
+                    if (o.integer != 0) max = o.integer;
+                } else if (o == .object) {
+                    if (o.object.get("max")) |m| {
+                        if (m == .integer and m.integer != 0) max = m.integer;
+                    }
+                    if (o.object.get("ignoreExpressions")) |ie| {
+                        if (ie == .bool) ignore_expr = ie.bool;
+                    }
+                }
+            }
+        }
+        var count: i64 = 0;
+        const total: u32 = @intCast(self.ast.nodes.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            switch (self.ast.nodeTag(@enumFromInt(i))) {
+                .class_decl => count += 1,
+                .class_expr => if (!ignore_expr) {
+                    count += 1;
+                },
+                else => {},
+            }
+        }
+        if (count <= max) return;
+        const count_str = std.fmt.allocPrint(self.allocator, "{d}", .{count}) catch return;
+        const max_str = std.fmt.allocPrint(self.allocator, "{d}", .{max}) catch return;
+        self.reportWithMessageIdAndData(node, "maximumExceeded", &[_]MessageDataEntry{
+            .{ .key = "classCount", .val = count_str },
+            .{ .key = "max", .val = max_str },
+        });
+    }
+
+    /// sort-vars: within one VariableDeclaration, report identifier declarators
+    /// that come before their predecessor alphabetically.  Skips destructuring
+    /// bindings.  `ignoreCase` option folds case.  Reports at the declarator.
+    pub fn checkSortVars(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag != .var_decl and tag != .let_decl and tag != .const_decl) return;
+        const ignore_case = self.getOptionBool("ignoreCase", false);
+        const d = self.nodeData(node);
+        const decls = self.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+        var memo: ?[]const u8 = null; // last in-order identifier name
+        for (decls) |dc_int| {
+            const dc: NodeIndex = @enumFromInt(dc_int);
+            if (self.ast.nodeTag(dc) != .declarator) continue;
+            const binding = self.nodeData(dc).lhs;
+            if (binding == .none or self.ast.nodeTag(binding) != .identifier) continue;
+            const name = self.ast.tokenText(self.ast.nodeMainToken(binding));
+            if (memo) |m| {
+                if (varNameLess(name, m, ignore_case)) {
+                    self.reportWithMessageId(dc, "sortVars");
+                    continue; // keep memo (the larger predecessor)
+                }
+            }
+            memo = name;
+        }
+    }
+
+    /// JS string `<` (UTF-16 code-unit order, fine for identifier ASCII) with
+    /// optional ASCII case folding.
+    fn varNameLess(a: []const u8, b: []const u8, ignore_case: bool) bool {
+        const fold = struct {
+            fn f(c: u8, ic: bool) u8 {
+                return if (ic and c >= 'A' and c <= 'Z') c + 32 else c;
+            }
+        }.f;
+        var i: usize = 0;
+        while (i < a.len and i < b.len) : (i += 1) {
+            const ca = fold(a[i], ignore_case);
+            const cb = fold(b[i], ignore_case);
+            if (ca != cb) return ca < cb;
+        }
+        return a.len < b.len;
+    }
+
+    /// vars-on-top: report a `var` declaration that isn't at the top of its
+    /// Program / function body / static block (preceded only by directives,
+    /// imports, and other variable declarations).
+    pub fn checkVarsOnTop(self: *const LintContext, node: NodeIndex) void {
+        if (self.ast.nodeTag(node) != .var_decl) return; // only `var`
+        var effective = node;
+        var parent = self.parentOf(node);
+        if (parent != .none and self.ast.nodeTag(parent) == .export_named) {
+            effective = parent; // `export var` — check the export's position
+            parent = self.parentOf(parent);
+        }
+        if (parent == .none) {
+            self.reportWithMessageId(effective, "top");
+            return;
+        }
+        switch (self.ast.nodeTag(parent)) {
+            .root => {
+                if (!self.varIsOnTop(effective, parent, false)) self.reportWithMessageId(effective, "top");
+            },
+            .block_stmt => {
+                const gp = self.parentOf(parent);
+                if (gp != .none and isFunctionLikeTag(self.ast.nodeTag(gp)) and self.varIsOnTop(effective, parent, false)) return;
+                self.reportWithMessageId(effective, "top");
+            },
+            .static_block => {
+                if (!self.varIsOnTop(effective, parent, true)) self.reportWithMessageId(effective, "top");
+            },
+            else => self.reportWithMessageId(effective, "top"),
+        }
+    }
+
+    fn varIsOnTop(self: *const LintContext, target: NodeIndex, container: NodeIndex, is_static: bool) bool {
+        const d = self.ast.nodeData(container);
+        const stmts = self.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+        var i: usize = 0;
+        if (!is_static) {
+            // Skip leading directives + imports.
+            while (i < stmts.len) : (i += 1) {
+                const s: NodeIndex = @enumFromInt(stmts[i]);
+                const st = self.ast.nodeTag(s);
+                const is_directive = st == .expression_stmt and
+                    self.ast.nodeTag(self.ast.nodeData(s).lhs) == .string_literal;
+                if (!is_directive and st != .import_decl) break;
+            }
+        }
+        while (i < stmts.len) : (i += 1) {
+            const s: NodeIndex = @enumFromInt(stmts[i]);
+            if (!self.isVarDeclLikeStmt(s)) return false;
+            if (s == target) return true;
+        }
+        return false;
+    }
+
+    fn isVarDeclLikeStmt(self: *const LintContext, s: NodeIndex) bool {
+        return switch (self.ast.nodeTag(s)) {
+            .var_decl, .let_decl, .const_decl => true,
+            .export_named => switch (self.ast.nodeTag(self.ast.nodeData(s).lhs)) {
+                .var_decl, .let_decl, .const_decl => true,
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    fn isFunctionLikeTag(tag: Node.Tag) bool {
+        return switch (tag) {
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .arrow_fn, .async_arrow_fn,
+            .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def, .constructor_def => true,
+            else => false,
+        };
+    }
+
+    /// no-labels: report labeled statements and labeled break/continue unless
+    /// the label targets an allowed loop (allowLoop) or switch (allowSwitch).
+    pub fn checkNoLabels(self: *const LintContext, node: NodeIndex) void {
+        const allow_loop = self.getOptionBool("allowLoop", false);
+        const allow_switch = self.getOptionBool("allowSwitch", false);
+        switch (self.ast.nodeTag(node)) {
+            .labeled_stmt => {
+                const kind = bodyLabelKind(self.ast.nodeTag(self.ast.nodeData(node).lhs));
+                if (!labelKindAllowed(kind, allow_loop, allow_switch))
+                    self.reportWithMessageId(node, "unexpectedLabel");
+            },
+            .break_label, .continue_label => {
+                const name = self.ast.tokenText(self.ast.nodeMainToken(node) + 1);
+                const kind = self.labelTargetKind(node, name);
+                if (!labelKindAllowed(kind, allow_loop, allow_switch)) {
+                    self.reportWithMessageId(node, if (self.ast.nodeTag(node) == .break_label)
+                        "unexpectedLabelInBreak"
+                    else
+                        "unexpectedLabelInContinue");
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Kind of a labeled statement's body: 0=other, 1=loop, 2=switch.
+    fn bodyLabelKind(tag: Node.Tag) u8 {
+        return switch (tag) {
+            .for_stmt, .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
+            .while_stmt, .do_while_stmt => 1,
+            .switch_stmt => 2,
+            else => 0,
+        };
+    }
+
+    fn labelKindAllowed(kind: u8, allow_loop: bool, allow_switch: bool) bool {
+        return switch (kind) {
+            1 => allow_loop,
+            2 => allow_switch,
+            else => false,
+        };
+    }
+
+    /// Walk ancestors for the labeled_stmt named `name`; return its body kind.
+    fn labelTargetKind(self: *const LintContext, node: NodeIndex, name: []const u8) u8 {
+        var p = self.parentOf(node);
+        while (p != .none) : (p = self.parentOf(p)) {
+            if (self.ast.nodeTag(p) == .labeled_stmt and
+                std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(p)), name))
+            {
+                return bodyLabelKind(self.ast.nodeTag(self.ast.nodeData(p).lhs));
+            }
+        }
+        return 0;
+    }
+
+    /// no-extra-bind: report `fn.bind(arg)` where the `.bind` is useless — the
+    /// callee is an arrow (can't be bound) or a regular function that never
+    /// references `this`.  Reports at the `.bind` property.
+    pub fn checkNoExtraBind(self: *const LintContext, node: NodeIndex) void {
+        const ntag0 = self.ast.nodeTag(node);
+        if (ntag0 != .call_expr and ntag0 != .optional_call_expr) return;
+        const callee = self.calleeOf(node);
+        if (!isMemberLike(self.ast.nodeTag(callee))) return;
+        if (!self.nodePropNameEquals(callee, "bind")) return;
+        // Exactly one non-spread argument.
+        const cd = self.nodeData(node);
+        if (cd.rhs == .none) return;
+        const args = self.extraSlice(self.extraData(SubRange, @intFromEnum(cd.rhs)));
+        if (args.len != 1) return;
+        if (self.ast.nodeTag(@enumFromInt(args[0])) == .spread_element) return;
+        const fn_node = self.nodeSkipGrouping(self.ast.nodeData(callee).lhs);
+        const ftag = self.ast.nodeTag(fn_node);
+        const is_arrow = ftag == .arrow_fn or ftag == .async_arrow_fn;
+        const is_regular_fn = ftag == .fn_expr or ftag == .async_fn_expr or
+            ftag == .generator_fn_expr or ftag == .async_generator_fn_expr;
+        if (!is_arrow and !is_regular_fn) return;
+        if (is_regular_fn and self.functionReferencesThis(fn_node)) return;
+        // Report at the `.bind` property node (member's rhs).
+        const prop = self.ast.nodeData(callee).rhs;
+        if (prop == .none) return;
+        self.reportSpanWithMessageId(self.nodeSpan(prop), "unexpected");
+    }
+
+    /// True when `fn_node` (a non-arrow function) references `this` in its own
+    /// `this`-binding (descending into nested arrows, stopping at nested
+    /// regular functions which rebind `this`).
+    fn functionReferencesThis(self: *const LintContext, fn_node: NodeIndex) bool {
+        const total: u32 = @intCast(self.ast.nodes.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            if (self.ast.nodeTag(@enumFromInt(i)) != .this_expr) continue;
+            if (self.thisBindingFunctionOf(@enumFromInt(i)) == fn_node) return true;
+        }
+        return false;
+    }
+
+    /// The function that `this` (at `node`) binds to: nearest enclosing
+    /// non-arrow function (arrows inherit `this`), or .none at top level.
+    fn thisBindingFunctionOf(self: *const LintContext, node: NodeIndex) NodeIndex {
+        var p = self.parentOf(node);
+        while (p != .none) : (p = self.parentOf(p)) {
+            switch (self.ast.nodeTag(p)) {
+                .arrow_fn, .async_arrow_fn => {}, // inherit — keep walking
+                .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                .method_def, .computed_method_def, .getter_def, .computed_getter_def,
+                .setter_def, .computed_setter_def, .constructor_def => return p,
+                else => {},
+            }
+        }
+        return .none;
+    }
+
+    /// no-nonoctal-decimal-escape: report each `\8` / `\9` decimal escape in a
+    /// string literal (a real escape — not an escaped backslash `\\8`).
+    pub fn checkNoNonoctalDecimalEscape(self: *const LintContext, node: NodeIndex) void {
+        if (self.ast.nodeTag(node) != .string_literal) return;
+        const raw = self.ast.tokenText(self.ast.nodeMainToken(node));
+        if (raw.len < 3) return; // need quotes + at least one char
+        const base = self.nodeSpan(node).start;
+        var i: usize = 1; // skip opening quote
+        const end = raw.len - 1; // exclude closing quote
+        while (i < end) {
+            if (raw[i] == '\\') {
+                if (i + 1 < end and (raw[i + 1] == '8' or raw[i + 1] == '9')) {
+                    const s: u32 = base + @as(u32, @intCast(i));
+                    self.reportSpanWithMessageId(.{ .start = s, .end = s + 2 }, "decimalEscape");
+                }
+                i += 2; // an escape consumes the backslash + next char
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// no-implicit-coercion: report shorthand type-coercion idioms (`!!x`,
+    /// `~x.indexOf(y)`, `+x`, `- -x`, `1*x`, `x-0`, `''+x`, `x+=''`, and
+    /// (when disallowTemplateShorthand) `` `${x}` ``).  Reports the expression node.
+    pub fn checkNoImplicitCoercion(self: *const LintContext, node: NodeIndex) void {
+        const opt_bool = self.getOptionBool("boolean", true);
+        const opt_num = self.getOptionBool("number", true);
+        const opt_str = self.getOptionBool("string", true);
+        switch (self.ast.nodeTag(node)) {
+            .logical_not => { // !!x
+                if (opt_bool and !self.coercionAllowed("!!") and
+                    self.ast.nodeTag(self.ast.nodeData(node).lhs) == .logical_not)
+                    self.reportWithMessageId(node, "implicitCoercion");
+            },
+            .bitwise_not => { // ~x.indexOf(y)
+                if (opt_bool and !self.coercionAllowed("~")) {
+                    const call = self.nodeSkipGrouping(self.ast.nodeData(node).lhs);
+                    const ct = self.ast.nodeTag(call);
+                    if (ct == .call_expr or ct == .optional_call_expr) {
+                        const callee = self.calleeOf(call);
+                        if (isMemberLike(self.ast.nodeTag(callee)) and
+                            self.nodePropNameInSet(callee, &[_][]const u8{ "indexOf", "lastIndexOf" }))
+                            self.reportWithMessageId(node, "implicitCoercion");
+                    }
+                }
+            },
+            .unary_plus => { // +x
+                if (opt_num and !self.coercionAllowed("+") and !self.isNumericCoercionNode(self.ast.nodeData(node).lhs))
+                    self.reportWithMessageId(node, "implicitCoercion");
+            },
+            .unary_minus => { // - -x  (also -(-x))
+                if (opt_num and !self.coercionAllowed("- -")) {
+                    const arg = self.nodeSkipGrouping(self.ast.nodeData(node).lhs);
+                    if (self.ast.nodeTag(arg) == .unary_minus and !self.isNumericCoercionNode(self.ast.nodeData(arg).lhs))
+                        self.reportWithMessageId(node, "implicitCoercion");
+                }
+            },
+            .multiply => { // 1*x
+                if (opt_num and !self.coercionAllowed("*") and self.isMultiplyByOne(node) and
+                    !self.isMultiplyByFractionOfOne(node) and self.multiplyNonNumericOperand(node) != .none)
+                    self.reportWithMessageId(node, "implicitCoercion");
+            },
+            .subtract => { // x-0
+                if (opt_num and !self.coercionAllowed("-")) {
+                    const d = self.nodeData(node);
+                    if (self.numIsZero(d.rhs) and !self.isNumericCoercionNode(d.lhs))
+                        self.reportWithMessageId(node, "implicitCoercion");
+                }
+            },
+            .add => { // ''+x
+                if (opt_str and !self.coercionAllowed("+") and self.isConcatWithEmptyString(node))
+                    self.reportWithMessageId(node, "implicitCoercion");
+            },
+            .add_assign => { // x+=''
+                if (opt_str and !self.coercionAllowed("+") and self.isEmptyStringNode(self.ast.nodeData(node).rhs))
+                    self.reportWithMessageId(node, "implicitCoercion");
+            },
+            .template_literal => {
+                if (self.getOptionBool("disallowTemplateShorthand", false))
+                    self.checkTemplateShorthand(node);
+            },
+            else => {},
+        }
+    }
+
+    fn coercionAllowed(self: *const LintContext, s: []const u8) bool {
+        const o = self.rule_options orelse return false;
+        if (o.* != .object) return false;
+        const allow = o.object.get("allow") orelse return false;
+        if (allow != .array) return false;
+        for (allow.array.items) |it| {
+            if (it == .string and std.mem.eql(u8, it.string, s)) return true;
+        }
+        return false;
+    }
+
+    fn isNumericCoercionNode(self: *const LintContext, n: NodeIndex) bool {
+        switch (self.ast.nodeTag(n)) {
+            .number_literal => return true,
+            .call_expr, .optional_call_expr => {
+                const callee = self.ast.nodeData(n).lhs;
+                if (self.ast.nodeTag(callee) != .identifier) return false;
+                const nm = self.ast.tokenText(self.ast.nodeMainToken(callee));
+                return std.mem.eql(u8, nm, "Number") or std.mem.eql(u8, nm, "parseInt") or std.mem.eql(u8, nm, "parseFloat");
+            },
+            else => return false,
+        }
+    }
+
+    fn numIsZero(self: *const LintContext, n: NodeIndex) bool {
+        if (self.ast.nodeTag(n) != .number_literal) return false;
+        return (self.staticNumericValue(n) orelse return false) == 0;
+    }
+
+    fn isStringLiteralNode(self: *const LintContext, n: NodeIndex) bool {
+        const t = self.ast.nodeTag(n);
+        return t == .string_literal or t == .template_literal;
+    }
+
+    fn isStringTypeNode(self: *const LintContext, n: NodeIndex) bool {
+        if (self.isStringLiteralNode(n)) return true;
+        if (self.ast.nodeTag(n) == .call_expr) {
+            const callee = self.ast.nodeData(n).lhs;
+            return self.ast.nodeTag(callee) == .identifier and
+                std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(callee)), "String");
+        }
+        return false;
+    }
+
+    fn isEmptyStringNode(self: *const LintContext, n: NodeIndex) bool {
+        switch (self.ast.nodeTag(n)) {
+            .string_literal => return self.ast.tokenText(self.ast.nodeMainToken(n)).len == 2,
+            .template_literal => {
+                const sp = self.nodeSpan(n);
+                return sp.end - sp.start == 2; // ``
+            },
+            else => return false,
+        }
+    }
+
+    fn isConcatWithEmptyString(self: *const LintContext, node: NodeIndex) bool {
+        const d = self.nodeData(node);
+        return (self.isEmptyStringNode(d.lhs) and !self.isStringTypeNode(d.rhs)) or
+            (self.isEmptyStringNode(d.rhs) and !self.isStringTypeNode(d.lhs));
+    }
+
+    fn isMultiplyByOne(self: *const LintContext, node: NodeIndex) bool {
+        const d = self.nodeData(node);
+        const lv = self.staticNumericValue(d.lhs);
+        const rv = self.staticNumericValue(d.rhs);
+        return (self.ast.nodeTag(d.lhs) == .number_literal and lv != null and lv.? == 1) or
+            (self.ast.nodeTag(d.rhs) == .number_literal and rv != null and rv.? == 1);
+    }
+
+    fn isBinaryExprTag(tag: Node.Tag) bool {
+        return switch (tag) {
+            .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
+            .bitwise_and, .bitwise_or, .bitwise_xor, .shift_left, .shift_right, .unsigned_shift_right,
+            .equal, .not_equal, .strict_equal, .strict_not_equal,
+            .less_than, .greater_than, .less_equal, .greater_equal,
+            .instanceof_expr, .in_expr => true,
+            else => false,
+        };
+    }
+
+    fn multiplyNonNumericOperand(self: *const LintContext, node: NodeIndex) NodeIndex {
+        const d = self.nodeData(node);
+        if (!isBinaryExprTag(self.ast.nodeTag(d.rhs)) and !self.isNumericCoercionNode(d.rhs)) return d.rhs;
+        if (!isBinaryExprTag(self.ast.nodeTag(d.lhs)) and !self.isNumericCoercionNode(d.lhs)) return d.lhs;
+        return .none;
+    }
+
+    fn isMultiplyByFractionOfOne(self: *const LintContext, node: NodeIndex) bool {
+        const d = self.nodeData(node);
+        const rv = self.staticNumericValue(d.rhs);
+        if (!(self.ast.nodeTag(d.rhs) == .number_literal and rv != null and rv.? == 1)) return false;
+        const parent = self.parentOf(node);
+        if (parent == .none or self.ast.nodeTag(parent) != .divide) return false;
+        if (self.nodeData(parent).lhs != node) return false;
+        // not parenthesised
+        const i = node.toInt();
+        if (i >= self.node_min_toks.len) return false;
+        return !self.tokenPairsWrap(self.node_min_toks[i], self.nodeLastToken(node), 1);
+    }
+
+    fn checkTemplateShorthand(self: *const LintContext, node: NodeIndex) void {
+        // Not a tagged template.
+        const parent = self.parentOf(node);
+        if (parent != .none and self.ast.nodeTag(parent) == .tagged_template) return;
+        const d = self.nodeData(node);
+        const children = self.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+        // Exactly one expression child (others are template_element quasis).
+        var expr: NodeIndex = .none;
+        var expr_count: u32 = 0;
+        for (children) |child_raw| {
+            const c: NodeIndex = @enumFromInt(child_raw);
+            if (self.ast.nodeTag(c) != .template_element) {
+                expr_count += 1;
+                expr = c;
+            }
+        }
+        if (expr_count != 1 or expr == .none) return;
+        // Both surrounding quasis must be cooked-empty: between `` ` `` and `${`,
+        // and between `}` and `` ` `` — either nothing, or only line continuations.
+        const sp = self.nodeSpan(node);
+        const src = self.ast.source;
+        const esp = self.nodeSpan(expr);
+        if (esp.start < sp.start + 3 or esp.end + 1 >= sp.end) return; // need `${` … `}`
+        const prefix = src[sp.start + 1 .. esp.start - 2]; // between ` and ${
+        const suffix = src[esp.end + 1 .. sp.end - 1]; // between } and `
+        if (!isLineContinuationOnly(prefix) or !isLineContinuationOnly(suffix)) return;
+        if (self.isStringTypeNode(expr)) return; // already a string
+        self.reportWithMessageId(node, "implicitCoercion");
+    }
+
+    /// True when `s` is empty or consists only of `\`-newline line continuations.
+    fn isLineContinuationOnly(s: []const u8) bool {
+        var i: usize = 0;
+        while (i < s.len) {
+            if (s[i] != '\\' or i + 1 >= s.len) return false;
+            const nx = s[i + 1];
+            if (nx == '\n') {
+                i += 2;
+            } else if (nx == '\r') {
+                i += if (i + 2 < s.len and s[i + 2] == '\n') 3 else 2;
+            } else return false;
+        }
+        return true;
+    }
+
+    /// func-names: enforce naming of function expressions per mode
+    /// (always/as-needed/never, with a `generators` sub-option).  Reports at the
+    /// function head (`function`/`async`/`*` + name, up to the params `(`).
+    pub fn checkFuncNames(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        const is_decl = tag == .fn_decl or tag == .async_fn_decl or
+            tag == .generator_fn_decl or tag == .async_generator_fn_decl;
+        if (is_decl) {
+            // Only `export default function(){}` (anonymous default decl) qualifies.
+            const p = self.parentOf(node);
+            if (p == .none or self.ast.nodeTag(p) != .export_default_fn) return;
+        }
+        const fd = self.extraData(ast_mod.FnData, @intFromEnum(self.ast.nodeData(node).lhs));
+        const name_node = fd.name;
+        const has_name = name_node != .none;
+        const is_gen = tag == .generator_fn_expr or tag == .async_generator_fn_expr or
+            tag == .generator_fn_decl or tag == .async_generator_fn_decl;
+        var mode: []const u8 = "always";
+        if (self.rule_options_all) |all| {
+            if (all.len > 0 and all[0] == .string) mode = all[0].string;
+            if (is_gen and all.len > 1 and all[1] == .object) {
+                if (all[1].object.get("generators")) |g| {
+                    if (g == .string) mode = g.string;
+                }
+            }
+        }
+        // A named function whose name is used (recursion) is always allowed.
+        if (has_name and self.fnNameRecursivelyUsed(node, name_node)) return;
+        if (std.mem.eql(u8, mode, "never")) {
+            if (has_name and !is_decl) self.reportFuncHead(node, "named"); // not declarations
+        } else if (std.mem.eql(u8, mode, "as-needed")) {
+            if (!has_name and !self.funcHasInferredName(node)) self.reportFuncHead(node, "unnamed");
+        } else { // "always"
+            if (!has_name) self.reportFuncHead(node, "unnamed");
+        }
+    }
+
+    fn reportFuncHead(self: *const LintContext, node: NodeIndex, msg: []const u8) void {
+        const sp = self.nodeSpan(node);
+        const src = self.ast.source;
+        // Head ends at the params opening `(` (scanned from the function itself).
+        var p: usize = sp.start;
+        while (p < src.len and src[p] != '(') p += 1;
+        // For property/field-valued functions, the head starts at the property
+        // key (mirrors getFunctionHeadLoc's parent.loc.start branch).
+        var start = sp.start;
+        const parent = self.parentOf(node);
+        if (parent != .none) {
+            switch (self.ast.nodeTag(parent)) {
+                .property, .computed_property, .property_def, .computed_property_def =>
+                    start = self.nodeSpan(parent).start,
+                else => {},
+            }
+        }
+        self.reportSpanWithMessageId(.{ .start = start, .end = @intCast(p) }, msg);
+    }
+
+    /// True when a function expression's name is inferred from its context
+    /// (assigned to a variable/property/field, or a default value).
+    fn funcHasInferredName(self: *const LintContext, node: NodeIndex) bool {
+        const parent = self.parentOf(node);
+        if (parent == .none) return false;
+        const pd = self.ast.nodeData(parent);
+        switch (self.ast.nodeTag(parent)) {
+            .declarator => return pd.rhs == node and pd.lhs != .none and self.ast.nodeTag(pd.lhs) == .identifier,
+            .property => return pd.rhs == node,
+            .assign => return pd.rhs == node and self.ast.nodeTag(pd.lhs) == .identifier,
+            .assignment_pattern => return pd.rhs == node and self.ast.nodeTag(pd.lhs) == .identifier,
+            .property_def, .computed_property_def => {
+                if (pd.rhs == .none) return false;
+                const prop = self.extraData(ast_mod.PropertyData, @intFromEnum(pd.rhs));
+                return prop.value == node;
+            },
+            else => return false,
+        }
+    }
+
+    /// True when a named function expression references its own name within its
+    /// body (recursion) — approximated by an identifier of the same name inside
+    /// the function's token span, other than the name declaration itself.
+    fn fnNameRecursivelyUsed(self: *const LintContext, node: NodeIndex, name_node: NodeIndex) bool {
+        const name = self.ast.tokenText(self.ast.nodeMainToken(name_node));
+        const name_tok = self.ast.nodeMainToken(name_node);
+        const fi = node.toInt();
+        if (fi >= self.node_min_toks.len) return false;
+        const lo = self.node_min_toks[fi];
+        const hi = self.node_max_toks[fi];
+        const total: u32 = @intCast(self.ast.nodes.len);
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const ni: NodeIndex = @enumFromInt(i);
+            if (self.ast.nodeTag(ni) != .identifier) continue;
+            const t = self.ast.nodeMainToken(ni);
+            if (t == name_tok or t < lo or t > hi) continue;
+            if (std.mem.eql(u8, self.ast.tokenText(t), name)) return true;
+        }
+        return false;
+    }
+
+    /// no-restricted-properties: report member access / destructuring of
+    /// configured object.property (or property-only / object-only) restrictions.
+    pub fn checkNoRestrictedProperties(self: *const LintContext, node: NodeIndex) void {
+        const all = self.rule_options_all orelse return;
+        if (all.len == 0) return;
+        const tag = self.ast.nodeTag(node);
+        if (isMemberLike(tag)) {
+            const obj = self.ast.nodeData(node).lhs;
+            const obj_name: ?[]const u8 = if (self.ast.nodeTag(obj) == .identifier)
+                self.ast.tokenText(self.ast.nodeMainToken(obj))
+            else
+                null;
+            // getStaticPropertyName: non-computed → property id; computed →
+            // the key's static value (string/number/regex/null/template).
+            const prop_name: ?[]const u8 = if (tag == .member_expr or tag == .optional_member_expr)
+                self.ast.tokenText(self.ast.nodeMainToken(self.ast.nodeData(node).rhs))
+            else
+                self.nodeStaticKeyValue(self.ast.nodeData(node).rhs);
+            self.restrictedPropCheck(node, obj_name, prop_name, all);
+        } else if (tag == .object_pattern) {
+            const obj_name = self.objectPatternSourceName(node);
+            const d = self.ast.nodeData(node);
+            const props = self.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+            for (props) |p_int| {
+                self.restrictedPropCheck(node, obj_name, self.patternPropKeyName(@enumFromInt(p_int)), all);
+            }
+        }
+    }
+
+    fn restrictedPropCheck(self: *const LintContext, node: NodeIndex, obj_name: ?[]const u8, prop_name_opt: ?[]const u8, all: []std.json.Value) void {
+        const prop_name = prop_name_opt orelse return;
+        var obj_has_specific = false;
+        var specific: ?std.json.Value = null;
+        var obj_only: ?std.json.Value = null;
+        var prop_only: ?std.json.Value = null;
+        for (all) |o| {
+            if (o != .object) continue;
+            const oobj = jsonStrField(o, "object");
+            const oprop = jsonStrField(o, "property");
+            if (oobj != null and oprop != null) {
+                if (obj_name != null and std.mem.eql(u8, oobj.?, obj_name.?)) {
+                    obj_has_specific = true;
+                    if (std.mem.eql(u8, oprop.?, prop_name)) specific = o;
+                }
+            } else if (oobj != null and oprop == null) {
+                if (obj_name != null and std.mem.eql(u8, oobj.?, obj_name.?)) obj_only = o;
+            } else if (oobj == null and oprop != null) {
+                if (std.mem.eql(u8, oprop.?, prop_name)) prop_only = o;
+            }
+        }
+        const matched = if (obj_has_specific) specific else obj_only;
+        if (matched) |m| {
+            if (!jsonArrayContains(m, "allowProperties", prop_name)) {
+                self.reportWithMessageId(node, "restrictedObjectProperty");
+                return;
+            }
+        }
+        if (prop_only) |po| {
+            if (!jsonArrayContains(po, "allowObjects", obj_name)) {
+                self.reportWithMessageId(node, "restrictedProperty");
+            }
+        }
+    }
+
+    fn jsonStrField(o: std.json.Value, key: []const u8) ?[]const u8 {
+        if (o != .object) return null;
+        const v = o.object.get(key) orelse return null;
+        return if (v == .string) v.string else null;
+    }
+
+    fn jsonArrayContains(o: std.json.Value, key: []const u8, name: ?[]const u8) bool {
+        const n = name orelse return false;
+        if (o != .object) return false;
+        const arr = o.object.get(key) orelse return false;
+        if (arr != .array) return false;
+        for (arr.array.items) |it| {
+            if (it == .string and std.mem.eql(u8, it.string, n)) return true;
+        }
+        return false;
+    }
+
+    fn objectPatternSourceName(self: *const LintContext, node: NodeIndex) ?[]const u8 {
+        const parent = self.parentOf(node);
+        if (parent == .none) return null;
+        const pd = self.ast.nodeData(parent);
+        const src_node = switch (self.ast.nodeTag(parent)) {
+            .declarator => pd.rhs,
+            .assign, .assignment_pattern => pd.rhs,
+            else => return null,
+        };
+        if (src_node == .none or self.ast.nodeTag(src_node) != .identifier) return null;
+        return self.ast.tokenText(self.ast.nodeMainToken(src_node));
+    }
+
+    fn patternPropKeyName(self: *const LintContext, p: NodeIndex) ?[]const u8 {
+        switch (self.ast.nodeTag(p)) {
+            .shorthand_property => {
+                const id = self.ast.nodeData(p).lhs;
+                return if (self.ast.nodeTag(id) == .identifier) self.ast.tokenText(self.ast.nodeMainToken(id)) else null;
+            },
+            .property => return self.keyNameOf(self.ast.nodeData(p).lhs),
+            .computed_property => return self.nodeStaticKeyValue(self.ast.nodeData(p).lhs),
+            else => return null,
+        }
+    }
+
+    fn keyNameOf(self: *const LintContext, key: NodeIndex) ?[]const u8 {
+        return switch (self.ast.nodeTag(key)) {
+            .identifier => self.ast.tokenText(self.ast.nodeMainToken(key)),
+            .string_literal, .number_literal => self.nodeStaticKeyValue(key),
+            else => null,
+        };
+    }
+
+    fn isNullOrUndefinedNode(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        return switch (self.ast.nodeTag(n)) {
+            .null_literal, .void_expr => true,
+            .identifier => std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(n)), "undefined"),
+            else => false,
+        };
+    }
+
     pub fn checkDefaultCase(self: *const LintContext, switch_node: NodeIndex, message_id: []const u8) void {
         if (switch_node == .none) return;
         if (self.ast.nodeTag(switch_node) != .switch_stmt) return;
@@ -6811,7 +8269,7 @@ pub const LintContext = struct {
                     const inner = self.nodeData(p).lhs;
                     const outer_span = self.nodeSpan(p);
                     const inner_span = self.nodeSpan(inner);
-                    const combined = @import("../parser/span.zig").Span{
+                    const combined = @import("es_parser").span.Span{
                         .start = outer_span.start,
                         .end = if (inner_span.end > outer_span.end) inner_span.end else outer_span.end,
                     };
@@ -7803,6 +9261,1114 @@ pub const LintContext = struct {
         }
     }
 
+    /// RegExp.prototype.test semantics for rule OPTION patterns (allowPattern,
+    /// id-match, restricted-import patterns). Parses `pattern` via regex_parser
+    /// and runs a powerset-NFA matcher (ReMatcher) over the AST: a substring
+    /// match (test) succeeds iff seeding all start positions reaches any end.
+    /// Returns false on parse error or unsupported huge input.
+    pub fn regexPatternMatches(self: *const LintContext, pattern: []const u8, flags: []const u8, input: []const u8) bool {
+        if (input.len > RE_MAX_POS) return false;
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const flag_set = regex_parser.Flags.fromString(flags);
+        const pat = regex_parser.parse(arena, pattern, .{ .flags = flag_set }) catch return false;
+        const m = ReMatcher{
+            .input = input,
+            .ignore_case = flag_set.ignore_case,
+            .multiline = flag_set.multiline,
+            .dot_all = flag_set.dot_all,
+        };
+        var seed: ReBits = .{};
+        var s: usize = 0;
+        while (s <= input.len) : (s += 1) seed.set(s);
+        var ends = m.matchAlts(pat.alternatives, &seed);
+        return !ends.isEmpty();
+    }
+
+    /// dot-notation: a computed member `a["b"]` reducible to `a.b` (useDot),
+    /// and — when allowKeywords:false — a `a.class` that must be `a["class"]`
+    /// (useBrackets). Fires per MemberExpression. Report node = the property
+    /// (the key literal/template for useDot, the identifier for useBrackets).
+    pub fn checkDotNotation(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        const data = self.ast.nodeData(node);
+        const allow_keywords = self.getOptionBool("allowKeywords", true);
+        const computed = tag == .computed_member_expr or tag == .optional_computed_member_expr;
+        if (computed) {
+            const key = self.nodeSkipGrouping(data.rhs);
+            if (key == .none) return;
+            const ktag = self.ast.nodeTag(key);
+            const main = self.ast.nodeMainToken(key);
+            var value: []const u8 = undefined;
+            switch (ktag) {
+                // typeof string / boolean, or the null literal — the only key
+                // forms ESLint checks (numbers are intentionally excluded).
+                .string_literal => {
+                    const raw = self.ast.tokenText(main);
+                    if (raw.len < 2) return;
+                    value = raw[1 .. raw.len - 1];
+                },
+                .boolean_literal => value = self.ast.tokenText(main),
+                .null_literal => value = "null",
+                .template_literal => {
+                    const raw = self.ast.tokenText(main);
+                    if (raw.len < 2 or raw[0] != '`' or raw[raw.len - 1] != '`') return;
+                    const inner = raw[1 .. raw.len - 1];
+                    if (std.mem.indexOf(u8, inner, "${") != null) return; // not static
+                    value = inner;
+                },
+                else => return,
+            }
+            if (!dotNotationValidIdentifier(value)) return;
+            if (!allow_keywords and dotNotationIsKeyword(value)) return;
+            const allow_pattern = self.getOptionString("allowPattern") orelse "";
+            if (allow_pattern.len > 0 and self.regexPatternMatches(allow_pattern, "u", value)) return;
+            self.reportWithMessageId(key, "useDot");
+            return;
+        }
+        // Non-computed `a.kw`: only an issue when keywords are disallowed.
+        if (allow_keywords) return;
+        if (!(tag == .member_expr or tag == .optional_member_expr)) return;
+        const prop = data.rhs;
+        if (prop == .none) return;
+        const name = self.ast.tokenText(self.ast.nodeMainToken(prop));
+        if (dotNotationIsKeyword(name)) self.reportWithMessageId(prop, "useBrackets");
+    }
+
+    /// id-match: every Identifier / PrivateIdentifier must match the configured
+    /// pattern (options[0]). Fires per `identifier` + `property_ident` node (both
+    /// map to estree Identifier; private names are `identifier` text starting
+    /// with `#`). Mirrors the ESLint Identifier/PrivateIdentifier visitors.
+    pub fn checkIdMatch(self: *const LintContext, node: NodeIndex) void {
+        const all = self.rule_options_all orelse return;
+        if (all.len == 0 or all[0] != .string) return;
+        const pattern = all[0].string;
+        const opts: ?std.json.Value = if (all.len > 1 and all[1] == .object) all[1] else null;
+        const check_class_fields = idmBool(opts, "classFields", false);
+        const ignore_destructuring = idmBool(opts, "ignoreDestructuring", false);
+        const only_declarations = idmBool(opts, "onlyDeclarations", false);
+        const check_properties = idmBool(opts, "properties", false);
+
+        const main_tok = self.ast.nodeMainToken(node);
+        const raw_name = self.tokenText(main_tok);
+        const is_private = raw_name.len > 0 and raw_name[0] == '#';
+
+        // PrivateIdentifier visitor. ez splits `#foo` into a `#` main token plus
+        // the name token; the report span covers `#name` and the regex tests `name`.
+        if (is_private) {
+            const name = if (raw_name.len > 1) raw_name[1..] else self.tokenText(main_tok + 1);
+            const par = self.parentOf(node);
+            const ptag0 = self.ast.nodeTag(par);
+            const is_class_field = ptag0 == .property_def or ptag0 == .computed_property_def;
+            if (is_class_field and !check_class_fields) return;
+            if (self.idmInvalid(pattern, name)) {
+                const name_end = if (raw_name.len > 1) self.tokenEnd(main_tok) else self.tokenEnd(main_tok + 1);
+                self.reportSpanWithMessageId(.{ .start = self.tokenStart(main_tok), .end = name_end }, "notMatchPrivate");
+            }
+            return;
+        }
+        const name = raw_name;
+
+        // Skip references to known (builtin/declared) globals + import attr keys.
+        if (self.idmIsKnownGlobalRef(node)) return;
+        if (self.idmIsImportAttributeKey(node)) return;
+
+        const parent = self.parentOf(node);
+        const ptag = self.ast.nodeTag(parent);
+        const parent_is_member = ptag == .member_expr or ptag == .optional_member_expr or
+            ptag == .computed_member_expr or ptag == .optional_computed_member_expr;
+        const effective_parent = if (parent_is_member) self.parentOf(parent) else parent;
+        const ep_is_assign = self.ast.nodeTag(effective_parent) == .assign;
+
+        if (parent_is_member) {
+            if (!check_properties) return;
+            const obj = self.ast.nodeData(parent).lhs;
+            // Always check object names: when this node IS the object identifier.
+            if (self.ast.nodeTag(obj) == .identifier and obj == node) {
+                if (self.idmInvalid(pattern, name)) self.reportIdMatch(node);
+                return;
+            }
+            if (ep_is_assign) {
+                const ep_left = self.ast.nodeData(effective_parent).lhs;
+                const ep_left_tag = self.ast.nodeTag(ep_left);
+                const ep_left_member = ep_left_tag == .member_expr or ep_left_tag == .optional_member_expr or
+                    ep_left_tag == .computed_member_expr or ep_left_tag == .optional_computed_member_expr;
+                if (ep_left_member) {
+                    const lp = self.ast.nodeData(ep_left).rhs; // left.property
+                    if (std.mem.eql(u8, self.idmName(lp), name)) {
+                        if (self.idmInvalid(pattern, name)) self.reportIdMatch(node);
+                        return;
+                    }
+                }
+                // Assignment whose RHS is not a member: report the LHS-side id.
+                const ep_right = self.ast.nodeData(effective_parent).rhs;
+                const ep_right_tag = self.ast.nodeTag(ep_right);
+                const ep_right_member = ep_right_tag == .member_expr or ep_right_tag == .optional_member_expr or
+                    ep_right_tag == .computed_member_expr or ep_right_tag == .optional_computed_member_expr;
+                if (!ep_right_member) {
+                    if (self.idmInvalid(pattern, name)) self.reportIdMatch(node);
+                }
+            }
+            return;
+        }
+
+        // Object literal property key: { foo: ... }
+        const pp = self.parentOf(parent);
+        if ((ptag == .property or ptag == .shorthand_property) and self.ast.nodeTag(pp) == .object_literal) {
+            const key = self.ast.nodeData(parent).lhs;
+            if (key == node) { // non-computed key (computed_property is a different tag)
+                if (check_properties and self.idmInvalid(pattern, name)) self.reportIdMatch(node);
+                return;
+            }
+        }
+
+        if (ptag == .property or ptag == .shorthand_property or ptag == .computed_property or ptag == .assignment_pattern) {
+            var reported = false;
+            if (self.ast.nodeTag(pp) == .object_pattern) {
+                const shorthand = ptag == .shorthand_property;
+                const pd = self.ast.nodeData(parent);
+                const key = pd.lhs;
+                const value = if (pd.rhs != .none) pd.rhs else pd.lhs;
+                if (!ignore_destructuring and shorthand and self.ast.nodeTag(value) == .assignment_pattern and self.idmInvalid(pattern, name)) {
+                    self.reportIdMatch(node);
+                    reported = true;
+                }
+                const key_eq_value = std.mem.eql(u8, self.idmName(key), self.idmName(value));
+                if (!key_eq_value and key == node) return; // skip the key in { key: alias }
+                const value_invalid = self.idmName(value).len > 0 and self.idmInvalid(pattern, name);
+                if (value_invalid and !(key_eq_value and ignore_destructuring) and !reported) {
+                    self.reportIdMatch(node);
+                    reported = true;
+                }
+            }
+            const computed = ptag == .computed_property;
+            if ((!check_properties and !computed) or (ignore_destructuring and self.idmInsideObjectPattern(node))) return;
+            // AssignmentPattern: don't check the RHS default value.
+            if (ptag == .assignment_pattern and self.ast.nodeData(parent).rhs == node) return;
+            if (!reported and self.idmShouldReport(effective_parent, only_declarations, pattern, name)) self.reportIdMatch(node);
+            return;
+        }
+
+        // Import specifier: only the local imported identifier.
+        if (ptag == .import_specifier or ptag == .import_default_specifier or ptag == .import_namespace_specifier) {
+            const local = self.idmImportLocal(parent);
+            if (local == node and self.idmInvalid(pattern, name)) self.reportIdMatch(node);
+            return;
+        }
+
+        if (ptag == .property_def or ptag == .computed_property_def) {
+            if (check_class_fields and self.idmInvalid(pattern, name)) self.reportIdMatch(node);
+            return;
+        }
+
+        if (self.idmShouldReport(effective_parent, only_declarations, pattern, name)) self.reportIdMatch(node);
+    }
+
+    fn idmName(self: *const LintContext, n: NodeIndex) []const u8 {
+        if (n == .none) return "";
+        return self.tokenText(self.ast.nodeMainToken(n));
+    }
+    fn idmInvalid(self: *const LintContext, pattern: []const u8, name: []const u8) bool {
+        return !self.regexPatternMatches(pattern, "u", name);
+    }
+    fn reportIdMatch(self: *const LintContext, node: NodeIndex) void {
+        self.reportWithMessageId(node, "notMatch");
+    }
+    fn idmIsKnownGlobalRef(self: *const LintContext, n: NodeIndex) bool {
+        if (self.ast.nodeTag(n) != .identifier) return false;
+        const ref_id = self.nodeRefId(n);
+        if (ref_id == .none) return false;
+        const sym_id = self.semantic.references.getSymbol(ref_id);
+        if (sym_id == .none) return false; // arbitrary undeclared → checked
+        return self.semantic.symbols.isImplicitGlobal(sym_id);
+    }
+    fn idmIsImportAttributeKey(self: *const LintContext, n: NodeIndex) bool {
+        // Static import attributes are dropped by the parser (no nodes), so only
+        // the dynamic form needs handling: key (or shorthand value) of a Property
+        // in an ObjectExpression that is an ImportExpression's options (or nested).
+        const parent = self.parentOf(n);
+        const ptag = self.ast.nodeTag(parent);
+        if (ptag != .property and ptag != .shorthand_property) return false;
+        const pd = self.ast.nodeData(parent);
+        const is_key_or_shorthand_value = pd.lhs == n or (ptag == .shorthand_property and (if (pd.rhs != .none) pd.rhs else pd.lhs) == n);
+        if (!is_key_or_shorthand_value) return false;
+        const obj = self.parentOf(parent);
+        if (self.ast.nodeTag(obj) != .object_literal) return false;
+        const obj_parent = self.parentOf(obj);
+        const opt = self.ast.nodeTag(obj_parent);
+        if (opt == .import_expr) return self.ast.nodeData(obj_parent).rhs == obj;
+        if ((opt == .property or opt == .shorthand_property) and self.ast.nodeData(obj_parent).rhs == obj) {
+            return self.idmIsImportAttributeKey(self.ast.nodeData(obj_parent).lhs);
+        }
+        return false;
+    }
+    fn idmShouldReport(self: *const LintContext, effective_parent: NodeIndex, only_declarations: bool, pattern: []const u8, name: []const u8) bool {
+        const ep_tag = self.ast.nodeTag(effective_parent);
+        const is_decl = ep_tag == .declarator or ep_tag == .fn_decl or ep_tag == .async_fn_decl or
+            ep_tag == .generator_fn_decl or ep_tag == .async_generator_fn_decl;
+        if (only_declarations and !is_decl) return false;
+        const is_allowed = ep_tag == .call_expr or ep_tag == .optional_call_expr or ep_tag == .new_expr;
+        if (is_allowed) return false;
+        return self.idmInvalid(pattern, name);
+    }
+    fn idmInsideObjectPattern(self: *const LintContext, n: NodeIndex) bool {
+        var cur = self.parentOf(n);
+        while (cur != .none) {
+            if (self.ast.nodeTag(cur) == .object_pattern) return true;
+            const p = self.parentOf(cur);
+            if (p == cur) break;
+            cur = p;
+        }
+        return false;
+    }
+    fn idmImportLocal(self: *const LintContext, spec: NodeIndex) NodeIndex {
+        // ImportSpecifier: lhs=imported, rhs=local. Default/Namespace: lhs=local.
+        const d = self.ast.nodeData(spec);
+        if (self.ast.nodeTag(spec) == .import_specifier) return if (d.rhs != .none) d.rhs else d.lhs;
+        return d.lhs;
+    }
+
+    /// sort-keys: object keys must be sorted (asc/desc × caseSensitive × natural).
+    /// Fires per object_literal; compares each property's name to the previous.
+    pub fn checkSortKeys(self: *const LintContext, node: NodeIndex) void {
+        var order: []const u8 = "asc";
+        var case_sensitive = true;
+        var natural = false;
+        var min_keys: usize = 2;
+        var allow_line_sep = false;
+        var ignore_computed = false;
+        if (self.rule_options_all) |all| {
+            if (all.len > 0 and all[0] == .string) order = all[0].string;
+            if (all.len > 1 and all[1] == .object) {
+                const o = all[1].object;
+                if (o.get("caseSensitive")) |v| case_sensitive = !(v == .bool and !v.bool);
+                if (o.get("natural")) |v| natural = (v == .bool and v.bool);
+                if (o.get("allowLineSeparatedGroups")) |v| allow_line_sep = (v == .bool and v.bool);
+                if (o.get("ignoreComputedKeys")) |v| ignore_computed = (v == .bool and v.bool);
+                if (o.get("minKeys")) |v| min_keys = switch (v) {
+                    .integer => @intCast(@max(0, v.integer)),
+                    .float => @intFromFloat(@max(0, v.float)),
+                    else => 2,
+                };
+            }
+        }
+        const insensitive = !case_sensitive;
+        const d = self.ast.nodeData(node);
+        const members = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+        const num_keys = members.len;
+        var prev_name: ?[]const u8 = null;
+        var prev_node: NodeIndex = .none;
+        var prev_blank = false;
+        for (members) |raw| {
+            if (raw == 0) continue;
+            const member: NodeIndex = @enumFromInt(raw);
+            const mtag = self.ast.nodeTag(member);
+            if (mtag == .spread_element or mtag == .rest_element) {
+                prev_name = null;
+                continue;
+            }
+            const computed = mtag == .computed_property or mtag == .computed_method_def or
+                mtag == .computed_getter_def or mtag == .computed_setter_def;
+            if (ignore_computed and computed) {
+                prev_name = null;
+                continue;
+            }
+            const this_name = self.sortKeyPropName(member);
+            var blank = prev_blank;
+            if (allow_line_sep and prev_node != .none and !blank and self.sortKeyBlankLineBetween(prev_node, member)) blank = true;
+            const old_prev = prev_name;
+            prev_node = member;
+            if (this_name != null) prev_name = this_name;
+            if (allow_line_sep and blank) {
+                prev_blank = (this_name == null);
+                continue;
+            }
+            if (old_prev == null or this_name == null or num_keys < min_keys) continue;
+            if (!sortKeyValidOrder(order, insensitive, natural, old_prev.?, this_name.?)) {
+                self.reportSpanWithMessageId(self.nodeSpan(self.propertyEntryKeyNode(member)), "sortKeys");
+            }
+        }
+    }
+    // sort-keys getPropertyName: static name, else the key's identifier name
+    // (`[a]` computed → "a"), else null (`[foo()]`, `[a+b]`).
+    fn sortKeyPropName(self: *const LintContext, member: NodeIndex) ?[]const u8 {
+        if (self.propertyEntryStaticName(member)) |n| return n;
+        const key = self.propertyEntryKeyNode(member);
+        if (key != .none and self.ast.nodeTag(key) == .identifier) return self.tokenText(self.ast.nodeMainToken(key));
+        return null;
+    }
+    // True end offset of an object member, reaching into its value (property
+    // rhs) or method/getter/setter body (which live in extra-data, so plain
+    // nodeSpan stops short) — so blank lines INSIDE the member don't leak.
+    fn sortKeyNodeEnd(self: *const LintContext, node: NodeIndex) u32 {
+        var end = self.nodeSpan(node).end;
+        const tag = self.ast.nodeTag(node);
+        if (tag == .property or tag == .computed_property) {
+            const val = self.ast.nodeData(node).rhs;
+            if (val != .none) end = @max(end, self.nodeSpan(val).end);
+        }
+        const body = self.nodeBodyBlock(node);
+        if (body != .none) end = @max(end, self.nodeSpan(body).end);
+        return end;
+    }
+    fn sortKeyBlankLineBetween(self: *const LintContext, a: NodeIndex, b: NodeIndex) bool {
+        // A blank line exists iff two consecutive "occupied" lines (lines bearing
+        // a token or comment, incl. node a's last line and node b's first line)
+        // differ by more than 1. Anchor on a's LAST token so a method body's `}`
+        // is included (its internal blank lines don't leak into the gap).
+        const src = self.ast.source;
+        const start = self.sortKeyNodeEnd(a);
+        const end = self.nodeSpan(b).start;
+        if (end <= start or end > src.len) return false;
+        var line: i64 = 0;
+        var last_occupied: i64 = 0; // a's end line
+        var in_block = false;
+        var i: usize = start;
+        while (i < end) {
+            const c = src[i];
+            if (c == '\n') {
+                line += 1;
+                i += 1;
+                if (in_block) last_occupied = line;
+                continue;
+            }
+            if (in_block) {
+                if (c == '*' and i + 1 < end and src[i + 1] == '/') {
+                    in_block = false;
+                    i += 2;
+                } else i += 1;
+                last_occupied = line;
+                continue;
+            }
+            if (c == ' ' or c == '\t' or c == '\r') {
+                i += 1;
+                continue;
+            }
+            // Content char (a token like `,` or a comment start).
+            if (line - last_occupied > 1) return true;
+            if (c == '/' and i + 1 < end and src[i + 1] == '/') {
+                last_occupied = line;
+                i += 2;
+                while (i < end and src[i] != '\n') i += 1;
+                continue;
+            }
+            if (c == '/' and i + 1 < end and src[i + 1] == '*') {
+                in_block = true;
+                last_occupied = line;
+                i += 2;
+                continue;
+            }
+            last_occupied = line;
+            i += 1;
+        }
+        // Gap between the last occupied line and node b's first line.
+        return (line - last_occupied) > 1;
+    }
+
+    /// consistent-this: a designated alias (options) must be assigned only `this`
+    /// (aliasNotAssignedToThis), and `this` must only be assigned to an alias
+    /// (unexpectedAlias). Fires per declarator / assignment.
+    pub fn checkConsistentThis(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag == .declarator) {
+            const id = self.ast.nodeData(node).lhs;
+            if (self.ast.nodeTag(id) != .identifier) return; // destructuring → skip
+            const name = self.tokenText(self.ast.nodeMainToken(id));
+            const init = self.ast.nodeData(node).rhs;
+            if (init != .none) {
+                self.ctCheckAssignment(node, name, init, false);
+            } else if (self.ctIsAlias(name) and !self.aliasAssignedThisInScope(node, name)) {
+                // checkWasAssigned: declared alias never assigned `this` in scope.
+                self.reportSpanWithMessageId(self.nodeSpan(node), "aliasNotAssignedToThis");
+            }
+            return;
+        }
+        // Assignment (any operator). `=` is .assign; everything else is compound.
+        const left = self.ast.nodeData(node).lhs;
+        if (self.ast.nodeTag(left) != .identifier) return;
+        const name = self.tokenText(self.ast.nodeMainToken(left));
+        self.ctCheckAssignment(node, name, self.ast.nodeData(node).rhs, tag != .assign);
+    }
+    fn ctCheckAssignment(self: *const LintContext, node: NodeIndex, name: []const u8, value: NodeIndex, is_compound: bool) void {
+        const is_this = self.ast.nodeTag(self.nodeSkipGrouping(value)) == .this_expr;
+        if (self.ctIsAlias(name)) {
+            if (!is_this or is_compound) self.reportSpanWithMessageId(self.nodeSpan(node), "aliasNotAssignedToThis");
+        } else if (is_this) {
+            self.reportSpanWithMessageId(self.nodeSpan(node), "unexpectedAlias");
+        }
+    }
+    fn ctIsAlias(self: *const LintContext, name: []const u8) bool {
+        const all = self.rule_options_all orelse return false;
+        for (all) |o| if (o == .string and std.mem.eql(u8, o.string, name)) return true;
+        return false;
+    }
+    fn ctEnclosingScope(self: *const LintContext, n: NodeIndex) NodeIndex {
+        var cur = n;
+        while (true) {
+            if (self.ast.nodeTag(cur) == .root) return cur;
+            const p = self.parentOf(cur);
+            if (p == .none or p == cur) return cur;
+            if (self.nodeIsFunction(p)) return p;
+            cur = p;
+        }
+    }
+    fn aliasAssignedThisInScope(self: *const LintContext, decl: NodeIndex, name: []const u8) bool {
+        const target = self.ctEnclosingScope(decl);
+        const tags = self.ast.nodes.items(.tag);
+        for (tags, 0..) |t, i| {
+            if (t != .assign) continue; // op must be `=`
+            const idx: NodeIndex = @enumFromInt(@as(u32, @intCast(i)));
+            const a = self.ast.nodeData(idx);
+            if (self.ast.nodeTag(a.lhs) != .identifier) continue;
+            if (!std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(a.lhs)), name)) continue;
+            if (self.ast.nodeTag(self.nodeSkipGrouping(a.rhs)) != .this_expr) continue;
+            if (self.ctEnclosingScope(idx) == target) return true;
+        }
+        return false;
+    }
+
+    /// grouped-accessor-pairs: a get/set pair for the same key must be adjacent
+    /// (notGrouped) and in the configured order (invalidOrder). Fires per
+    /// object_literal / class_body (and TS type members when enforceForTSTypes).
+    pub fn checkGroupedAccessorPairs(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        // order = options[0] string (default "anyOrder").
+        var order: []const u8 = "anyOrder";
+        if (self.rule_options_all) |all| {
+            if (all.len > 0 and all[0] == .string) order = all[0].string;
+        }
+        const d = self.ast.nodeData(node);
+        if (tag == .object_literal) {
+            const members = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+            self.gapCheckList(members, order, 0); // 0 = object (no static filter)
+        } else if (tag == .class_body) {
+            const members = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+            self.gapCheckList(members, order, 1); // 1 = instance (non-static)
+            self.gapCheckList(members, order, 2); // 2 = static
+        } else if (tag == .ts_type_literal or tag == .ts_interface_decl) {
+            const enforce = if (self.rule_options_all) |all|
+                (all.len > 1 and all[1] == .object and (if (all[1].object.get("enforceForTSTypes")) |v| (v == .bool and v.bool) else false))
+            else
+                false;
+            if (!enforce) return;
+            const members = if (tag == .ts_type_literal)
+                self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) })
+            else blk: {
+                const id = self.extraData(ast_mod.InterfaceData, @intFromEnum(d.lhs));
+                break :blk self.ast.extraSlice(.{ .start = id.body_start, .end = id.body_end });
+            };
+            self.gapCheckList(members, order, 3); // 3 = TS signatures
+        }
+    }
+    fn gapSigKind(self: *const LintContext, member: NodeIndex) PropertyKind {
+        if (self.ast.nodeTag(member) == .ts_method_signature) {
+            const sig = self.extraData(ast_mod.InterfaceSigData, @intFromEnum(self.ast.nodeData(member).lhs));
+            return switch (sig.kind) {
+                1 => .get,
+                2 => .set,
+                else => .init,
+            };
+        }
+        return self.propertyEntryKind(member);
+    }
+    fn gapKeyNode(self: *const LintContext, member: NodeIndex) NodeIndex {
+        if (self.ast.nodeTag(member) == .ts_method_signature) {
+            return self.extraData(ast_mod.InterfaceSigData, @intFromEnum(self.ast.nodeData(member).lhs)).key;
+        }
+        return self.propertyEntryKeyNode(member);
+    }
+    fn gapAccessorOk(self: *const LintContext, member: NodeIndex, mode: u8) bool {
+        const k = self.gapSigKind(member);
+        if (k != .get and k != .set) return false;
+        switch (mode) {
+            1 => if (self.classMemberIsStatic(member)) return false, // instance pass
+            2 => if (!self.classMemberIsStatic(member)) return false, // static pass
+            else => {},
+        }
+        return true;
+    }
+    fn gapCheckList(self: *const LintContext, members: []const u32, order: []const u8, mode: u8) void {
+        for (members, 0..) |raw_i, i| {
+            if (raw_i == 0) continue;
+            const mi: NodeIndex = @enumFromInt(raw_i);
+            if (!self.gapAccessorOk(mi, mode)) continue;
+            // Process each key-group once, at its first accessor.
+            var earlier = false;
+            for (members[0..i]) |raw_j| {
+                if (raw_j == 0) continue;
+                const mj: NodeIndex = @enumFromInt(raw_j);
+                if (self.gapAccessorOk(mj, mode) and self.gapKeysEqual(mi, mj)) {
+                    earlier = true;
+                    break;
+                }
+            }
+            if (earlier) continue;
+            // Gather all accessors of this key.
+            var getter: NodeIndex = .none;
+            var setter: NodeIndex = .none;
+            var gcount: u32 = 0;
+            var scount: u32 = 0;
+            var gidx: usize = 0;
+            var sidx: usize = 0;
+            for (members, 0..) |raw_j, j| {
+                if (raw_j == 0) continue;
+                const mj: NodeIndex = @enumFromInt(raw_j);
+                if (!self.gapAccessorOk(mj, mode) or !self.gapKeysEqual(mi, mj)) continue;
+                if (self.gapSigKind(mj) == .get) {
+                    gcount += 1;
+                    getter = mj;
+                    gidx = j;
+                } else {
+                    scount += 1;
+                    setter = mj;
+                    sidx = j;
+                }
+            }
+            if (gcount != 1 or scount != 1) continue;
+            const former = if (gidx < sidx) getter else setter;
+            const latter = if (gidx < sidx) setter else getter;
+            _ = former;
+            const diff = if (gidx > sidx) gidx - sidx else sidx - gidx;
+            if (diff > 1) {
+                self.gapReport(latter, "notGrouped");
+            } else if ((std.mem.eql(u8, order, "getBeforeSet") and gidx > sidx) or
+                (std.mem.eql(u8, order, "setBeforeGet") and gidx < sidx))
+            {
+                self.gapReport(latter, "invalidOrder");
+            }
+        }
+    }
+    // areEqualKeys: both-static → name equality (numeric-aware); both-dynamic →
+    // key token-sequence equality (`[a]`≡`[a]`, `[a+b]`≢`[a-b]`); mixed → false.
+    fn gapKeysEqual(self: *const LintContext, pa: NodeIndex, pb: NodeIndex) bool {
+        // TS method signatures: compare key nodes by identifier/string name or tokens.
+        if (self.ast.nodeTag(pa) == .ts_method_signature or self.ast.nodeTag(pb) == .ts_method_signature) {
+            const ka = self.gapKeyNode(pa);
+            const kb = self.gapKeyNode(pb);
+            if (ka == .none or kb == .none) return false;
+            const sa = self.gapKeyName(ka);
+            const sb = self.gapKeyName(kb);
+            if (sa != null and sb != null) return std.mem.eql(u8, sa.?, sb.?);
+            if (sa == null and sb == null) return self.nodeTokensEqual(ka, kb);
+            return false;
+        }
+        if (self.propertyKeysEqual(pa, pb)) return true;
+        const sa = self.propertyEntryStaticName(pa);
+        const sb = self.propertyEntryStaticName(pb);
+        if (sa == null and sb == null)
+            return self.nodeTokensEqual(self.propertyEntryKeyNode(pa), self.propertyEntryKeyNode(pb));
+        return false;
+    }
+    fn gapKeyName(self: *const LintContext, key: NodeIndex) ?[]const u8 {
+        if (key == .none) return null;
+        const ktag = self.ast.nodeTag(key);
+        if (ktag == .identifier or ktag == .property_ident) return self.tokenText(self.ast.nodeMainToken(key));
+        if (ktag == .string_literal or ktag == .property_literal) {
+            const raw = self.tokenText(self.ast.nodeMainToken(key));
+            if (raw.len >= 2) return raw[1 .. raw.len - 1];
+        }
+        return null;
+    }
+    fn gapReport(self: *const LintContext, latter: NodeIndex, message_id: []const u8) void {
+        // loc = getFunctionHeadLoc: [accessor start (incl static/get/set), params `(`).
+        const main = self.ast.nodeMainToken(latter);
+        var start_tok = main;
+        while (start_tok > 0) {
+            const prev = self.ast.tokenText(start_tok - 1);
+            if (std.mem.eql(u8, prev, "get") or std.mem.eql(u8, prev, "set") or
+                std.mem.eql(u8, prev, "static") or std.mem.eql(u8, prev, "async") or
+                std.mem.eql(u8, prev, "*")) start_tok -= 1 else break;
+        }
+        // Params `(` is the first `(` AFTER the key (skipping a computed key's
+        // `]` and any parens within the key, e.g. `get [f(a)]()`).
+        const key_last = self.nodeLastToken(self.gapKeyNode(latter));
+        const open_paren = self.tokenAfterMatchingPunct(key_last, "(");
+        const head = Span{ .start = self.ast.tokenStart(start_tok), .end = self.ast.tokenStart(open_paren) };
+        self.reportSpanWithMessageId(head, message_id);
+    }
+
+    /// no-setter-return: a `return <value>;` inside a setter (accessor or
+    /// property-descriptor `set`), or a concise-body arrow used as a descriptor
+    /// setter. Fires per return_stmt / arrow_fn.
+    pub fn checkNoSetterReturn(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag == .return_stmt) {
+            if (self.ast.nodeData(node).lhs == .none) return; // bare `return;`
+            const fnode = self.nearestEnclosingFunction(node);
+            if (fnode != .none and self.fnIsSetter(fnode))
+                self.reportSpanWithMessageId(self.nodeSpan(node), "returnsValue");
+            return;
+        }
+        if (tag == .arrow_fn or tag == .async_arrow_fn) {
+            const body = self.arrowFnBody(node);
+            if (body == .none or self.ast.nodeTag(body) == .block_stmt) return; // concise only
+            if (self.fnIsSetter(node)) self.reportSpanWithMessageId(self.nodeSpan(body), "returnsValue");
+        }
+    }
+    fn nearestEnclosingFunction(self: *const LintContext, node: NodeIndex) NodeIndex {
+        var cur = self.parentOf(node);
+        while (cur != .none) {
+            if (self.nodeIsFunction(cur)) return cur;
+            const p = self.parentOf(cur);
+            if (p == cur) break;
+            cur = p;
+        }
+        return .none;
+    }
+    fn fnIsSetter(self: *const LintContext, fnode: NodeIndex) bool {
+        if (self.propertyEntryKind(fnode) == .set) return true; // accessor setter
+        const ftag = self.ast.nodeTag(fnode);
+        // Method-shorthand `{ set(val){} }` — the method node IS the property.
+        if (ftag == .method_def or ftag == .computed_method_def) {
+            if (!self.propertyKeyEquals(fnode, "set")) return false;
+            const gp = self.parentOf(fnode);
+            return self.ast.nodeTag(gp) == .object_literal and self.isPropertyDescriptorObj(gp);
+        }
+        // Property-descriptor setter: `{ set: fn }` / `{ ['set']: fn }`.
+        const parent = self.parentOf(fnode);
+        const ptag = self.ast.nodeTag(parent);
+        if (ptag != .property and ptag != .shorthand_property and ptag != .computed_property) return false;
+        if (self.ast.nodeData(parent).rhs != fnode) return false;
+        if (!self.propertyKeyEquals(parent, "set")) return false;
+        const gp = self.parentOf(parent);
+        if (self.ast.nodeTag(gp) != .object_literal) return false;
+        return self.isPropertyDescriptorObj(gp);
+    }
+    fn isPropertyDescriptorObj(self: *const LintContext, obj: NodeIndex) bool {
+        if (self.isArgOfGlobalMethodCall(obj, "Object", "defineProperty", 2)) return true;
+        if (self.isArgOfGlobalMethodCall(obj, "Reflect", "defineProperty", 2)) return true;
+        const parent = self.parentOf(obj);
+        const ptag = self.ast.nodeTag(parent);
+        if ((ptag == .property or ptag == .shorthand_property) and self.ast.nodeData(parent).rhs == obj) {
+            const gp = self.parentOf(parent);
+            if (self.ast.nodeTag(gp) == .object_literal) {
+                if (self.isArgOfGlobalMethodCall(gp, "Object", "create", 1)) return true;
+                if (self.isArgOfGlobalMethodCall(gp, "Object", "defineProperties", 1)) return true;
+            }
+        }
+        return false;
+    }
+    fn isArgOfGlobalMethodCall(self: *const LintContext, node: NodeIndex, obj_name: []const u8, method_name: []const u8, index: usize) bool {
+        const call = self.parentOf(node);
+        const ctag = self.ast.nodeTag(call);
+        if (ctag != .call_expr and ctag != .optional_call_expr) return false;
+        if (self.ast.nodeData(call).rhs == .none) return false;
+        const args = self.extraSlice(self.extraData(SubRange, @intFromEnum(self.ast.nodeData(call).rhs)));
+        if (index >= args.len) return false;
+        if (@as(NodeIndex, @enumFromInt(args[index])) != node) return false;
+        const callee = self.nodeSkipGrouping(self.ast.nodeData(call).lhs);
+        if (!isMemberLike(self.ast.nodeTag(callee))) return false;
+        const obj = self.nodeSkipGrouping(self.ast.nodeData(callee).lhs);
+        if (self.ast.nodeTag(obj) != .identifier) return false;
+        if (!std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(obj)), obj_name)) return false;
+        if (!self.nodePropNameEquals(callee, method_name)) return false;
+        // `/* globals Object:off */` removes it as a global → not a descriptor.
+        if (self.globalIsOff(obj_name)) return false;
+        return self.isGlobalReference(obj);
+    }
+
+    /// no-extend-native: extending a native builtin's prototype —
+    /// `Builtin.prototype.x = …` or `Object.defineProperty(Builtin.prototype, …)`.
+    /// Fires per identifier (the builtin object). Mirrors the ESLint global-scope
+    /// reference walk via name + isGlobalReference.
+    pub fn checkNoExtendNative(self: *const LintContext, node: NodeIndex) void {
+        if (self.ast.nodeTag(node) != .identifier) return;
+        const name = self.tokenText(self.ast.nodeMainToken(node));
+        if (!noExtendNativeIsBuiltin(name)) return;
+        if (self.rule_options) |opts| {
+            if (jsonArrayContains(opts.*, "exceptions", name)) return;
+        }
+        if (self.globalIsOff(name)) return; // `/* globals X:off */` → not the builtin
+        if (!self.isGlobalReference(node)) return;
+        // isPrototypePropertyAccessed: node is the object of a `*.prototype` member.
+        const proto = self.parentOf(node);
+        if (!isMemberLike(self.ast.nodeTag(proto))) return;
+        if (self.ast.nodeData(proto).lhs != node) return;
+        const pn = self.staticPropertyName(proto) orelse return;
+        if (!std.mem.eql(u8, pn, "prototype")) return;
+        // Walk up past parenthesization (ESTree's parens-are-transparent + the
+        // optional-chain wrapper) to the node consuming `X.prototype`.
+        var pp = self.parentOf(proto);
+        while (self.ast.nodeTag(pp) == .grouping_expr) pp = self.parentOf(pp);
+        const pptag = self.ast.nodeTag(pp);
+        // Assignment: `*.prototype` -> MemberExpression -> AssignmentExpression
+        // (any operator: `=`, `&&=`, `??=`, …).
+        if (isMemberLike(pptag) and self.nodeSkipGrouping(self.ast.nodeData(pp).lhs) == proto) {
+            const ppp = self.parentOf(pp);
+            if (std.mem.eql(u8, self.nodeEslintTypeName(ppp), "AssignmentExpression") and
+                self.nodeSkipGrouping(self.ast.nodeData(ppp).lhs) == pp)
+            {
+                self.reportSpanWithMessageId(self.nodeSpan(ppp), "unexpected");
+            }
+            return;
+        }
+        // Object.defineProperty/defineProperties(*.prototype, …).
+        if ((pptag == .call_expr or pptag == .optional_call_expr) and self.ast.nodeData(pp).rhs != .none) {
+            const args = self.extraSlice(self.extraData(SubRange, @intFromEnum(self.ast.nodeData(pp).rhs)));
+            if (args.len >= 1 and self.nodeSkipGrouping(@as(NodeIndex, @enumFromInt(args[0]))) == proto and
+                self.isObjectDefinePropertyCallee(self.nodeSkipGrouping(self.ast.nodeData(pp).lhs)))
+            {
+                self.reportSpanWithMessageId(self.nodeSpan(pp), "unexpected");
+            }
+        }
+    }
+    fn isObjectDefinePropertyCallee(self: *const LintContext, callee: NodeIndex) bool {
+        const tag = self.ast.nodeTag(callee);
+        if (!isMemberLike(tag)) return false;
+        const obj = self.nodeSkipGrouping(self.ast.nodeData(callee).lhs);
+        if (self.ast.nodeTag(obj) != .identifier) return false;
+        if (!std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(obj)), "Object")) return false;
+        return self.nodePropNameEquals(callee, "defineProperty") or self.nodePropNameEquals(callee, "defineProperties");
+    }
+
+    /// prefer-numeric-literals: `parseInt("111", 2)` / `Number.parseInt(s, 16)`
+    /// with a string literal + radix 2/8/16 → prefer a numeric literal. Diagnostic
+    /// fires on these conditions (the autofix validity check isn't scored natively).
+    pub fn checkPreferNumericLiterals(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        if (tag != .call_expr and tag != .optional_call_expr) return;
+        const data = self.ast.nodeData(node);
+        if (data.rhs == .none) return;
+        const args = self.extraSlice(self.extraData(SubRange, @intFromEnum(data.rhs)));
+        if (args.len != 2) return;
+        const str_node: NodeIndex = @enumFromInt(args[0]);
+        const radix_node = self.nodeSkipGrouping(@as(NodeIndex, @enumFromInt(args[1])));
+        // arg0 must be a statically-known string (string literal OR static
+        // template — ESLint's isStringLiteral includes TemplateLiteral).
+        const str_tag = self.ast.nodeTag(str_node);
+        if (str_tag != .string_literal and str_tag != .template_literal) return;
+        if (str_tag == .template_literal) {
+            // Static only: a template with `${` interpolation has no static value.
+            const raw = self.tokenText(self.ast.nodeMainToken(str_node));
+            if (std.mem.indexOf(u8, raw, "${") != null) return;
+        }
+        if (self.ast.nodeTag(radix_node) != .number_literal) return;
+        const radix = self.staticNumericValue(radix_node) orelse return;
+        if (radix != 2 and radix != 8 and radix != 16) return;
+        if (!self.isParseIntCallee(self.nodeSkipGrouping(data.lhs))) return;
+        self.reportSpanWithMessageId(self.nodeSpan(node), "useLiteral");
+    }
+    fn isParseIntCallee(self: *const LintContext, callee: NodeIndex) bool {
+        const tag = self.ast.nodeTag(callee);
+        if (tag == .identifier) return std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(callee)), "parseInt");
+        if (tag == .member_expr or tag == .optional_member_expr or
+            tag == .computed_member_expr or tag == .optional_computed_member_expr)
+        {
+            const obj = self.nodeSkipGrouping(self.ast.nodeData(callee).lhs);
+            if (self.ast.nodeTag(obj) != .identifier) return false;
+            if (!std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(obj)), "Number")) return false;
+            return self.nodePropNameEquals(callee, "parseInt");
+        }
+        return false;
+    }
+
+    /// no-restricted-exports: report exported names in `restrictedNamedExports`
+    /// (or matching `restrictedNamedExportsPattern`), and `default` exports per
+    /// the `restrictDefaultExports` matrix. Fires per export declaration.
+    pub fn checkNoRestrictedExports(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        switch (tag) {
+            .export_default_expr, .export_default_fn, .export_default_class => {
+                if (self.rdeFlag("direct")) {
+                    // ExportDefaultDeclaration's range includes the trailing `;`.
+                    var span = self.nodeSpan(node);
+                    const src = self.ast.source;
+                    var p = span.end;
+                    while (p < src.len and (src[p] == ' ' or src[p] == '\t')) p += 1;
+                    if (p < src.len and src[p] == ';') span.end = @intCast(p + 1);
+                    self.reportSpanWithMessageId(span, "restrictedDefault");
+                }
+            },
+            .export_all => {
+                const exported = self.ast.nodeData(node).rhs;
+                if (exported != .none) self.checkExportedName(exported);
+            },
+            .export_named => {
+                const data = self.ast.nodeData(node);
+                if (data.rhs == .none) {
+                    const decl = data.lhs;
+                    if (decl == .none) return;
+                    const dtag = self.ast.nodeTag(decl);
+                    if (dtag == .fn_decl or dtag == .async_fn_decl or dtag == .generator_fn_decl or
+                        dtag == .async_generator_fn_decl or dtag == .class_decl)
+                    {
+                        // FnData/ClassData both store `name` as their first field.
+                        const ei = @intFromEnum(self.ast.nodeData(decl).lhs);
+                        if (ei < self.ast.extra_data.len) {
+                            const id: NodeIndex = @enumFromInt(self.ast.extra_data[ei]);
+                            if (id != .none) self.checkExportedName(id);
+                        }
+                    } else if (dtag == .var_decl or dtag == .let_decl or dtag == .const_decl) {
+                        const dd = self.ast.nodeData(decl);
+                        const s = @intFromEnum(dd.lhs);
+                        const e = @intFromEnum(dd.rhs);
+                        if (e <= self.ast.extra_data.len and s <= e) {
+                            for (self.ast.extra_data[s..e]) |raw| {
+                                const dctor: NodeIndex = @enumFromInt(raw);
+                                if (self.ast.nodeTag(dctor) == .declarator) self.checkExportBinding(self.ast.nodeData(dctor).lhs);
+                            }
+                        }
+                    }
+                } else {
+                    const s = @intFromEnum(data.lhs);
+                    const e = @intFromEnum(data.rhs);
+                    if (e <= self.ast.extra_data.len and s <= e) {
+                        for (self.ast.extra_data[s..e]) |raw| {
+                            const spec: NodeIndex = @enumFromInt(raw);
+                            self.checkExportedName(self.ast.nodeData(spec).rhs);
+                        }
+                    }
+                }
+            },
+            .export_named_from => {
+                const ei = @intFromEnum(self.ast.nodeData(node).lhs);
+                if (ei + 1 >= self.ast.extra_data.len) return;
+                const s = self.ast.extra_data[ei];
+                const e = self.ast.extra_data[ei + 1];
+                if (e <= self.ast.extra_data.len and s <= e) {
+                    for (self.ast.extra_data[s..e]) |raw| {
+                        const spec: NodeIndex = @enumFromInt(raw);
+                        self.checkExportedName(self.ast.nodeData(spec).rhs);
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    // Recursively check binding identifiers of an export declaration's pattern.
+    fn checkExportBinding(self: *const LintContext, binding: NodeIndex) void {
+        if (binding == .none) return;
+        switch (self.ast.nodeTag(binding)) {
+            .identifier => self.checkExportedName(binding),
+            .object_pattern, .array_pattern => {
+                const d = self.ast.nodeData(binding);
+                const s = @intFromEnum(d.lhs);
+                const e = @intFromEnum(d.rhs);
+                if (e <= self.ast.extra_data.len and s <= e) {
+                    for (self.ast.extra_data[s..e]) |raw| self.checkExportBinding(@enumFromInt(raw));
+                }
+            },
+            .property, .shorthand_property => self.checkExportBinding(if (self.ast.nodeData(binding).rhs != .none) self.ast.nodeData(binding).rhs else self.ast.nodeData(binding).lhs),
+            .assignment_pattern, .rest_element, .spread_element => self.checkExportBinding(self.ast.nodeData(binding).lhs),
+            else => {},
+        }
+    }
+
+    fn checkExportedName(self: *const LintContext, node: NodeIndex) void {
+        if (node == .none) return;
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const name = self.getModuleExportName(arena, node);
+        var matches_pattern = false;
+        if (!std.mem.eql(u8, name, "default")) {
+            if (self.getOptionString("restrictedNamedExportsPattern")) |pat| {
+                if (pat.len > 0 and self.regexPatternMatches(pat, "u", name)) matches_pattern = true;
+            }
+        }
+        const in_list = blk: {
+            const opts = self.rule_options orelse break :blk false;
+            break :blk jsonArrayContains(opts.*, "restrictedNamedExports", name);
+        };
+        if (matches_pattern or in_list) {
+            self.reportSpanWithMessageId(self.nodeSpan(node), "restrictedNamed");
+            return;
+        }
+        if (!std.mem.eql(u8, name, "default")) return;
+        const parent = self.parentOf(node);
+        if (self.ast.nodeTag(parent) == .export_all) {
+            if (self.rdeFlag("namespaceFrom")) self.reportSpanWithMessageId(self.nodeSpan(node), "restrictedDefault");
+            return;
+        }
+        // ExportSpecifier: parent = export_specifier, grandparent = export_named[_from].
+        const gp = self.parentOf(parent);
+        const is_source = self.ast.nodeTag(gp) == .export_named_from;
+        const local_name = self.getModuleExportName(arena, self.ast.nodeData(parent).lhs);
+        if (!is_source) {
+            if (self.rdeFlag("named")) self.reportSpanWithMessageId(self.nodeSpan(node), "restrictedDefault");
+            return;
+        }
+        if (self.rdePresent()) {
+            const is_def = std.mem.eql(u8, local_name, "default");
+            if ((is_def and self.rdeFlag("defaultFrom")) or (!is_def and self.rdeFlag("namedFrom")))
+                self.reportSpanWithMessageId(self.nodeSpan(node), "restrictedDefault");
+        }
+    }
+
+    fn getModuleExportName(self: *const LintContext, arena: std.mem.Allocator, node: NodeIndex) []const u8 {
+        if (node == .none) return "";
+        const tag = self.ast.nodeTag(node);
+        // String module names use `property_literal` (`export { x as 'name' }`).
+        if (tag == .string_literal or tag == .property_literal) {
+            const raw = self.tokenText(self.ast.nodeMainToken(node));
+            if (raw.len < 2) return "";
+            const inner = raw[1 .. raw.len - 1];
+            if (std.mem.indexOfScalar(u8, inner, '\\') == null) return inner;
+            return decodeJsStringLiteral(arena, inner) catch inner;
+        }
+        return self.tokenText(self.ast.nodeMainToken(node));
+    }
+    fn rdeFlag(self: *const LintContext, key: []const u8) bool {
+        const opts = self.rule_options orelse return false;
+        if (opts.* != .object) return false;
+        const rde = opts.object.get("restrictDefaultExports") orelse return false;
+        if (rde != .object) return false;
+        const v = rde.object.get(key) orelse return false;
+        return if (v == .bool) v.bool else false;
+    }
+    fn rdePresent(self: *const LintContext) bool {
+        const opts = self.rule_options orelse return false;
+        if (opts.* != .object) return false;
+        const rde = opts.object.get("restrictDefaultExports") orelse return false;
+        return rde == .object;
+    }
+
+    /// new-cap: `new lower()` → "lower"; `Upper()` (called without new) → "upper".
+    /// Fires on new_expr / call_expr. Mirrors ESLint new-cap create().
+    pub fn checkNewCap(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        const is_new = tag == .new_expr;
+        const is_call = tag == .call_expr or tag == .optional_call_expr;
+        if (!is_new and !is_call) return;
+        if (is_new and !self.getOptionBool("newIsCap", true)) return;
+        if (is_call and !self.getOptionBool("capIsNew", true)) return;
+        const skip_properties = !self.getOptionBool("properties", true);
+
+        const callee = self.nodeSkipGrouping(self.ast.nodeData(node).lhs);
+        const ctag = self.ast.nodeTag(callee);
+        var name: []const u8 = "";
+        if (ctag == .identifier) {
+            name = self.tokenText(self.ast.nodeMainToken(callee));
+        } else if (ctag == .member_expr or ctag == .optional_member_expr) {
+            name = self.tokenText(self.ast.nodeMainToken(self.ast.nodeData(callee).rhs));
+        } else if (ctag == .computed_member_expr or ctag == .optional_computed_member_expr) {
+            // Computed key may be parenthesized — skip grouping, then read string/template.
+            const key = self.nodeSkipGrouping(self.ast.nodeData(callee).rhs);
+            const ktag = self.ast.nodeTag(key);
+            if (ktag == .string_literal or ktag == .template_literal) {
+                const raw = self.tokenText(self.ast.nodeMainToken(key));
+                if (raw.len >= 2) name = raw[1 .. raw.len - 1];
+            }
+        }
+        if (name.len == 0) return;
+
+        const cap = newCapGetCap(name);
+        if (is_new) {
+            if (cap == .lower and !self.newCapIsAllowed(callee, name, false, skip_properties))
+                self.newCapReport(callee, "lower");
+        } else {
+            if (cap == .upper and !self.newCapIsAllowed(callee, name, true, skip_properties))
+                self.newCapReport(callee, "upper");
+        }
+    }
+
+    fn newCapMemberLike(tag: anytype) bool {
+        return tag == .member_expr or tag == .optional_member_expr or
+            tag == .computed_member_expr or tag == .optional_computed_member_expr;
+    }
+    fn newCapIsAllowed(self: *const LintContext, callee: NodeIndex, name: []const u8, comptime is_cap_is_new: bool, skip_properties: bool) bool {
+        const source_text = self.sourceText(callee);
+        const list_key = if (is_cap_is_new) "capIsNewExceptions" else "newIsCapExceptions";
+        const pat_key = if (is_cap_is_new) "capIsNewExceptionPattern" else "newIsCapExceptionPattern";
+        // Exception lists match either the callee name or the full callee text.
+        if (self.newCapInList(list_key, is_cap_is_new, name) or self.newCapInList(list_key, is_cap_is_new, source_text)) return true;
+        if (self.getOptionString(pat_key)) |pat| {
+            if (pat.len > 0 and self.regexPatternMatches(pat, "u", source_text)) return true;
+        }
+        const is_member = newCapMemberLike(self.ast.nodeTag(callee));
+        // Date.UTC special-case.
+        if (std.mem.eql(u8, name, "UTC") and is_member) {
+            const obj = self.ast.nodeData(callee).lhs;
+            return self.ast.nodeTag(obj) == .identifier and std.mem.eql(u8, self.tokenText(self.ast.nodeMainToken(obj)), "Date");
+        }
+        return skip_properties and is_member;
+    }
+    fn newCapInList(self: *const LintContext, key: []const u8, with_caps: bool, name: []const u8) bool {
+        if (with_caps and newCapIsCapsAllowed(name)) return true;
+        const opts = self.rule_options orelse return false;
+        return jsonArrayContains(opts.*, key, name);
+    }
+    fn newCapReport(self: *const LintContext, callee: NodeIndex, message_id: []const u8) void {
+        // loc = the callee identifier, or the member's property (skip-grouped).
+        if (newCapMemberLike(self.ast.nodeTag(callee))) {
+            const prop = self.nodeSkipGrouping(self.ast.nodeData(callee).rhs);
+            self.reportSpanWithMessageId(self.nodeSpan(prop), message_id);
+        } else {
+            self.reportSpanWithMessageId(self.nodeSpan(callee), message_id);
+        }
+    }
+
+    /// id-denylist: report identifiers/private names in the configured denylist
+    /// (options). Mirrors ESLint id-denylist; reuses id-match's import-attr +
+    /// known-global-ref helpers.
+    pub fn checkIdDenylist(self: *const LintContext, node: NodeIndex) void {
+        const main_tok = self.ast.nodeMainToken(node);
+        const raw = self.tokenText(main_tok);
+        const is_private = raw.len > 0 and raw[0] == '#';
+        const name = if (is_private) (if (raw.len > 1) raw[1..] else self.tokenText(main_tok + 1)) else raw;
+        if (!self.idDenylistHas(name)) return;
+        if (!self.idDenylistShouldCheck(node)) return;
+        if (is_private) {
+            const name_end = if (raw.len > 1) self.tokenEnd(main_tok) else self.tokenEnd(main_tok + 1);
+            self.reportSpanWithMessageId(.{ .start = self.tokenStart(main_tok), .end = name_end }, "restrictedPrivate");
+        } else {
+            self.reportWithMessageId(node, "restricted");
+        }
+    }
+    fn idDenylistHas(self: *const LintContext, name: []const u8) bool {
+        const all = self.rule_options_all orelse return false;
+        for (all) |o| if (o == .string and std.mem.eql(u8, o.string, name)) return true;
+        return false;
+    }
+    fn idDenylistShouldCheck(self: *const LintContext, node: NodeIndex) bool {
+        if (self.idmIsImportAttributeKey(node)) return false;
+        const parent = self.parentOf(node);
+        const ptag = self.ast.nodeTag(parent);
+        // Non-computed member property: only checked on write (assignment target).
+        if ((ptag == .member_expr or ptag == .optional_member_expr) and self.ast.nodeData(parent).rhs == node) {
+            return self.idDenylistIsAssignmentTarget(parent);
+        }
+        if (ptag == .call_expr or ptag == .optional_call_expr or ptag == .new_expr) return false;
+        if (self.idDenylistIsRenamedImport(node)) return false;
+        if (self.idDenylistIsPropNameInDestructuring(node)) return false;
+        // A shorthand object-literal property (`{ foo }`) introduces a property
+        // name and is checked even for global names (ESLint's reference-identity).
+        if (ptag == .shorthand_property and self.ast.nodeTag(self.parentOf(parent)) == .object_literal) return true;
+        // A real (non-off) global reference is exempt; an `off` global is checked.
+        const nm = self.tokenText(self.ast.nodeMainToken(node));
+        if (self.idmIsKnownGlobalRef(node) and !self.globalIsOff(nm)) return false;
+        return true;
+    }
+    fn idDenylistIsAssignmentTarget(self: *const LintContext, member: NodeIndex) bool {
+        const p = self.parentOf(member);
+        const pt = self.ast.nodeTag(p);
+        if (std.mem.eql(u8, self.nodeEslintTypeName(p), "AssignmentExpression") and self.ast.nodeData(p).lhs == member) return true;
+        if (pt == .array_pattern or pt == .rest_element or pt == .spread_element) return true;
+        if ((pt == .property or pt == .shorthand_property or pt == .computed_property) and self.ast.nodeData(p).rhs == member and self.ast.nodeTag(self.parentOf(p)) == .object_pattern) return true;
+        if (pt == .assignment_pattern and self.ast.nodeData(p).lhs == member) return true;
+        return false;
+    }
+    fn idDenylistIsRenamedImport(self: *const LintContext, node: NodeIndex) bool {
+        const parent = self.parentOf(node);
+        const ptag = self.ast.nodeTag(parent);
+        const d = self.ast.nodeData(parent);
+        // import { a as b }: imported (lhs) renamed; node is the imported name.
+        if (ptag == .import_specifier) return d.lhs != d.rhs and d.lhs == node;
+        // export { a as b } from 'mod' (re-export): local (lhs) renamed.
+        if (ptag == .export_specifier and self.ast.nodeTag(self.parentOf(parent)) == .export_named_from)
+            return d.lhs != d.rhs and d.lhs == node;
+        return false;
+    }
+    fn idDenylistIsPropNameInDestructuring(self: *const LintContext, node: NodeIndex) bool {
+        const parent = self.parentOf(node);
+        // Only a NON-shorthand, non-computed `{ key: binding }` has a distinct key
+        // to skip; shorthand `{ foo }` is a binding (must be checked).
+        if (self.ast.nodeTag(parent) != .property) return false;
+        return self.ast.nodeData(parent).lhs == node and self.ast.nodeTag(self.parentOf(parent)) == .object_pattern;
+    }
+
     pub fn checkUselessBackrefCall(self: *const LintContext, node: NodeIndex) void {
         if (!self.isGlobalRegExpCall(node)) return;
         const data = self.ast.nodeData(node);
@@ -7884,32 +10450,394 @@ pub const LintContext = struct {
     // Partial port: handles `badSuper` (super() in a class with no
     // extends) and `missingAll` (no super() in a derived constructor).
     // Skips `missingSome` and `duplicate` which need flow analysis.
+    // ── Constructor-super analysis ─────────────────────────────────────
+    //
+    // Pure AST-based path analysis.  We recursively walk the constructor
+    // body, threading a "live" super-call count range { min, max } through
+    // every branch.  capped at 2 (we only care ≥2 for duplicates).
+    //
+    // Key invariants
+    //   • min/max describe the OPEN (still-flowing) path
+    //   • return <value>  →  treat the path as "super called" (ESLint escape hatch)
+    //   • return;         →  seal path with current count into accum
+    //   • break           →  carried in brk_* fields; consumed by enclosing loop/switch
+    //   • The "fall-off-end" open path is sealed at the top level
+
+    /// Live execution state for constructor-super path analysis.
+    const CsLive = struct {
+        min: u8 = 0,
+        max: u8 = 0,
+        dead: bool = false,
+        // Break-exit paths (for innermost loop/switch)
+        brk_min: u8 = 0,
+        brk_max: u8 = 0,
+        brk_has: bool = false,
+    };
+
+    /// Accumulates super-call counts across all function-terminating paths.
+    const CsAccum = struct {
+        min: u8 = 255, // 255 = no paths sealed yet
+        max: u8 = 0,
+        dup_node: NodeIndex = .none, // super() to report as duplicate
+
+        fn seal(self: *CsAccum, mn: u8, mx: u8) void {
+            const m: u8 = @min(mn, 2);
+            const M: u8 = @min(mx, 2);
+            if (self.min == 255) { self.min = m; self.max = M; }
+            else { self.min = @min(self.min, m); self.max = @max(self.max, M); }
+        }
+        fn finalMin(self: *const CsAccum) u8 {
+            return if (self.min == 255) 0 else self.min;
+        }
+    };
+
+    fn csMerge(a: CsLive, b: CsLive) CsLive {
+        var brk_min: u8 = 0; var brk_max: u8 = 0; var brk_has = false;
+        if (a.brk_has and b.brk_has) {
+            brk_min = @min(a.brk_min, b.brk_min);
+            brk_max = @max(a.brk_max, b.brk_max);
+            brk_has = true;
+        } else if (a.brk_has) { brk_min = a.brk_min; brk_max = a.brk_max; brk_has = true; }
+        else if (b.brk_has) { brk_min = b.brk_min; brk_max = b.brk_max; brk_has = true; }
+
+        if (a.dead and b.dead) return .{ .dead = true, .brk_min = brk_min, .brk_max = brk_max, .brk_has = brk_has };
+        if (a.dead) return .{ .min = b.min, .max = b.max, .brk_min = brk_min, .brk_max = brk_max, .brk_has = brk_has };
+        if (b.dead) return .{ .min = a.min, .max = a.max, .brk_min = brk_min, .brk_max = brk_max, .brk_has = brk_has };
+        return .{ .min = @min(a.min, b.min), .max = @max(a.max, b.max),
+                  .brk_min = brk_min, .brk_max = brk_max, .brk_has = brk_has };
+    }
+
+    fn csAnalyzeBlock(self: *const LintContext, block: NodeIndex, live: CsLive,
+                      super_is_ctor: bool, super_calls: []const NodeIndex, accum: *CsAccum) CsLive {
+        if (block == .none) return live;
+        if (self.ast.nodeTag(block) != .block_stmt) return self.csAnalyzeStmt(block, live, super_is_ctor, super_calls, accum);
+        const d = self.ast.nodeData(block);
+        const stmts = self.ast.extra_data[@intFromEnum(d.lhs)..@intFromEnum(d.rhs)];
+        var cur = live;
+        for (stmts) |raw| {
+            if (cur.dead) break;
+            cur = self.csAnalyzeStmt(@enumFromInt(raw), cur, super_is_ctor, super_calls, accum);
+        }
+        return cur;
+    }
+
+    fn csAnalyzeStmt(self: *const LintContext, node: NodeIndex, live: CsLive,
+                     super_is_ctor: bool, super_calls: []const NodeIndex, accum: *CsAccum) CsLive {
+        if (node == .none or live.dead) return live;
+        const tag = self.ast.nodeTag(node);
+        const d = self.ast.nodeData(node);
+        switch (tag) {
+            .empty_stmt, .debugger_stmt => return live,
+            .expression_stmt => return self.csAnalyzeExpr(d.lhs, live, super_is_ctor, accum),
+            .block_stmt => return self.csAnalyzeBlock(node, live, super_is_ctor, super_calls, accum),
+
+            .return_stmt => {
+                // return <value> is ESLint's "substitute for super()" escape hatch
+                accum.seal(if (d.lhs != .none) 1 else live.min,
+                           if (d.lhs != .none) 1 else live.max);
+                return .{ .dead = true };
+            },
+            .throw_stmt => {
+                // throw creates an exception path, NOT a return path.
+                // ESLint's returnedSegments excludes exception paths → don't seal.
+                return .{ .dead = true };
+            },
+            .break_stmt, .break_label => {
+                return .{ .dead = true, .brk_min = live.min, .brk_max = live.max, .brk_has = true };
+            },
+            .continue_stmt, .continue_label => {
+                // Exits this loop iteration; conservatively seal (rare in constructors)
+                accum.seal(live.min, live.max);
+                return .{ .dead = true };
+            },
+
+            .if_stmt => {
+                const then_live = self.csAnalyzeStmt(d.rhs, live, super_is_ctor, super_calls, accum);
+                return csMerge(then_live, live);
+            },
+            .if_else_stmt => {
+                const id = self.extraData(ast_mod.IfData, @intFromEnum(d.rhs));
+                const then_live = self.csAnalyzeStmt(id.consequent, live, super_is_ctor, super_calls, accum);
+                const else_live = self.csAnalyzeStmt(id.alternate, live, super_is_ctor, super_calls, accum);
+                return csMerge(then_live, else_live);
+            },
+
+            .while_stmt => {
+                const body_live = self.csAnalyzeStmt(d.rhs, live, super_is_ctor, super_calls, accum);
+                return self.csHandleLoop(node, live, body_live, super_calls, accum, false);
+            },
+            .do_while_stmt => {
+                const body_live = self.csAnalyzeStmt(d.lhs, live, super_is_ctor, super_calls, accum);
+                return self.csHandleLoop(node, live, body_live, super_calls, accum, true);
+            },
+            .for_stmt => {
+                const body_live = self.csAnalyzeStmt(d.rhs, live, super_is_ctor, super_calls, accum);
+                return self.csHandleLoop(node, live, body_live, super_calls, accum, false);
+            },
+            .for_in_stmt, .for_of_stmt, .for_await_of_stmt => {
+                const fd = self.extraData(ast_mod.ForInOfData, @intFromEnum(d.lhs));
+                const body_live = self.csAnalyzeStmt(fd.body, live, super_is_ctor, super_calls, accum);
+                return self.csHandleLoop(node, live, body_live, super_calls, accum, false);
+            },
+
+            .switch_stmt => return self.csAnalyzeSwitch(node, live, super_is_ctor, super_calls, accum),
+
+            .try_stmt => {
+                const td = self.extraData(ast_mod.TryData, @intFromEnum(d.rhs));
+                const try_live = self.csAnalyzeBlock(d.lhs, live, super_is_ctor, super_calls, accum);
+                var merged = try_live;
+                if (td.catch_node != .none) {
+                    const cd = self.ast.nodeData(td.catch_node);
+                    // catch might run from anywhere in try → start from original live
+                    const catch_live = self.csAnalyzeBlock(cd.rhs, live, super_is_ctor, super_calls, accum);
+                    merged = csMerge(try_live, catch_live);
+                }
+                if (td.finally_body != .none) {
+                    merged = self.csAnalyzeBlock(td.finally_body, merged, super_is_ctor, super_calls, accum);
+                }
+                return merged;
+            },
+
+            .labeled_stmt => return self.csAnalyzeStmt(d.lhs, live, super_is_ctor, super_calls, accum),
+            .with_stmt    => return self.csAnalyzeStmt(d.rhs, live, super_is_ctor, super_calls, accum),
+
+            .var_decl, .let_decl, .const_decl => {
+                const decls = self.ast.extra_data[@intFromEnum(d.lhs)..@intFromEnum(d.rhs)];
+                var cur = live;
+                for (decls) |raw| {
+                    if (cur.dead) break;
+                    const dd = self.ast.nodeData(@enumFromInt(raw));
+                    if (dd.rhs != .none) cur = self.csAnalyzeExpr(dd.rhs, cur, super_is_ctor, accum);
+                }
+                return cur;
+            },
+
+            // Function / class declarations: never recurse into them
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .class_decl => return live,
+
+            else => return live,
+        }
+    }
+
+    fn csAnalyzeExpr(self: *const LintContext, node: NodeIndex, live: CsLive,
+                     super_is_ctor: bool, accum: *CsAccum) CsLive {
+        if (node == .none or live.dead) return live;
+        const tag = self.ast.nodeTag(node);
+        const d = self.ast.nodeData(node);
+        switch (tag) {
+            // Never recurse into nested functions / classes
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .arrow_fn, .async_arrow_fn, .class_expr => return live,
+
+            .grouping_expr => {
+                if (d.lhs == .none) return live;
+                return self.csAnalyzeExpr(d.lhs, live, super_is_ctor, accum);
+            },
+
+            .call_expr, .optional_call_expr => {
+                if (d.lhs != .none and self.ast.nodeTag(d.lhs) == .super_expr) {
+                    // super() call found
+                    if (live.max >= 1) {
+                        // Some open path already saw a super() → duplicate
+                        if (accum.dup_node == .none) accum.dup_node = node;
+                    } else if (!super_is_ctor) {
+                        self.reportWithMessageId(node, "badSuper");
+                    }
+                    return .{ .min = @min(live.min + 1, 2), .max = @min(live.max + 1, 2) };
+                }
+                return live;
+            },
+
+            .conditional => {
+                const cd = self.extraData(ast_mod.Conditional, @intFromEnum(d.rhs));
+                const then_live = self.csAnalyzeExpr(cd.consequent, live, super_is_ctor, accum);
+                const else_live = self.csAnalyzeExpr(cd.alternate, live, super_is_ctor, accum);
+                return csMerge(then_live, else_live);
+            },
+
+            // Both && and || / ?? : left always runs, right is conditional
+            .logical_and, .logical_or, .nullish_coalesce => {
+                const left_live = self.csAnalyzeExpr(d.lhs, live, super_is_ctor, accum);
+                const right_live = self.csAnalyzeExpr(d.rhs, left_live, super_is_ctor, accum);
+                // right might not run → branch(left_live, right_live)
+                return csMerge(left_live, right_live);
+            },
+
+            .sequence_expr => {
+                const exprs = self.ast.extra_data[@intFromEnum(d.lhs)..@intFromEnum(d.rhs)];
+                var cur = live;
+                for (exprs) |raw| {
+                    if (cur.dead) break;
+                    cur = self.csAnalyzeExpr(@enumFromInt(raw), cur, super_is_ctor, accum);
+                }
+                return cur;
+            },
+
+            // Assignment rhs might contain super() (unusual but handle it)
+            .assign, .add_assign, .sub_assign, .mul_assign, .div_assign,
+            .mod_assign, .exp_assign, .shl_assign, .shr_assign, .ushr_assign,
+            .and_assign, .or_assign, .xor_assign,
+            .logical_and_assign, .logical_or_assign, .nullish_assign => {
+                return self.csAnalyzeExpr(d.rhs, live, super_is_ctor, accum);
+            },
+
+            else => return live,
+        }
+    }
+
+    fn csHandleLoop(self: *const LintContext, loop_node: NodeIndex, live: CsLive,
+                    body_live: CsLive, super_calls: []const NodeIndex, accum: *CsAccum,
+                    do_while: bool) CsLive {
+        var res_min: u8 = live.min;
+        var res_max: u8 = live.max;
+        var res_dead = false;
+
+        if (!body_live.dead) {
+            if (body_live.max > 0) {
+                // Body calls super on some fall-through path → might iterate twice → duplicate
+                res_max = @min(live.max + 2, 2);
+                if (accum.dup_node == .none) {
+                    // Find the first super() call inside the loop body span
+                    const loop_span = self.nodeSpan(loop_node);
+                    var best: NodeIndex = .none;
+                    var best_pos: u32 = std.math.maxInt(u32);
+                    for (super_calls) |sc| {
+                        const sp = self.nodeSpan(sc);
+                        if (sp.start >= loop_span.start and sp.end <= loop_span.end) {
+                            if (sp.start < best_pos) { best_pos = sp.start; best = sc; }
+                        }
+                    }
+                    accum.dup_node = best;
+                }
+            }
+            if (do_while) {
+                res_min = @min(live.min + body_live.min, 2);
+            }
+            // else: while/for might not run → res_min = live.min (0 iterations)
+        } else {
+            // Body always terminates — loop runs at most once for do-while, maybe 0 for while
+            if (do_while and !body_live.brk_has) {
+                // do-while: body always returned/threw, nothing continues after loop
+                res_dead = true;
+            }
+        }
+
+        // Merge break-exit paths into after-loop state
+        if (body_live.brk_has) {
+            const brk_min: u8 = @min(live.min + body_live.brk_min, 2);
+            const brk_max: u8 = @min(live.max + body_live.brk_max, 2);
+            if (res_dead) {
+                res_min = brk_min; res_max = brk_max; res_dead = false;
+            } else {
+                res_min = @min(res_min, brk_min);
+                res_max = @max(res_max, brk_max);
+            }
+        }
+
+        return .{ .min = res_min, .max = res_max, .dead = res_dead };
+    }
+
+    fn csAnalyzeSwitch(self: *const LintContext, node: NodeIndex, live: CsLive,
+                       super_is_ctor: bool, super_calls: []const NodeIndex, accum: *CsAccum) CsLive {
+        const d = self.ast.nodeData(node);
+        if (d.rhs == .none) return csMerge(.{ .dead = true }, live); // no cases
+
+        const sr = self.extraData(SubRange, @intFromEnum(d.rhs));
+        const cases = self.extraSlice(sr);
+        if (cases.len == 0) return live;
+
+        var has_default = false;
+        for (cases) |c| {
+            if (self.ast.nodeTag(@enumFromInt(c)) == .switch_default) { has_default = true; break; }
+        }
+
+        // after_switch: accumulates all "exited switch" paths (break or fall-off last case)
+        var after_switch = CsLive{ .dead = true }; // start dead; will be merged with real paths
+        var carry = live;      // state carried by fallthrough from previous case
+        var has_carry = false; // is there active fallthrough?
+
+        for (cases) |c_raw| {
+            const case_node: NodeIndex = @enumFromInt(c_raw);
+            const cd = self.ast.nodeData(case_node);
+            if (cd.rhs == .none) { has_carry = false; continue; }
+            const csr = self.extraData(SubRange, @intFromEnum(cd.rhs));
+            const stmts = self.extraSlice(csr);
+
+            // Starting state: merge carry (if any) with live (direct discriminant match)
+            const case_start = if (has_carry) csMerge(carry, live) else live;
+            var cur = case_start;
+            for (stmts) |s_raw| {
+                if (cur.dead) break;
+                cur = self.csAnalyzeStmt(@enumFromInt(s_raw), cur, super_is_ctor, super_calls, accum);
+            }
+
+            // Consume break exits → they leave the switch
+            if (cur.brk_has) {
+                const brk_live = CsLive{ .min = cur.brk_min, .max = cur.brk_max };
+                after_switch = csMerge(after_switch, brk_live);
+                cur.brk_has = false;
+            }
+
+            if (!cur.dead) {
+                carry = .{ .min = cur.min, .max = cur.max }; // fall-through to next case
+                has_carry = true;
+            } else {
+                has_carry = false;
+            }
+        }
+
+        // Last case fell off without break
+        if (has_carry) {
+            after_switch = csMerge(after_switch, carry);
+        }
+
+        // No default: "no case matched" path passes through unchanged
+        if (!has_default) {
+            after_switch = csMerge(after_switch, live);
+        }
+
+        return after_switch;
+    }
+
     pub fn checkConstructorSuper(self: *const LintContext, node: NodeIndex) void {
-        if (self.ast.nodeTag(node) != .method_def) return;
-        const data = self.ast.nodeData(node);
-        const key = data.lhs;
-        if (key == .none or self.ast.nodeTag(key) != .identifier) return;
-        const key_name = self.ast.tokenText(self.ast.nodeMainToken(key));
-        if (!std.mem.eql(u8, key_name, "constructor")) return;
+        if (!self.isConstructorMethod(node)) return;
 
         // Walk up to the enclosing class.
-        var cur = self.parentOf(node);
-        while (cur != .none) : (cur = self.parentOf(cur)) {
-            const t = self.ast.nodeTag(cur);
+        var class_cur = self.parentOf(node);
+        while (class_cur != .none) : (class_cur = self.parentOf(class_cur)) {
+            const t = self.ast.nodeTag(class_cur);
             if (t == .class_decl or t == .class_expr) break;
         }
-        if (cur == .none) return;
-        const class_data = self.ast.nodeData(cur);
-        const cd = self.extraData(ast_mod.ClassData, @intFromEnum(class_data.lhs));
-        const has_extends = cd.super_class != .none and self.extendsIsPossibleConstructor(cd.super_class);
+        if (class_cur == .none) return;
+        const class_node_data = self.ast.nodeData(class_cur);
+        const class_d = self.extraData(ast_mod.ClassData, @intFromEnum(class_node_data.lhs));
 
-        // Method's body lives in MethodData (an extra payload), so
-        // nodeSpan(method_def) doesn't extend past the parameter list.
-        // Pull the body node out of the extra so we can scan it.
-        const method_data = self.extraData(ast_mod.MethodData, @intFromEnum(data.rhs));
-        const body = method_data.body;
+        // has_extends = any extends clause (even `extends null`)
+        // super_is_ctor = extends a value that can actually be called as a constructor
+        const has_extends = class_d.super_class != .none;
+        const super_is_ctor = has_extends and self.extendsIsPossibleConstructor(class_d.super_class);
+
+        // Get constructor body from MethodData / constructor_def shape.
+        const body: NodeIndex = blk: {
+            const tag = self.ast.nodeTag(node);
+            if (tag == .constructor_def) {
+                // constructor_def: lhs = extra index to FnData-like structure
+                // actually constructor_def stores MethodData same as method_def
+                const ndata = self.ast.nodeData(node);
+                const md = self.extraData(ast_mod.MethodData, @intFromEnum(ndata.rhs));
+                break :blk md.body;
+            } else {
+                // method_def: rhs = extra index to MethodData
+                const ndata = self.ast.nodeData(node);
+                const md = self.extraData(ast_mod.MethodData, @intFromEnum(ndata.rhs));
+                break :blk md.body;
+            }
+        };
         if (body == .none) return;
-        const method_span = self.nodeSpan(body);
+
+        // Collect all super() calls in this constructor body (excluding nested functions/classes).
+        const body_span = self.nodeSpan(body);
         const total: u32 = @intCast(self.ast.nodes.len);
         var super_calls_buf: [32]NodeIndex = undefined;
         var super_calls_len: usize = 0;
@@ -7920,9 +10848,7 @@ pub const LintContext = struct {
             const cd2 = self.ast.nodeData(ni);
             if (cd2.lhs == .none or self.ast.nodeTag(cd2.lhs) != .super_expr) continue;
             const sp = self.nodeSpan(ni);
-            if (sp.start < method_span.start or sp.end > method_span.end) continue;
-            // Skip super() calls inside nested functions / classes —
-            // they don't belong to this constructor.
+            if (sp.start < body_span.start or sp.end > body_span.end) continue;
             if (self.callInsideNestedFunctionOrClass(ni, node)) continue;
             if (super_calls_len >= super_calls_buf.len) break;
             super_calls_buf[super_calls_len] = ni;
@@ -7930,318 +10856,39 @@ pub const LintContext = struct {
         }
         const super_calls = super_calls_buf[0..super_calls_len];
 
-        if (!has_extends) {
-            for (super_calls) |sc| {
-                self.reportWithMessageId(sc, "badSuper");
-            }
-            return;
+        // No extends at all: ignore (non-derived class, no super() constraint)
+        if (!has_extends) return;
+
+        // Run path analysis
+        var accum = CsAccum{};
+        const final_live = self.csAnalyzeBlock(body, .{}, super_is_ctor, super_calls, &accum);
+
+        // Seal the fall-off-end path
+        if (!final_live.dead) accum.seal(final_live.min, final_live.max);
+        // Seal break exits that reached the function level (unusual but handle it)
+        if (final_live.brk_has) accum.seal(final_live.brk_min, final_live.brk_max);
+
+        // No return paths at all (all paths threw) → nothing to report
+        if (accum.min == 255) return;
+
+        const all_min = accum.finalMin();
+        const all_max = accum.max;
+
+        // Span for missingSome/missingAll: from method start to body end (full constructor).
+        const method_span = self.nodeSpan(node);
+        const ctor_span = Span{ .start = method_span.start, .end = body_span.end };
+
+        // Report missingSome or missingAll
+        if (all_min == 0) {
+            const some_paths_called = all_max >= 1;
+            self.reportSpanWithMessageId(ctor_span, if (some_paths_called) "missingSome" else "missingAll");
         }
-        if (super_calls.len == 0) {
-            // ESLint reports at the constructor function head.
-            self.reportWithMessageId(node, "missingAll");
-            return;
-        }
-        // Flow analysis via code-path events.  Build a node→segment map
-        // by walking the event stream once: every event whose `node` we
-        // can attribute to a specific branch body gets recorded with the
-        // segment that was current BEFORE the branch-end transition.
-        // For each super_call, we then walk parents and pick up the
-        // nearest recorded segment.
-        const cpr_opt = self.semantic.code_path_result;
-        if (cpr_opt == null) return;
-        const cpr = cpr_opt.?;
-        const cp_id = self.findCodePathForFunction(node) orelse return;
-        var node_to_seg = std.AutoHashMapUnmanaged(NodeIndex, u32).empty;
-        defer node_to_seg.deinit(self.allocator);
-        self.buildNodeSegMap(cpr, cp_id, &node_to_seg, body) catch return;
-        var super_segs_buf: [32]u32 = undefined;
-        var super_segs_len: usize = 0;
-        for (super_calls) |sc| {
-            const seg = self.lookupNodeSeg(&node_to_seg, sc, cpr, cp_id);
-            super_segs_buf[super_segs_len] = seg;
-            super_segs_len += 1;
-        }
-        const super_segs = super_segs_buf[0..super_segs_len];
-        // duplicate: two super_calls in the same segment.
-        for (super_segs, 0..) |seg_a, ai| {
-            for (super_segs[ai + 1 ..], ai + 1..) |seg_b, bi| {
-                if (seg_b == seg_a) {
-                    self.reportWithMessageId(super_calls[bi], "duplicate");
-                    return;
-                }
-            }
-        }
-        // missingSome: some returned-segment paths reach the function
-        // exit without crossing super, others do.
-        const cp = cpr.codepaths[cp_id];
-        const returned = cpr.cp_returned_pool[cp.returned_start..cp.returned_end];
-        if (returned.len > 0) {
-            var any_misses = false;
-            var any_hits = false;
-            for (returned) |fin| {
-                if (cpr.seg_reachable[fin] == 0) continue;
-                if (self.allPathsThroughSuper(cpr, cp.initial_segment, fin, super_segs)) {
-                    any_hits = true;
-                } else {
-                    any_misses = true;
-                }
-            }
-            if (any_hits and any_misses) self.reportWithMessageId(node, "missingSome");
+
+        // Report duplicate (can coexist with missingSome)
+        if (all_max >= 2 and accum.dup_node != .none) {
+            self.reportWithMessageId(accum.dup_node, "duplicate");
         }
     }
-
-    /// Walks events for the constructor's CodePath, recording per-node
-    /// segments at the branch-end transitions where the AST node is
-    /// known but `seg_start` has already moved on.  Specifically:
-    ///   * cond_alt — current_seg before this event IS the consequent's
-    ///     segment (the true-fork side).  Record consequent → seg.
-    ///   * cond_close — current_seg before pop IS the alternate's
-    ///     segment.  Record alternate → seg.
-    ///   * logical_close — similarly for RHS of `&&` / `||` / `??`.
-    ///   * branch_else / branch_close — if-statement branches.
-    fn buildNodeSegMap(self: *const LintContext, cpr: anytype, cp_id: u32, map: *std.AutoHashMapUnmanaged(NodeIndex, u32), body: NodeIndex) !void {
-        _ = body;
-        // Key insight: seg_start events with phase=.exit fire AT the
-        // exit of `node` and transition us to `data1`.  That means
-        // `node`'s content was processed in the PREVIOUS segment — so
-        // record map[node] = previous_seg.  seg_start with phase=.enter
-        // (body entry) records map[node] = new_seg (data1).
-        var current_seg: u32 = std.math.maxInt(u32);
-        for (cpr.events) |ev| {
-            if (ev.type != .seg_start) continue;
-            if (cpr.seg_codepath[ev.data1] != cp_id) {
-                // Different CodePath — refresh current_seg to NONE so
-                // subsequent within-CP events don't see leftover state.
-                continue;
-            }
-            switch (ev.phase) {
-                .enter => {
-                    current_seg = ev.data1;
-                    try map.put(self.allocator, ev.node, ev.data1);
-                },
-                .exit, .after_enter => {
-                    // The previous current_seg owned ev.node's content.
-                    if (current_seg != std.math.maxInt(u32)) {
-                        try map.put(self.allocator, ev.node, current_seg);
-                    }
-                    current_seg = ev.data1;
-                },
-                .post => {
-                    current_seg = ev.data1;
-                    try map.put(self.allocator, ev.node, ev.data1);
-                },
-            }
-        }
-    }
-
-    /// Walk parents of `n` collecting node→segment hits.  Returns the
-    /// first ancestor's segment (or the CP's initial segment as the
-    /// fallback when nothing else is known).
-    fn lookupNodeSeg(self: *const LintContext, map: *const std.AutoHashMapUnmanaged(NodeIndex, u32), n: NodeIndex, cpr: anytype, cp_id: u32) u32 {
-        var cur = n;
-        while (cur != .none) : (cur = self.parentOf(cur)) {
-            if (map.get(cur)) |s| return s;
-        }
-        return cpr.codepaths[cp_id].initial_segment;
-    }
-
-    /// Conservative AST-only fallback: detect duplicate when the body
-    /// has TWO or more top-level statements that are `super()` (no
-    /// branches between them).  Misses cases hidden in conditionals
-    /// and won't flag missingSome — those need a real per-node segment
-    /// map (see notes at the call site).
-    fn checkConstructorSuperBodyStraightLine(self: *const LintContext, body: NodeIndex, super_calls: []const NodeIndex) void {
-        const data = self.ast.nodeData(body);
-        const stmts = self.ast.extraSlice(.{
-            .start = @intFromEnum(data.lhs),
-            .end = @intFromEnum(data.rhs),
-        });
-        var top_level_super: ?NodeIndex = null;
-        for (stmts) |raw| {
-            const s: NodeIndex = @enumFromInt(raw);
-            if (self.ast.nodeTag(s) != .expression_stmt) continue;
-            const sdata = self.ast.nodeData(s);
-            const expr = sdata.lhs;
-            // Is `expr` one of our super_calls?
-            var is_super = false;
-            for (super_calls) |sc| if (sc == expr) { is_super = true; break; };
-            if (!is_super) continue;
-            if (top_level_super) |_| {
-                self.reportWithMessageId(expr, "duplicate");
-                return;
-            }
-            top_level_super = expr;
-        }
-    }
-
-    /// True when EVERY path from `start` to `end` crosses at least one
-    /// segment in `super_segs`.  Implemented by BFS from `start` with
-    /// super_segs blocked: if `end` is reachable in the filtered CFG,
-    /// some path bypasses super, so not all paths cross.
-    fn allPathsThroughSuper(self: *const LintContext, cpr: anytype, start: u32, end: u32, super_segs: []const u32) bool {
-        _ = self;
-        if (start == end) {
-            for (super_segs) |s| if (s == end) return true;
-            return false;
-        }
-        for (super_segs) |s| if (s == start) return true;
-        var visited: [4096]u8 = undefined;
-        if (cpr.seg_count > visited.len) return false;
-        @memset(visited[0..cpr.seg_count], 0);
-        var queue: [256]u32 = undefined;
-        var qhead: usize = 0;
-        var qtail: usize = 0;
-        queue[qtail] = start;
-        qtail += 1;
-        visited[start] = 1;
-        while (qhead < qtail) {
-            const cur = queue[qhead];
-            qhead += 1;
-            const next_info = cpr.seg_next[cur];
-            for (cpr.all_next_targets[next_info.all_next_start..next_info.all_next_end]) |n| {
-                if (visited[n] != 0) continue;
-                // Block traversal through super_segs.
-                var is_super = false;
-                for (super_segs) |s| if (s == n) { is_super = true; break; };
-                if (is_super) continue;
-                if (n == end) return false; // reached end without crossing super
-                visited[n] = 1;
-                if (qtail >= queue.len) return false;
-                queue[qtail] = n;
-                qtail += 1;
-            }
-        }
-        return true; // couldn't reach end without crossing super
-    }
-
-    /// True when there exists a path from `start` to `end` that visits
-    /// at least one segment in `super_segs`.
-    fn pathPassesThroughSuper(self: *const LintContext, cpr: anytype, start: u32, end: u32, super_segs: []const u32) bool {
-        _ = self;
-        if (start == end) {
-            for (super_segs) |s| if (s == end) return true;
-            return false;
-        }
-        // BFS from end backwards via prev edges, marking visited.  When we
-        // reach start, check whether the visited set includes any super_seg.
-        var visited: [4096]u8 = undefined;
-        if (cpr.seg_count > visited.len) return false;
-        @memset(visited[0..cpr.seg_count], 0);
-        var queue: [256]u32 = undefined;
-        var qhead: usize = 0;
-        var qtail: usize = 0;
-        queue[qtail] = end;
-        qtail += 1;
-        visited[end] = 1;
-        var saw_super = false;
-        for (super_segs) |s| if (s == end) { saw_super = true; break; };
-        while (qhead < qtail) {
-            const cur = queue[qhead];
-            qhead += 1;
-            if (cur == start) {
-                // We've connected end → start.  Check if any visited seg is super.
-                // Since BFS reached start, the path goes through visited.  But
-                // "saw_super along this path" needs a per-path tracker, which
-                // a single visited set can't do precisely.  Approximation:
-                // saw_super is true if ANY visited segment is super_seg AND
-                // visited includes both start and end transitively.
-                if (saw_super) return true;
-                for (visited[0..cpr.seg_count], 0..) |v, i| {
-                    if (v == 0) continue;
-                    for (super_segs) |s| if (s == i) return true;
-                }
-                return false;
-            }
-            const prev_start = cpr.seg_all_prev_start[cur];
-            const prev_end = cpr.seg_all_prev_end[cur];
-            for (cpr.all_prev_targets[prev_start..prev_end]) |p| {
-                if (visited[p] != 0) continue;
-                visited[p] = 1;
-                if (qtail >= queue.len) return saw_super;
-                queue[qtail] = p;
-                qtail += 1;
-                for (super_segs) |s| {
-                    if (s == p) {
-                        saw_super = true;
-                        break;
-                    }
-                }
-            }
-        }
-        return saw_super;
-    }
-
-    /// True when segment `b` is reachable from `a` via forward edges
-    /// without crossing a loop back-edge.
-    fn segmentReachableFrom(self: *const LintContext, cpr: anytype, a: u32, b: u32) bool {
-        _ = self;
-        if (a == b) return false; // same-segment handled separately
-        var visited: [4096]u8 = undefined;
-        if (cpr.seg_count > visited.len) return false;
-        @memset(visited[0..cpr.seg_count], 0);
-        var queue: [256]u32 = undefined;
-        var qhead: usize = 0;
-        var qtail: usize = 0;
-        queue[qtail] = a;
-        qtail += 1;
-        visited[a] = 1;
-        while (qhead < qtail) {
-            const cur = queue[qhead];
-            qhead += 1;
-            const next_info = cpr.seg_next[cur];
-            for (cpr.all_next_targets[next_info.all_next_start..next_info.all_next_end]) |n| {
-                if (n == b) return true;
-                if (visited[n] != 0) continue;
-                visited[n] = 1;
-                if (qtail >= queue.len) return false;
-                queue[qtail] = n;
-                qtail += 1;
-            }
-        }
-        return false;
-    }
-
-    /// Find the CodePath whose codepath_start event points at `func_node`.
-    fn findCodePathForFunction(self: *const LintContext, func_node: NodeIndex) ?u32 {
-        const cpr = self.semantic.code_path_result orelse return null;
-        for (cpr.events) |ev| {
-            if (ev.type == .codepath_start and ev.node == func_node) return ev.data1;
-        }
-        return null;
-    }
-
-    /// Approximate "which segment is `node` in?" by walking events in
-    /// order: the most recent reachable seg_start whose source position
-    /// is <= the node's start (and that belongs to `cp_id`) is the
-    /// answer.  Returns null when no segment covers the node (e.g. the
-    /// node is in a nested function with a different CP).
-    fn segmentAtNode(self: *const LintContext, cpr: anytype, cp_id: u32, node: NodeIndex) ?u32 {
-        // Walk events in stream order (= source order, because the parser
-        // emits scope/CFG events left-to-right during parse).  Maintain
-        // `current_seg` from the LAST seg_start whose node belongs to
-        // this CodePath.  When we encounter the FIRST seg_start whose
-        // source position is STRICTLY GREATER than the target, the
-        // segment captured before that transition is the target's
-        // segment.  This correctly distinguishes branches whose
-        // seg_start.node IS the parent expression (ternary etc.) by
-        // relying on source-position ordering of consecutive
-        // seg_starts (e.g. seg_start.node = condition for branch1,
-        // seg_start.node = consequent for branch2 — the consequent's
-        // start is strictly after the condition's start, so a target
-        // INSIDE the consequent passes the branch1 seg_start but
-        // matches the branch2 seg_start only at its own start position).
-        const node_pos = self.nodeSpan(node).start;
-        var current_seg: ?u32 = null;
-        for (cpr.events) |ev| {
-            if (ev.type != .seg_start) continue;
-            if (cpr.seg_codepath[ev.data1] != cp_id) continue;
-            const ev_pos = self.nodeSpan(ev.node).start;
-            if (ev_pos > node_pos) break;
-            current_seg = ev.data1;
-        }
-        return current_seg;
-    }
-
     /// Mirrors ESLint's `isPossibleConstructor`: bails on literals,
     /// `undefined`, and mathematical-assignment shapes that can't
     /// evaluate to a constructor.  Returns true conservatively for
@@ -10768,6 +13415,416 @@ fn isValidModifierGroup(body: []const u8, off: usize) bool {
     if (i >= body.len or body[i] != ':') return false;
     // At least one flag must appear somewhere (either pre or post -).
     return pre_count + post_count > 0;
+}
+
+// ── Regex matcher (powerset-NFA over regex_parser AST) ──────────────────────
+// Implements RegExp.prototype.test for the regex subset used by rule OPTIONS:
+// anchors, char classes, groups, alternation, quantifiers, common escapes.
+// Inputs are short identifier/path tokens, so a fixed-cap position bitset and
+// the O(pattern * input^2) powerset closure are comfortably fast. Each AST
+// helper maps a SET of reachable positions to the set after matching a node,
+// so a single seeded-everywhere call covers all start offsets (test semantics).
+// Unsupported (rare in option patterns): backrefs (→ no match), lookbehind
+// (→ pass-through zero-width), \p{...} unicode properties (→ no match).
+const RE_MAX_POS: usize = 1024;
+const RE_WORDS: usize = RE_MAX_POS / 64 + 1;
+
+const ReBits = struct {
+    words: [RE_WORDS]u64 = std.mem.zeroes([RE_WORDS]u64),
+
+    fn set(self: *ReBits, i: usize) void {
+        if (i > RE_MAX_POS) return;
+        self.words[i >> 6] |= (@as(u64, 1) << @as(u6, @intCast(i & 63)));
+    }
+    fn isSet(self: *const ReBits, i: usize) bool {
+        if (i > RE_MAX_POS) return false;
+        return (self.words[i >> 6] & (@as(u64, 1) << @as(u6, @intCast(i & 63)))) != 0;
+    }
+    fn isEmpty(self: *const ReBits) bool {
+        for (self.words) |w| if (w != 0) return false;
+        return true;
+    }
+    fn orWith(self: *ReBits, other: *const ReBits) void {
+        for (&self.words, 0..) |*w, idx| w.* |= other.words[idx];
+    }
+    fn andNot(self: *const ReBits, other: *const ReBits) ReBits {
+        var out: ReBits = .{};
+        for (self.words, 0..) |w, idx| out.words[idx] = w & ~other.words[idx];
+        return out;
+    }
+};
+
+const ReMatcher = struct {
+    input: []const u8,
+    ignore_case: bool,
+    multiline: bool,
+    dot_all: bool,
+
+    fn matchAlts(self: *const ReMatcher, alts: []regex_parser.Alternative, from: *const ReBits) ReBits {
+        var out: ReBits = .{};
+        for (alts) |alt| {
+            var r = self.matchAlt(alt.terms, from);
+            out.orWith(&r);
+        }
+        return out;
+    }
+
+    fn matchAlt(self: *const ReMatcher, terms: []regex_parser.Term, from: *const ReBits) ReBits {
+        var cur: ReBits = from.*;
+        for (terms) |term| {
+            cur = self.matchTerm(&term, &cur);
+            if (cur.isEmpty()) return cur;
+        }
+        return cur;
+    }
+
+    fn matchTerm(self: *const ReMatcher, term: *const regex_parser.Term, from: *const ReBits) ReBits {
+        const qmin: u32 = if (term.quantifier) |q| q.min else 1;
+        const qmax: u32 = if (term.quantifier) |q| q.max else 1;
+        var out: ReBits = .{};
+        if (qmin == 0) out.orWith(from);
+        var cur: ReBits = from.*;
+        var visited: ReBits = from.*;
+        const cap: u32 = @intCast(self.input.len + 2);
+        var rep: u32 = 1;
+        while (rep <= qmax) : (rep += 1) {
+            const nxt = self.matchAtomSet(&term.atom, &cur);
+            if (nxt.isEmpty()) break;
+            // Record this rep's reachable ends (incl. zero-width matches that
+            // stay at the same position) BEFORE deduping.
+            if (rep >= qmin) out.orWith(&nxt);
+            // Continue only from positions not seen yet — bounds empty-match loops.
+            const fresh = nxt.andNot(&visited);
+            if (fresh.isEmpty()) break;
+            visited.orWith(&fresh);
+            cur = fresh;
+            if (rep >= cap) break;
+        }
+        return out;
+    }
+
+    fn matchAtomSet(self: *const ReMatcher, atom: *const regex_parser.Atom, from: *const ReBits) ReBits {
+        var out: ReBits = .{};
+        switch (atom.*) {
+            .character, .char_set, .char_class => {
+                var p: usize = 0;
+                while (p < self.input.len) : (p += 1) {
+                    if (!from.isSet(p)) continue;
+                    const cp_len = self.decodeLen(p);
+                    const cp = self.decodeCp(p);
+                    if (self.atomMatchesCp(atom, cp)) out.set(p + cp_len);
+                }
+            },
+            .assertion => |as| {
+                var p: usize = 0;
+                while (p <= self.input.len) : (p += 1) {
+                    if (!from.isSet(p)) continue;
+                    if (self.assertHolds(as.kind, p)) out.set(p);
+                }
+            },
+            .group => |g| {
+                switch (g.kind) {
+                    .lookahead, .neg_lookahead => {
+                        var p: usize = 0;
+                        while (p <= self.input.len) : (p += 1) {
+                            if (!from.isSet(p)) continue;
+                            var seed: ReBits = .{};
+                            seed.set(p);
+                            var inner = self.matchAlts(g.alternatives, &seed);
+                            const matched = !inner.isEmpty();
+                            const ok = if (g.kind == .lookahead) matched else !matched;
+                            if (ok) out.set(p);
+                        }
+                    },
+                    .lookbehind, .neg_lookbehind => {
+                        // Unsupported precisely — treat as zero-width pass-through.
+                        out.orWith(from);
+                    },
+                    else => {
+                        out = self.matchAlts(g.alternatives, from);
+                    },
+                }
+            },
+            .backref, .quoted_string_disjunction => {},
+        }
+        return out;
+    }
+
+    fn atomMatchesCp(self: *const ReMatcher, atom: *const regex_parser.Atom, cp: u32) bool {
+        return switch (atom.*) {
+            .character => |c| self.cpEq(c.codepoint, cp),
+            .char_set => |cs| self.charSetMatches(cs, cp),
+            .char_class => |cc| blk: {
+                var any = false;
+                for (cc.elements) |el| {
+                    if (self.classElemMatches(el, cp)) {
+                        any = true;
+                        break;
+                    }
+                }
+                break :blk any != cc.negated;
+            },
+            else => false,
+        };
+    }
+
+    fn classElemMatches(self: *const ReMatcher, el: regex_parser.ClassElement, cp: u32) bool {
+        return switch (el) {
+            .character => |c| self.cpEq(c.codepoint, cp),
+            .range => |r| blk: {
+                if (cp >= r.min.codepoint and cp <= r.max.codepoint) break :blk true;
+                if (self.ignore_case) {
+                    const sw = asciiSwapCase(cp);
+                    if (sw != cp and sw >= r.min.codepoint and sw <= r.max.codepoint) break :blk true;
+                }
+                break :blk false;
+            },
+            .char_set => |cs| self.charSetMatches(cs, cp),
+            .nested => |nc| blk: {
+                var any = false;
+                for (nc.elements) |e| {
+                    if (self.classElemMatches(e, cp)) {
+                        any = true;
+                        break;
+                    }
+                }
+                break :blk any != nc.negated;
+            },
+        };
+    }
+
+    fn charSetMatches(self: *const ReMatcher, cs: regex_parser.CharSet, cp: u32) bool {
+        return switch (cs.kind) {
+            .any => self.dot_all or (cp != '\n' and cp != '\r' and cp != 0x2028 and cp != 0x2029),
+            .digit => cp >= '0' and cp <= '9',
+            .non_digit => !(cp >= '0' and cp <= '9'),
+            .word => reIsWord(cp),
+            .non_word => !reIsWord(cp),
+            .space => reIsSpace(cp),
+            .non_space => !reIsSpace(cp),
+            .unicode_prop => false,
+        };
+    }
+
+    fn cpEq(self: *const ReMatcher, a: u32, b: u32) bool {
+        if (a == b) return true;
+        if (self.ignore_case) return asciiLower(a) == asciiLower(b);
+        return false;
+    }
+
+    fn assertHolds(self: *const ReMatcher, kind: regex_parser.AssertionKind, p: usize) bool {
+        return switch (kind) {
+            .line_start => p == 0 or (self.multiline and p > 0 and reIsLineTerm(self.input[p - 1])),
+            .line_end => p == self.input.len or (self.multiline and p < self.input.len and reIsLineTerm(self.input[p])),
+            .word_boundary => self.reWordBoundary(p),
+            .non_word_boundary => !self.reWordBoundary(p),
+        };
+    }
+
+    fn reWordBoundary(self: *const ReMatcher, p: usize) bool {
+        const before = p > 0 and reIsWord(self.input[p - 1]);
+        const after = p < self.input.len and reIsWord(self.input[p]);
+        return before != after;
+    }
+
+    fn decodeLen(self: *const ReMatcher, p: usize) usize {
+        const l = std.unicode.utf8ByteSequenceLength(self.input[p]) catch return 1;
+        if (p + l > self.input.len) return 1;
+        return l;
+    }
+    fn decodeCp(self: *const ReMatcher, p: usize) u32 {
+        const l = self.decodeLen(p);
+        if (l == 1) return self.input[p];
+        return std.unicode.utf8Decode(self.input[p .. p + l]) catch self.input[p];
+    }
+};
+
+fn reIsWord(cp: u32) bool {
+    return (cp >= 'A' and cp <= 'Z') or (cp >= 'a' and cp <= 'z') or (cp >= '0' and cp <= '9') or cp == '_';
+}
+fn reIsSpace(cp: u32) bool {
+    return switch (cp) {
+        ' ', '\t', '\n', 0x0B, 0x0C, '\r', 0xA0, 0x1680, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF => true,
+        0x2000...0x200A => true,
+        else => false,
+    };
+}
+fn reIsLineTerm(b: u8) bool {
+    return b == '\n' or b == '\r';
+}
+fn asciiLower(cp: u32) u32 {
+    return if (cp >= 'A' and cp <= 'Z') cp + 32 else cp;
+}
+fn asciiSwapCase(cp: u32) u32 {
+    if (cp >= 'A' and cp <= 'Z') return cp + 32;
+    if (cp >= 'a' and cp <= 'z') return cp - 32;
+    return cp;
+}
+
+// sort-keys: valid-order comparators (asc/desc × insensitive × natural).
+fn sortKeyValidOrder(order: []const u8, insensitive: bool, natural: bool, a: []const u8, b: []const u8) bool {
+    if (std.mem.eql(u8, order, "desc")) return sortKeyAscLe(insensitive, natural, b, a);
+    return sortKeyAscLe(insensitive, natural, a, b); // "asc" (default)
+}
+fn sortKeyAscLe(insensitive: bool, natural: bool, a: []const u8, b: []const u8) bool {
+    var bufa: [512]u8 = undefined;
+    var bufb: [512]u8 = undefined;
+    const aa = if (insensitive) sortKeyLower(a, &bufa) else a;
+    const bb = if (insensitive) sortKeyLower(b, &bufb) else b;
+    if (natural) return sortKeyNaturalCompare(aa, bb) <= 0;
+    return std.mem.order(u8, aa, bb) != .gt; // JS string `<=` (byte order for ASCII)
+}
+fn sortKeyLower(s: []const u8, buf: []u8) []const u8 {
+    if (s.len > buf.len) return s; // too long → skip folding (rare)
+    for (s, 0..) |c, i| buf[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    return buf[0..s.len];
+}
+// natural-compare-lite (Lauri Rooden) — faithful port. Remaps char codes so
+// punctuation/digits/upper/lower interleave specially, and compares digit runs
+// numerically. e.g. nc("_","A")=-1, "img2" < "img10".
+fn ncRemap(c: i64) i64 {
+    if (c < 45 or c > 127) return c;
+    if (c < 46) return 65; // '-'
+    if (c < 48) return c - 1; // '.' '/'
+    if (c < 58) return c + 18; // '0'-'9' → 66-75
+    if (c < 65) return c - 11; // ':'..'@'
+    if (c < 91) return c + 11; // 'A'-'Z' → 76-101
+    if (c < 97) return c - 37; // '['..'`' (incl '_'→58)
+    if (c < 123) return c + 5; // 'a'-'z' → 102-127
+    return c - 63; // 123-127
+}
+fn ncCodeAt(s: []const u8, pos: usize) i64 {
+    if (pos >= s.len) return ncRemap(0);
+    return ncRemap(s[pos]);
+}
+// Parse the digit run of `s` starting at index `pos`; sets `end` to one past it.
+// Mirrors getCode's number branch: slice [pos-1 .. end] as an integer.
+fn ncNum(s: []const u8, pos: usize, end: *usize) i64 {
+    var i = pos;
+    while (true) {
+        const code = ncCodeAt(s, i);
+        if (code < 76 and code > 65) i += 1 else break;
+    }
+    end.* = i;
+    const start = pos - 1;
+    var val: i64 = 0;
+    for (s[start..@min(i, s.len)]) |ch| {
+        if (ch < '0' or ch > '9') break;
+        val = val *% 10 +% @as(i64, ch - '0');
+    }
+    return val;
+}
+fn sortKeyNaturalCompare(a: []const u8, b: []const u8) i32 {
+    if (std.mem.eql(u8, a, b)) return 0;
+    var pos_a: usize = 0;
+    var pos_b: usize = 0;
+    var code_b: i64 = 1;
+    var iters: usize = 0;
+    while (code_b != 0) {
+        iters += 1;
+        if (iters > a.len + b.len + 4) break; // safety
+        var code_a = ncCodeAt(a, pos_a);
+        pos_a += 1;
+        code_b = ncCodeAt(b, pos_b);
+        pos_b += 1;
+        if (code_a < 76 and code_b < 76 and code_a > 66 and code_b > 66) {
+            var end_a: usize = 0;
+            var end_b: usize = 0;
+            code_a = ncNum(a, pos_a, &end_a);
+            pos_a = end_a;
+            code_b = ncNum(b, pos_b, &end_b);
+            pos_b = end_b;
+        }
+        if (code_a != code_b) return if (code_a < code_b) -1 else 1;
+    }
+    return 0;
+}
+
+// no-extend-native: capitalized ECMASCRIPT_GLOBALS (the extendable builtins).
+fn noExtendNativeIsBuiltin(name: []const u8) bool {
+    const builtins = [_][]const u8{
+        "Array", "Boolean", "Date", "Error", "EvalError", "Function", "Infinity",
+        "Math", "NaN", "Number", "Object", "RangeError", "ReferenceError", "RegExp",
+        "String", "SyntaxError", "TypeError", "URIError", "JSON", "ArrayBuffer",
+        "DataView", "Float32Array", "Float64Array", "Int16Array", "Int32Array",
+        "Int8Array", "Intl", "Map", "Promise", "Proxy", "Reflect", "Set", "Symbol",
+        "Uint16Array", "Uint32Array", "Uint8Array", "Uint8ClampedArray", "WeakMap",
+        "WeakSet", "Atomics", "SharedArrayBuffer", "BigInt", "BigInt64Array",
+        "BigUint64Array", "AggregateError", "FinalizationRegistry", "WeakRef",
+        "Float16Array", "Iterator", "AsyncDisposableStack", "DisposableStack", "SuppressedError",
+    };
+    for (builtins) |b| if (std.mem.eql(u8, b, name)) return true;
+    return false;
+}
+
+// new-cap: capitalization state of a name's first codepoint (ESLint getCap).
+// "non-alpha" when the char has no case variant, else "lower"/"upper".
+const NewCapState = enum { non_alpha, lower, upper };
+fn newCapGetCap(name_in: []const u8) NewCapState {
+    // Skip leading line-continuation sequences (\<newline>) — matches a cooked
+    // template value (e.g. `[`\<nl>Foo`]`).
+    var name = name_in;
+    while (name.len >= 2 and name[0] == '\\' and (name[1] == '\n' or name[1] == '\r')) {
+        name = name[2..];
+    }
+    if (name.len == 0) return .non_alpha;
+    const c0 = name[0];
+    if (c0 < 0x80) {
+        if (c0 >= 'A' and c0 <= 'Z') return .upper;
+        if (c0 >= 'a' and c0 <= 'z') return .lower;
+        return .non_alpha;
+    }
+    const cp = std.unicode.utf8Decode(name[0..(std.unicode.utf8ByteSequenceLength(c0) catch return .non_alpha)]) catch return .non_alpha;
+    // Best-effort cased-letter ranges (Latin-1, Greek, Cyrillic) covering the corpus.
+    if ((cp >= 0xC0 and cp <= 0xD6) or (cp >= 0xD8 and cp <= 0xDE) or // Latin-1 upper
+        (cp >= 0x391 and cp <= 0x3A1) or (cp >= 0x3A3 and cp <= 0x3A9) or // Greek upper
+        (cp >= 0x410 and cp <= 0x42F)) return .upper; // Cyrillic upper
+    if ((cp >= 0xDF and cp <= 0xF6) or (cp >= 0xF8 and cp <= 0xFF) or // Latin-1 lower
+        (cp >= 0x3B1 and cp <= 0x3C9) or // Greek lower (incl. φ U+03C6)
+        (cp >= 0x430 and cp <= 0x44F)) return .lower; // Cyrillic lower
+    return .non_alpha;
+}
+fn newCapIsCapsAllowed(name: []const u8) bool {
+    const caps = [_][]const u8{
+        "Array", "Boolean", "Date", "Error", "Function", "Number",
+        "Object", "RegExp", "String", "Symbol", "BigInt",
+    };
+    for (caps) |c| if (std.mem.eql(u8, c, name)) return true;
+    return false;
+}
+
+// id-match: read a bool field from the options[1] object (default when absent).
+fn idmBool(opts: ?std.json.Value, key: []const u8, default: bool) bool {
+    const o = opts orelse return default;
+    if (o != .object) return default;
+    const v = o.object.get(key) orelse return default;
+    return if (v == .bool) v.bool else default;
+}
+
+// dot-notation: ESLint's `validIdentifier = /^[a-zA-Z_$][\w$]*$/u` (\w is ASCII).
+fn dotNotationValidIdentifier(s: []const u8) bool {
+    if (s.len == 0) return false;
+    const c0 = s[0];
+    if (!((c0 >= 'A' and c0 <= 'Z') or (c0 >= 'a' and c0 <= 'z') or c0 == '_' or c0 == '$')) return false;
+    for (s[1..]) |c| {
+        if (!((c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_' or c == '$')) return false;
+    }
+    return true;
+}
+
+// dot-notation: eslint/lib/rules/utils/keywords.js (reserved + future-reserved).
+fn dotNotationIsKeyword(s: []const u8) bool {
+    const kws = [_][]const u8{
+        "abstract", "boolean", "break", "byte", "case", "catch", "char", "class", "const",
+        "continue", "debugger", "default", "delete", "do", "double", "else", "enum", "export",
+        "extends", "false", "final", "finally", "float", "for", "function", "goto", "if",
+        "implements", "import", "in", "instanceof", "int", "interface", "long", "native", "new",
+        "null", "package", "private", "protected", "public", "return", "short", "static", "super",
+        "switch", "synchronized", "this", "throw", "throws", "transient", "true", "try", "typeof",
+        "var", "void", "volatile", "while", "with",
+    };
+    for (kws) |k| if (std.mem.eql(u8, k, s)) return true;
+    return false;
 }
 
 fn regexPatternHasSyntaxError(body: []const u8, flags_known: bool, flags_body: []const u8) bool {
