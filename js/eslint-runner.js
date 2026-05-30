@@ -8544,10 +8544,23 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         // the binding Identifier is visited naturally as AssignmentPattern.left.
         // Both cases have rhs === NONE for the shorthand_property node, so we must also
         // check that the lhs itself is an Identifier-mapped tag (not AssignmentPattern).
+        // Skip shadow VALUE synthesis when inside an object_pattern that is an assignment
+        // TARGET (not a binding declaration). ESLint/Espree visits the shorthand identifier once
+        // for assignment targets; for bindings (const/let/var/param) it visits twice (key+value).
+        // Assignment targets: ObjectPattern is the LHS of an AssignmentExpression (tags 109-124).
+        // For bindings, we still need the value visit so rules like id-denylist can check the
+        // binding name (e.g. `const {foo} = baz` — 'foo' is a declared binding that SHOULD be
+        // checked even though it is also the property key).
+        const _parentIdxSP = ast._parentData ? ast._parentData[idx] : NONE;
+        const _inObjPattern = _parentIdxSP !== NONE && nodeTags[_parentIdxSP] === T.object_pattern;
+        // Check if object_pattern is an assignment target (parent of object_pattern is an assign tag)
+        const _gpIdxSP = (_inObjPattern && ast._parentData) ? ast._parentData[_parentIdxSP] : NONE;
+        const _gpTagSP = _gpIdxSP !== NONE ? nodeTags[_gpIdxSP] : 0;
+        const _inAssignTarget = _inObjPattern && _gpTagSP >= T.assign && _gpTagSP <= T.nullish_assign;
         const _childLhs = ast.nodeLhs(idx);
         const _childRhs = ast.nodeRhs(idx);
         const _childLhsIsIdent = _childLhs !== undefined && _childLhs !== NONE && _childLhs < ast.nodeCount && _identTagBits[nodeTags[_childLhs]];
-        if (_childRhs === NONE && _childLhsIsIdent) {
+        if (!_inAssignTarget && _childRhs === NONE && _childLhsIsIdent) {
           const _propNode = nodeView(ast, idx);
           const _realNode = nodeView(ast, _childLhs);
           // Create and cache the shadow + parentWrapper on the property node object

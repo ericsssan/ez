@@ -762,11 +762,13 @@ fn parseImpl(
         }
     }
 
-    // v15: Per-node identifier name byte ranges. Computed here (pre-UTF-16)
-    // so they can be included in the single-pass span conversion below.
-    // identifier/property_ident: [tok_start, tok_end) with '#' stripped for
-    // private identifiers. All other nodes: 0,0. After conversion these hold
-    // UTF-16 code-unit positions that JS can pass directly to source.slice().
+    // v15: Per-node identifier name ranges (UTF-16 code-unit positions).
+    // Filled POST-conversion using the already-converted tok_starts/tok_ends
+    // (which are sorted and convert correctly). Pre-conversion pass only
+    // records the '#' flag so we know to strip the leading '#' after.
+    // node_name_starts/ends must NOT be in the spans array — they contain
+    // 0-sentinels for non-identifier nodes interspersed with real values,
+    // breaking the sorted-array assumption of convertMultiSpansToUtf16.
     const node_main_toks = tree.nodes.items(.main_token);
     var node_name_starts: []u32 = &.{};
     var node_name_ends:   []u32 = &.{};
@@ -777,19 +779,21 @@ fn parseImpl(
         node_name_ends   = try alloc.alloc(u32, node_count);
         @memset(node_name_starts, 0);
         @memset(node_name_ends,   0);
+        // Pre-pass: store private-identifier flag in node_name_starts.
+        //   0 = not private
+        //   1 = private, two-token ('#' token + name token, tok_lens[mt]==1)
+        //   2 = private, single-token ('#name' as one token, tok_lens[mt]>1)
+        // tok_starts/tok_lens are still byte-offset here so source[ts] is valid.
         for (0..node_count) |i| {
             const nt = node_tag_items[i];
             if (nt == .identifier or nt == .property_ident) {
                 const mt = node_main_toks[i];
                 const ts = tok_starts[mt];
-                const te = ts + tok_lens[mt];
-                // Private identifiers begin with '#' (ASCII 0x23); strip it.
                 if (ts < source.len and source[ts] == '#') {
-                    node_name_starts[i] = ts + 1;
+                    node_name_starts[i] = if (tok_lens[mt] == 1) 1 else 2;
                 } else {
-                    node_name_starts[i] = ts;
+                    node_name_starts[i] = 0;
                 }
-                node_name_ends[i] = te;
             }
         }
         node_name_starts_offset = js_buffer.ptrOffsetPub(buf_ptr, node_name_starts.ptr);
@@ -797,9 +801,35 @@ fn parseImpl(
     }
 
     // Convert ALL byte-offset arrays to UTF-16 in a single source scan.
-    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32, node_name_starts, node_name_ends };
+    // node_name_starts/ends are intentionally excluded (see comment above).
+    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
-    // After this: gap_starts_u32, gap_ends_u32, text_gap_starts_u32 contain UTF-16 positions.
+    // After this: tok_starts, tok_ends are now UTF-16 code-unit positions.
+    // Post-pass: fill node_name_starts/ends from converted tok_starts/tok_ends.
+    // node_name_starts[i] holds the private flag set pre-conversion:
+    //   0 = not private, 1 = two-token private, 2 = single-token private.
+    if (node_count > 0) {
+        for (0..node_count) |i| {
+            const nt = node_tag_items[i];
+            if (nt == .identifier or nt == .property_ident) {
+                const mt = node_main_toks[i];
+                const flag = node_name_starts[i];
+                if (flag == 0) {
+                    node_name_starts[i] = tok_starts[mt];
+                    node_name_ends[i] = tok_ends[mt];
+                } else if (flag == 1) {
+                    // Two-token private: '#' tok + name tok (mt+1).
+                    node_name_starts[i] = tok_starts[mt] + 1;
+                    node_name_ends[i] = if (mt + 1 < tok_starts.len) tok_ends[mt + 1] else tok_ends[mt];
+                } else {
+                    // Single-token private: '#name' all in mt.
+                    node_name_starts[i] = tok_starts[mt] + 1;
+                    node_name_ends[i] = tok_ends[mt];
+                }
+            }
+        }
+    }
+
     // Signal trav_thread that tok_starts/tok_ends are now in UTF-16 — it will
     // run buildNodeSpans now (~3.2 ms) parallel with main's tok_cmt_merge +
     // writeCfgGraph + sem_join wait, removing node_spans from main's tail.
@@ -1226,7 +1256,8 @@ fn parseAndLintImpl(
         }
     }
 
-    // v15: Per-node identifier name byte ranges (same logic as parseImpl).
+    // v15: Per-node identifier name ranges — same fix as parseImpl.
+    // Pre-pass stores '#' flag; post-conversion fills from converted tok_starts/tok_ends.
     const node_main_toks2 = tree.nodes.items(.main_token);
     var node_name_starts2: []u32 = &.{};
     var node_name_ends2:   []u32 = &.{};
@@ -1237,27 +1268,48 @@ fn parseAndLintImpl(
         node_name_ends2   = try alloc.alloc(u32, node_count);
         @memset(node_name_starts2, 0);
         @memset(node_name_ends2,   0);
+        // Pre-pass: 0=not private, 1=two-token private, 2=single-token private.
         for (0..node_count) |i| {
             const nt = node_tag_items2[i];
             if (nt == .identifier or nt == .property_ident) {
                 const mt = node_main_toks2[i];
                 const ts = tok_starts[mt];
-                const te = ts + tok_lens[mt];
                 if (ts < source.len and source[ts] == '#') {
-                    node_name_starts2[i] = ts + 1;
+                    node_name_starts2[i] = if (tok_lens[mt] == 1) 1 else 2;
                 } else {
-                    node_name_starts2[i] = ts;
+                    node_name_starts2[i] = 0;
                 }
-                node_name_ends2[i] = te;
             }
         }
         node_name_starts_offset2 = js_buffer.ptrOffsetPub(buf_ptr, node_name_starts2.ptr);
         node_name_ends_offset2   = js_buffer.ptrOffsetPub(buf_ptr, node_name_ends2.ptr);
     }
 
-    // Single-pass UTF-16 conversion for all byte-offset arrays.
-    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts, gap_starts_u322, gap_ends_u322, text_gap_starts_u322, node_name_starts2, node_name_ends2 };
+    // Single-pass UTF-16 conversion (node_name_starts2/ends2 excluded — unsorted sentinels).
+    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts, gap_starts_u322, gap_ends_u322, text_gap_starts_u322 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans2);
+
+    // Post-pass: fill node_name_starts2/ends2 from now-UTF-16 tok_starts/tok_ends.
+    // Flag: 0=not private, 1=two-token private, 2=single-token private.
+    if (node_count > 0) {
+        for (0..node_count) |i| {
+            const nt = node_tag_items2[i];
+            if (nt == .identifier or nt == .property_ident) {
+                const mt = node_main_toks2[i];
+                const flag = node_name_starts2[i];
+                if (flag == 0) {
+                    node_name_starts2[i] = tok_starts[mt];
+                    node_name_ends2[i] = tok_ends[mt];
+                } else if (flag == 1) {
+                    node_name_starts2[i] = tok_starts[mt] + 1;
+                    node_name_ends2[i] = if (mt + 1 < tok_starts.len) tok_ends[mt + 1] else tok_ends[mt];
+                } else {
+                    node_name_starts2[i] = tok_starts[mt] + 1;
+                    node_name_ends2[i] = tok_ends[mt];
+                }
+            }
+        }
+    }
 
     const node_pos = try js_buffer.buildNodeSpans(
         alloc,
