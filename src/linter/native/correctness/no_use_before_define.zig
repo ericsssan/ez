@@ -355,12 +355,33 @@ fn shouldCheck(
     // ignoreTypeReferences: skip references that are in type positions.
     if (opts.ignore_type_refs) {
         const rk = refs.getKind(ref_id);
-        if (rk == .type_read) return false;
-        // parent is TSTypeReference (ts_type_reference) — also skip
-        const parent = ctx.parentOf(ref_node);
-        if (parent != .none) {
-            const pt = ctx.ast.nodeTag(parent);
-            if (pt == .ts_type_reference or pt == .ts_typeof_type) return false;
+        // Enum names are also values (Foo.BAR in expressions), so a type_read ref
+        // kind on an enum may be a semantic over-classification. Fall through to the
+        // parent walk to distinguish true type positions from value positions.
+        const is_enum = binding_kind == .enum_decl;
+        if (rk == .type_read and !is_enum) return false;
+        // Walk up a few levels looking for a type container node.
+        // Handles `typeof Foo.FOO` where Foo's immediate parent is member_expr
+        // (not ts_typeof_type), but the grandparent is ts_typeof_type.
+        // Also handles enum refs that appear in type annotations (args: Foo).
+        var p = ctx.parentOf(ref_node);
+        var depth: u32 = 3;
+        while (p != .none and depth > 0) : (depth -= 1) {
+            const pt = ctx.ast.nodeTag(p);
+            if (pt == .ts_type_reference or pt == .ts_typeof_type or
+                pt == .ts_type_annotation or pt == .ts_type_alias_decl or
+                pt == .ts_interface_decl)
+            {
+                return false;
+            }
+            // Stop at expression boundaries.
+            if (pt == .call_expr or pt == .optional_call_expr or
+                pt == .new_expr or pt == .arrow_fn or pt == .fn_expr or
+                pt == .class_decl or pt == .class_expr)
+            {
+                break;
+            }
+            p = ctx.parentOf(p);
         }
     }
 
