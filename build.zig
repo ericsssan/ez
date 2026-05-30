@@ -4,12 +4,25 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // ── es-parser dependency (extracted parser/lexer/semantic) ──
+    // The parser lives in the sibling `es-parser` repo and is consumed as a
+    // Zig module named "es_parser".  Every module rooted under src/ imports it.
+    // Built ReleaseFast regardless of the top-level optimize mode: the parser
+    // is an external, separately-tested dependency, and the NAPI/conformance
+    // path (the only consumer of writeSemanticData) has always run ReleaseFast.
+    const es_parser_dep = b.dependency("es_parser", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const es_parser_mod = es_parser_dep.module("es-parser");
+
     // ── Main executable ──────────────────────────────────────
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    exe_mod.addImport("es_parser", es_parser_mod);
     const exe = b.addExecutable(.{
         .name = "ez",
         .root_module = exe_mod,
@@ -31,6 +44,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    test_mod.addImport("es_parser", es_parser_mod);
     const unit_tests = b.addTest(.{
         .root_module = test_mod,
     });
@@ -84,12 +98,13 @@ pub fn build(b: *std.Build) void {
 
     // ── NAPI shared library (JS plugin support) ────────────
     // Root is src/napi_entry.zig (in src/) so that cli/napi.zig's relative
-    // imports (../parser/root.zig) stay within the module path (src/).
+    // imports of the es_parser module stay within the module path (src/).
     const napi_mod = b.createModule(.{
         .root_source_file = b.path("src/napi_entry.zig"),
         .target = target,
         .optimize = .ReleaseFast,
     });
+    napi_mod.addImport("es_parser", es_parser_mod);
     const napi_lib = b.addLibrary(.{
         .name = "ez",
         .root_module = napi_mod,
@@ -267,6 +282,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .strip = false,
     });
+    bench_par_ez_mod.addImport("es_parser", es_parser_mod);
     const bench_par_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_parallel.zig"),
         .target = target,
