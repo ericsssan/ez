@@ -2,7 +2,7 @@
 
 // ── Ez AST Tag Constants ───────────────────────────────────────
 //
-// Ordinals matching the Node.Tag enum in src/parser/ast.zig.
+// Ordinals matching the Node.Tag enum in es-parser src/ast.zig.
 // These are part of the buffer ABI — stable unless the enum changes.
 
 const T = {
