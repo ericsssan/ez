@@ -1,16 +1,16 @@
 const std = @import("std");
-const parser = @import("../parser/root.zig");
+const parser = @import("es_parser");
 const js_buffer = parser.js_buffer;
 const layout = parser.layout;
 const Lexer = parser.Lexer;
-const parser_mod = @import("../parser/parser.zig");
+const parser_mod = @import("es_parser");
 
 inline fn tokenizeMaybeFused(alloc: std.mem.Allocator, source: []const u8, language: Language) !Lexer.TokenizeResult {
     return Lexer.tokenizeWithLanguage(alloc, source, language);
 }
-const parent_builder = @import("../parser/parent_builder.zig");
-const semantic_mod = @import("../parser/semantic.zig");
-const event_resolver = @import("../parser/event_resolver.zig");
+const parent_builder = @import("es_parser").parent_builder;
+const semantic_mod = @import("es_parser").semantic;
+const event_resolver = @import("es_parser").event_resolver;
 const Language = parser.token.Language;
 const linter_root = @import("../linter/root.zig");
 const linter_mod = linter_root.linter;
@@ -50,7 +50,7 @@ const StreamSemCtx = struct {
     arena_alloc: std.mem.Allocator,
     worker_backing: *js_buffer.JsBufferAllocator,
     buf_ptr: [*]u8,
-    ast_view: *@import("../parser/ast.zig").Ast,
+    ast_view: *@import("es_parser").ast.Ast,
     events_pub: *std.atomic.Value(usize),
     parse_done: *std.atomic.Value(bool),
     ast_ready: *std.atomic.Value(bool),
@@ -71,7 +71,7 @@ const StreamSemCtx = struct {
     /// the 1.9 ms tag_csr cost off the critical pre-fire path.
     tag_csr_ready: ?*std.atomic.Value(bool) = null,
     actual_node_count: u32 = 0,                    // set by main after parse returns
-    actual_node_tags: ?[]const @import("../parser/ast.zig").Node.Tag = null, // ditto
+    actual_node_tags: ?[]const @import("es_parser").ast.Node.Tag = null, // ditto
     semantic_data_offset: u32 = 0,                 // result: where SemanticHeader landed
     err: ?anyerror = null,
     /// Main writes here when its writeCfgGraph finishes; worker reads at end of
@@ -391,7 +391,7 @@ fn parseImpl(
     var s_analyzer_done: std.atomic.Value(bool) = .init(false);
     var s_cfg_done: std.atomic.Value(bool) = .init(false);
     var s_utf16_done: std.atomic.Value(bool) = .init(false);
-    var s_ast_view: @import("../parser/ast.zig").Ast = undefined;
+    var s_ast_view: @import("es_parser").ast.Ast = undefined;
     // Lex already complete — use actual token count as exact upper bound,
     // not the source.len/5 over-estimate.
     const s_cap_hint: usize = tokens.len + 64;
@@ -469,10 +469,10 @@ fn parseImpl(
     // Trav thread also runs buildNodeSpans after main signals s_utf16_done —
     // fully removes node_spans (~3.2 ms) from main's critical path.
     const TraversalJob = struct {
-        tree: *const @import("../parser/ast.zig").Ast,
+        tree: *const @import("es_parser").ast.Ast,
         alloc: std.mem.Allocator,
         node_count: u32 = 0,
-        tok_tags: []const @import("../parser/token.zig").Tag = &.{},
+        tok_tags: []const @import("es_parser").token.Tag = &.{},
         tok_starts: []u32 = &.{},
         tok_ends_ptr: *[]u32,
         source: []const u8 = "",
@@ -762,8 +762,42 @@ fn parseImpl(
         }
     }
 
+    // v15: Per-node identifier name byte ranges. Computed here (pre-UTF-16)
+    // so they can be included in the single-pass span conversion below.
+    // identifier/property_ident: [tok_start, tok_end) with '#' stripped for
+    // private identifiers. All other nodes: 0,0. After conversion these hold
+    // UTF-16 code-unit positions that JS can pass directly to source.slice().
+    const node_main_toks = tree.nodes.items(.main_token);
+    var node_name_starts: []u32 = &.{};
+    var node_name_ends:   []u32 = &.{};
+    var node_name_starts_offset: u32 = 0;
+    var node_name_ends_offset:   u32 = 0;
+    if (node_count > 0) {
+        node_name_starts = try alloc.alloc(u32, node_count);
+        node_name_ends   = try alloc.alloc(u32, node_count);
+        @memset(node_name_starts, 0);
+        @memset(node_name_ends,   0);
+        for (0..node_count) |i| {
+            const nt = node_tag_items[i];
+            if (nt == .identifier or nt == .property_ident) {
+                const mt = node_main_toks[i];
+                const ts = tok_starts[mt];
+                const te = ts + tok_lens[mt];
+                // Private identifiers begin with '#' (ASCII 0x23); strip it.
+                if (ts < source.len and source[ts] == '#') {
+                    node_name_starts[i] = ts + 1;
+                } else {
+                    node_name_starts[i] = ts;
+                }
+                node_name_ends[i] = te;
+            }
+        }
+        node_name_starts_offset = js_buffer.ptrOffsetPub(buf_ptr, node_name_starts.ptr);
+        node_name_ends_offset   = js_buffer.ptrOffsetPub(buf_ptr, node_name_ends.ptr);
+    }
+
     // Convert ALL byte-offset arrays to UTF-16 in a single source scan.
-    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32 };
+    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32, node_name_starts, node_name_ends };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
     // After this: gap_starts_u32, gap_ends_u32, text_gap_starts_u32 contain UTF-16 positions.
     // Signal trav_thread that tok_starts/tok_ends are now in UTF-16 — it will
@@ -965,6 +999,8 @@ fn parseImpl(
         .resolved_parent_offset = resolved_parent_offset,
         .type_overrides_offset = type_overrides_offset,
         .parent_kind_offset = parent_kind_offset,
+        .node_name_starts_offset = node_name_starts_offset,
+        .node_name_ends_offset = node_name_ends_offset,
     });
 
     const t_header_end = if (trace_main) TraceTs.now() else undefined;
@@ -1190,8 +1226,37 @@ fn parseAndLintImpl(
         }
     }
 
+    // v15: Per-node identifier name byte ranges (same logic as parseImpl).
+    const node_main_toks2 = tree.nodes.items(.main_token);
+    var node_name_starts2: []u32 = &.{};
+    var node_name_ends2:   []u32 = &.{};
+    var node_name_starts_offset2: u32 = 0;
+    var node_name_ends_offset2:   u32 = 0;
+    if (node_count > 0) {
+        node_name_starts2 = try alloc.alloc(u32, node_count);
+        node_name_ends2   = try alloc.alloc(u32, node_count);
+        @memset(node_name_starts2, 0);
+        @memset(node_name_ends2,   0);
+        for (0..node_count) |i| {
+            const nt = node_tag_items2[i];
+            if (nt == .identifier or nt == .property_ident) {
+                const mt = node_main_toks2[i];
+                const ts = tok_starts[mt];
+                const te = ts + tok_lens[mt];
+                if (ts < source.len and source[ts] == '#') {
+                    node_name_starts2[i] = ts + 1;
+                } else {
+                    node_name_starts2[i] = ts;
+                }
+                node_name_ends2[i] = te;
+            }
+        }
+        node_name_starts_offset2 = js_buffer.ptrOffsetPub(buf_ptr, node_name_starts2.ptr);
+        node_name_ends_offset2   = js_buffer.ptrOffsetPub(buf_ptr, node_name_ends2.ptr);
+    }
+
     // Single-pass UTF-16 conversion for all byte-offset arrays.
-    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts, gap_starts_u322, gap_ends_u322, text_gap_starts_u322 };
+    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts, gap_starts_u322, gap_ends_u322, text_gap_starts_u322, node_name_starts2, node_name_ends2 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans2);
 
     const node_pos = try js_buffer.buildNodeSpans(
@@ -1302,6 +1367,8 @@ fn parseAndLintImpl(
         .resolved_parent_offset = resolved_parent_offset,
         .type_overrides_offset  = type_overrides_offset,
         .parent_kind_offset     = parent_kind_offset,
+        .node_name_starts_offset = node_name_starts_offset2,
+        .node_name_ends_offset   = node_name_ends_offset2,
     });
 
     return backing.bytesUsed();
@@ -1388,8 +1455,36 @@ fn buildGlobalsBytes(
         };
         break :blk false;
     };
+    // Only include ES2015+ / ES2020+ globals based on ecmaVersion in languageOptions.
+    // When ecmaVersion is explicitly < 2015, ES2015+ globals (Map, Set, Symbol, etc.)
+    // are not in the environment.  When ecmaVersion is 2015–2019, globalThis is not
+    // available (it was introduced in ES2020).  Default (unspecified) = include all.
+    const ecmaVersionInt = blk: {
+        if (config) |cfg| if (cfg.language_options) |lo| if (lo.* == .object) {
+            if (lo.object.get("ecmaVersion")) |ev| {
+                if (ev == .integer) break :blk ev.integer;
+            }
+        };
+        break :blk @as(i64, 0); // 0 = unspecified → include all
+    };
+    // ecmaVersion is expressed as either a year (2015–2030+) or a short number (3–16).
+    // Year 2015 = short 6, year 2020 = short 11.
+    // When 0 (unspecified), include everything.
+    const is_year_form = ecmaVersionInt >= 2015;
+    const include_es2015 = ecmaVersionInt == 0 or
+        (is_year_form and ecmaVersionInt >= 2015) or
+        (!is_year_form and ecmaVersionInt >= 6);
+    const include_es2020 = ecmaVersionInt == 0 or
+        (is_year_form and ecmaVersionInt >= 2020) or
+        (!is_year_form and ecmaVersionInt >= 11);
     var total: usize = 0;
-    for (linter_root.lint_context.BUILTIN_READONLY_GLOBALS) |g| total += g.len + 1;
+    for (linter_root.lint_context.BUILTIN_ES5_GLOBALS) |g| total += g.len + 1;
+    if (include_es2015) {
+        for (linter_root.lint_context.BUILTIN_ES2015_GLOBALS) |g| total += g.len + 1;
+    }
+    if (include_es2020) {
+        for (linter_root.lint_context.BUILTIN_ES2020_GLOBALS) |g| total += g.len + 1;
+    }
     if (is_commonjs) {
         for (linter_root.lint_context.COMMONJS_READONLY_GLOBALS) |g| total += g.len + 1;
     }
@@ -1408,11 +1503,27 @@ fn buildGlobalsBytes(
     };
     const buf = try arena.alloc(u8, total);
     var pos: usize = 0;
-    for (linter_root.lint_context.BUILTIN_READONLY_GLOBALS) |g| {
+    for (linter_root.lint_context.BUILTIN_ES5_GLOBALS) |g| {
         @memcpy(buf[pos..pos + g.len], g);
         pos += g.len;
         buf[pos] = 0;
         pos += 1;
+    }
+    if (include_es2015) {
+        for (linter_root.lint_context.BUILTIN_ES2015_GLOBALS) |g| {
+            @memcpy(buf[pos..pos + g.len], g);
+            pos += g.len;
+            buf[pos] = 0;
+            pos += 1;
+        }
+    }
+    if (include_es2020) {
+        for (linter_root.lint_context.BUILTIN_ES2020_GLOBALS) |g| {
+            @memcpy(buf[pos..pos + g.len], g);
+            pos += g.len;
+            buf[pos] = 0;
+            pos += 1;
+        }
     }
     if (is_commonjs) {
         for (linter_root.lint_context.COMMONJS_READONLY_GLOBALS) |g| {

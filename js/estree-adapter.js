@@ -18,6 +18,7 @@ const MOD_ABSTRACT  = 1 << 5;
 const MOD_STATIC    = 1 << 6;
 const MOD_ASYNC     = 1 << 7;
 const MOD_GENERATOR = 1 << 8;
+const MOD_ACCESSOR  = 1 << 9;
 
 // ── Template literal cooked value processor ──────────────────────
 // Processes escape sequences in a template literal quasi raw string,
@@ -176,6 +177,11 @@ const H = {
   // parent NodeView directly); 1..6 select a synthetic-wrapper or redirect
   // path. See parent_builder.zig ParentKind enum.
   PARENT_KIND_OFFSET: 148,
+  // v15: per-node identifier name UTF-16 ranges. u32[node_count] each.
+  // For identifier/property_ident: [start,end) in source (private '#' stripped).
+  // For all other nodes: 0,0. JS reads via source.slice(start, end).
+  NODE_NAME_STARTS_OFFSET: 152,
+  NODE_NAME_ENDS_OFFSET: 156,
 };
 
 // CfgGraphHeader: 25 u32 fields = 100 bytes
@@ -381,6 +387,11 @@ class AstView {
     this._parentKinds = parentKindOff > 0
       ? new Uint8Array(buffer, parentKindOff, this.nodeCount)
       : null;
+    // v15: per-node identifier name UTF-16 ranges (start, end into source).
+    const nnsOff = dv.getUint32(H.NODE_NAME_STARTS_OFFSET, true);
+    const nneOff = dv.getUint32(H.NODE_NAME_ENDS_OFFSET, true);
+    this._nodeNameStarts = nnsOff > 0 ? new Uint32Array(buffer, nnsOff, this.nodeCount) : null;
+    this._nodeNameEnds   = nneOff > 0 ? new Uint32Array(buffer, nneOff, this.nodeCount) : null;
 
     // DFS traversal orders (v4 — pre-order and post-order, computed in Zig)
     const preOff  = dv.getUint32(H.PRE_ORDER_OFFSET,  true);
@@ -1137,6 +1148,9 @@ const _OVERRIDE_TYPES = [
   'TSVoidKeyword',               // 19
   'TSQualifiedName',             // 20 — member_expr in type position
   'NewExpression',               // 21 — call_expr(ts_instantiation_expr(new_expr)) = new Foo<T>()
+  'AccessorProperty',           // 22 — property_def with accessor keyword (ES2024 auto-accessors)
+  'TSAbstractPropertyDefinition', // 23 — abstract class property
+  'TSAbstractAccessorProperty', // 24 — abstract accessor class property
 ];
 
 // Compute the ESTree-shape `type` string for a node at construction time.
@@ -1159,9 +1173,14 @@ function _computeNodeType(ast, index, tag) {
   // already on the modifier byte — check it here.
   if (tag === T.property_def || tag === T.computed_property_def ||
       tag === T.method_def || tag === T.computed_method_def) {
-    if (_nodeMods(ast, index) & MOD_ABSTRACT) {
+    const mods = _nodeMods(ast, index);
+    if (mods & MOD_ABSTRACT) {
       if (tag === T.property_def || tag === T.computed_property_def) return 'TSAbstractPropertyDefinition';
       return 'TSAbstractMethodDefinition';
+    }
+    // ES2024 auto-accessor fields use `accessor` keyword → AccessorProperty node type.
+    if ((tag === T.property_def || tag === T.computed_property_def) && (mods & MOD_ACCESSOR)) {
+      return 'AccessorProperty';
     }
   }
   return TAG_NAMES ? TAG_NAMES[tag] : String(tag);
@@ -1207,6 +1226,33 @@ const NodeProto = {
       for (let i = lhs; i < rhs; i++) {
         const ci = extra[i];
         if (ci !== NONE) return ast._nodeStartPos(ci);
+      }
+    }
+    // `declare var/let/const` and `declare function`: the VariableDeclaration/
+    // FunctionDeclaration node's range starts at `var`/`function`, but ESTree
+    // (TypeScript-ESLint) includes the `declare` keyword in the node range.
+    // Detect by checking if the token preceding the node's main_token is `declare`.
+    const t = ast._nodeTags[this._i];
+    if (t === T.var_decl || t === T.let_decl || t === T.const_decl || t === T.fn_decl || t === T.ts_declare_function) {
+      const mt = ast._mainTokens[this._i];
+      if (mt > 0 && ast._tokStarts && ast._tokEnds) {
+        const prev = mt - 1;
+        const ps = ast._tokStarts[prev], pe = ast._tokEnds[prev];
+        if (pe <= ast.source.length && ast.source.slice(ps, pe) === 'declare') {
+          return ps;
+        }
+      }
+    }
+    // TSIndexSignature with `readonly`: main_token is `[` but range should
+    // include the preceding `readonly` keyword (typescript-eslint behavior).
+    if (t === T.ts_index_signature) {
+      const mt = ast._mainTokens[this._i];
+      if (mt > 0 && ast._tokStarts && ast._tokEnds) {
+        const prev = mt - 1;
+        const ps = ast._tokStarts[prev], pe = ast._tokEnds[prev];
+        if (pe <= ast.source.length && ast.source.slice(ps, pe) === 'readonly') {
+          return ps;
+        }
       }
     }
     return ast._nodeStartPos(this._i);
@@ -2124,7 +2170,7 @@ const NodeProto = {
       return rhs === NONE ? null : nodeView(ast, rhs);
     }
     // Property node: key
-    if (t === T.property || t === T.shorthand_property) {
+    if (t === T.property) {
       const lhs = ast.nodeLhs(this._i);
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
@@ -2183,6 +2229,23 @@ const NodeProto = {
         const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
         if (val === 'readonly') return true;
         if (val !== 'public' && val !== 'private' && val !== 'protected' && val !== 'override') break;
+      }
+      return false;
+    }
+    // TSPropertySignature: the parser sets main_token to `readonly` when present,
+    // otherwise to the property name. Check if the main token text is `readonly`.
+    if (t === T.ts_property_signature) {
+      const mt = ast._mainTokens[this._i];
+      const val = ast.source.slice(ast._tokStarts[mt], ast._tokEnds[mt]);
+      return val === 'readonly';
+    }
+    // TSIndexSignature: main_token is `[`. Check if the preceding token is `readonly`.
+    if (t === T.ts_index_signature) {
+      const mt = ast._mainTokens[this._i];
+      if (mt > 0) {
+        const prev = mt - 1;
+        const val = ast.source.slice(ast._tokStarts[prev], ast._tokEnds[prev]);
+        if (val === 'readonly') return true;
       }
       return false;
     }
@@ -2307,8 +2370,9 @@ const NodeProto = {
         }
       } else if (val === 'static' || val === 'async' || val === 'get' || val === 'set' || val === '*' ||
                  val === 'public' || val === 'private' || val === 'protected' || val === 'readonly' ||
-                 val === 'abstract' || val === 'declare' || val === 'override') {
-        continue; // skip modifiers between decorator and method name
+                 val === 'abstract' || val === 'declare' || val === 'override' ||
+                 val === 'export' || val === 'default') {
+        continue; // skip modifiers and export keywords between decorator and class name
       } else if (val === '.') {
         // Member expression in decorator: @ns.Dec — skip dot and continue
         continue;
@@ -4133,9 +4197,17 @@ const NodeProto = {
     return undefined;
   },
 
-  /** node.comments — empty array (ez doesn't track comments yet). Writable so rules can set it. */
+  /** node.comments — all file comments on Program; empty array elsewhere. Writable so rules can set it. */
   get comments() {
-    return this._comments || _emptyArray;
+    if (this._comments !== undefined) return this._comments;
+    // Program (root) nodes expose the full comment list; other nodes get nothing.
+    if (this._tag === T.root) {
+      const ast = this._ast;
+      const all = ast.commentsInRange ? ast.commentsInRange(0, ast.sourceLen) : _emptyArray;
+      this._comments = all;
+      return all;
+    }
+    return _emptyArray;
   },
   set comments(v) {
     this._comments = v;
@@ -4429,11 +4501,8 @@ const _TAG_DELETE_PROPS = {
   // Identifier: ESTree spec has no .left/.right. The compiled jsdocUtils.cjs checks
   // `'left' in param && 'typeAnnotation' in param.left` without a null guard, so
   // `'left' in identifier` returning true leads to `'typeAnnotation' in undefined` crash.
-  // `name` is also deleted because we eager-fill it as an own data property in
-  // `_NodeView_LR`'s ctor (the prototype's getter would otherwise be readonly
-  // and block the assignment in strict mode).
-  [T.identifier]:            ['left', 'right', 'name'],
-  [T.property_ident]:        ['left', 'right', 'name'],
+  [T.identifier]:            ['left', 'right'],
+  [T.property_ident]:        ['left', 'right'],
   // Property/shorthand_property/computed_property: ESTree spec has no .left/.right/.name.
   // jsdocUtils v2's compiled dist checks `'left' in prop && 'typeAnnotation' in prop.left`
   // and `'name' in prop` without null guards on Property nodes from ObjectPattern.properties.
@@ -4529,13 +4598,27 @@ function _NodeView_LRN(ast, idx, tag, type) {  // ['left','right','name']
   this._cachedName = undefined;
   // synth caches externalized — see _NodeView comment.
 }
-// Identifier name extraction — pulled out of the `get name` getter so we
-// can eager-fill `name` as an own property at construction time for
-// identifier-tagged NodeViews. Profiles on typescript.js attributed ~11%
-// of total ez time to the `get name` getter dispatch + cache check (V8
-// IC pessimised by the prototype-getter shape); replacing it with a
-// plain own-property read drops that to a fast inline-cached load.
+// Identifier name extraction — called at construction time to pre-fill
+// `_cachedName` on identifier-tagged NodeViews, so the `get name` getter
+// hits the cache on first access immediately.
+//
+// Fast path (v15 buffer): read pre-computed UTF-16 [start,end) from Zig,
+// slice source directly, inline the unicode-escape check. Eliminates both
+// _identAt (char-by-char scan) and the _resolveUnicodeEscapes function call
+// for the 99.9%+ of identifiers without escapes.
+//
+// Fallback (no v15 data): legacy _identAt scan + _resolveUnicodeEscapes.
 function _computeIdentifierName(ast, idx) {
+  const nameStarts = ast._nodeNameStarts;
+  if (nameStarts !== null) {
+    const start = nameStarts[idx];
+    const end = ast._nodeNameEnds[idx];
+    const name = ast.source.slice(start, end);
+    // Inline the escape check — avoids the function call for 99.9%+ of names.
+    if (name.indexOf('\\') === -1) return name;
+    return _resolveUnicodeEscapes(name);
+  }
+  // Fallback: v15 arrays not present (old buffer).
   const tok = ast._mainTokens[idx];
   const pos = ast._tokStarts[tok];
   if (ast.source.charCodeAt(pos) === 35) { // '#' — private identifier
@@ -4552,12 +4635,12 @@ function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']  (T.identifie
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
   this.type = type; this._loc = null;
   this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
-  // _body, _value, _init moved to external `_synthCache` (WeakMap-keyed)
-  // Eager `name` — every identifier instance gets a fixed shape with `name`
-  // as an own data property; rule code reads it without hitting the
-  // prototype getter. `_cachedName` is dropped from this ctor since the
-  // lazy-cache path is unreachable for these tags.
-  this.name = _computeIdentifierName(ast, idx);
+  // Pre-fill _cachedName so the `get name` getter hits the cache immediately
+  // on first access (no _identAt scan, no unicode-escape resolve at read time).
+  // Using _cachedName (not `name`) keeps slot-8 identical to _NodeView's layout,
+  // so both constructors produce objects at the same property offset — JSC/V8
+  // can use offset-based ICs without structure checks at mixed-tag call sites.
+  this._cachedName = _computeIdentifierName(ast, idx);
   // synth caches externalized — see _NodeView comment.
 }
 function _NodeView_N(ast, idx, tag, type) {    // ['name']  (T.assignment_pattern)
