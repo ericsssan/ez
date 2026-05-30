@@ -451,6 +451,16 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
     }
   }
 
+  // Whole-rule recognizers — for rules whose create() shape splitHandlers
+  // can't resolve (e.g. `return <conditionally-reassigned var>`).  Each
+  // inspects the entire create() body; on match it returns ready IR handlers,
+  // bypassing per-handler extraction.
+  const wholeRuleRecognizers = [extractNoLoneBlocksRule, extractMaxClassesPerFileRule, extractNoLabelsRule, extractNoExtraBindRule, extractNoImplicitCoercionRule, extractFuncNamesRule, extractNoRestrictedPropertiesRule, extractIdMatchRule, extractNewCapRule, extractNoRestrictedExportsRule, extractNoExtendNativeRule, extractNoSetterReturnRule, extractGroupedAccessorPairsRule, extractConsistentThisRule, extractIdDenylistRule, extractSortKeysRule];
+  for (const rec of wholeRuleRecognizers) {
+    const r = rec(createFn, ctxName);
+    if (r && r.ok) return { handlers: r.handlers };
+  }
+
   const { handlers: rawHandlers, unsupported: splitErr } = splitHandlers(createFn, ctxName);
   if (splitErr) return { handlers: [], unsupported: splitErr };
 
@@ -547,6 +557,18 @@ function extractHandlers(ruleObj, sourceFile, moduleConstants, defaultOptions, m
       extractNoUnexpectedMultilineHandler, // no-unexpected-multiline
       extractPreserveCaughtErrorHandler, // preserve-caught-error
       extractConstructorSuperHandler, // constructor-super
+      extractNoLonelyIfHandler,      // no-lonely-if
+      extractNoUselessCallHandler,   // no-useless-call
+      extractOperatorAssignmentHandler, // operator-assignment
+      extractNoUselessComputedKeyHandler, // no-useless-computed-key
+      extractPreferObjectHasOwnHandler, // prefer-object-has-own
+      extractPreferObjectSpreadHandler, // prefer-object-spread
+      extractNoSequencesHandler, // no-sequences
+      extractSortVarsHandler, // sort-vars
+      extractVarsOnTopHandler, // vars-on-top
+      extractNoNonoctalHandler, // no-nonoctal-decimal-escape
+      extractDotNotationHandler, // dot-notation
+      extractPreferNumericLiteralsHandler, // prefer-numeric-literals
     ];
     // Stash the create() body so recognizers that need to find sibling helpers
     // (e.g. no-global-assign's checkVariable / checkReference) can look them up.
@@ -1995,6 +2017,579 @@ function extractDefaultCaseHandler(rawHandler, stmts, { ctxName }) {
       messageId,
     },
   };
+}
+
+// Recognize no-lonely-if: an `IfStatement` handler that reports when the `if`
+// is the sole statement of a block serving as an enclosing `if`'s `else`
+// branch.  Distinctive signature: a call to `astUtils.areBracesNecessary(...)`
+// inside the handler (no other core rule uses it).  The dangling-`else`
+// brace-necessity logic is reproduced in `ctx.checkLonelyIf`.
+function extractNoLonelyIfHandler(rawHandler, stmts, { ctxName }) {
+  if (rawHandler.selector !== "IfStatement") return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let usesAreBracesNecessary = false;
+  let messageId = null;
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "CallExpression" && n.callee?.type === "MemberExpression"
+        && n.callee.property?.name === "areBracesNecessary") {
+      usesAreBracesNecessary = true;
+    }
+    if (n.type === "CallExpression"
+        && n.callee?.type === "MemberExpression"
+        && n.callee.object?.type === "Identifier"
+        && n.callee.object.name === ctxName
+        && n.callee.property?.name === "report"
+        && n.arguments?.[0]?.type === "ObjectExpression") {
+      for (const p of n.arguments[0].properties) {
+        if (p.type === "Property" && (p.key?.name || p.key?.value) === "messageId"
+            && p.value?.type === "Literal" && typeof p.value.value === "string") {
+          messageId = p.value.value;
+        }
+      }
+    }
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!usesAreBracesNecessary || !messageId) return { ok: false };
+  return {
+    ok: true,
+    handler: { kind: "no-lonely-if-check", selector: "IfStatement", messageId },
+  };
+}
+
+// Recognize no-useless-call: a `CallExpression` handler that flags
+// `fn.call(thisArg, …)` / `fn.apply(thisArg, [..])` reducible to a direct
+// call.  Distinctive signature: a call to the local `isCallOrNonVariadicApply`
+// helper.  Logic reproduced in `ctx.checkNoUselessCall`.
+function extractNoUselessCallHandler(rawHandler, stmts, { ctxName }) {
+  if (rawHandler.selector !== "CallExpression") return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let usesMarker = false;
+  let messageId = null;
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "CallExpression" && n.callee?.type === "Identifier"
+        && n.callee.name === "isCallOrNonVariadicApply") {
+      usesMarker = true;
+    }
+    if (n.type === "CallExpression"
+        && n.callee?.type === "MemberExpression"
+        && n.callee.object?.type === "Identifier"
+        && n.callee.object.name === ctxName
+        && n.callee.property?.name === "report"
+        && n.arguments?.[0]?.type === "ObjectExpression") {
+      for (const p of n.arguments[0].properties) {
+        if (p.type === "Property" && (p.key?.name || p.key?.value) === "messageId"
+            && p.value?.type === "Literal" && typeof p.value.value === "string") {
+          messageId = p.value.value;
+        }
+      }
+    }
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!usesMarker || !messageId) return { ok: false };
+  return {
+    ok: true,
+    handler: { kind: "no-useless-call-check", selector: "CallExpression", messageId },
+  };
+}
+
+// Recognize operator-assignment: an `AssignmentExpression` handler whose body
+// references one of the rule's distinctive shorthand-operator helpers.  The
+// rule's `cond ? verify : prohibit` handler resolves to one of those functions;
+// either body carries a recognizable marker.  Both "always"/"never" modes are
+// handled at runtime in `ctx.checkOperatorAssignment`.
+function extractOperatorAssignmentHandler(rawHandler, stmts) {
+  if (rawHandler.selector !== "AssignmentExpression") return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const markers = new Set([
+    "isCommutativeOperatorWithShorthand",
+    "isNonCommutativeOperatorWithShorthand",
+    "isLogicalAssignmentOperator",
+  ]);
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "CallExpression") {
+      const cn = n.callee;
+      if (cn?.type === "Identifier" && markers.has(cn.name)) found = true;
+      else if (cn?.type === "MemberExpression" && markers.has(cn.property?.name)) found = true;
+    }
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "operator-assignment-check", selector: "AssignmentExpression" } };
+}
+
+// Recognize no-useless-computed-key: Property/MethodDefinition/PropertyDefinition
+// handlers that call the local `hasUselessComputedKey` helper.  Selector-agnostic
+// (fires per resolved handler); logic lives in `ctx.checkUselessComputedKey`.
+function extractNoUselessComputedKeyHandler(rawHandler, stmts) {
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "CallExpression" && n.callee?.type === "Identifier"
+        && n.callee.name === "hasUselessComputedKey") found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "no-useless-computed-key-check", selector: rawHandler.selector } };
+}
+
+// Recognize prefer-object-has-own: a CallExpression handler that reports
+// `useHasOwn` (the rewrite to Object.hasOwn).  Logic in ctx.checkPreferObjectHasOwn.
+function extractPreferObjectHasOwnHandler(rawHandler, stmts, { ctxName }) {
+  if (rawHandler.selector !== "CallExpression") return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "CallExpression" && n.callee?.type === "MemberExpression"
+        && n.callee.object?.type === "Identifier" && n.callee.object.name === ctxName
+        && n.callee.property?.name === "report" && n.arguments?.[0]?.type === "ObjectExpression") {
+      for (const p of n.arguments[0].properties) {
+        if (p.type === "Property" && (p.key?.name || p.key?.value) === "messageId"
+            && p.value?.value === "useHasOwn") found = true;
+      }
+    }
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "prefer-object-has-own-check", selector: "CallExpression" } };
+}
+
+// Recognize prefer-object-spread: a handler reporting useSpreadMessage /
+// useLiteralMessage (it tracks global Object.assign calls).  Logic in
+// ctx.checkPreferObjectSpread (CallExpression-based).
+function extractPreferObjectSpreadHandler(rawHandler, stmts) {
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && (n.value === "useSpreadMessage" || n.value === "useLiteralMessage")) found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "prefer-object-spread-check", selector: "CallExpression" } };
+}
+
+// Recognize no-sequences: a SequenceExpression handler reporting
+// unexpectedCommaExpression.  Logic in ctx.checkNoSequences.
+function extractNoSequencesHandler(rawHandler, stmts) {
+  if (rawHandler.selector !== "SequenceExpression") return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "unexpectedCommaExpression") found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "no-sequences-check", selector: "SequenceExpression" } };
+}
+
+// Recognize prefer-numeric-literals: a CallExpression handler reporting
+// "useLiteral" via the local isParseInt check. Conditions + report handled
+// in `ctx.checkPreferNumericLiterals`.
+function extractPreferNumericLiteralsHandler(rawHandler, stmts) {
+  if (!/^CallExpression/.test(rawHandler.selector || "")) return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "useLiteral") found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "prefer-numeric-literals-check", selector: "CallExpression" } };
+}
+
+// Recognize dot-notation: a MemberExpression handler that delegates computed
+// keys to the local `checkComputedProperty` helper (and inline-reports
+// "useBrackets" for keyword dot access). Both messageIds + options + the
+// allowPattern regex are handled at runtime in `ctx.checkDotNotation`.
+function extractDotNotationHandler(rawHandler, stmts) {
+  if (rawHandler.selector !== "MemberExpression") return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "CallExpression" && n.callee?.type === "Identifier"
+        && n.callee.name === "checkComputedProperty") {
+      found = true;
+    }
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "dot-notation-check", selector: "MemberExpression" } };
+}
+
+// Recognize sort-vars: a VariableDeclaration handler reporting "sortVars".
+// Logic in ctx.checkSortVars.
+function extractSortVarsHandler(rawHandler, stmts) {
+  if (rawHandler.selector !== "VariableDeclaration") return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "sortVars") found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "sort-vars-check", selector: "VariableDeclaration" } };
+}
+
+// Recognize vars-on-top: a VariableDeclaration[kind='var'] handler using the
+// local `isVarOnTop` helper.  Logic in ctx.checkVarsOnTop.
+function extractVarsOnTopHandler(rawHandler, stmts) {
+  if (!String(rawHandler.selector || "").startsWith("VariableDeclaration")) return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if ((n.type === "Identifier" && (n.name === "isVarOnTop" || n.name === "globalVarCheck" || n.name === "blockScopeVarCheck"))) found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "vars-on-top-check", selector: "VariableDeclaration" } };
+}
+
+// Recognize no-nonoctal-decimal-escape: a Literal handler reporting
+// "decimalEscape".  Logic in ctx.checkNoNonoctalDecimalEscape.
+function extractNoNonoctalHandler(rawHandler, stmts) {
+  if (rawHandler.selector !== "Literal") return { ok: false };
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  let found = false;
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "decimalEscape") found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  for (const s of stmts) walk(s);
+  if (!found) return { ok: false };
+  return { ok: true, handler: { kind: "no-nonoctal-decimal-escape-check", selector: "Literal" } };
+}
+
+// Whole-rule recognizer for no-lone-blocks.  Its create() builds a `loneBlocks`
+// stack and reassigns `ruleDef` based on ecmaVersion, then `return ruleDef` —
+// a shape splitHandlers can't resolve.  Detect by the distinctive `isLoneBlock`
+// helper + the two messageIds; the stateless per-block logic lives in
+// `ctx.checkLoneBlock`.
+function extractNoLoneBlocksRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let hasIsLoneBlock = false, hasRedundant = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Identifier" && n.name === "isLoneBlock") hasIsLoneBlock = true;
+    if (n.type === "Literal" && (n.value === "redundantBlock" || n.value === "redundantNestedBlock")) hasRedundant = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!hasIsLoneBlock || !hasRedundant) return { ok: false };
+  return { ok: true, handlers: [{ kind: "no-lone-blocks-check", selector: "BlockStatement" }] };
+}
+
+// Whole-rule recognizer for max-classes-per-file (multiple stateful handlers:
+// Program/Program:exit + ClassDeclaration/ClassExpression counters).  Detect by
+// the `maximumExceeded` messageId + `classCount` identifier.  Logic in
+// ctx.checkMaxClassesPerFile.
+function extractMaxClassesPerFileRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let hasMsg = false, hasCount = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "maximumExceeded") hasMsg = true;
+    if (n.type === "Identifier" && n.name === "classCount") hasCount = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!hasMsg || !hasCount) return { ok: false };
+  return { ok: true, handlers: [{ kind: "max-classes-per-file-check", selector: "Program" }] };
+}
+
+// Whole-rule recognizer for no-labels (multiple stateful handlers tracking a
+// scopeInfo label chain).  Detect by its messageIds.  Logic in ctx.checkNoLabels.
+function extractNoLabelsRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let found = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && (n.value === "unexpectedLabelInBreak" || n.value === "unexpectedLabelInContinue")) found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!found) return { ok: false };
+  return { ok: true, handlers: [{ kind: "no-labels-check", selector: "LabeledStatement" }] };
+}
+
+// Whole-rule recognizer for no-extra-bind (multi-handler scopeInfo tracking
+// isBound/thisFound).  Detect by the `isCalleeOfBindMethod` helper.  Logic in
+// ctx.checkNoExtraBind.
+function extractNoExtraBindRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let found = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Identifier" && n.name === "isCalleeOfBindMethod") found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!found) return { ok: false };
+  return { ok: true, handlers: [{ kind: "no-extra-bind-check", selector: "CallExpression" }] };
+}
+
+// Whole-rule recognizer for no-implicit-coercion (4 inline handlers all calling
+// a shared report() with messageId "implicitCoercion").  Logic in
+// ctx.checkNoImplicitCoercion.
+function extractNoImplicitCoercionRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let found = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "implicitCoercion") found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!found) return { ok: false };
+  return { ok: true, handlers: [{ kind: "no-implicit-coercion-check", selector: "UnaryExpression" }] };
+}
+
+// Whole-rule recognizer for func-names (FunctionExpression handler with scope
+// recursion + getFunctionHeadLoc).  Detect by its "unnamed"/"named" messageIds.
+// Logic in ctx.checkFuncNames.
+// Recognize id-match: stateful Program (globalScope) + Identifier +
+// PrivateIdentifier visitors reporting "notMatch"/"notMatchPrivate". All
+// option/branch logic + the pattern regex are handled in `ctx.checkIdMatch`.
+function extractIdMatchRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let notMatch = false, notMatchPrivate = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "notMatch") notMatch = true;
+    if (n.type === "Literal" && n.value === "notMatchPrivate") notMatchPrivate = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!notMatch || !notMatchPrivate) return { ok: false };
+  return { ok: true, handlers: [{ kind: "id-match-check", selector: "Identifier" }] };
+}
+
+// Recognize new-cap: conditionally-assigned NewExpression/CallExpression
+// listeners reporting "lower"/"upper". All cap logic + exceptions + the
+// exception-pattern regex are handled in `ctx.checkNewCap`.
+// Recognize sort-keys: ObjectExpression key-order rule reporting "sortKeys"
+// (distinctive `isValidOrder` marker). Logic in `ctx.checkSortKeys`.
+function extractSortKeysRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let sortKeys = false, validOrder = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "sortKeys") sortKeys = true;
+    if (n.type === "Identifier" && n.name === "isValidOrder") validOrder = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!sortKeys || !validOrder) return { ok: false };
+  return { ok: true, handlers: [{ kind: "sort-keys-check", selector: "ObjectExpression" }] };
+}
+
+// Recognize id-denylist: Identifier/PrivateIdentifier denylist reporting
+// "restricted"/"restrictedPrivate". Logic in `ctx.checkIdDenylist`.
+function extractIdDenylistRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let restricted = false, restrictedPrivate = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "restricted") restricted = true;
+    if (n.type === "Literal" && n.value === "restrictedPrivate") restrictedPrivate = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!restricted || !restrictedPrivate) return { ok: false };
+  return { ok: true, handlers: [{ kind: "id-denylist-check", selector: "Identifier" }] };
+}
+
+// Recognize consistent-this: alias-assignment rule reporting
+// "aliasNotAssignedToThis"/"unexpectedAlias". Logic in `ctx.checkConsistentThis`.
+function extractConsistentThisRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let bad = false, unexpected = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "aliasNotAssignedToThis") bad = true;
+    if (n.type === "Literal" && n.value === "unexpectedAlias") unexpected = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!bad || !unexpected) return { ok: false };
+  return { ok: true, handlers: [{ kind: "consistent-this-check", selector: "VariableDeclarator" }] };
+}
+
+// Recognize grouped-accessor-pairs: Object/Class/TS-type handlers reporting
+// "notGrouped"/"invalidOrder". Logic in `ctx.checkGroupedAccessorPairs`.
+function extractGroupedAccessorPairsRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let notGrouped = false, invalidOrder = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "notGrouped") notGrouped = true;
+    if (n.type === "Literal" && n.value === "invalidOrder") invalidOrder = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!notGrouped || !invalidOrder) return { ok: false };
+  return { ok: true, handlers: [{ kind: "grouped-accessor-pairs-check", selector: "ObjectExpression" }] };
+}
+
+// Recognize no-setter-return: a funcInfo-stack rule reporting "returnsValue"
+// for `return value` inside setters (distinctive `isSetter` marker). Logic in
+// `ctx.checkNoSetterReturn`.
+function extractNoSetterReturnRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let returnsValue = false, isSetterRef = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "returnsValue") returnsValue = true;
+    if (n.type === "Identifier" && n.name === "isSetter") isSetterRef = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!returnsValue || !isSetterRef) return { ok: false };
+  return { ok: true, handlers: [{ kind: "no-setter-return-check", selector: "ReturnStatement" }] };
+}
+
+// Recognize no-extend-native: a Program:exit global-scope walk reporting native
+// prototype extensions (distinctive `checkAndReportPrototypeExtension` helper).
+// All logic handled in `ctx.checkNoExtendNative`.
+function extractNoExtendNativeRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let found = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object" || found) return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if ((n.type === "Identifier" && n.name === "checkAndReportPrototypeExtension") ||
+        (n.type === "Identifier" && n.name === "isPrototypePropertyAccessed")) found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!found) return { ok: false };
+  return { ok: true, handlers: [{ kind: "no-extend-native-check", selector: "Identifier" }] };
+}
+
+// Recognize no-restricted-exports: Export{All,Default,Named}Declaration handlers
+// reporting "restrictedNamed"/"restrictedDefault". All option/branch logic + the
+// restrictedNamedExportsPattern regex are handled in `ctx.checkNoRestrictedExports`.
+function extractNoRestrictedExportsRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let named = false, def = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "restrictedNamed") named = true;
+    if (n.type === "Literal" && n.value === "restrictedDefault") def = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!named || !def) return { ok: false };
+  return { ok: true, handlers: [{ kind: "no-restricted-exports-check", selector: "ExportNamedDeclaration" }] };
+}
+
+function extractNewCapRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let lower = false, upper = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "lower") lower = true;
+    if (n.type === "Literal" && n.value === "upper") upper = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!lower || !upper) return { ok: false };
+  return { ok: true, handlers: [{ kind: "new-cap-check", selector: "CallExpression" }] };
+}
+
+function extractFuncNamesRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let unnamed = false, named = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && n.value === "unnamed") unnamed = true;
+    if (n.type === "Literal" && n.value === "named") named = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!unnamed || !named) return { ok: false };
+  return { ok: true, handlers: [{ kind: "func-names-check", selector: "FunctionExpression" }] };
+}
+
+// Whole-rule recognizer for no-restricted-properties (config-driven, early
+// `return {}` when no options).  Detect by its messageIds.  Logic in
+// ctx.checkNoRestrictedProperties.
+function extractNoRestrictedPropertiesRule(createFn, _ctxName) {
+  if (!createFn?.body || createFn.body.type !== "BlockStatement") return { ok: false };
+  let found = false;
+  const childKeys = (n) => visitorKeys[n?.type] || [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === "Literal" && (n.value === "restrictedObjectProperty" || n.value === "restrictedProperty")) found = true;
+    for (const k of childKeys(n)) { const v = n[k]; if (v != null) walk(v); }
+  };
+  walk(createFn.body);
+  if (!found) return { ok: false };
+  return { ok: true, handlers: [{ kind: "no-restricted-properties-check", selector: "MemberExpression" }] };
 }
 
 // Recognize the "scope-lookup on global implicit names" handler pattern:
@@ -4163,8 +4758,10 @@ function parseComplexSelector(sel) {
       const tag = PSEUDO_CLASS_TO_PSEUDO_TAG[pseudo];
       if (tag) { result.push({ base: tag, conds: [] }); continue; }
     }
-    // Simple: "NodeType" or "NodeType:exit"
-    const simpleM = part.match(/^([A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)?)$/);
+    // Simple: "NodeType" or "NodeType:exit" / "NodeType:enter".  The
+    // enter/exit phase is irrelevant to our single-pass AST walk (each node
+    // is visited once), so strip the phase suffix and key off the bare type.
+    const simpleM = part.match(/^([A-Za-z_][A-Za-z0-9_]*)(?::exit|:enter)?$/);
     if (simpleM) { result.push({ base: simpleM[1], conds: [] }); continue; }
     // Child combinator: "ParentType > ChildType" or "ParentType[attrs] > ChildType[attrs].position"
     // Handles attribute filters on both parent and child, and position hint on child.

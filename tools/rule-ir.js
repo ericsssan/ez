@@ -462,6 +462,92 @@ function validateRule(rule) {
       if (typeof h.messageId !== "string") return fail("messageId must be string", path);
       continue;
     }
+    if (h.kind === "no-lonely-if-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
+    if (h.kind === "no-useless-call-check") {
+      if (typeof h.messageId !== "string") return fail("messageId must be string", path);
+      continue;
+    }
+    if (h.kind === "operator-assignment-check") {
+      continue;
+    }
+    if (h.kind === "no-lone-blocks-check") {
+      continue;
+    }
+    if (h.kind === "no-useless-computed-key-check") {
+      continue;
+    }
+    if (h.kind === "prefer-object-has-own-check") {
+      continue;
+    }
+    if (h.kind === "prefer-object-spread-check") {
+      continue;
+    }
+    if (h.kind === "no-sequences-check") {
+      continue;
+    }
+    if (h.kind === "dot-notation-check") {
+      continue;
+    }
+    if (h.kind === "id-match-check") {
+      continue;
+    }
+    if (h.kind === "new-cap-check") {
+      continue;
+    }
+    if (h.kind === "no-restricted-exports-check") {
+      continue;
+    }
+    if (h.kind === "prefer-numeric-literals-check") {
+      continue;
+    }
+    if (h.kind === "no-extend-native-check") {
+      continue;
+    }
+    if (h.kind === "no-setter-return-check") {
+      continue;
+    }
+    if (h.kind === "grouped-accessor-pairs-check") {
+      continue;
+    }
+    if (h.kind === "consistent-this-check") {
+      continue;
+    }
+    if (h.kind === "id-denylist-check") {
+      continue;
+    }
+    if (h.kind === "sort-keys-check") {
+      continue;
+    }
+    if (h.kind === "max-classes-per-file-check") {
+      continue;
+    }
+    if (h.kind === "sort-vars-check") {
+      continue;
+    }
+    if (h.kind === "vars-on-top-check") {
+      continue;
+    }
+    if (h.kind === "no-labels-check") {
+      continue;
+    }
+    if (h.kind === "no-extra-bind-check") {
+      continue;
+    }
+    if (h.kind === "no-nonoctal-decimal-escape-check") {
+      continue;
+    }
+    if (h.kind === "no-implicit-coercion-check") {
+      continue;
+    }
+    if (h.kind === "func-names-check") {
+      continue;
+    }
+    if (h.kind === "no-restricted-properties-check") {
+      continue;
+    }
     if (h.kind === "noop-stub") {
       continue;
     }

@@ -14,7 +14,7 @@ const path = require("node:path");
 const { validateRule } = require(path.resolve(__dirname, "rule-ir.js"));
 
 // ── ESTree node type name → Ez Node.Tag(s) ──
-// Source of truth: src/parser/layout.zig. Drift caught at Zig compile time.
+// Source of truth: es-parser src/layout.zig. Drift caught at Zig compile time.
 // Single-value entries below; SELECTOR_TO_TAG_MULTI covers cases where one ESTree
 // name maps to multiple Ez tags (e.g. FunctionDeclaration → fn_decl + 3 variants).
 const SELECTOR_TO_TAG = {
@@ -164,7 +164,7 @@ const SELECTOR_TO_TAG_MULTI = {
   LogicalExpression: ["logical_and", "logical_or", "nullish_coalesce"],
 };
 
-// JS operator → Ez Node.Tag.  See src/parser/ast.zig for the canonical tag list.
+// JS operator → Ez Node.Tag.  See es-parser src/ast.zig for the canonical tag list.
 // `+`/`-` are disambiguated by the optional `category` field on node-operator-equals.
 const OPERATOR_TO_TAG = {
   // Unary — no conflict with binary
@@ -274,10 +274,38 @@ function emit(rule) {
   const hasPreserveCaughtErrorCheck = rule.handlers.some(h => h.kind === "preserve-caught-error-check");
   const hasConstructorSuperCheck = rule.handlers.some(h => h.kind === "constructor-super-check");
   const hasDefaultCaseCheck = rule.handlers.some(h => h.kind === "default-case-check");
+  const hasNoLonelyIfCheck = rule.handlers.some(h => h.kind === "no-lonely-if-check");
+  const hasNoUselessCallCheck = rule.handlers.some(h => h.kind === "no-useless-call-check");
+  const hasOperatorAssignmentCheck = rule.handlers.some(h => h.kind === "operator-assignment-check");
+  const hasNoLoneBlocksCheck = rule.handlers.some(h => h.kind === "no-lone-blocks-check");
+  const hasNoUselessComputedKeyCheck = rule.handlers.some(h => h.kind === "no-useless-computed-key-check");
+  const hasPreferObjectHasOwnCheck = rule.handlers.some(h => h.kind === "prefer-object-has-own-check");
+  const hasPreferObjectSpreadCheck = rule.handlers.some(h => h.kind === "prefer-object-spread-check");
+  const hasNoSequencesCheck = rule.handlers.some(h => h.kind === "no-sequences-check");
+  const hasMaxClassesPerFileCheck = rule.handlers.some(h => h.kind === "max-classes-per-file-check");
+  const hasSortVarsCheck = rule.handlers.some(h => h.kind === "sort-vars-check");
+  const hasVarsOnTopCheck = rule.handlers.some(h => h.kind === "vars-on-top-check");
+  const hasNoLabelsCheck = rule.handlers.some(h => h.kind === "no-labels-check");
+  const hasNoExtraBindCheck = rule.handlers.some(h => h.kind === "no-extra-bind-check");
+  const hasNoNonoctalCheck = rule.handlers.some(h => h.kind === "no-nonoctal-decimal-escape-check");
+  const hasNoImplicitCoercionCheck = rule.handlers.some(h => h.kind === "no-implicit-coercion-check");
+  const hasFuncNamesCheck = rule.handlers.some(h => h.kind === "func-names-check");
+  const hasNoRestrictedPropsCheck = rule.handlers.some(h => h.kind === "no-restricted-properties-check");
+  const hasDotNotationCheck = rule.handlers.some(h => h.kind === "dot-notation-check");
+  const hasIdMatchCheck = rule.handlers.some(h => h.kind === "id-match-check");
+  const hasNewCapCheck = rule.handlers.some(h => h.kind === "new-cap-check");
+  const hasNoRestrictedExportsCheck = rule.handlers.some(h => h.kind === "no-restricted-exports-check");
+  const hasPreferNumericLiteralsCheck = rule.handlers.some(h => h.kind === "prefer-numeric-literals-check");
+  const hasNoExtendNativeCheck = rule.handlers.some(h => h.kind === "no-extend-native-check");
+  const hasNoSetterReturnCheck = rule.handlers.some(h => h.kind === "no-setter-return-check");
+  const hasGroupedAccessorPairsCheck = rule.handlers.some(h => h.kind === "grouped-accessor-pairs-check");
+  const hasConsistentThisCheck = rule.handlers.some(h => h.kind === "consistent-this-check");
+  const hasIdDenylistCheck = rule.handlers.some(h => h.kind === "id-denylist-check");
+  const hasSortKeysCheck = rule.handlers.some(h => h.kind === "sort-keys-check");
   const hasReadonlyGlobalHandler = rule.handlers.some(h => h.kind === "for-each-readonly-global-write-ref");
   const hasWriteRefBindingHandler = rule.handlers.some(h => h.kind === "for-each-write-ref-of-binding");
   const hasNodeHandler = rule.handlers.some(h => h.kind === "for-each-node");
-  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasNoLossOfPrecisionCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck || hasDefaultCaseCheck;
+  const hasSpecializedHandler = hasSymbolHandler || hasNodeHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler || hasReportAllUnresolvedRefs || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasNoLossOfPrecisionCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck || hasDefaultCaseCheck || hasNoLonelyIfCheck || hasNoUselessCallCheck || hasOperatorAssignmentCheck || hasNoLoneBlocksCheck || hasNoUselessComputedKeyCheck || hasPreferObjectHasOwnCheck || hasPreferObjectSpreadCheck || hasNoSequencesCheck || hasMaxClassesPerFileCheck || hasSortVarsCheck || hasVarsOnTopCheck || hasNoLabelsCheck || hasNoExtraBindCheck || hasNoNonoctalCheck || hasNoImplicitCoercionCheck || hasFuncNamesCheck || hasNoRestrictedPropsCheck || hasDotNotationCheck || hasIdMatchCheck || hasNewCapCheck || hasNoRestrictedExportsCheck || hasPreferNumericLiteralsCheck || hasNoExtendNativeCheck || hasNoSetterReturnCheck || hasGroupedAccessorPairsCheck || hasConsistentThisCheck || hasIdDenylistCheck || hasSortKeysCheck;
   for (const h of rule.handlers) {
     if (h.kind) continue; // specialized — doesn't need a Tag mapping
     if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
@@ -346,6 +374,72 @@ function emit(rule) {
     relevantTags = ["method_def"];
   } else if (hasDefaultCaseCheck) {
     relevantTags = ["switch_stmt"];
+  } else if (hasNoLonelyIfCheck) {
+    relevantTags = ["if_stmt", "if_else_stmt"];
+  } else if (hasNoUselessCallCheck) {
+    relevantTags = ["call_expr", "optional_call_expr"];
+  } else if (hasOperatorAssignmentCheck) {
+    relevantTags = ["assign", "add_assign", "sub_assign", "mul_assign", "div_assign",
+      "mod_assign", "exp_assign", "and_assign", "or_assign", "xor_assign",
+      "shl_assign", "shr_assign", "ushr_assign"];
+  } else if (hasNoLoneBlocksCheck) {
+    relevantTags = ["block_stmt"];
+  } else if (hasNoUselessComputedKeyCheck) {
+    relevantTags = ["computed_property", "computed_method_def", "computed_property_def",
+      "computed_getter_def", "computed_setter_def"];
+  } else if (hasPreferObjectHasOwnCheck) {
+    relevantTags = ["call_expr", "optional_call_expr"];
+  } else if (hasPreferObjectSpreadCheck) {
+    relevantTags = ["call_expr"];
+  } else if (hasNoSequencesCheck) {
+    relevantTags = ["sequence_expr"];
+  } else if (hasMaxClassesPerFileCheck) {
+    relevantTags = ["root"];
+  } else if (hasSortVarsCheck) {
+    relevantTags = ["var_decl", "let_decl", "const_decl"];
+  } else if (hasVarsOnTopCheck) {
+    relevantTags = ["var_decl"];
+  } else if (hasNoLabelsCheck) {
+    relevantTags = ["labeled_stmt", "break_label", "continue_label"];
+  } else if (hasNoExtraBindCheck) {
+    relevantTags = ["call_expr", "optional_call_expr"];
+  } else if (hasNoNonoctalCheck) {
+    relevantTags = ["string_literal"];
+  } else if (hasNoImplicitCoercionCheck) {
+    relevantTags = ["logical_not", "bitwise_not", "unary_plus", "unary_minus",
+      "multiply", "subtract", "add", "add_assign", "template_literal"];
+  } else if (hasFuncNamesCheck) {
+    relevantTags = ["fn_expr", "async_fn_expr", "generator_fn_expr", "async_generator_fn_expr",
+      "fn_decl", "async_fn_decl", "generator_fn_decl", "async_generator_fn_decl"];
+  } else if (hasNoRestrictedPropsCheck) {
+    relevantTags = ["member_expr", "optional_member_expr", "computed_member_expr",
+      "optional_computed_member_expr", "object_pattern"];
+  } else if (hasDotNotationCheck) {
+    relevantTags = ["member_expr", "optional_member_expr", "computed_member_expr",
+      "optional_computed_member_expr"];
+  } else if (hasIdMatchCheck) {
+    relevantTags = ["identifier", "property_ident"];
+  } else if (hasNewCapCheck) {
+    relevantTags = ["new_expr", "call_expr", "optional_call_expr"];
+  } else if (hasNoRestrictedExportsCheck) {
+    relevantTags = ["export_named", "export_named_from", "export_all",
+      "export_default_expr", "export_default_fn", "export_default_class"];
+  } else if (hasPreferNumericLiteralsCheck) {
+    relevantTags = ["call_expr", "optional_call_expr"];
+  } else if (hasNoExtendNativeCheck) {
+    relevantTags = ["identifier"];
+  } else if (hasNoSetterReturnCheck) {
+    relevantTags = ["return_stmt", "arrow_fn", "async_arrow_fn"];
+  } else if (hasGroupedAccessorPairsCheck) {
+    relevantTags = ["object_literal", "class_body", "ts_type_literal", "ts_interface_decl"];
+  } else if (hasConsistentThisCheck) {
+    relevantTags = ["declarator", "assign", "add_assign", "sub_assign", "mul_assign",
+      "div_assign", "mod_assign", "exp_assign", "and_assign", "or_assign", "xor_assign",
+      "shl_assign", "shr_assign", "ushr_assign", "logical_and_assign", "logical_or_assign", "nullish_assign"];
+  } else if (hasIdDenylistCheck) {
+    relevantTags = ["identifier", "property_ident"];
+  } else if (hasSortKeysCheck) {
+    relevantTags = ["object_literal"];
   } else if (hasAnyUseIsnan) {
     relevantTags = [];
     if (hasUseIsnanBinaryCheck) relevantTags.push(
@@ -382,27 +476,27 @@ function emit(rule) {
     || irUsesOp(rule, "template-string")
     || irUsesOp(rule, "source-text-of");
   if (needsStd) out.push(`const std = @import("std");`);
-  out.push(`const ast = @import("../../../parser/ast.zig");`);
+  out.push(`const ast = @import("es_parser").ast;`);
   out.push(`const NodeIndex = ast.NodeIndex;`);
   out.push(`const Node = ast.Node;`);
   out.push(`const LintContext = @import("../../lint_context.zig").LintContext;`);
   out.push(`const RuleMeta = @import("../rule.zig").RuleMeta;`);
   if (hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler) {
-    out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
+    out.push(`const ref_mod = @import("es_parser").reference;`);
     out.push(`const ReferenceId = ref_mod.ReferenceId;`);
   }
   if (hasForEachRefByName) {
-    out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
-    out.push(`const symbol_mod = @import("../../../parser/symbol.zig");`);
+    out.push(`const ref_mod = @import("es_parser").reference;`);
+    out.push(`const symbol_mod = @import("es_parser").symbol;`);
   }
   if (hasForEachDeclByName) {
-    out.push(`const symbol_mod = @import("../../../parser/symbol.zig");`);
+    out.push(`const symbol_mod = @import("es_parser").symbol;`);
   }
   if (hasForEachRefByOptionName) {
-    out.push(`const ref_mod = @import("../../../parser/reference.zig");`);
+    out.push(`const ref_mod = @import("es_parser").reference;`);
   }
   if (hasNoRedeclareCheck || hasNoDupeArgsCheck) {
-    out.push(`const symbol_mod = @import("../../../parser/symbol.zig");`);
+    out.push(`const symbol_mod = @import("es_parser").symbol;`);
   }
   out.push(``);
   out.push(`pub const meta = RuleMeta{`);
@@ -432,7 +526,7 @@ function emit(rule) {
       || irUsesOp(rule, "arguments-ref-is-restable-violation")
       || hasReportAllUnresolvedRefs
       || hasSymbolHandler || hasReadonlyGlobalHandler || hasWriteRefBindingHandler
-      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck) {
+      || hasForEachRefByName || hasForEachDeclByName || hasNoUndefInitCheck || hasForEachRefByOptionName || hasNoRedeclareCheck || hasNoSelfAssignCheck || hasNoDupeArgsCheck || hasNoDupeKeysCheck || hasNoDupeClassMembersCheck || hasNoUnusedLabelsCheck || hasNoExtraLabelCheck || hasNoEmptyCheck || hasNoSparseArraysCheck || hasForDirectionCheck || hasValidTypeofCheck || hasNoExtraSemiCheck || hasAnyUseIsnan || hasAnyNoRegexSpaces || hasAnyNoEmptyCharClass || hasAnyNoControlRegex || hasNoInvalidRegexpCheck || hasAnyNoMisleadingCharClass || hasAnyNoUselessBackref || hasNoUnassignedVarsCheck || hasNoUnusedPrivateMembersCheck || hasNoUnexpectedMultilineCheck || hasPreserveCaughtErrorCheck || hasConstructorSuperCheck || hasNoLonelyIfCheck || hasNoUselessCallCheck || hasNoLoneBlocksCheck || hasNoUselessComputedKeyCheck || hasPreferObjectHasOwnCheck || hasPreferObjectSpreadCheck || hasNoSequencesCheck || hasVarsOnTopCheck || hasNoLabelsCheck || hasNoExtraBindCheck || hasNoImplicitCoercionCheck || hasFuncNamesCheck || hasNoRestrictedPropsCheck || hasDotNotationCheck || hasIdMatchCheck || hasNewCapCheck || hasNoRestrictedExportsCheck || hasPreferNumericLiteralsCheck || hasNoExtendNativeCheck || hasNoSetterReturnCheck || hasGroupedAccessorPairsCheck || hasConsistentThisCheck || hasIdDenylistCheck || hasSortKeysCheck) {
     out.push(`pub const needs_semantic = true;`);
     out.push(``);
   }
@@ -876,6 +970,119 @@ function emit(rule) {
     out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
     out.push(`    ctx.checkDefaultCase(node, "${zigStr(messageId)}");`);
     out.push(`}`);
+  } else if (hasNoLonelyIfCheck) {
+    const messageId = rule.handlers.find(x => x.kind === "no-lonely-if-check").messageId;
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkLonelyIf(node, "${zigStr(messageId)}");`);
+    out.push(`}`);
+  } else if (hasNoUselessCallCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoUselessCall(node);`);
+    out.push(`}`);
+  } else if (hasOperatorAssignmentCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkOperatorAssignment(node);`);
+    out.push(`}`);
+  } else if (hasNoLoneBlocksCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkLoneBlock(node);`);
+    out.push(`}`);
+  } else if (hasNoUselessComputedKeyCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkUselessComputedKey(node);`);
+    out.push(`}`);
+  } else if (hasPreferObjectHasOwnCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkPreferObjectHasOwn(node);`);
+    out.push(`}`);
+  } else if (hasPreferObjectSpreadCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkPreferObjectSpread(node);`);
+    out.push(`}`);
+  } else if (hasNoSequencesCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoSequences(node);`);
+    out.push(`}`);
+  } else if (hasMaxClassesPerFileCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkMaxClassesPerFile(node);`);
+    out.push(`}`);
+  } else if (hasSortVarsCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkSortVars(node);`);
+    out.push(`}`);
+  } else if (hasVarsOnTopCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkVarsOnTop(node);`);
+    out.push(`}`);
+  } else if (hasNoLabelsCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoLabels(node);`);
+    out.push(`}`);
+  } else if (hasNoExtraBindCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoExtraBind(node);`);
+    out.push(`}`);
+  } else if (hasNoNonoctalCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoNonoctalDecimalEscape(node);`);
+    out.push(`}`);
+  } else if (hasNoImplicitCoercionCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoImplicitCoercion(node);`);
+    out.push(`}`);
+  } else if (hasFuncNamesCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkFuncNames(node);`);
+    out.push(`}`);
+  } else if (hasNoRestrictedPropsCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoRestrictedProperties(node);`);
+    out.push(`}`);
+  } else if (hasDotNotationCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkDotNotation(node);`);
+    out.push(`}`);
+  } else if (hasIdMatchCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkIdMatch(node);`);
+    out.push(`}`);
+  } else if (hasNewCapCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNewCap(node);`);
+    out.push(`}`);
+  } else if (hasNoRestrictedExportsCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoRestrictedExports(node);`);
+    out.push(`}`);
+  } else if (hasPreferNumericLiteralsCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkPreferNumericLiterals(node);`);
+    out.push(`}`);
+  } else if (hasNoExtendNativeCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoExtendNative(node);`);
+    out.push(`}`);
+  } else if (hasNoSetterReturnCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkNoSetterReturn(node);`);
+    out.push(`}`);
+  } else if (hasGroupedAccessorPairsCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkGroupedAccessorPairs(node);`);
+    out.push(`}`);
+  } else if (hasConsistentThisCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkConsistentThis(node);`);
+    out.push(`}`);
+  } else if (hasIdDenylistCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkIdDenylist(node);`);
+    out.push(`}`);
+  } else if (hasSortKeysCheck) {
+    out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
+    out.push(`    ctx.checkSortKeys(node);`);
+    out.push(`}`);
   } else if (hasAnyUseIsnan) {
     // use-isnan: tag-switch dispatches to the per-check helpers.  The
     // binary handler emits suggestions; switch + indexOf are plain reports.
@@ -941,7 +1148,7 @@ function emit(rule) {
     out.push(`    if (span.start > 0) {`);
     out.push(`        const prev = src[span.start - 1];`);
     out.push(`        if (prev == ';' or prev == '}') {`);
-    out.push(`            const fix_span = @import("../../../parser/span.zig").Span{ .start = span.start - 1, .end = span.end };`);
+    out.push(`            const fix_span = @import("es_parser").span.Span{ .start = span.start - 1, .end = span.end };`);
     out.push(`            const repl: []const u8 = if (prev == ';') ";" else "}";`);
     out.push(`            ctx.reportSpanWithFixAndMessageId(span, fix_span, repl, "${zigStr(h.messageId)}");`);
     out.push(`            return;`);
@@ -2086,7 +2293,17 @@ function emitStatement(stmt, indent, ctx) {
     return emitFixOrPlainReport(stmt.fix, node, msgId, indent, ctx, stmt.data);
   }
   if (stmt.op === "if") {
-    const out = [`${ind}if (${emitExpr(stmt.cond, ctx)}) {`];
+    const condZ = emitExpr(stmt.cond, ctx);
+    // Constant-fold a statically-known condition (e.g. a dead TS-only guard
+    // folded to `false`): drop the dead `if (false)` entirely; inline the
+    // then-branch for `if (true)`.
+    if (condZ === "false") return [];
+    if (condZ === "true") {
+      const out = [];
+      for (const s of stmt.then) for (const l of emitStatement(s, indent, ctx)) out.push(l);
+      return out;
+    }
+    const out = [`${ind}if (${condZ}) {`];
     for (const s of stmt.then) for (const l of emitStatement(s, indent + 1, ctx)) out.push(l);
     if (stmt.else && stmt.else.length > 0) {
       out.push(`${ind}} else {`);
@@ -2308,6 +2525,24 @@ function emitExpr(e, ctx) {
     }
     case "binary": {
       const op = e.operator;
+      // `node.kind ===/!== "var"|"let"|"const"` — a VariableDeclaration's kind
+      // is encoded directly in our tag system (var_decl / let_decl /
+      // const_decl), so compare the node tag rather than reading text.  The
+      // three kind strings are unambiguous to VariableDeclaration.
+      if (op === "===" || op === "!==" || op === "==" || op === "!=") {
+        const VAR_KIND_TAG = { var: "var_decl", let: "let_decl", const: "const_decl" };
+        const isKind = (m, lit) =>
+          m.op === "member" && m.property === "kind" &&
+          lit.op === "literal" && typeof lit.value === "string" && VAR_KIND_TAG[lit.value];
+        let km = null, klit = null;
+        if (isKind(e.lhs, e.rhs)) { km = e.lhs; klit = e.rhs; }
+        else if (isKind(e.rhs, e.lhs)) { km = e.rhs; klit = e.lhs; }
+        if (km) {
+          const objZ = emitExpr(km.object, ctx);
+          const eq = op === "===" || op === "==";
+          return `(ctx.nodeTag(${objZ}) ${eq ? "==" : "!="} .${VAR_KIND_TAG[klit.value]})`;
+        }
+      }
       // node.(properties|elements).length op literal(0) — SubRange emptiness check.
       // object_pattern / array_pattern store SubRange directly as lhs=start, rhs=end.
       const isCollectionLen = (e) =>
@@ -2354,7 +2589,19 @@ function emitExpr(e, ctx) {
       // Logical &&/|| — operands must be booleans. NodeIndex-valued ops need != .none.
       if (op === "&&" || op === "||") {
         const lhs = emitAsBool(e.lhs, ctx);
+        // Constant-fold so a statically-false/true operand short-circuits the
+        // chain WITHOUT emitting the other side — the dropped operand may
+        // reference node fields we can't codegen (e.g. a TS-only `.global`
+        // guard that only runs when a TS-only node-tag check already passed).
+        if (op === "&&" && lhs === "false") return "false";
+        if (op === "||" && lhs === "true") return "true";
         const rhs = emitAsBool(e.rhs, ctx);
+        if (op === "&&" && rhs === "false") return "false";
+        if (op === "||" && rhs === "true") return "true";
+        if (lhs === "true") return op === "&&" ? rhs : "true";
+        if (lhs === "false") return op === "&&" ? "false" : rhs;
+        if (rhs === "true") return op === "&&" ? lhs : "true";
+        if (rhs === "false") return op === "&&" ? "false" : lhs;
         return `(${lhs} ${mapBinaryOp(op)} ${rhs})`;
       }
       const lhs = emitComparableOperand(e.lhs, ctx);
@@ -2389,6 +2636,14 @@ function emitExpr(e, ctx) {
       return `ctx.nodeData(${emitExpr(e.node, ctx)}).lhs`;
     }
     case "node-tag-equals": {
+      // TS-only node types our JS-focused parser never produces (e.g.
+      // TSModuleBlock) can never match — fold to `false`.  Combined with the
+      // &&/|| constant-folding below, this drops dead TS-specific guards whose
+      // remaining operands reference fields we can't codegen.
+      if (/^TS[A-Z]/.test(e.estreeType) &&
+          !SELECTOR_TO_TAG_MULTI[e.estreeType] && !SELECTOR_TO_TAG[e.estreeType]) {
+        return "false";
+      }
       const tags = estreeTypeToTags(e.estreeType);
       const nodeExpr = emitExpr(e.node, ctx);
       if (tags.length === 1) return `(ctx.nodeTag(${nodeExpr}) == .${tags[0]})`;
