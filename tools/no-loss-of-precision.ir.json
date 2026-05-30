@@ -1,0 +1,15 @@
+{
+  "name": "no-loss-of-precision",
+  "category": "correctness",
+  "defaultSeverity": "error",
+  "description": "Disallow literal numbers that lose precision",
+  "messages": {
+    "noLossOfPrecision": "This number literal will lose precision at runtime."
+  },
+  "handlers": [
+    {
+      "kind": "no-loss-of-precision-check",
+      "messageId": "noLossOfPrecision"
+    }
+  ]
+}
