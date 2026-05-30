@@ -19,7 +19,7 @@
 //   - spread: spreading a Promise.
 
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -345,7 +345,7 @@ fn arrayElemIsPromiseReturningFn(ty: NodeIndex, ctx: *const LintContext) bool {
     return false;
 }
 
-fn reportSpanForArg(arg: NodeIndex, ctx: *const LintContext) @import("../../../parser/root.zig").span.Span {
+fn reportSpanForArg(arg: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     var n = arg;
     while (ctx.nodeTag(n) == .grouping_expr) n = ctx.nodeData(n).lhs;
     const tag = ctx.nodeTag(n);
@@ -1365,7 +1365,7 @@ fn checkObjectMethod(node: NodeIndex, ctx: *const LintContext) void {
 /// Returns the span of the type (excluding the `:` and surrounding space).
 /// Span of a type annotation node, extended to include trailing `>`/`]`
 /// that the parser sometimes drops.
-fn typeAnnotationSpan(ty: NodeIndex, ctx: *const LintContext) @import("../../../parser/root.zig").span.Span {
+fn typeAnnotationSpan(ty: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     var sp = ctx.nodeSpan(ty);
     const src = ctx.ast.source;
     while (sp.end < src.len) {
@@ -1376,7 +1376,7 @@ fn typeAnnotationSpan(ty: NodeIndex, ctx: *const LintContext) @import("../../../
     return sp;
 }
 
-fn objectMethodReturnTypeSpan(method_node: NodeIndex, md: ast.MethodData, ctx: *const LintContext) ?@import("../../../parser/root.zig").span.Span {
+fn objectMethodReturnTypeSpan(method_node: NodeIndex, md: ast.MethodData, ctx: *const LintContext) ?@import("es_parser").span.Span {
     if (md.body == .none) return null;
     const body_start = ctx.nodeSpan(md.body).start;
     const head = ctx.nodeSpan(method_node);
@@ -1429,7 +1429,7 @@ fn objectMethodSourceReturnsPromise(method_node: NodeIndex, md: ast.MethodData, 
         std.mem.indexOf(u8, slice, "Thenable") != null;
 }
 
-fn propertyHeadSpan(prop_node: NodeIndex, value: NodeIndex, ctx: *const LintContext) @import("../../../parser/root.zig").span.Span {
+fn propertyHeadSpan(prop_node: NodeIndex, value: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     // TSe's getFunctionHeadLoc for Property:
     //   start = property.loc.start
     //   end = `(` of params (or `=>` for arrows w/o params).
@@ -1802,8 +1802,8 @@ fn checkInheritedMethods(node: NodeIndex, ctx: *const LintContext) void {
 /// that appear immediately before the field's name on the same line
 /// so the diagnostic span matches TSe's report node (the full
 /// MethodDefinition / PropertyDefinition).
-fn fieldFullSpan(m: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
-    const Span = @import("../../../parser/span.zig").Span;
+fn fieldFullSpan(m: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
+    const Span = @import("es_parser").span.Span;
     const base = ctx.nodeSpan(m);
     const src = ctx.ast.source;
     if (base.start == 0 or base.start > src.len) return base;
@@ -2007,8 +2007,8 @@ fn checkInterfaceInheritedMethods(node: NodeIndex, ctx: *const LintContext) void
 
 /// Report span for a `ts_property_signature` — extend forward past
 /// a trailing `;` / `,` if present so the diagnostic matches TSe.
-fn propertySignatureSpan(m: NodeIndex, ctx: *const LintContext) @import("../../../parser/span.zig").Span {
-    const Span = @import("../../../parser/span.zig").Span;
+fn propertySignatureSpan(m: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
+    const Span = @import("es_parser").span.Span;
     const base = ctx.nodeSpan(m);
     const src = ctx.ast.source;
     var end: u32 = base.end;
@@ -2320,7 +2320,7 @@ fn interfaceMethodIsVoid(id: ast.InterfaceData, name: []const u8, ctx: *const Li
 
 /// Full span of a class method_def including modifiers + body.  TSe
 /// reports the entire method node for voidReturnInheritedMethod.
-fn classMemberFullSpan(m: NodeIndex, method_data: ast.MethodData, ctx: *const LintContext) @import("../../../parser/root.zig").span.Span {
+fn classMemberFullSpan(m: NodeIndex, method_data: ast.MethodData, ctx: *const LintContext) @import("es_parser").span.Span {
     var sp = ctx.nodeSpan(m);
     const src = ctx.ast.source;
     // Walk backward to include modifier keywords on the same line.
@@ -2371,7 +2371,7 @@ fn isClassMemberModifier(word: []const u8) bool {
 /// Span of a ts_method_signature including its trailing semicolon and
 /// generic-close `>` (to match TSe's range).  Our parser's node span
 /// often cuts off the trailing closing tokens.
-fn methodSignatureSpan(node: NodeIndex, ctx: *const LintContext) @import("../../../parser/root.zig").span.Span {
+fn methodSignatureSpan(node: NodeIndex, ctx: *const LintContext) @import("es_parser").span.Span {
     var sp = ctx.nodeSpan(node);
     const src = ctx.ast.source;
     while (sp.end < src.len) {

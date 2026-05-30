@@ -3,13 +3,13 @@
 // Source rule: tests/conformance/eslint/lib/rules/no-undefined.js
 
 const std = @import("std");
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const ref_mod = @import("../../../parser/reference.zig");
-const symbol_mod = @import("../../../parser/symbol.zig");
+const ref_mod = @import("es_parser").reference;
+const symbol_mod = @import("es_parser").symbol;
 
 pub const meta = RuleMeta{
     .name = "no-undefined",

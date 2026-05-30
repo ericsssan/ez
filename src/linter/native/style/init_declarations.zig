@@ -1,23 +1,35 @@
 const std = @import("std");
-const parser = @import("../../../parser/root.zig");
+const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const Span = @import("../../../parser/span.zig").Span;
+const Span = @import("es_parser").span.Span;
 
 pub const meta = RuleMeta{
     .name = "init-declarations",
     .category = .style,
     .default_severity = .@"error",
     .description = "Require or disallow initialization in variable declarations",
-    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.declarator};
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
+    runImpl(node, ctx, false);
+}
+
+/// Shared implementation.  `short_span` selects the report loc for the
+/// uninitialized ("initialized" messageId) case:
+///   - false (base `init-declarations`): ESLint reports `node: declaration`,
+///     so the span is the whole declarator — which, with a TS type annotation
+///     and no initializer, includes the annotation (`arr: string`).
+///   - true (`@typescript-eslint/init-declarations`): the plugin overrides the
+///     loc to the identifier name only (`arr`), excluding the annotation.
+/// The "never" (notInitialized) case is identical for both: the declarator
+/// span from the identifier through the end of the initializer.
+pub fn runImpl(node: NodeIndex, ctx: *const LintContext, short_span: bool) void {
     const data = ctx.nodeData(node);
     const binding = data.lhs;
     if (binding == .none) return;
@@ -27,6 +39,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const var_tag = ctx.nodeTag(var_decl);
     // Only fire on var/let/const declaration statements.
     if (var_tag != .var_decl and var_tag != .let_decl and var_tag != .const_decl) return;
+
+    // The base rule only reports when `id.type === "Identifier"` — destructuring
+    // patterns are never flagged.
+    if (ctx.nodeTag(binding) != .identifier) return;
 
     const never_mode = ctx.optionEqualsString("never");
     const initialized = isInitialized(node, var_decl, ctx);
@@ -52,7 +68,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         // always mode (default)
         if (initialized) return;
         if (isAmbient(var_decl, ctx)) return;
-        ctx.reportSpanWithMessageId(identifierSpan(binding, ctx), "initialized");
+        const span = if (short_span) identifierSpan(binding, ctx) else ctx.nodeSpan(node);
+        ctx.reportSpanWithMessageId(span, "initialized");
     }
 }
 
@@ -110,15 +127,12 @@ fn isAmbient(var_decl: NodeIndex, ctx: *const LintContext) bool {
     return false;
 }
 
-/// Return the binding span, extending to end of TypeScript type annotation when present.
+/// Return the identifier-name span only.  Both the base ESLint rule (which
+/// reports `node: declaration`, whose span equals the bare identifier when
+/// there is no initializer) and the @typescript-eslint variant (which
+/// overrides the loc to `start + id.name.length`, deliberately excluding the
+/// TS type annotation) want exactly the identifier name here.
 fn identifierSpan(binding: NodeIndex, ctx: *const LintContext) Span {
     const mt = ctx.nodeMainToken(binding);
-    const start = ctx.tokenStart(mt);
-    if (ctx.nodeTag(binding) == .identifier) {
-        const ann = ctx.nodeData(binding).rhs;
-        if (ann != .none) {
-            return .{ .start = start, .end = ctx.nodeSpan(ann).end };
-        }
-    }
-    return .{ .start = start, .end = ctx.tokenEnd(mt) };
+    return .{ .start = ctx.tokenStart(mt), .end = ctx.tokenEnd(mt) };
 }

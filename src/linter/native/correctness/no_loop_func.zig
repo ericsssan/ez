@@ -1,14 +1,14 @@
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const ref_mod = @import("../../../parser/reference.zig");
+const ref_mod = @import("es_parser").reference;
 const ReferenceId = ref_mod.ReferenceId;
-const symbol_mod = @import("../../../parser/symbol.zig");
+const symbol_mod = @import("es_parser").symbol;
 const SymbolId = symbol_mod.SymbolId;
 const BindingKind = symbol_mod.BindingKind;
-const scope_mod = @import("../../../parser/scope.zig");
+const scope_mod = @import("es_parser").scope;
 const ScopeId = scope_mod.ScopeId;
 
 pub const meta = RuleMeta{
@@ -87,7 +87,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 fn isSafeSymbol(
     sym_id: SymbolId,
     loop: NodeIndex,
-    loop_span: @import("../../../parser/span.zig").Span,
+    loop_span: @import("es_parser").span.Span,
     fn_scope: ScopeId,
     scopes: *const scope_mod.ScopeTree,
     symbols: *const symbol_mod.SymbolTable,

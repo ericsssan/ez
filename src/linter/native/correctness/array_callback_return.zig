@@ -8,10 +8,10 @@
 // "expectedAtEnd" for fn_expr (partial returns, needs CFG reachability) is skipped.
 
 const std = @import("std");
-const ast = @import("../../../parser/ast.zig");
+const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
-const span_mod = @import("../../../parser/span.zig");
+const span_mod = @import("es_parser").span;
 const Span = span_mod.Span;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
@@ -155,6 +155,22 @@ fn getArrayMethodName(node: NodeIndex, ctx: *const LintContext, is_async: bool) 
             .conditional,
             => {
                 cur = parent;
+                continue;
+            },
+
+            // If the upper function is an IIFE, check the destination of its
+            // return value.  e.g. `foo.every((function(){ return cb; })())` —
+            // the returned `cb` is itself the array-method callback.
+            .return_stmt => {
+                const func = ctx.nodeNearestFunctionAncestor(parent);
+                if (func == .none) return null;
+                // isCallee(func): func is immediately invoked.
+                const fparent = ctx.parentOfSkipGrouping(func);
+                if (fparent == .none) return null;
+                const ft = ctx.nodeTag(fparent);
+                if (ft != .call_expr and ft != .optional_call_expr) return null;
+                if (ctx.nodeSkipGrouping(ctx.nodeData(fparent).lhs) != func) return null;
+                cur = fparent; // func.parent (the IIFE CallExpression)
                 continue;
             },
 
