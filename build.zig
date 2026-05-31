@@ -163,19 +163,6 @@ pub fn build(b: *std.Build) void {
     const bench_stages_step = b.step("bench-parse-stages", "Per-stage pipeline timing breakdown");
     bench_stages_step.dependOn(&bench_stages_cmd.step);
 
-    const prof_p1_mod = b.createModule(.{
-        .root_source_file = b.path("bench/profile_phase1.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .strip = false,
-    });
-    prof_p1_mod.addImport("ez", test_mod);
-    const prof_p1 = b.addExecutable(.{ .name = "profile_phase1", .root_module = prof_p1_mod });
-    const prof_p1_run = b.addRunArtifact(prof_p1);
-    prof_p1_run.step.dependOn(b.getInstallStep());
-    const prof_p1_step = b.step("profile-phase1", "Time buildBitmaps in isolation");
-    prof_p1_step.dependOn(&prof_p1_run.step);
-
     // ── Events bench ─────────────────────────────────────────
     const bench_evt_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_events.zig"),
@@ -274,19 +261,6 @@ pub fn build(b: *std.Build) void {
     const bench_lsp_step = b.step("bench-lsp", "Single-file latency (LSP/daemon shape): G vs G+mmap");
     bench_lsp_step.dependOn(&bench_lsp_cmd.step);
 
-    // ── Test: typescript.js pipeline timing under different analyze options ──
-    const tsp_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_ts_pipeline.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    tsp_mod.addImport("ez", test_mod);  // ← swap: use Debug ez to compare with bench_ez_parser
-    const tsp = b.addExecutable(.{ .name = "test_ts_pipeline", .root_module = tsp_mod });
-    const tsp_cmd = b.addRunArtifact(tsp);
-    tsp_cmd.step.dependOn(b.getInstallStep());
-    const tsp_step = b.step("test-ts-pipeline", "Time typescript.js pipeline under various analyze options");
-    tsp_step.dependOn(&tsp_cmd.step);
-
     // ── Profiling target: run only strategy K, many iters ──
     const tk_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_k_only.zig"),
@@ -314,61 +288,6 @@ pub fn build(b: *std.Build) void {
     pool_cmd.step.dependOn(b.getInstallStep());
     const pool_step = b.step("bench-pool", "Pool vs hybrid_3stage vs ws_aio strategies");
     pool_step.dependOn(&pool_cmd.step);
-
-    // ── Parser profile harness ──
-    const pp_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_parse_profile.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    pp_mod.addImport("ez", test_mod);
-    const pp_exe = b.addExecutable(.{ .name = "test_parse_profile", .root_module = pp_mod });
-    b.installArtifact(pp_exe);
-    const pp_cmd = b.addRunArtifact(pp_exe);
-    pp_cmd.step.dependOn(b.getInstallStep());
-    const pp_step = b.step("test-parse-profile", "Long-running parser profile harness");
-    pp_step.dependOn(&pp_cmd.step);
-
-    // ── Sem profile harness ──
-    const sm_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_sem_profile.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    sm_mod.addImport("ez", test_mod);
-    const sm_exe = b.addExecutable(.{ .name = "test_sem_profile", .root_module = sm_mod });
-    b.installArtifact(sm_exe);
-    const sm_cmd = b.addRunArtifact(sm_exe);
-    sm_cmd.step.dependOn(b.getInstallStep());
-    const sm_step = b.step("test-sem-profile", "Long-running sem profile harness");
-    sm_step.dependOn(&sm_cmd.step);
-
-    // ── Full pipeline profile harness ──
-    const pl_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_pipeline_profile.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    pl_mod.addImport("ez", test_mod);
-    const pl_exe = b.addExecutable(.{ .name = "test_pipeline_profile", .root_module = pl_mod });
-    b.installArtifact(pl_exe);
-    const pl_cmd = b.addRunArtifact(pl_exe);
-    pl_cmd.step.dependOn(b.getInstallStep());
-    const pl_step = b.step("test-pipeline-profile", "Full pipeline profile harness for sampling");
-    pl_step.dependOn(&pl_cmd.step);
-
-    // ── Production Phase 1 timing ──
-    const p1_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_phase1_prod.zig"),
-        .target = target, .optimize = .ReleaseFast,
-    });
-    p1_mod.addImport("ez", test_mod);
-    const p1_exe = b.addExecutable(.{ .name = "test_phase1_prod", .root_module = p1_mod });
-    b.installArtifact(p1_exe);
-    const p1_cmd = b.addRunArtifact(p1_exe);
-    p1_cmd.step.dependOn(b.getInstallStep());
-    const p1_step = b.step("test-phase1-prod", "Time production Phase 1 buildBitmaps");
-    p1_step.dependOn(&p1_cmd.step);
 
     // ── Pipeline crash isolation test ────────────────────────────────────────
     const test_pipeline_mod = b.createModule(.{
