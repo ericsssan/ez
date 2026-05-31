@@ -1037,6 +1037,23 @@ pub const Checker = struct {
     /// up to the declarator and falling back to the initializer.
     pub fn declaredTypeAtBinding(self: *Checker, binding: NodeIndex) TypeId {
         if (binding == .none) return tymod.ID_UNKNOWN;
+        // Enum binding: the symbol's decl node is the ts_enum_decl itself
+        // (the parser declares the enum name so forward references resolve).
+        // Type its value side as the enum object shape — each member a
+        // literal-typed prop — so `EnumName.Member` access types correctly.
+        // Without this the symbol path would fall through to `any`, and
+        // type-aware rules (strict-boolean-expressions, no-unsafe-enum-*)
+        // would lose enum-ness. Mirrors the no-symbol fallback in
+        // inferIdentifier.
+        if (self.ast_ref.nodeTag(binding) == .ts_enum_decl) {
+            const data = self.ast_ref.nodeData(binding);
+            if (data.lhs != .none) {
+                const ed = self.ast_ref.extraData(ast.EnumData, @intFromEnum(data.lhs));
+                const enum_name = self.ast_ref.tokenText(ed.name);
+                if (self.buildEnumObjectType(enum_name)) |t| return t;
+            }
+            return tymod.ID_UNKNOWN;
+        }
         // Direct annotation on the identifier.
         if (self.ast_ref.nodeTag(binding) == .identifier) {
             const bd = self.ast_ref.nodeData(binding);

@@ -187,10 +187,42 @@ fn countArrow(container: NodeIndex, name: []const u8, count: *u32, ctx: *const L
     const d = ctx.nodeData(container);
     if (d.lhs == .none) return;
     const ad = ctx.extraData(ast.ArrowData, @intFromEnum(d.lhs));
+    // Generic arrows (`<T, U extends F<T>>(…) => …`) do not store their type
+    // params in ArrowData — they parse as orphan ts_type_parameter nodes. Count
+    // references to `name` in sibling type-param constraints/defaults (the
+    // function-like path does this via countTypeParamConstraints).
+    countArrowTypeParamConstraints(container, name, count, ctx);
+    if (count.* >= 2) return;
     countParams(ad.params_start, ad.params_end, name, count, ctx);
     countReturnTypeNode(ad.return_type, name, count, ctx);
     if (count.* < 2) countTypeofExpansion(ad.return_type, ad.params_start, ad.params_end, name, count, ctx);
     if (count.* < 2 and ad.body != .none) bodyBoost(ad.body, ad.return_type, ad.params_start, ad.params_end, name, count, ctx);
+}
+
+/// Count `name` references in the constraints/defaults of an arrow function's
+/// (orphan) type parameters — those whose closest positional owner is `arrow`.
+/// Arrow type params aren't stored in ArrowData, so we locate them by scanning.
+fn countArrowTypeParamConstraints(arrow: NodeIndex, name: []const u8, count: *u32, ctx: *const LintContext) void {
+    const arrow_pos = ctx.tokenStart(ctx.nodeMainToken(arrow));
+    const total: u32 = @intCast(ctx.ast.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (ctx.nodeTag(ni) != .ts_type_parameter) continue;
+        // Cheap filter: a type param of this arrow sits after its `<`.
+        if (ctx.tokenStart(ctx.nodeMainToken(ni)) <= arrow_pos) continue;
+        // Confirm ownership: the closest positional owner must be this arrow.
+        const owner = findOwnerByPosition(ni, ctx) orelse continue;
+        if (owner != arrow) continue;
+        // Skip the param's own name — self-references don't count.
+        const tp_name = ctx.tokenText(ctx.nodeMainToken(ni));
+        if (std.mem.eql(u8, tp_name, name)) continue;
+        const td = ctx.nodeData(ni);
+        countTypeNode(td.lhs, name, count, ctx, false);
+        if (count.* >= 2) return;
+        countTypeNode(td.rhs, name, count, ctx, false);
+        if (count.* >= 2) return;
+    }
 }
 
 /// After explicit-signature counting, scan the function body for evidence that
