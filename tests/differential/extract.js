@@ -404,6 +404,7 @@ const _TEST_DIR_CANDIDATES = [
   "test/rules/assertions",  // jsdoc
   "__tests__",              // promise
   "test",                   // unicorn
+  "test/rules",             // security (test/ holds only subdirs, so "test" is rejected first)
   "tests/rules",
   "tests",
   // typescript-eslint: load directly from submodule source (no extraction script needed)

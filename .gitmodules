@@ -43,3 +43,6 @@
 [submodule "tests/conformance/eslint-plugin-react-hooks"]
 	path = tests/conformance/eslint-plugin-react-hooks
 	url = https://github.com/facebook/react.git
+[submodule "tests/conformance/eslint-plugin-security"]
+	path = tests/conformance/eslint-plugin-security
+	url = https://github.com/eslint-community/eslint-plugin-security.git
