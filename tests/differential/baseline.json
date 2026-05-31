@@ -1,5 +1,239 @@
 {
   "corpus": {
+    "security/detect-eval-with-expression": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-pseudoRandomBytes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-child-process": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-bidi-characters": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-non-literal-regexp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-object-injection": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-non-literal-fs-filename": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-non-literal-require": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-new-buffer": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-disable-mustache-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-no-csrf-before-method-override": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-buffer-noassert": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-possible-timing-attacks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
     "n/handle-callback-err": {
       "runner": {
         "fn": 0,
@@ -344,9 +578,9 @@
     },
     "n/no-sync": {
       "runner": {
-        "fn": 0,
+        "fn": 10,
         "fp": 0,
-        "crash": 0
+        "crash": 11
       },
       "native": {
         "fn": 10,
@@ -355,7 +589,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 10,
         "fp": 0,
         "crash": 0
       }
@@ -1478,7 +1712,7 @@
     },
     "@typescript-eslint/no-redeclare": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1489,7 +1723,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -1568,7 +1802,7 @@
     },
     "@typescript-eslint/no-use-before-define": {
       "runner": {
-        "fn": 5,
+        "fn": 2,
         "fp": 2,
         "crash": 0
       },
@@ -1579,7 +1813,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 5,
+        "fn": 2,
         "fp": 2,
         "crash": 0
       }
@@ -1748,7 +1982,7 @@
     },
     "@typescript-eslint/explicit-module-boundary-types": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1759,7 +1993,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -9668,18 +9902,18 @@
     },
     "object-shorthand": {
       "runner": {
-        "fn": 0,
+        "fn": 22,
         "fp": 0,
-        "crash": 0
+        "crash": 2
       },
       "native": {
-        "fn": 136,
+        "fn": 158,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 22,
         "fp": 0,
         "crash": 0
       }
@@ -10411,13 +10645,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 13,
+        "fn": 7,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 13,
+        "fn": 7,
         "fp": 0,
         "crash": 0
       }
@@ -17215,7 +17449,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 18,
+        "fn": 21,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -17431,7 +17665,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 9,
+        "fn": 10,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -17611,7 +17845,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 46,
+        "fn": 54,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -19496,7 +19730,7 @@
     },
     "unicorn/prevent-abbreviations": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -19507,7 +19741,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -21836,7 +22070,7 @@
     },
     "react/prop-types": {
       "runner": {
-        "fn": 8,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       },
@@ -21847,7 +22081,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 8,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       }
@@ -22394,9 +22628,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9857,
-    "runnerCasesPerSec": 7648,
-    "nativeCasesPerSec": 63000,
-    "totalCases": 55633
+    "totalElapsedMs": 9836,
+    "runnerCasesPerSec": 7646,
+    "nativeCasesPerSec": 63326,
+    "totalCases": 55833
   }
 }
