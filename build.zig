@@ -287,19 +287,6 @@ pub fn build(b: *std.Build) void {
     const tsp_step = b.step("test-ts-pipeline", "Time typescript.js pipeline under various analyze options");
     tsp_step.dependOn(&tsp_cmd.step);
 
-    // ── Pipeline ceiling: concurrent lex+parse upper-bound ──
-    const ceiling_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_pipeline_ceiling.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    ceiling_mod.addImport("ez", test_mod);
-    const ceiling = b.addExecutable(.{ .name = "test_pipeline_ceiling", .root_module = ceiling_mod });
-    const ceiling_cmd = b.addRunArtifact(ceiling);
-    ceiling_cmd.step.dependOn(b.getInstallStep());
-    const ceiling_step = b.step("test-ceiling", "Concurrent lex+parse ceiling on typescript.js");
-    ceiling_step.dependOn(&ceiling_cmd.step);
-
     // ── Profiling target: run only strategy K, many iters ──
     const tk_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_k_only.zig"),
@@ -314,19 +301,6 @@ pub fn build(b: *std.Build) void {
     const tk_step = b.step("test-k", "Run only strategy K (for profiling)");
     tk_step.dependOn(&tk_cmd.step);
 
-    // ── Phase 1 PoC: simdjson-style bitmap construction ──
-    const sj_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_simdjson_phase1.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    sj_mod.addImport("ez", test_mod);
-    const sj_exe = b.addExecutable(.{ .name = "test_simdjson_phase1", .root_module = sj_mod });
-    const sj_cmd = b.addRunArtifact(sj_exe);
-    sj_cmd.step.dependOn(b.getInstallStep());
-    const sj_step = b.step("test-sj", "Phase 1 bitmap-construction PoC (simdjson-style)");
-    sj_step.dependOn(&sj_cmd.step);
-
     // ── Pool strategy bench ──
     const pool_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_pool.zig"),
@@ -340,20 +314,6 @@ pub fn build(b: *std.Build) void {
     pool_cmd.step.dependOn(b.getInstallStep());
     const pool_step = b.step("bench-pool", "Pool vs hybrid_3stage vs ws_aio strategies");
     pool_step.dependOn(&pool_cmd.step);
-
-    // ── Profile harness for macOS `sample` ──
-    const sjp_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_simdjson_profile.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    sjp_mod.addImport("ez", test_mod);
-    const sjp_exe = b.addExecutable(.{ .name = "test_simdjson_profile", .root_module = sjp_mod });
-    b.installArtifact(sjp_exe);
-    const sjp_cmd = b.addRunArtifact(sjp_exe);
-    sjp_cmd.step.dependOn(b.getInstallStep());
-    const sjp_step = b.step("test-sj-profile", "Long-running profile harness for sampling");
-    sjp_step.dependOn(&sjp_cmd.step);
 
     // ── Parser profile harness ──
     const pp_mod = b.createModule(.{
@@ -383,19 +343,6 @@ pub fn build(b: *std.Build) void {
     const sm_step = b.step("test-sem-profile", "Long-running sem profile harness");
     sm_step.dependOn(&sm_cmd.step);
 
-    // ── typescript.js semantic failure test ──
-    const ts_fail_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_ts_fail.zig"),
-        .target = target, .optimize = .ReleaseFast,
-    });
-    ts_fail_mod.addImport("ez", test_mod);
-    const ts_fail_exe = b.addExecutable(.{ .name = "test_ts_fail", .root_module = ts_fail_mod });
-    b.installArtifact(ts_fail_exe);
-    const ts_fail_cmd = b.addRunArtifact(ts_fail_exe);
-    ts_fail_cmd.step.dependOn(b.getInstallStep());
-    const ts_fail_step = b.step("test-ts-fail", "Debug typescript.js semantic failure");
-    ts_fail_step.dependOn(&ts_fail_cmd.step);
-
     // ── Full pipeline profile harness ──
     const pl_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_pipeline_profile.zig"),
@@ -410,20 +357,6 @@ pub fn build(b: *std.Build) void {
     const pl_step = b.step("test-pipeline-profile", "Full pipeline profile harness for sampling");
     pl_step.dependOn(&pl_cmd.step);
 
-    // ── Sem split parity test ──
-    const sp_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_sem_split_parity.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    sp_mod.addImport("ez", test_mod);
-    const sp_exe = b.addExecutable(.{ .name = "test_sem_split_parity", .root_module = sp_mod });
-    b.installArtifact(sp_exe);
-    const sp_cmd = b.addRunArtifact(sp_exe);
-    sp_cmd.step.dependOn(b.getInstallStep());
-    const sp_step = b.step("test-sem-split-parity", "Verify resolveFullScope+resolveFullCfg ≡ resolveFull");
-    sp_step.dependOn(&sp_cmd.step);
-
     // ── Production Phase 1 timing ──
     const p1_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_phase1_prod.zig"),
@@ -436,32 +369,6 @@ pub fn build(b: *std.Build) void {
     p1_cmd.step.dependOn(b.getInstallStep());
     const p1_step = b.step("test-phase1-prod", "Time production Phase 1 buildBitmaps");
     p1_step.dependOn(&p1_cmd.step);
-
-    // ── Real lex-parse pipeline (with shared token buffer) ──
-    const real_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_pipeline_real.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    real_mod.addImport("ez", test_mod);
-    const real_exe = b.addExecutable(.{ .name = "test_pipeline_real", .root_module = real_mod });
-    const real_cmd = b.addRunArtifact(real_exe);
-    real_cmd.step.dependOn(b.getInstallStep());
-    const real_step = b.step("test-real", "Real lex-parse pipeline benchmark");
-    real_step.dependOn(&real_cmd.step);
-
-    // ── 3-stage real pipeline (lex || parse || sem) ──
-    const p3_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_pipeline_3stage.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    p3_mod.addImport("ez", test_mod);
-    const p3_exe = b.addExecutable(.{ .name = "test_pipeline_3stage", .root_module = p3_mod });
-    const p3_cmd = b.addRunArtifact(p3_exe);
-    p3_cmd.step.dependOn(b.getInstallStep());
-    const p3_step = b.step("test-3stage", "3-stage real pipeline benchmark");
-    p3_step.dependOn(&p3_cmd.step);
 
     // ── Pipeline crash isolation test ────────────────────────────────────────
     const test_pipeline_mod = b.createModule(.{
