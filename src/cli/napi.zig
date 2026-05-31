@@ -1,6 +1,6 @@
 const std = @import("std");
 const parser = @import("es_parser");
-const js_buffer = parser.js_buffer;
+const js_buffer = @import("../js_buffer.zig");
 const layout = parser.layout;
 const Lexer = parser.Lexer;
 const parser_mod = @import("es_parser");
@@ -488,20 +488,25 @@ fn parseImpl(
         node_pos: ?js_buffer.NodeSpansResult = null,
         err: ?anyerror = null,
         fn run(self: *@This()) void {
-            // Parallel buildTraversal: aux sub-thread runs tag_csr (early
-            // signal), then resolved_parents + type_overrides while this
-            // thread runs mintok→preorder→dfs.
             const r = parent_builder.buildTraversalParallel(
                 self.tree,
                 self.alloc,
-                if (self.tag_csr_ready != null) self.buf_ptr else null,
-                self.backing,
-                self.tag_csr_out,
-                self.tag_csr_ready,
             ) catch |e| {
                 self.err = e;
                 return;
             };
+            // tag_csr: compute inline now that it's no longer inside
+            // buildTraversalParallel. Signal ready so stream_sem worker can proceed.
+            if (self.tag_csr_ready != null) {
+                if (self.backing) |tag_backing| {
+                    if (self.tag_csr_out) |tag_out| {
+                        if (js_buffer.computeTagNodeCsr(self.buf_ptr, tag_backing, self.tree.nodes.items(.tag))) |csr| {
+                            tag_out.* = csr;
+                        } else |_| {}
+                    }
+                }
+                self.tag_csr_ready.?.store(true, .release);
+            }
             self.result = r;
             if (self.utf16_done) |a| {
                 while (!a.load(.acquire)) std.atomic.spinLoopHint();
