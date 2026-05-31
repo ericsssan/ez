@@ -32,9 +32,6 @@ pub fn build(b: *std.Build) void {
     // Run step: zig build run -- [args]
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
     const run_step = b.step("run", "Run ez");
     run_step.dependOn(&run_cmd.step);
 
@@ -134,9 +131,6 @@ pub fn build(b: *std.Build) void {
     });
     const bench_cmd = b.addRunArtifact(bench);
     bench_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        bench_cmd.addArgs(args);
-    }
     const bench_step = b.step("bench", "Run parser benchmarks");
     bench_step.dependOn(&bench_cmd.step);
 
@@ -296,7 +290,6 @@ pub fn build(b: *std.Build) void {
     });
     const bench_par_cmd = b.addRunArtifact(bench_par);
     bench_par_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| bench_par_cmd.addArgs(args);
     const bench_par_step = b.step("bench-parallel", "Compare static-chunk vs work-stealing scheduling");
     bench_par_step.dependOn(&bench_par_cmd.step);
 
@@ -310,7 +303,6 @@ pub fn build(b: *std.Build) void {
     const bench_lsp_exe = b.addExecutable(.{ .name = "bench_lsp", .root_module = bench_lsp_mod });
     const bench_lsp_cmd = b.addRunArtifact(bench_lsp_exe);
     bench_lsp_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| bench_lsp_cmd.addArgs(args);
     const bench_lsp_step = b.step("bench-lsp", "Single-file latency (LSP/daemon shape): G vs G+mmap");
     bench_lsp_step.dependOn(&bench_lsp_cmd.step);
 
@@ -351,7 +343,6 @@ pub fn build(b: *std.Build) void {
     const tk_exe = b.addExecutable(.{ .name = "test_k_only", .root_module = tk_mod });
     const tk_cmd = b.addRunArtifact(tk_exe);
     tk_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| tk_cmd.addArgs(args);
     const tk_step = b.step("test-k", "Run only strategy K (for profiling)");
     tk_step.dependOn(&tk_cmd.step);
 
@@ -379,7 +370,6 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(pool_exe);
     const pool_cmd = b.addRunArtifact(pool_exe);
     pool_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| pool_cmd.addArgs(args);
     const pool_step = b.step("bench-pool", "Pool vs hybrid_3stage vs ws_aio strategies");
     pool_step.dependOn(&pool_cmd.step);
 
@@ -515,7 +505,6 @@ pub fn build(b: *std.Build) void {
     const test_pipeline_exe = b.addExecutable(.{ .name = "test_pipeline", .root_module = test_pipeline_mod });
     const test_pipeline_cmd = b.addRunArtifact(test_pipeline_exe);
     test_pipeline_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| test_pipeline_cmd.addArgs(args);
     const test_pipeline_step = b.step("test-pipeline", "Isolate lintFilesPipelined crash (7 runs, gpa, real files)");
     test_pipeline_step.dependOn(&test_pipeline_cmd.step);
 

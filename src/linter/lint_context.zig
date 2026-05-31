@@ -12455,7 +12455,7 @@ pub const LintContext = struct {
             // Duplicate flag detection — check each char against earlier
             // positions.  ESLint reports as duplicate (rather than invalid)
             // when at least one occurrence is a valid flag char.
-            var seen = std.bit_set.IntegerBitSet(128).initEmpty();
+            var seen: std.bit_set.IntegerBitSet(128) = .empty;
             var has_dup = false;
             for (flags_body) |c| {
                 if (c < 128) {
