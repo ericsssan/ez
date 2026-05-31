@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
         const t2 = std.Io.Timestamp.now(io, .boot);
         var sem = try ez.semantic.SemanticAnalyzer.analyzeWithOptions(alloc, &tree, .{});
         const t3 = std.Io.Timestamp.now(io, .boot);
-        const traversal = try ez.parent_builder.buildTraversal(&tree, alloc);
+        const traversal = try ez.traversal_builder.buildTraversal(&tree, alloc);
         const source_start: u32 = @intCast(buf.len - src.len);
         @memcpy(buf[source_start..], src);
         var backing = ez.js_buffer.JsBufferAllocator.init(buf.ptr, source_start);

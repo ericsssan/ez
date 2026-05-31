@@ -10,6 +10,7 @@ const Parser = ez.Parser;
 const semantic_mod = ez.semantic;
 const js_buffer = ez.js_buffer;
 const parent_builder = ez.parent_builder;
+const traversal_builder = ez.traversal_builder;
 const Language = ez.token.Language;
 
 pub fn main(init: std.process.Init) !void {
@@ -34,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
         var tree = Parser.parseWithOptions(alloc, source, lex.tokens.slice(), .{
             .language = .js, .is_module = true, .emit_events = true,
         }) catch continue;
-        const traversal = parent_builder.buildTraversal(&tree, alloc) catch continue;
+        const traversal = traversal_builder.buildTraversal(&tree, alloc) catch continue;
         var sem_arena = std.heap.ArenaAllocator.init(alloc);
         var sem = semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena.allocator(), &tree, &.{}) catch {
             sem_arena.deinit();

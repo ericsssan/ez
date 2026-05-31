@@ -17,7 +17,7 @@
 const std = @import("std");
 const Lexer = @import("es_parser").Lexer;
 const parser_mod = @import("es_parser");
-const parent_builder = @import("es_parser").parent_builder;
+const traversal_builder = @import("cli/traversal_builder.zig");
 const semantic_mod = @import("es_parser").semantic;
 const event_resolver = @import("es_parser").event_resolver;
 const js_buffer = @import("js_buffer.zig");
@@ -91,7 +91,7 @@ pub fn parseToBuffer(
     });
 
     // ── Build traversal (parents, pre_order, post_order, dfs_events, min_tok) ──
-    const traversal = try parent_builder.buildTraversal(&tree, alloc);
+    const traversal = try traversal_builder.buildTraversal(&tree, alloc);
 
     // ── Resolve full semantic in one walk. `resolveFull` is the same code
     // path NAPI's streaming-sem uses (minus the streaming hooks) — single

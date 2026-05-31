@@ -93,13 +93,13 @@ pub const BufferHeader = extern struct {
     // v13: ESTree-shape `type` override slot per node. u8[node_count]. 0 means
     // "no override; use TAG_NAMES[tag]"; 1..19 select an entry in JS-side
     // `_OVERRIDE_TYPES` (PrivateIdentifier, Property, TSImportEquals…, etc).
-    // See parent_builder.TypeOverride for the mapping.
+    // See traversal_builder.TypeOverride for the mapping.
     type_overrides_offset: u32 = 0,
     // v14: ESTree-shape parent-synthesis dispatch slot per node. u8[node_count].
     // 0 = no synthesis (use resolved-parent NodeView directly); 1..6 select a
     // synthetic-wrapper or redirect path in JS-side `get parent`. Replaces the
     // post-resolve tag-pattern cascade with a single typed-array read.
-    // See parent_builder.ParentKind for the mapping.
+    // See traversal_builder.ParentKind for the mapping.
     parent_kind_offset: u32 = 0,
     // v15: per-node identifier name byte ranges (UTF-8 offsets into source).
     // For identifier/property_ident nodes: [start, end) encloses the name text

@@ -9,6 +9,7 @@ inline fn tokenizeMaybeFused(alloc: std.mem.Allocator, source: []const u8, langu
     return Lexer.tokenizeWithLanguage(alloc, source, language);
 }
 const parent_builder = @import("es_parser").parent_builder;
+const traversal_builder = @import("traversal_builder.zig");
 const semantic_mod = @import("es_parser").semantic;
 const event_resolver = @import("es_parser").event_resolver;
 const Language = parser.token.Language;
@@ -484,11 +485,11 @@ fn parseImpl(
         backing: ?*js_buffer.JsBufferAllocator = null,
         tag_csr_out: ?*?js_buffer.TagNodeCsrResult = null,
         tag_csr_ready: ?*std.atomic.Value(bool) = null,
-        result: parent_builder.TraversalResult = undefined,
+        result: traversal_builder.TraversalResult = undefined,
         node_pos: ?js_buffer.NodeSpansResult = null,
         err: ?anyerror = null,
         fn run(self: *@This()) void {
-            const r = parent_builder.buildTraversalParallel(
+            const r = traversal_builder.buildTraversalParallel(
                 self.tree,
                 self.alloc,
             ) catch |e| {
@@ -581,9 +582,9 @@ fn parseImpl(
         if (trace_main) t_tag_csr_end = t_depths_end;
     }
     const t_parents_ready = if (trace_main) TraceTs.now() else undefined;
-    var traversal: parent_builder.TraversalResult = undefined;
+    var traversal: traversal_builder.TraversalResult = undefined;
     if (trav_thread == null) {
-        traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| {
+        traversal = traversal_builder.buildTraversal(&tree, alloc) catch |e| {
             if (use_stream_sem) {
                 s_parents_ready.store(true, .release);
                 if (stream_sem_thread) |th| th.join();
@@ -1135,7 +1136,7 @@ fn parseAndLintImpl(
         .emit_events = true,
     }) catch |e| return e;
 
-    const traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| return e;
+    const traversal = traversal_builder.buildTraversal(&tree, alloc) catch |e| return e;
     const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
     const pre_order_offset      = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
     const post_order_offset     = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);

@@ -14,6 +14,7 @@ pub const symbol = @import("es_parser").symbol;
 pub const reference = @import("es_parser").reference;
 pub const semantic = @import("es_parser").semantic;
 pub const js_buffer = @import("js_buffer.zig");
+pub const traversal_builder = @import("cli/traversal_builder.zig");
 pub const layout = @import("es_parser").layout;
 pub const parent_builder = @import("es_parser").parent_builder;
 pub const scope_events = @import("es_parser").scope_events;

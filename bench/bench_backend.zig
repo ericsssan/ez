@@ -14,6 +14,7 @@ const SemanticAnalyzer = ez.semantic.SemanticAnalyzer;
 const linter = ez.linter;
 const js_buffer = ez.js_buffer;
 const parent_builder = ez.parent_builder;
+const traversal_builder = ez.traversal_builder;
 
 const FIXTURE_PATH = "bench/fixtures/lodash.js";
 const ITERATIONS: u32 = 200;
@@ -165,7 +166,7 @@ fn timeBackend(gpa: std.mem.Allocator, source: []const u8, io: std.Io) !BackendT
     defer sem.deinit(alloc);
     const t3 = std.Io.Timestamp.now(io, .boot);
 
-    const traversal = try parent_builder.buildTraversal(&tree, alloc);
+    const traversal = try traversal_builder.buildTraversal(&tree, alloc);
     const t4 = std.Io.Timestamp.now(io, .boot);
 
     const buf = try alloc.alloc(u8, BUF_BYTES);

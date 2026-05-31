@@ -4,6 +4,7 @@ const Lexer = ez.Lexer;
 const Parser = ez.Parser;
 const semantic_mod = ez.semantic;
 const parent_builder = ez.parent_builder;
+const traversal_builder = ez.traversal_builder;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -25,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
     var tree = try Parser.parseWithOptions(alloc, source, lex.tokens.slice(), .{ .language = .js, .is_module = false, .emit_events = true });
     std.debug.print("parse+ev ok, fba: {d}KB\n", .{fba.end_index/1024});
 
-    const traversal = try parent_builder.buildTraversal(&tree, alloc);
+    const traversal = try traversal_builder.buildTraversal(&tree, alloc);
     _ = traversal;
     std.debug.print("traversal ok, fba: {d}KB\n", .{fba.end_index/1024});
 

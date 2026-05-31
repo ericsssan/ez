@@ -8,6 +8,7 @@ const Parser = ez.Parser;
 const semantic_mod = ez.semantic;
 const js_buffer = ez.js_buffer;
 const parent_builder = ez.parent_builder;
+const traversal_builder = ez.traversal_builder;
 const Language = ez.token.Language;
 
 const Fixture = struct { path: []const u8, lang: Language = .js, is_module: bool = false };
@@ -71,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
             };
             const t3 = std.Io.Timestamp.now(io, .boot);
 
-            const traversal = parent_builder.buildTraversal(&tree, alloc) catch {
+            const traversal = traversal_builder.buildTraversal(&tree, alloc) catch {
                 if (iter == 0) first_fail_stage = "traversal";
                 continue;
             };
