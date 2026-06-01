@@ -157,11 +157,19 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   }
 
   // Synthetic ts.Signature over a type's sig_idx-th call signature.
-  function makeSignature(typeId, sigIdx) {
+  // `callIdx` (the call's Ez node index), when given, instantiates each param's
+  // type at the call site — `inferGenericParamType` infers the callee's type
+  // args from the arguments and substitutes them in. Falls back to the
+  // un-instantiated signature param type for non-generic calls / on miss.
+  function makeSignature(typeId, sigIdx, callIdx) {
     const n = h.sigParamCount(typeId, sigIdx);
     const restIdx = h.sigRestIndex(typeId, sigIdx);
     const params = new Array(n);
-    for (let i = 0; i < n; i++) params[i] = makeSymbol("arg" + i, h.sigParam(typeId, sigIdx, i), 0, i === restIdx);
+    for (let i = 0; i < n; i++) {
+      const inst = callIdx != null ? h.callParamType(callIdx, i) : null;
+      const ptid = inst != null ? inst : h.sigParam(typeId, sigIdx, i);
+      params[i] = makeSymbol("arg" + i, ptid, 0, i === restIdx);
+    }
     return {
       getReturnType() {
         const r = h.sigReturn(typeId, sigIdx);
@@ -327,6 +335,11 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const est = callNode && (callNode._i != null ? callNode : callNode._estree);
       const callee = est && (est.callee || est.tag); // Call/New.callee, TaggedTemplate.tag
       const ct = callee ? typeAt(callee) : undefined;
+      // Build the signature with call-site generic instantiation (callIdx) so
+      // param types reflect the inferred type args (no-unsafe-argument).
+      if (ct && ct.__ez_typeId != null && h.sigCount(ct.__ez_typeId) > 0) {
+        return makeSignature(ct.__ez_typeId, 0, est && est._i != null ? est._i : null);
+      }
       const sigs = ct && ct.getCallSignatures ? ct.getCallSignatures() : [];
       if (sigs.length) return sigs[0];
       // Fallback: a permissive empty signature so callers that nullThrows on a

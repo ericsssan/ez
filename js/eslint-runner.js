@@ -27,15 +27,12 @@ const _TYPE_FACADE_RULES = new Set([
   // Unknown returned value -> discriminateAnyType=Safe -> no report; an Unknown
   // declared return -> matches the Any|Unknown early-return -> no report.
   "@typescript-eslint/no-unsafe-return",
-  // NOTE: no-unsafe-argument is intentionally NOT allowlisted. Rest params ARE
-  // now modeled (Signature.rest_param_index → the facade marks the rest param so
-  // the rule unwraps the spread array to its element), which fixed the
-  // `<E extends any[]>(...params: E)` FP. A residual FP remains on GENERIC rest
-  // params whose element is inferred from the call args — `<E extends string[]>(
-  // ...params: E)` called with an `any` arg: real TS infers E to include `any`
-  // (safe), but our checker uses E's constraint (string → any→string unsafe →
-  // FP). Re-add once call-site generic inference lands. Surface stays built
-  // (no-unsafe-return uses it).
+  // Fires when a DEFINITE-any argument flows into a non-any parameter. Param
+  // types are instantiated at the call site via the checker's generic inference
+  // (getResolvedSignature → makeSignature(callIdx) → ez_type_call_param_type),
+  // so `<E extends string[]>(...p: E)` called with an `any` arg correctly infers
+  // E=any (any-wins) → safe, instead of the old constraint-based FP. Audit: 0 FP.
+  "@typescript-eslint/no-unsafe-argument",
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading

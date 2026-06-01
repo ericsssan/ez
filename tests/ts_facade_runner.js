@@ -101,8 +101,17 @@ reports = runRule("no-unsafe-return", "async function f(x: any): Promise<any> { 
 assert(reports.length === 0, `must NOT fire returning any from :Promise<any> (awaited is any); got ${reports.length}`);
 console.log("PASS: no false positive returning any from :Promise<any> (awaited unwrap)");
 
-// (no-unsafe-argument is intentionally NOT allowlisted — see eslint-runner.js:
-// real FP on generic rest params until rest-param modeling lands.)
+// no-unsafe-argument: a DEFINITE-any argument to a non-any parameter is unsafe.
+reports = runRule("no-unsafe-argument", "function f(a: number) {} function g(x: any) { f(x); }");
+assert(reports.length >= 1, `no-unsafe-argument should fire passing any to a number param; got ${reports.length}`);
+console.log(`PASS: no-unsafe-argument fired (${reports.length}) passing any to a number param`);
+reports = runRule("no-unsafe-argument", "function f(a: number) {} f(1);");
+assert(reports.length === 0, `must NOT fire passing number to a number param; got ${reports.length}`);
+console.log("PASS: no false positive passing number to a number param");
+// Generic rest param: call-site inference infers E=any (any-wins) → safe.
+reports = runRule("no-unsafe-argument", "declare function foo<E extends string[]>(...p: E): void;\nfoo('a', 1 as any);");
+assert(reports.length === 0, `must NOT fire on generic rest param with an any arg (E inferred any); got ${reports.length}`);
+console.log("PASS: no false positive on generic rest param (call-site inference)");
 
 // restrict-plus-operands must at least not CRASH and not false-positive on
 // number+number (its boolean/union categorization needs more facade surface —
