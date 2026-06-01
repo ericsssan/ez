@@ -66,6 +66,19 @@ reports = runRule("no-unsafe-call", "function f(x: () => void) { x(); }");
 assert(reports.length === 0, `must NOT fire on 'x()' where x: () => void; got ${reports.length}`);
 console.log("PASS: no false positive on 'x()' (x: () => void)");
 
+// no-unsafe-return: returning a DEFINITE-any value from a function whose declared
+// return type isn't any/unknown is unsafe. Exercises the signature FFI surface
+// (call signatures + return types) end-to-end.
+reports = runRule("no-unsafe-return", "function f(x: any): string { return x; }");
+assert(reports.length >= 1, `no-unsafe-return should fire returning any from :string; got ${reports.length}`);
+console.log(`PASS: no-unsafe-return fired (${reports.length}) returning any from :string`);
+reports = runRule("no-unsafe-return", "function f(x: string): string { return x; }");
+assert(reports.length === 0, `must NOT fire returning string from :string; got ${reports.length}`);
+console.log("PASS: no false positive returning string from :string");
+reports = runRule("no-unsafe-return", "function f(x: any): any { return x; }");
+assert(reports.length === 0, `must NOT fire returning any from :any (declared return is any); got ${reports.length}`);
+console.log("PASS: no false positive returning any from :any");
+
 // restrict-plus-operands must at least not CRASH and not false-positive on
 // number+number (its boolean/union categorization needs more facade surface —
 // tracked as incremental per-rule work).

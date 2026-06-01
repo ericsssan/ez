@@ -46,6 +46,16 @@ function binding() {
       ez_type_array_elem:  { args: [H, U], returns: U },
       ez_type_member_count:{ args: [H, U], returns: U },
       ez_type_member_at:   { args: [H, U, U], returns: U },
+      // Call signatures (params + return type).
+      ez_type_sig_count:       { args: [H, U], returns: U },
+      ez_type_sig_return:      { args: [H, U, U], returns: U },
+      ez_type_sig_param_count: { args: [H, U, U], returns: U },
+      ez_type_sig_param:       { args: [H, U, U, U], returns: U },
+      ez_type_sig_flags:       { args: [H, U, U], returns: U },
+      // Object properties (by-name lookup; name passed as utf8 ptr+len).
+      ez_type_prop_count:         { args: [H, U], returns: U },
+      ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
+      ez_type_prop_flags_by_name: { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_tag_last:    { args: [U], returns: FFIType.void },
       ez_type_open_reuse:  { args: [U], returns: H },
     });
@@ -80,6 +90,31 @@ function _handleObj(b, h) {
       const out = new Array(n);
       for (let i = 0; i < n; i++) out[i] = b.sym.ez_type_member_at(h, typeId >>> 0, i);
       return out;
+    },
+    // Call signatures.
+    sigCount(typeId) { return b.sym.ez_type_sig_count(h, typeId >>> 0); },
+    sigReturn(typeId, sigIdx) {
+      const r = b.sym.ez_type_sig_return(h, typeId >>> 0, sigIdx >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
+    sigParamCount(typeId, sigIdx) { return b.sym.ez_type_sig_param_count(h, typeId >>> 0, sigIdx >>> 0); },
+    sigParam(typeId, sigIdx, paramIdx) {
+      const r = b.sym.ez_type_sig_param(h, typeId >>> 0, sigIdx >>> 0, paramIdx >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
+    sigFlags(typeId, sigIdx) { return b.sym.ez_type_sig_flags(h, typeId >>> 0, sigIdx >>> 0); },
+    // Object properties (by name).
+    propCount(typeId) { return b.sym.ez_type_prop_count(h, typeId >>> 0); },
+    propType(typeId, name) {
+      const buf = Buffer.from(name, "utf8");
+      const r = b.sym.ez_type_prop_type_by_name(h, typeId >>> 0, b.ptr(buf), buf.length);
+      return r === NO_TYPE ? null : r;
+    },
+    // Flag bits (1=optional,2=readonly,4=method,8=fn-property) or -1 if absent.
+    propFlags(typeId, name) {
+      const buf = Buffer.from(name, "utf8");
+      const r = b.sym.ez_type_prop_flags_by_name(h, typeId >>> 0, b.ptr(buf), buf.length);
+      return r === NO_TYPE ? -1 : r;
     },
     close() { b.sym.ez_type_close(h); },
   };

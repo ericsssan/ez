@@ -63,6 +63,35 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // getConstrainedTypeAtLocation fallbacks) fall back to the type itself.
       getConstraint() { return undefined; },
       getDefault() { return undefined; },
+      // Call signatures (params + return type) — the checker fills these for
+      // function/method types. getCallSignaturesOfType / signature.getReturnType
+      // (no-unsafe-return) read these.
+      getCallSignatures() {
+        const n = h.sigCount(typeId);
+        const out = new Array(n);
+        for (let i = 0; i < n; i++) out[i] = makeSignature(typeId, i);
+        return out;
+      },
+      getConstructSignatures() { return []; }, // construct sigs not modelled
+      // Named property → a synthetic ts.Symbol carrying the property type, or
+      // undefined if absent. getProperty('length')/'toString'/the accessed member.
+      getProperty(name) {
+        const pid = h.propType(typeId, name);
+        if (pid == null) return undefined;
+        return makeSymbol(name, pid, h.propFlags(typeId, name));
+      },
+      getProperties() { return []; }, // by-name only — no name iteration yet
+      getApparentType() { return ty; },
+      // Arrays/tuples are number-indexed by their element type.
+      getNumberIndexType() {
+        const k = h.kind(typeId);
+        if (k === 21 /*array*/ || k === 22 /*readonly_array*/) {
+          const e = h.arrayElem(typeId);
+          return e != null ? makeType(e) : undefined;
+        }
+        return undefined;
+      },
+      getStringIndexType() { return undefined; },
       // Internal handle hooks (non-ts, for our own helpers).
       __ez_typeId: typeId,
       __ez_handle: h,
@@ -72,10 +101,59 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     return ty;
   }
 
+  // Accept either an ESTree node (carries `_i`, the Ez node index) or a synth
+  // ts node from esTreeNodeToTSNodeMap (carries `_estree` back at the ESTree
+  // node). Rules pass both — services.getTypeAtLocation(estNode) and
+  // checker.getTypeAtLocation(esTreeNodeToTSNodeMap.get(estNode)).
   function typeAt(node) {
-    if (!node || node._i == null) return makeType(undefined);
-    const tid = h.typeOfNode(node._i);
+    if (!node) return makeType(undefined);
+    const est = node._i != null ? node : node._estree;
+    if (!est || est._i == null) return makeType(undefined);
+    let tid = h.typeOfNode(est._i);
+    // The checker types a declaration's BINDING (its name id), not the
+    // declaration statement node — e.g. a FunctionDeclaration's function type
+    // lives on `fn.id`, while the statement node is Unknown. Rules call
+    // getTypeAtLocation(functionNode)/(classNode) expecting the declared type,
+    // so fall back to the id's type when the node itself is untyped (Unknown).
+    if ((tid == null || h.kind(tid) === 1 /*unknown*/) && est.id && est.id._i != null) {
+      const idTid = h.typeOfNode(est.id._i);
+      if (idTid != null && h.kind(idTid) !== 1) tid = idTid;
+    }
     return makeType(tid);
+  }
+
+  // Synthetic ts.Signature over a type's sig_idx-th call signature.
+  function makeSignature(typeId, sigIdx) {
+    return {
+      getReturnType() {
+        const r = h.sigReturn(typeId, sigIdx);
+        return r != null ? makeType(r) : syntheticType(2 /*Unknown*/);
+      },
+      getParameters() {
+        const n = h.sigParamCount(typeId, sigIdx);
+        const out = new Array(n);
+        for (let i = 0; i < n; i++) out[i] = makeSymbol("arg" + i, h.sigParam(typeId, sigIdx, i), 0);
+        return out;
+      },
+      getTypeParameters() { return undefined; },
+      getDeclaration() { return undefined; },
+      declaration: undefined,
+    };
+  }
+
+  // Synthetic ts.Symbol carrying the member/param type (checker.getTypeOfSymbol*
+  // reads __ez_type). Declarations aren't modelled (undefined → callers guard).
+  function makeSymbol(name, typeId, propFlags) {
+    return {
+      name, escapedName: name,
+      getName() { return name; },
+      getEscapedName() { return name; },
+      getDeclarations() { return undefined; },
+      getFlags() { return 0; },
+      valueDeclaration: undefined,
+      __ez_type: typeId,
+      __ez_propFlags: propFlags || 0,
+    };
   }
 
   // Minimal synthetic ts.Type (no backing typeId) for derived/widened types.
@@ -110,6 +188,30 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       return elem != null ? [makeType(elem)] : [];
     },
     typeToString() { return ""; }, // printer not modelled yet
+    // ── Structural classification used by discriminateAnyType / no-for-in-array ──
+    isArrayType(type) {
+      if (!type || type.__ez_typeId == null) return false;
+      const k = h.kind(type.__ez_typeId);
+      return k === 21 /*array*/ || k === 22 /*readonly_array*/;
+    },
+    isTupleType(type) {
+      if (!type || type.__ez_typeId == null) return false;
+      return h.kind(type.__ez_typeId) === 23 /*tuple*/;
+    },
+    // Promise unwrapping isn't modelled — identity is the FP-safe degrade
+    // (non-thenable types are their own awaited type; thenable detection via
+    // getProperty('then') returns null, so the promise-any path is skipped).
+    getAwaitedType(type) { return type; },
+    getContextualType() { return undefined; }, // contextual typing not modelled
+    getSignaturesOfType(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
+    // Symbol → its type (for getTypeOfSymbolAtLocation in no-unsafe-argument /
+    // getTypeOfSymbol in no-for-in-array's length check).
+    getTypeOfSymbol(sym) { return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined; },
+    getTypeOfSymbolAtLocation(sym) { return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined; },
+    // Apparent type (primitives' object-ish view) isn't modelled — identity is
+    // safe: callers use it to read call signatures / properties, which we read
+    // off the type directly.
+    getApparentType(type) { return type; },
   };
 
   const program = {

@@ -21,6 +21,12 @@ const _TYPE_FACADE_RULES = new Set([
   // reached only when getSymbol() returns the lib Function (we return undefined
   // → skipped, no FP). Reads parserServices.program in its visitor (see wrap).
   "@typescript-eslint/no-unsafe-call",
+  // Fires when a DEFINITE-any value is returned and the function's declared
+  // return type isn't any/unknown. Uses call signatures + return types (now
+  // exposed via the signature FFI). Checker gaps only suppress to FN: an
+  // Unknown returned value -> discriminateAnyType=Safe -> no report; an Unknown
+  // declared return -> matches the Any|Unknown early-return -> no report.
+  "@typescript-eslint/no-unsafe-return",
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading

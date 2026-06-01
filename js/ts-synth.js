@@ -296,8 +296,12 @@ const _tsNodeProto = {
   get type() {
     // tsNode.type points at the type annotation node (TS shape). For
     // VariableDeclaration / Parameter / PropertyDeclaration: estNode.id.typeAnnotation.
+    // For FunctionDeclaration / FunctionExpression / ArrowFunction the return
+    // type annotation is ESTree's `.returnType` (ts FunctionLike.type) — rules
+    // like no-unsafe-return gate on its presence.
     const e = this._estree;
     if (e.typeAnnotation) return this._wrap(e.typeAnnotation);
+    if (e.returnType) return this._wrap(e.returnType);
     if (e.id && e.id.typeAnnotation) return this._wrap(e.id.typeAnnotation);
     return undefined;
   },

@@ -263,6 +263,103 @@ pub export fn ez_type_member_at(h: usize, type_id: u32, i: u32) callconv(.c) u32
     }
 }
 
+// ── Call signatures ─────────────────────────────────────────────────────────
+//
+// A function/object type carries zero or more call `Signature`s (params + a
+// return type).  These back `type.getCallSignatures()` / `signature.getReturnType()`
+// in the facade, which `getCallSignaturesOfType` (no-unsafe-return) and a
+// resolved-signature shim (no-unsafe-argument) consume.
+
+fn sigAt(ctx: *TypeCtx, type_id: u32, sig_idx: u32) ?*const tymod.Signature {
+    if (type_id >= ctx.checker.store.types.items.len) return null;
+    const sl = ctx.checker.store.types.items[type_id].signatures;
+    if (sig_idx >= sl.len()) return null;
+    return &ctx.checker.store.signature_pool.items[sl.start + sig_idx];
+}
+
+/// Number of call signatures on a type (0 on bad handle/type or non-callable).
+pub export fn ez_type_sig_count(h: usize, type_id: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    return ctx.checker.store.types.items[type_id].signatures.len();
+}
+
+/// Return-type TypeId of a signature (0xFFFFFFFF on out-of-range).
+pub export fn ez_type_sig_return(h: usize, type_id: u32, sig_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    const s = sigAt(ctx, type_id, sig_idx) orelse return NO_TYPE;
+    return s.return_type.toInt();
+}
+
+/// Parameter count of a signature (0 on out-of-range).
+pub export fn ez_type_sig_param_count(h: usize, type_id: u32, sig_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    const s = sigAt(ctx, type_id, sig_idx) orelse return 0;
+    return s.params_end - s.params_start;
+}
+
+/// `param_idx`-th parameter TypeId of a signature (0xFFFFFFFF on out-of-range).
+pub export fn ez_type_sig_param(h: usize, type_id: u32, sig_idx: u32, param_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    const s = sigAt(ctx, type_id, sig_idx) orelse return NO_TYPE;
+    if (param_idx >= s.params_end - s.params_start) return NO_TYPE;
+    return ctx.checker.store.signature_param_pool.items[s.params_start + param_idx].toInt();
+}
+
+/// Signature flag bits: 1 = async, 2 = generator (0 on out-of-range).
+pub export fn ez_type_sig_flags(h: usize, type_id: u32, sig_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    const s = sigAt(ctx, type_id, sig_idx) orelse return 0;
+    var f: u32 = 0;
+    if (s.is_async) f |= 1;
+    if (s.is_generator) f |= 2;
+    return f;
+}
+
+// ── Object properties ───────────────────────────────────────────────────────
+//
+// Named members of an object/class type, backing `type.getProperty(name)` and
+// the method/field distinction `unbound-method` needs.  By-name lookup only
+// (no string-out iteration yet) — the target rules query specific names
+// (`length`, `toString`, the accessed member).
+
+fn findProp(ctx: *TypeCtx, type_id: u32, name: []const u8) ?*const tymod.ObjectProp {
+    if (type_id >= ctx.checker.store.types.items.len) return null;
+    const pl = ctx.checker.store.types.items[type_id].object_props;
+    const props = ctx.checker.store.object_prop_pool.items[pl.start..pl.end];
+    for (props) |*p| if (std.mem.eql(u8, p.name, name)) return p;
+    return null;
+}
+
+/// Number of own named properties of a type (0 on bad handle/type).
+pub export fn ez_type_prop_count(h: usize, type_id: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    return ctx.checker.store.types.items[type_id].object_props.len();
+}
+
+/// TypeId of the property named `name_ptr[0..name_len]`, or 0xFFFFFFFF if the
+/// type has no such property.
+pub export fn ez_type_prop_type_by_name(h: usize, type_id: u32, name_ptr: [*]const u8, name_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    const p = findProp(ctx, type_id, name_ptr[0..name_len]) orelse return NO_TYPE;
+    return p.type_id.toInt();
+}
+
+/// Property flag bits for `name`: 1 = optional, 2 = readonly, 4 = is_method,
+/// 8 = is_fn_property.  Returns 0xFFFFFFFF when the property is absent (so the
+/// caller distinguishes "absent" from "present with no flags").
+pub export fn ez_type_prop_flags_by_name(h: usize, type_id: u32, name_ptr: [*]const u8, name_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    const p = findProp(ctx, type_id, name_ptr[0..name_len]) orelse return NO_TYPE;
+    var f: u32 = 0;
+    if (p.optional) f |= 1;
+    if (p.readonly) f |= 2;
+    if (p.is_method) f |= 4;
+    if (p.is_fn_property) f |= 8;
+    return f;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 test "type_ffi: open → typeOf → kind/flags → close" {
@@ -297,4 +394,45 @@ test "type_ffi: bad handle is safe" {
     try std.testing.expectEqual(@as(u32, NO_TYPE), ez_type_of_node(0, 0));
     try std.testing.expectEqual(@as(u8, 0xFF), ez_type_kind(12345, 0));
     ez_type_close(0); // no crash
+}
+
+test "type_ffi: call signatures (params + return type)" {
+    const src = "function add(a: number, b: number): string { return ''; }";
+    const h = ez_type_open(src.ptr, @intCast(src.len), @intFromEnum(Language.ts), 1);
+    try std.testing.expect(h != 0);
+    defer ez_type_close(h);
+    const ctx = ctxFrom(h).?;
+    // Find the function type (the binding `add` carries it).
+    var fn_tid: u32 = NO_TYPE;
+    for (0..ctx.ast.nodes.len) |i| {
+        const tid = ez_type_of_node(h, @intCast(i));
+        if (tid != NO_TYPE and ez_type_sig_count(h, tid) > 0) { fn_tid = tid; break; }
+    }
+    try std.testing.expect(fn_tid != NO_TYPE);
+    try std.testing.expectEqual(@as(u32, 1), ez_type_sig_count(h, fn_tid));
+    try std.testing.expectEqual(@as(u32, 2), ez_type_sig_param_count(h, fn_tid, 0));
+    // param 0 is number (flags 8), return is string (flags 4).
+    try std.testing.expectEqual(@as(u32, 8), ez_type_flags(h, ez_type_sig_param(h, fn_tid, 0, 0)));
+    try std.testing.expectEqual(@as(u32, 4), ez_type_flags(h, ez_type_sig_return(h, fn_tid, 0)));
+}
+
+test "type_ffi: object property by name" {
+    const src = "const o = { count: 3, label: 'x' };";
+    const h = ez_type_open(src.ptr, @intCast(src.len), @intFromEnum(Language.ts), 1);
+    try std.testing.expect(h != 0);
+    defer ez_type_close(h);
+    const ctx = ctxFrom(h).?;
+    var obj_tid: u32 = NO_TYPE;
+    for (0..ctx.ast.nodes.len) |i| {
+        const tid = ez_type_of_node(h, @intCast(i));
+        if (tid != NO_TYPE and ez_type_prop_count(h, tid) >= 2) { obj_tid = tid; break; }
+    }
+    try std.testing.expect(obj_tid != NO_TYPE);
+    const cnt = "count";
+    const count_tid = ez_type_prop_type_by_name(h, obj_tid, cnt.ptr, cnt.len);
+    try std.testing.expect(count_tid != NO_TYPE);
+    const cf = ez_type_flags(h, count_tid); // number (8) or number-literal (256)
+    try std.testing.expect(cf == 8 or cf == 256);
+    const missing = "nope";
+    try std.testing.expectEqual(@as(u32, NO_TYPE), ez_type_prop_type_by_name(h, obj_tid, missing.ptr, missing.len));
 }
