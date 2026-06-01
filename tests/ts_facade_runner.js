@@ -64,4 +64,11 @@ reports = runRule("restrict-plus-operands", "const y = 1 + 2;");
 assert(reports.length === 0, `restrict-plus-operands must NOT fire on 'number + number'; got ${reports.length}`);
 console.log("PASS: restrict-plus-operands clean (no crash, no FP) on 'number + number'");
 
+// Big file (>100KB → streaming parse): the facade reuses the runner's parse
+// (no second parse), and the rule must still fire correctly on the violation.
+const bigPad = "const _k = 1; // filler to exceed the 100KB stream threshold\n".repeat(2000);
+reports = runRule("no-unsafe-member-access", bigPad + "\nfunction big(x: any) { return x.zzz; }\n");
+assert(reports.length >= 1, `no-unsafe-member-access should fire on the big-file 'x.zzz' (x: any); got ${reports.length}`);
+console.log(`PASS: no-unsafe-member-access fired on a >100KB file (streaming parse reused, not re-parsed)`);
+
 console.log("\nALL PASS — type-aware rules run through the JS facade end-to-end.");

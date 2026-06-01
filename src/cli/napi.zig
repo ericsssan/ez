@@ -12,6 +12,7 @@ const parent_builder = @import("es_parser").parent_builder;
 const traversal_builder = @import("traversal_builder.zig");
 const semantic_mod = @import("es_parser").semantic;
 const event_resolver = @import("es_parser").event_resolver;
+const type_ffi = @import("type_ffi.zig");
 const Language = parser.token.Language;
 const linter_root = @import("../linter/root.zig");
 const linter_mod = linter_root.linter;
@@ -85,6 +86,11 @@ const StreamSemCtx = struct {
     /// CFG cost off the worker's tail.
     analyzer_done: ?*std.atomic.Value(bool) = null,
     sem_result_ptr: ?*const semantic_mod.SemanticResult = null,
+    /// Worker stores the finished sem result BY VALUE here at the end (its
+    /// `sem_result` stack local dies on return, so the pointer above can't be
+    /// read post-join). Main stashes it for facade parse-reuse after the join.
+    /// Backed by the sem arena (tl_sem_arena), valid until the next parse.
+    sem_value: ?semantic_mod.SemanticResult = null,
     /// Main signals after writeCfgGraph stores its offset in
     /// `main_cfg_graph_offset`; worker spin-waits on this inside writeSem
     /// just before its own writeCfgGraph call and adopts the offset.
@@ -172,6 +178,10 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
     } else |e| {
         ctx.err = e;
     }
+    // Hand the finished sem result to main (by value) for facade parse-reuse.
+    // The arrays live in the sem arena (valid until the next parse); the struct
+    // copy survives this worker's return.
+    ctx.sem_value = sem_result;
     _ = std.c.clock_gettime(.MONOTONIC, &ts4);
     if (std.c.getenv("EZ_TRACE_SEM")) |_| {
         const ms = struct {
@@ -660,6 +670,8 @@ fn parseImpl(
                         if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
                             semantic_data_offset = off;
                         } else |_| {}
+                        tree.parents = traversal.parents; // for facade parse-reuse (see sequential path)
+                        type_ffi.stashLastParse(&tree, &sem);
                     } else |_| {}
                 } else |_| {}
             } else |_| {
@@ -683,6 +695,11 @@ fn parseImpl(
             if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
                 semantic_data_offset = off;
             } else |_| {}
+            // Stash for facade parse-reuse. The checker reads `ast.parents`;
+            // set it (parseImpl otherwise leaves it empty). Valid until the
+            // next parse on this thread (sem arena + buffer).
+            tree.parents = traversal.parents;
+            type_ffi.stashLastParse(&tree, &sem);
         } else |_| {}
     }
 
@@ -1069,6 +1086,12 @@ fn parseImpl(
             const real_off = stream_sem_ctx.semantic_data_offset;
             const sd_off_addr: *u32 = @ptrCast(@alignCast(buf_ptr + js_buffer.semanticDataOffsetFieldOff()));
             sd_off_addr.* = real_off;
+            // Stash the streamed parse for facade reuse (kills the double-parse
+            // for >=100KB files too). Worker used `stream_parents_for_worker`.
+            if (stream_sem_ctx.sem_value != null) {
+                tree.parents = stream_parents_for_worker;
+                type_ffi.stashLastParse(&tree, &stream_sem_ctx.sem_value.?);
+            }
             const main_end = backing.bytesUsed();
             const worker_end = worker_backing.endOffset();
             return if (worker_end > main_end) worker_end else main_end;

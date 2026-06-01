@@ -42,6 +42,38 @@ const TypeCtx = struct {
 var g_mutex: std.atomic.Mutex = .unlocked;
 var g_handles: std.ArrayListUnmanaged(?*TypeCtx) = .empty;
 
+// ── Parse reuse (kill the facade double-parse) ─────────────────────────────
+//
+// `napi.parseImpl` stashes the just-built `tree`+`sem` here (cheap struct
+// copies) after every non-streaming parse, so the type facade can build a
+// checker over the RUNNER's parse instead of re-parsing the file.  The stash's
+// arrays live in the JS buffer (tree) and `tl_sem_arena` (sem) — both valid
+// only until the next parse on this thread, so a reuse handle MUST be closed
+// before the next parse (the JS runner closes it after the file's lint walk).
+// `ez_type_tag_last` stamps a JS-assigned generation; the facade passes it back
+// to `ez_type_open_reuse`, which only reuses on an exact generation match — so
+// a stale stash (shared buffer, LSP recheck, interleaving) falls back to a
+// re-parse instead of returning the wrong file's types.
+threadlocal var tl_last_ast: ?Ast = null;
+threadlocal var tl_last_sem: ?semantic.SemanticResult = null;
+threadlocal var tl_tagged_gen: u32 = 0;
+
+/// Stash the latest parse for reuse.  Called by napi.parseImpl with the live
+/// `tree` (after `tree.parents` is set) and `sem`.  Copies the structs; their
+/// backing arrays are NOT copied (they stay in the buffer / sem arena).
+pub fn stashLastParse(ast: *const Ast, sem: *const semantic.SemanticResult) void {
+    tl_last_ast = ast.*;
+    tl_last_sem = sem.*;
+}
+
+/// JS stamps the generation of the parse it just completed; the facade passes
+/// the same value to `ez_type_open_reuse`. Stash + tag happen together per
+/// parse (with no intervening parse before the lint), so a matching generation
+/// means `tl_last_*` is exactly that parse.
+pub export fn ez_type_tag_last(gen: u32) callconv(.c) void {
+    tl_tagged_gen = gen;
+}
+
 fn lockG() void {
     while (!g_mutex.tryLock()) std.atomic.spinLoopHint();
 }
@@ -101,6 +133,32 @@ fn openImpl(source_ptr: [*]const u8, source_len: u32, lang_val: u8, is_module: u
 /// scope.  Caller must `ez_type_close`.
 pub export fn ez_type_open(source_ptr: [*]const u8, source_len: u32, lang_val: u8, is_module: u8) callconv(.c) usize {
     return openImpl(source_ptr, source_len, lang_val, is_module) catch 0;
+}
+
+fn openReuseImpl(gen: u32) !usize {
+    // Reuse only the exact parse JS tagged with this generation. The stash is
+    // overwritten every parse, so a mismatch means it's stale → return 0 and
+    // let JS fall back to a fresh parse (ez_type_open).
+    if (tl_last_ast == null or gen == 0 or tl_tagged_gen != gen) return 0;
+    const gpa = std.heap.page_allocator;
+    const ctx = try gpa.create(TypeCtx);
+    errdefer gpa.destroy(ctx);
+    ctx.arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer ctx.arena.deinit();
+    // Struct copies — the backing arrays stay in the JS buffer (ast) and sem
+    // arena (sem); the checker only allocates through ctx.arena.
+    ctx.ast = tl_last_ast.?;
+    ctx.sem = tl_last_sem.?;
+    ctx.checker = try Checker.init(ctx.arena.allocator(), &ctx.ast, &ctx.sem);
+    return registerCtx(ctx);
+}
+
+/// Open a type-query handle that REUSES the runner's just-completed parse
+/// (tagged with `gen`), avoiding a second parse.  Returns 0 if the tagged parse
+/// isn't available (caller re-parses via `ez_type_open`).  The handle is only
+/// valid until the next parse on this thread, so it must be closed before then.
+pub export fn ez_type_open_reuse(gen: u32) callconv(.c) usize {
+    return openReuseImpl(gen) catch 0;
 }
 
 pub export fn ez_type_close(h: usize) callconv(.c) void {

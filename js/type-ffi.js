@@ -46,6 +46,8 @@ function binding() {
       ez_type_array_elem:  { args: [H, U], returns: U },
       ez_type_member_count:{ args: [H, U], returns: U },
       ez_type_member_at:   { args: [H, U, U], returns: U },
+      ez_type_tag_last:    { args: [U], returns: FFIType.void },
+      ez_type_open_reuse:  { args: [U], returns: H },
     });
   } catch {
     _binding = null;
@@ -59,16 +61,7 @@ function isAvailable() {
   return binding() !== null;
 }
 
-/// Open a type-query handle for `source`. Returns a handle object with query
-/// methods, or null if the native bridge is unavailable. Caller MUST .close().
-function open(source, lang = "ts", isModule = true) {
-  const b = binding();
-  if (!b) return null;
-  const langCode = typeof lang === "number" ? lang : (LANG[lang] ?? LANG.ts);
-  const bytes = Buffer.from(source, "utf8");
-  const h = b.sym.ez_type_open(b.ptr(bytes), bytes.length, langCode, isModule ? 1 : 0);
-  if (!h || h === 0) return null;
-
+function _handleObj(b, h) {
   return {
     handle: h,
     nodeCount() { return b.sym.ez_type_node_count(h); },
@@ -92,4 +85,36 @@ function open(source, lang = "ts", isModule = true) {
   };
 }
 
-module.exports = { open, isAvailable, LANG, NO_TYPE };
+/// Open a type-query handle for `source` (fresh parse). Returns a handle object
+/// with query methods, or null if the native bridge is unavailable. Caller MUST
+/// .close().
+function open(source, lang = "ts", isModule = true) {
+  const b = binding();
+  if (!b) return null;
+  const langCode = typeof lang === "number" ? lang : (LANG[lang] ?? LANG.ts);
+  const bytes = Buffer.from(source, "utf8");
+  const h = b.sym.ez_type_open(b.ptr(bytes), bytes.length, langCode, isModule ? 1 : 0);
+  if (!h || h === 0) return null;
+  return _handleObj(b, h);
+}
+
+/// Stamp the generation of the parse JS just completed (so the matching
+/// `openReuse(gen)` reuses exactly that parse).
+function tagLast(gen) {
+  const b = binding();
+  if (b) b.sym.ez_type_tag_last(gen >>> 0);
+}
+
+/// Open a handle that REUSES the runner's just-tagged parse — no second parse.
+/// Returns a handle object, or null if the tagged parse isn't available (the
+/// caller should fall back to `open`). The handle is valid only until the next
+/// parse on this thread; close it before then.
+function openReuse(gen) {
+  const b = binding();
+  if (!b) return null;
+  const h = b.sym.ez_type_open_reuse(gen >>> 0);
+  if (!h || h === 0) return null;
+  return _handleObj(b, h);
+}
+
+module.exports = { open, openReuse, tagLast, isAvailable, LANG, NO_TYPE };

@@ -381,10 +381,25 @@ function parseSource(source, options = {}) {
   }
   const view = new AstView(buf);
   // Stash the exact base language the buffer was parsed with so the type-aware
-  // bridge (ts-type-facade) re-parses identically — guaranteeing node-index
-  // alignment between this buffer and the type handle's own parse.
+  // bridge (ts-type-facade) parses identically when it must fall back to a fresh
+  // parse — guaranteeing node-index alignment.
   view._lang = lang;
+  // Tag this parse so the type facade can REUSE it instead of re-parsing (the
+  // native side stashed tree+sem during the parse). Generation-matched so a
+  // stale stash (shared buffer reuse) is detected and the facade re-parses.
+  _tagParseForReuse(view);
   return view;
+}
+
+let _parseGen = 0;
+let _typeFFI;
+let _typeFFITried = false;
+function _tagParseForReuse(view) {
+  if (!_typeFFITried) { _typeFFITried = true; try { _typeFFI = require("./type-ffi"); } catch { _typeFFI = null; } }
+  if (!_typeFFI || !_typeFFI.isAvailable()) return;
+  _parseGen = (_parseGen + 1) >>> 0;
+  if (_parseGen === 0) _parseGen = 1; // 0 means "no reuse"
+  try { _typeFFI.tagLast(_parseGen); view._parseGen = _parseGen; } catch {}
 }
 
 function parse(filePath, options = {}) {

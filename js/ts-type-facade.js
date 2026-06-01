@@ -29,8 +29,12 @@ function defineTypePredicates(ty, flags) {
   return ty;
 }
 
-function makeFacade(source, lang = "ts", isModule = true) {
-  const h = tf.open(source, lang, isModule);
+function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
+  // Prefer reusing the runner's just-completed parse (no second parse). Falls
+  // back to a fresh parse when the tagged parse isn't available (streaming/big
+  // files, stale generation, or Node without the stash).
+  let h = (parseGen && tf.openReuse) ? tf.openReuse(parseGen) : null;
+  if (!h) h = tf.open(source, lang, isModule);
   if (!h) return null;
 
   const typeCache = new Map(); // typeId → Type object

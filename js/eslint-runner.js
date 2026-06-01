@@ -138,7 +138,9 @@ function _makeLightParserServices(sourceCode) {
     if (!mod || !mod.isAvailable()) { _facade = null; return null; }
     const lang = (sourceCode._ast && sourceCode._ast._lang != null) ? sourceCode._ast._lang : 1 /* ts */;
     const isModule = sourceCode._sourceType !== "script" && sourceCode._sourceType !== "commonjs";
-    try { _facade = mod.makeFacade(sourceCode.text, lang, isModule) || null; }
+    // Reuse the runner's parse (tagged at parse time) instead of re-parsing.
+    const parseGen = (sourceCode._ast && sourceCode._ast._parseGen) || 0;
+    try { _facade = mod.makeFacade(sourceCode.text, lang, isModule, parseGen) || null; }
     catch { _facade = null; }
     return _facade;
   }
