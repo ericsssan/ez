@@ -1594,12 +1594,19 @@ pub const Checker = struct {
         // Resolve each param's type from its annotation.
         var param_buf: [16]tymod.TypeId = undefined;
         var count: usize = 0;
+        var rest_idx: u16 = 0xFFFF;
         const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
         if (params_start <= params_end and params_end <= ext_len) {
             const params = self.ast_ref.extra_data[params_start..params_end];
             for (params) |raw| {
                 if (count >= param_buf.len) break;
                 const param: NodeIndex = @enumFromInt(raw);
+                // Detect a rest parameter (`...args`) — peel default-value and
+                // parameter-property wrappers, then check for rest_element.
+                var pn = param;
+                if (self.ast_ref.nodeTag(pn) == .assignment_pattern) pn = self.ast_ref.nodeData(pn).lhs;
+                if (self.ast_ref.nodeTag(pn) == .ts_parameter_property) pn = self.ast_ref.nodeData(pn).lhs;
+                if (self.ast_ref.nodeTag(pn) == .rest_element) rest_idx = @intCast(count);
                 param_buf[count] = self.paramDeclaredType(param);
                 count += 1;
             }
@@ -1681,6 +1688,7 @@ pub const Checker = struct {
             .predicate_param_index = predicate_param_idx,
             .predicate_target = predicate_target,
             .is_assertion = is_assertion,
+            .rest_param_index = rest_idx,
         };
     }
 

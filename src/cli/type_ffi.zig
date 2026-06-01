@@ -316,6 +316,14 @@ pub export fn ez_type_sig_flags(h: usize, type_id: u32, sig_idx: u32) callconv(.
     return f;
 }
 
+/// Zero-based index of the signature's rest parameter (`...args`), or 0xFFFF if
+/// it has none.  no-unsafe-argument needs this to unwrap the spread.
+pub export fn ez_type_sig_rest_index(h: usize, type_id: u32, sig_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0xFFFF;
+    const s = sigAt(ctx, type_id, sig_idx) orelse return 0xFFFF;
+    return s.rest_param_index;
+}
+
 // ── Object properties ───────────────────────────────────────────────────────
 //
 // Named members of an object/class type, backing `type.getProperty(name)` and

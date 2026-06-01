@@ -123,6 +123,10 @@ pub const Signature = struct {
     /// strict-boolean-expressions) treat the argument as being in a
     /// boolean / value-testing context.
     is_assertion: bool = false,
+    /// Zero-based index of the rest parameter (`...args: T[]`), or 0xFFFF when
+    /// the signature has none.  Lets the type-aware facade tell
+    /// no-unsafe-argument which trailing param consumes the spread.
+    rest_param_index: u16 = 0xFFFF,
 };
 
 pub const Type = struct {
@@ -314,6 +318,7 @@ pub const InternContext = struct {
             if (!x.return_type.eq(y.return_type)) return false;
             if (x.is_async != y.is_async or x.is_generator != y.is_generator or
                 x.is_assertion != y.is_assertion) return false;
+            if (x.rest_param_index != y.rest_param_index) return false;
             if (x.predicate_param_index != y.predicate_param_index) return false;
             if (!x.predicate_target.eq(y.predicate_target)) return false;
             const xpa = self.store.signatureParamsOf(x);

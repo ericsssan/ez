@@ -21,6 +21,25 @@ const EMPTY_DECL = Object.freeze({ kind: 0, dotDotDotToken: undefined });
 // `.target.combinedFlags`; 0 = no variable/rest tuple element).
 const TUPLE_TARGET = Object.freeze({ combinedFlags: 0, elementFlags: Object.freeze([]) });
 
+// Lazy `typescript` (already loaded — the rules require it) for the SyntaxKind
+// constants a rest-parameter declaration needs (isRestParameterDeclaration =
+// ts.isParameter(decl) && decl.dotDotDotToken != null).
+let _ts;
+function tsMod() {
+  if (_ts === undefined) { try { _ts = require("typescript"); } catch { _ts = null; } }
+  return _ts;
+}
+let _restDecl;
+function restDecl() {
+  if (_restDecl !== undefined) return _restDecl;
+  const ts = tsMod();
+  _restDecl = Object.freeze({
+    kind: ts ? ts.SyntaxKind.Parameter : 0,
+    dotDotDotToken: Object.freeze({ kind: ts ? ts.SyntaxKind.DotDotDotToken : 0 }),
+  });
+  return _restDecl;
+}
+
 // ts.Type predicate methods (rules call type.isUnion() / isLiteral() / …).
 // Pure flag tests over the ts.TypeFlags bitmask.
 function defineTypePredicates(ty, flags) {
@@ -140,8 +159,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // Synthetic ts.Signature over a type's sig_idx-th call signature.
   function makeSignature(typeId, sigIdx) {
     const n = h.sigParamCount(typeId, sigIdx);
+    const restIdx = h.sigRestIndex(typeId, sigIdx);
     const params = new Array(n);
-    for (let i = 0; i < n; i++) params[i] = makeSymbol("arg" + i, h.sigParam(typeId, sigIdx, i), 0);
+    for (let i = 0; i < n; i++) params[i] = makeSymbol("arg" + i, h.sigParam(typeId, sigIdx, i), 0, i === restIdx);
     return {
       getReturnType() {
         const r = h.sigReturn(typeId, sigIdx);
@@ -161,18 +181,20 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
 
   // Synthetic ts.Symbol carrying the member/param type (checker.getTypeOfSymbol*
   // reads __ez_type). Declarations aren't modelled (undefined → callers guard).
-  function makeSymbol(name, typeId, propFlags) {
+  function makeSymbol(name, typeId, propFlags, isRest) {
+    // Rest params carry a declaration isRestParameterDeclaration recognizes
+    // (ts.SyntaxKind.Parameter + a dotDotDotToken) so no-unsafe-argument unwraps
+    // the spread array to its element type. Non-rest params get EMPTY_DECL
+    // (dotDotDotToken undefined → not rest), which also satisfies ts-api-utils'
+    // isCallback reading `valueDeclaration.dotDotDotToken` unguarded.
+    const decl = isRest ? restDecl() : EMPTY_DECL;
     return {
       name, escapedName: name,
       getName() { return name; },
       getEscapedName() { return name; },
-      getDeclarations() { return undefined; },
+      getDeclarations() { return isRest ? [decl] : undefined; },
       getFlags() { return 0; },
-      // A minimal synthetic declaration: ts-api-utils' isCallback reads
-      // `param.valueDeclaration.dotDotDotToken` unguarded for rest detection.
-      // kind 0 (Unknown) makes ts.isParameter() false; dotDotDotToken undefined
-      // means "not a rest parameter".
-      valueDeclaration: EMPTY_DECL,
+      valueDeclaration: decl,
       __ez_type: typeId,
       __ez_propFlags: propFlags || 0,
     };
@@ -194,6 +216,11 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       return s && s.__ez_type != null ? makeType(s.__ez_type) : undefined;
     }
     return undefined;
+  }
+
+  // A symbol's type.
+  function symType(sym) {
+    return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined;
   }
 
   // Minimal synthetic ts.Type (no backing typeId) for derived/widened types.
@@ -280,9 +307,14 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     },
     getSignaturesOfType(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
     // Symbol → its type (for getTypeOfSymbolAtLocation in no-unsafe-argument /
-    // getTypeOfSymbol in no-for-in-array's length check).
-    getTypeOfSymbol(sym) { return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined; },
-    getTypeOfSymbolAtLocation(sym) { return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined; },
+    // getTypeOfSymbol in no-for-in-array's length check). A bare type parameter
+    // (generic, e.g. `<E extends any[]>`) can't be resolved precisely without
+    // instantiation — the checker leaves broad constraints as a type_param. Treat
+    // it as its safe supertype `unknown` so `any` flowing into a generic position
+    // (e.g. a generic rest param) is NOT flagged unsafe (FP); precision lost is
+    // FN (safe). See no-unsafe-argument's generic-rest-param case.
+    getTypeOfSymbol(sym) { return symType(sym); },
+    getTypeOfSymbolAtLocation(sym) { return symType(sym); },
     // Apparent type (primitives' object-ish view) isn't modelled — identity is
     // safe: callers use it to read call signatures / properties, which we read
     // off the type directly.
