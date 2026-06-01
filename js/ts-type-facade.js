@@ -58,6 +58,11 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // value (rules guard `type.getSymbol()` / `.symbol`).
       symbol: undefined,
       getSymbol() { return undefined; },
+      // Type-parameter constraint — not modelled; undefined means "no
+      // constraint", so constraint-walking helpers (isBuiltinSymbolLikeRecurser,
+      // getConstrainedTypeAtLocation fallbacks) fall back to the type itself.
+      getConstraint() { return undefined; },
+      getDefault() { return undefined; },
       // Internal handle hooks (non-ts, for our own helpers).
       __ez_typeId: typeId,
       __ez_handle: h,
@@ -76,7 +81,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // Minimal synthetic ts.Type (no backing typeId) for derived/widened types.
   function syntheticType(flags) {
     return defineTypePredicates(
-      { flags, getFlags() { return flags; }, types: undefined, symbol: undefined, getSymbol() { return undefined; } },
+      { flags, getFlags() { return flags; }, types: undefined, symbol: undefined, getSymbol() { return undefined; }, getConstraint() { return undefined; }, getDefault() { return undefined; } },
       flags,
     );
   }

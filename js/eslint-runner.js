@@ -9,9 +9,18 @@ const { RuleMetadataIndex, DEFAULT_STRATEGY } = require("./rule-metadata");
 // incomplete facade would otherwise turn a clean skip into a crash for rules
 // calling checker methods we haven't implemented. Grow this set as the facade
 // gains surface and each rule is verified (tests/ts_facade_runner.js).
+// Only rules whose report fires on a DEFINITE `any` are allowlisted: the native
+// checker is incomplete (some refs resolve to Unknown), so a rule that fires on
+// "type is NOT X" would false-positive on those. "fire on any" rules are robust
+// because Unknown != Any → no spurious report. (Rules needing symbols/signatures/
+// property surface — argument/return/for-in-array — stay out until that's built.)
 const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/no-unsafe-member-access",
   "@typescript-eslint/no-unsafe-assignment",
+  // Pure any-detection on the callee type; the builtin-`Function` branch is
+  // reached only when getSymbol() returns the lib Function (we return undefined
+  // → skipped, no FP). Reads parserServices.program in its visitor (see wrap).
+  "@typescript-eslint/no-unsafe-call",
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
@@ -29,6 +38,29 @@ const _TYPE_FACADE_RULES = new Set([
 // via `services.getTypeAtLocation` (ungated) rather than `services.program`.
 // Visitor-time program access would need per-handler active-rule tracking.
 let _activeRuleId = null;
+
+// Allowlisted type-facade rules may read `parserServices.program` inside their
+// VISITORS (not just create()) — e.g. `checker.getTypeChecker()`,
+// `isBuiltinSymbolLike(services.program, …)`. `_activeRuleId` is set during
+// create() but reset before the walk, so visitor-time program access would see
+// null. Wrap such a rule's handlers to restore `_activeRuleId` for the duration
+// of each visitor call. Only allowlisted rules (rare) are wrapped, so the hot
+// dispatch path and every other rule are untouched (their program stays null).
+function _wrapVisitorsForFacade(visitors, ruleId) {
+  if (!visitors || !_TYPE_FACADE_RULES.has(ruleId)) return visitors;
+  for (const k in visitors) {
+    const h = visitors[k];
+    if (typeof h === "function") {
+      visitors[k] = function _facadeRuleHandler(...a) {
+        const prev = _activeRuleId;
+        _activeRuleId = ruleId;
+        try { return h.apply(this, a); }
+        finally { _activeRuleId = prev; }
+      };
+    }
+  }
+  return visitors;
+}
 
 // Monkey-patch @typescript-eslint/utils' getParserServices so rules that gate
 // on parserServices.esTreeNodeToTSNodeMap (TS-aware rules with the
@@ -5176,6 +5208,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       if (!visitors || typeof visitors !== 'object') visitors = {};
       // Merge context.on() listeners into visitors (used by unicorn / ESLint 9 rules).
       if (fileCtx._onListeners) Object.assign(visitors, fileCtx._onListeners);
+      _wrapVisitorsForFacade(visitors, pluginRuleIds[pi]);
       if (Object.keys(visitors).length === 0) {
         if (recipe.length !== 0) { mismatch = true; break; }
         continue;
@@ -5301,6 +5334,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     if (!visitors || typeof visitors !== 'object') visitors = {};
     // Merge context.on() listeners (used by unicorn and ESLint 9 rules) into visitors.
     if (perRuleCtx._onListeners) Object.assign(visitors, perRuleCtx._onListeners);
+    _wrapVisitorsForFacade(visitors, ruleId);
     if (Object.keys(visitors).length === 0) {
       perPluginRecipe.push(recipe);
       pluginTagBitsets.push(null); // empty visitors — no tags, but we don't skip empty rules

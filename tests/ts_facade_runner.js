@@ -57,6 +57,15 @@ reports = runRule("no-unsafe-assignment", "function f(x: any) { const y: number 
 assert(reports.length >= 1, `no-unsafe-assignment should fire on 'any -> number'; got ${reports.length}`);
 console.log(`PASS: no-unsafe-assignment fired (${reports.length}) on 'any -> number'`);
 
+// no-unsafe-call: calling an `any`-typed value is unsafe (pure any-detection on
+// the callee type; the builtin-Function branch is skipped since getSymbol→undef).
+reports = runRule("no-unsafe-call", "function f(x: any) { x(); }");
+assert(reports.length >= 1, `no-unsafe-call should fire on 'x()' where x: any; got ${reports.length}`);
+console.log(`PASS: no-unsafe-call fired (${reports.length}) on 'x()' (x: any)`);
+reports = runRule("no-unsafe-call", "function f(x: () => void) { x(); }");
+assert(reports.length === 0, `must NOT fire on 'x()' where x: () => void; got ${reports.length}`);
+console.log("PASS: no false positive on 'x()' (x: () => void)");
+
 // restrict-plus-operands must at least not CRASH and not false-positive on
 // number+number (its boolean/union categorization needs more facade surface —
 // tracked as incremental per-rule work).
