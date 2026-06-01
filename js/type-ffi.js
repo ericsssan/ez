@@ -56,6 +56,10 @@ function binding() {
       ez_type_prop_count:         { args: [H, U], returns: U },
       ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_prop_flags_by_name: { args: [H, U, FFIType.ptr, U], returns: U },
+      // Type arguments + name (type refs like Promise<T>).
+      ez_type_type_arg_count: { args: [H, U], returns: U },
+      ez_type_type_arg:       { args: [H, U, U], returns: U },
+      ez_type_name_eq:        { args: [H, U, FFIType.ptr, U], returns: FFIType.u8 },
       ez_type_tag_last:    { args: [U], returns: FFIType.void },
       ez_type_open_reuse:  { args: [U], returns: H },
     });
@@ -115,6 +119,16 @@ function _handleObj(b, h) {
       const buf = Buffer.from(name, "utf8");
       const r = b.sym.ez_type_prop_flags_by_name(h, typeId >>> 0, b.ptr(buf), buf.length);
       return r === NO_TYPE ? -1 : r;
+    },
+    // Type arguments (type refs like Promise<T>, arrays, tuples).
+    typeArgCount(typeId) { return b.sym.ez_type_type_arg_count(h, typeId >>> 0); },
+    typeArg(typeId, i) {
+      const r = b.sym.ez_type_type_arg(h, typeId >>> 0, i >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
+    nameEq(typeId, name) {
+      const buf = Buffer.from(name, "utf8");
+      return b.sym.ez_type_name_eq(h, typeId >>> 0, b.ptr(buf), buf.length) === 1;
     },
     close() { b.sym.ez_type_close(h); },
   };

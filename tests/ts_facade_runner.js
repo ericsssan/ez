@@ -79,6 +79,17 @@ reports = runRule("no-unsafe-return", "function f(x: any): any { return x; }");
 assert(reports.length === 0, `must NOT fire returning any from :any (declared return is any); got ${reports.length}`);
 console.log("PASS: no false positive returning any from :any");
 
+// no-unsafe-return async/Promise: the checker wraps async returns as Promise<T>;
+// getAwaitedType must unwrap it. Returning any to :Promise<string> fires (awaited
+// return is string); returning any to :Promise<any> must NOT fire (awaited is any
+// — this is the FP getAwaitedType prevents).
+reports = runRule("no-unsafe-return", "async function f(x: any): Promise<string> { return x; }");
+assert(reports.length >= 1, `no-unsafe-return should fire returning any from :Promise<string>; got ${reports.length}`);
+console.log(`PASS: no-unsafe-return fired (${reports.length}) returning any from :Promise<string>`);
+reports = runRule("no-unsafe-return", "async function f(x: any): Promise<any> { return x; }");
+assert(reports.length === 0, `must NOT fire returning any from :Promise<any> (awaited is any); got ${reports.length}`);
+console.log("PASS: no false positive returning any from :Promise<any> (awaited unwrap)");
+
 // no-unsafe-argument: passing a DEFINITE-any argument to a non-any parameter is
 // unsafe. Exercises getResolvedSignature (resolve call -> callee signature ->
 // param types) end-to-end.

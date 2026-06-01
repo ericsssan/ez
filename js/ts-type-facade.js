@@ -184,6 +184,15 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // getTypeArguments(arrayType)[0] in a couple of any-detection paths.
     getTypeArguments(type) {
       if (!type || type.__ez_typeId == null) return [];
+      const n = h.typeArgCount(type.__ez_typeId);
+      if (n > 0) {
+        const out = new Array(n);
+        for (let i = 0; i < n; i++) {
+          const a = h.typeArg(type.__ez_typeId, i);
+          out[i] = a != null ? makeType(a) : undefined;
+        }
+        return out;
+      }
       const elem = h.arrayElem(type.__ez_typeId);
       return elem != null ? [makeType(elem)] : [];
     },
@@ -198,10 +207,20 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       if (!type || type.__ez_typeId == null) return false;
       return h.kind(type.__ez_typeId) === 23 /*tuple*/;
     },
-    // Promise unwrapping isn't modelled — identity is the FP-safe degrade
-    // (non-thenable types are their own awaited type; thenable detection via
-    // getProperty('then') returns null, so the promise-any path is skipped).
-    getAwaitedType(type) { return type; },
+    // Unwrap Promise<T> (recursively) to its awaited type. The checker wraps
+    // async return types as a `Promise` type_ref carrying T in its type args;
+    // non-promise types are their own awaited type. Without this, an async
+    // function returning any to a :Promise<any>/:any return type would FP (the
+    // signature return Promise<any> isn't flagged Any until unwrapped).
+    getAwaitedType(type) {
+      let t = type, guard = 0;
+      while (t && t.__ez_typeId != null && h.nameEq(t.__ez_typeId, "Promise") && guard++ < 16) {
+        const arg = h.typeArg(t.__ez_typeId, 0);
+        if (arg == null) break;
+        t = makeType(arg);
+      }
+      return t;
+    },
     getContextualType() { return undefined; }, // contextual typing not modelled
     getSignaturesOfType(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
     // Symbol → its type (for getTypeOfSymbolAtLocation in no-unsafe-argument /

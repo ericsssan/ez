@@ -360,6 +360,47 @@ pub export fn ez_type_prop_flags_by_name(h: usize, type_id: u32, name_ptr: [*]co
     return f;
 }
 
+// ── Type arguments + name (type references, e.g. Promise<T>) ────────────────
+//
+// A `type_ref` (Foo<A,B>) and array/tuple kinds keep their type arguments in
+// list_data.  Backs getTypeArguments + getAwaitedType's Promise<T> unwrap in
+// the facade (the checker wraps async returns as a `Promise` type_ref).
+
+/// Number of type arguments of a type_ref/array/tuple (0 otherwise).
+pub export fn ez_type_type_arg_count(h: usize, type_id: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    const t = &ctx.checker.store.types.items[type_id];
+    return switch (t.kind) {
+        .type_ref, .tuple_t, .array_t, .readonly_array_t => t.list_data.len(),
+        else => 0,
+    };
+}
+
+/// `i`-th type argument TypeId (0xFFFFFFFF if out of range).
+pub export fn ez_type_type_arg(h: usize, type_id: u32, i: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    if (type_id >= ctx.checker.store.types.items.len) return NO_TYPE;
+    const t = &ctx.checker.store.types.items[type_id];
+    switch (t.kind) {
+        .type_ref, .tuple_t, .array_t, .readonly_array_t => {
+            const ids = ctx.checker.store.idsOf(t.list_data);
+            if (i >= ids.len) return NO_TYPE;
+            return ids[i].toInt();
+        },
+        else => return NO_TYPE,
+    }
+}
+
+/// 1 if the type's name equals `name_ptr[0..name_len]` (type_ref/type_param
+/// names like "Promise"), else 0.
+pub export fn ez_type_name_eq(h: usize, type_id: u32, name_ptr: [*]const u8, name_len: u32) callconv(.c) u8 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    const t = &ctx.checker.store.types.items[type_id];
+    return if (std.mem.eql(u8, t.name, name_ptr[0..name_len])) 1 else 0;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 test "type_ffi: open → typeOf → kind/flags → close" {
@@ -435,4 +476,27 @@ test "type_ffi: object property by name" {
     try std.testing.expect(cf == 8 or cf == 256);
     const missing = "nope";
     try std.testing.expectEqual(@as(u32, NO_TYPE), ez_type_prop_type_by_name(h, obj_tid, missing.ptr, missing.len));
+}
+
+test "type_ffi: Promise<T> type ref (name + type arg)" {
+    // Async returns are wrapped Promise<T> by the checker; the signature return
+    // type of `async function f(): string` is Promise<string>.
+    const src = "async function f(): string { return ''; }";
+    const h = ez_type_open(src.ptr, @intCast(src.len), @intFromEnum(Language.ts), 1);
+    try std.testing.expect(h != 0);
+    defer ez_type_close(h);
+    const ctx = ctxFrom(h).?;
+    var fn_tid: u32 = NO_TYPE;
+    for (0..ctx.ast.nodes.len) |i| {
+        const tid = ez_type_of_node(h, @intCast(i));
+        if (tid != NO_TYPE and ez_type_sig_count(h, tid) > 0) { fn_tid = tid; break; }
+    }
+    try std.testing.expect(fn_tid != NO_TYPE);
+    const ret = ez_type_sig_return(h, fn_tid, 0);
+    try std.testing.expect(ret != NO_TYPE);
+    const promise = "Promise";
+    try std.testing.expectEqual(@as(u8, 1), ez_type_name_eq(h, ret, promise.ptr, promise.len));
+    try std.testing.expect(ez_type_type_arg_count(h, ret) >= 1);
+    // The awaited type arg is string (flags 4).
+    try std.testing.expectEqual(@as(u32, 4), ez_type_flags(h, ez_type_type_arg(h, ret, 0)));
 }
