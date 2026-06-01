@@ -212,6 +212,19 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // safe: callers use it to read call signatures / properties, which we read
     // off the type directly.
     getApparentType(type) { return type; },
+    // Resolve a call/new/tagged-template node to its callee's first call
+    // signature (no overload resolution — first signature). no-unsafe-argument
+    // nullThrows on a missing signature, so this must return one when the callee
+    // is callable. The node may be a synth ts-node (carries _estree).
+    getResolvedSignature(callNode) {
+      const est = callNode && (callNode._i != null ? callNode : callNode._estree);
+      if (!est) return undefined;
+      const callee = est.callee || est.tag; // Call/New.callee, TaggedTemplate.tag
+      if (!callee) return undefined;
+      const ct = typeAt(callee);
+      const sigs = ct && ct.getCallSignatures ? ct.getCallSignatures() : [];
+      return sigs.length ? sigs[0] : undefined;
+    },
   };
 
   const program = {

@@ -27,6 +27,11 @@ const _TYPE_FACADE_RULES = new Set([
   // Unknown returned value -> discriminateAnyType=Safe -> no report; an Unknown
   // declared return -> matches the Any|Unknown early-return -> no report.
   "@typescript-eslint/no-unsafe-return",
+  // Fires when a DEFINITE-any argument is passed to a non-any parameter. Uses
+  // getResolvedSignature (resolve the call's callee -> first call signature ->
+  // param types). FP-safe: an Unknown argument -> not any -> no report; an
+  // Unknown/any param -> isUnsafeAssignment(any, unknown|any) is safe -> no report.
+  "@typescript-eslint/no-unsafe-argument",
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading

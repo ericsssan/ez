@@ -79,6 +79,19 @@ reports = runRule("no-unsafe-return", "function f(x: any): any { return x; }");
 assert(reports.length === 0, `must NOT fire returning any from :any (declared return is any); got ${reports.length}`);
 console.log("PASS: no false positive returning any from :any");
 
+// no-unsafe-argument: passing a DEFINITE-any argument to a non-any parameter is
+// unsafe. Exercises getResolvedSignature (resolve call -> callee signature ->
+// param types) end-to-end.
+reports = runRule("no-unsafe-argument", "function f(a: number) {} function g(x: any) { f(x); }");
+assert(reports.length >= 1, `no-unsafe-argument should fire passing any to a number param; got ${reports.length}`);
+console.log(`PASS: no-unsafe-argument fired (${reports.length}) passing any to a number param`);
+reports = runRule("no-unsafe-argument", "function f(a: number) {} f(1);");
+assert(reports.length === 0, `must NOT fire passing number to a number param; got ${reports.length}`);
+console.log("PASS: no false positive passing number to a number param");
+reports = runRule("no-unsafe-argument", "function f(a: any) {} function g(x: any) { f(x); }");
+assert(reports.length === 0, `must NOT fire passing any to an any param; got ${reports.length}`);
+console.log("PASS: no false positive passing any to an any param");
+
 // restrict-plus-operands must at least not CRASH and not false-positive on
 // number+number (its boolean/union categorization needs more facade surface —
 // tracked as incremental per-rule work).
