@@ -202,6 +202,16 @@ function _makeLightParserServices(sourceCode) {
       const f = openFacade();
       return f ? f.getTypeAtLocation(node) : undefined;
     },
+    // Some type-aware rules call these directly on parserServices (not via the
+    // checker). Delegate to the facade's checker, which resolves synth ts-nodes.
+    getResolvedSignature(node) {
+      const f = openFacade();
+      return f && f.checker.getResolvedSignature ? f.checker.getResolvedSignature(node) : undefined;
+    },
+    getSymbolAtLocation(node) {
+      const f = openFacade();
+      return f && f.checker.getSymbolAtLocation ? f.checker.getSymbolAtLocation(node) : undefined;
+    },
     // Close hook used by the runner after each file's walk.
     __ez_closeFacade() { if (_facade) { try { _facade.close(); } catch {} } _facade = undefined; },
   };
@@ -9105,6 +9115,9 @@ function applyDisableDirectives(source, violations) {
 
 module.exports = {
   runPlugins, RuleContext,
+  // The type-facade allowlist (mutable) — the facade audit harness adds the full
+  // type-aware universe to it to measure every rule against the oracle at once.
+  _TYPE_FACADE_RULES,
   computeGlobals,
   applyDisableDirectives,
   DEFAULT_ERROR_BUDGET,

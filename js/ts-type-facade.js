@@ -124,18 +124,21 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
 
   // Synthetic ts.Signature over a type's sig_idx-th call signature.
   function makeSignature(typeId, sigIdx) {
+    const n = h.sigParamCount(typeId, sigIdx);
+    const params = new Array(n);
+    for (let i = 0; i < n; i++) params[i] = makeSymbol("arg" + i, h.sigParam(typeId, sigIdx, i), 0);
     return {
       getReturnType() {
         const r = h.sigReturn(typeId, sigIdx);
         return r != null ? makeType(r) : syntheticType(2 /*Unknown*/);
       },
-      getParameters() {
-        const n = h.sigParamCount(typeId, sigIdx);
-        const out = new Array(n);
-        for (let i = 0; i < n; i++) out[i] = makeSymbol("arg" + i, h.sigParam(typeId, sigIdx, i), 0);
-        return out;
-      },
+      getParameters() { return params; },
+      // ts.Signature exposes `.parameters` (symbol array) and `.minArgumentCount`
+      // as fields, not just getters — some rules read them directly.
+      parameters: params,
+      minArgumentCount: n,
       getTypeParameters() { return undefined; },
+      typeParameters: undefined,
       getDeclaration() { return undefined; },
       declaration: undefined,
     };
@@ -243,6 +246,25 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const ct = typeAt(callee);
       const sigs = ct && ct.getCallSignatures ? ct.getCallSignatures() : [];
       return sigs.length ? sigs[0] : undefined;
+    },
+    // Direct maps onto the signature/property surface.
+    getReturnTypeOfSignature(sig) { return sig && sig.getReturnType ? sig.getReturnType() : undefined; },
+    getPropertyOfType(type, name) { return type && type.getProperty ? type.getProperty(name) : undefined; },
+    getTypeOfPropertyOfType(type, name) {
+      const s = type && type.getProperty ? type.getProperty(name) : undefined;
+      return s && s.__ez_type != null ? makeType(s.__ez_type) : undefined;
+    },
+    getSignaturesOfType2(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
+    // Best-effort symbol for a node: a synthetic symbol carrying the node's
+    // type. Name is the identifier text when available. Declarations aren't
+    // modelled (undefined → callers guard).
+    getSymbolAtLocation(node) {
+      const est = node && (node._i != null ? node : node._estree);
+      if (!est || est._i == null) return undefined;
+      const t = typeAt(est);
+      if (!t || t.__ez_typeId == null) return undefined;
+      const name = est.name || (est.id && est.id.name) || "";
+      return makeSymbol(name, t.__ez_typeId, 0);
     },
   };
 
