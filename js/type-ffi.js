@@ -53,6 +53,7 @@ function binding() {
       ez_type_sig_param:       { args: [H, U, U, U], returns: U },
       ez_type_sig_flags:       { args: [H, U, U], returns: U },
       ez_type_sig_rest_index:  { args: [H, U, U], returns: U },
+      ez_type_call_param_type: { args: [H, U, U], returns: U },
       // Object properties (by-name lookup; name passed as utf8 ptr+len).
       ez_type_prop_count:         { args: [H, U], returns: U },
       ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
@@ -112,6 +113,11 @@ function _handleObj(b, h) {
     sigRestIndex(typeId, sigIdx) {
       const r = b.sym.ez_type_sig_rest_index(h, typeId >>> 0, sigIdx >>> 0);
       return r === 0xffff ? null : r;
+    },
+    // Instantiated type of a generic call's param (null if not a generic call).
+    callParamType(callNodeIdx, paramIdx) {
+      const r = b.sym.ez_type_call_param_type(h, callNodeIdx >>> 0, paramIdx >>> 0);
+      return r === NO_TYPE ? null : r;
     },
     // Object properties (by name).
     propCount(typeId) { return b.sym.ez_type_prop_count(h, typeId >>> 0); },

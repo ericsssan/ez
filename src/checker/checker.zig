@@ -4933,29 +4933,36 @@ pub const Checker = struct {
     /// into `return_ty`.  Returns `null` when the callee isn't a
     /// generic function declaration we can find, or when there were
     /// no inferences to make.
-    fn inferGenericReturn(self: *Checker, callee: NodeIndex, call: NodeIndex, return_ty: TypeId) ?TypeId {
-        const fn_decl = self.findCalleeFnDecl(callee) orelse return null;
+    /// Collect generic type-parameter bindings for a call: type-param names
+    /// from the callee decl, explicit type args (`fn<number>(x)`), and the rest
+    /// inferred from argument types (any-wins via `matchTypeParam`, with rest
+    /// parameters spreading each trailing arg against the rest element).  Fills
+    /// `names`/`bindings` (unbound entries stay `TypeId.none`).  Returns the
+    /// type-param count, or 0 if the callee isn't a generic fn decl we resolve.
+    fn collectCallBindings(
+        self: *Checker,
+        callee: NodeIndex,
+        call: NodeIndex,
+        names: *[8][]const u8,
+        bindings: *[8]TypeId,
+    ) usize {
+        const fn_decl = self.findCalleeFnDecl(callee) orelse return 0;
         const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(self.ast_ref.nodeData(fn_decl).lhs));
-        if (fd.type_params_end <= fd.type_params) return null;
-        // Collect type-parameter names.
-        var tp_names_buf: [8][]const u8 = undefined;
-        var tp_count: usize = 0;
+        if (fd.type_params_end <= fd.type_params) return 0;
         const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+        var tp_count: usize = 0;
         if (fd.type_params_end <= ext_len) {
             for (self.ast_ref.extra_data[fd.type_params..fd.type_params_end]) |raw| {
-                if (tp_count >= tp_names_buf.len) break;
+                if (tp_count >= names.len) break;
                 const tp_node: NodeIndex = @enumFromInt(raw);
                 if (self.ast_ref.nodeTag(tp_node) != .ts_type_parameter) continue;
-                tp_names_buf[tp_count] = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(tp_node));
+                names[tp_count] = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(tp_node));
                 tp_count += 1;
             }
         }
-        if (tp_count == 0) return null;
-        // Collect explicit type args from the call (e.g. `id<number>(x)`).
-        var bindings_buf: [8]TypeId = undefined;
-        var bound: usize = 0;
-        while (bound < tp_count) : (bound += 1) bindings_buf[bound] = TypeId.none;
-        // Read explicit type args from ts_instantiation_expr callee (e.g. `fn<T>(x)`).
+        if (tp_count == 0) return 0;
+        for (0..tp_count) |b| bindings[b] = TypeId.none;
+        // Explicit type args (`fn<T>(x)` via ts_instantiation_expr).
         {
             var c = callee;
             while (self.ast_ref.nodeTag(c) == .grouping_expr) c = self.ast_ref.nodeData(c).lhs;
@@ -4963,43 +4970,95 @@ pub const Checker = struct {
                 const inst_d = self.ast_ref.nodeData(c);
                 if (inst_d.rhs != .none) {
                     const sr = self.ast_ref.extraData(ast.SubRange, @intFromEnum(inst_d.rhs));
-                    const type_args = self.ast_ref.extra_data[sr.start..sr.end];
-                    for (type_args, 0..) |raw, ti| {
-                        if (ti >= tp_count) break;
-                        const ta_node: NodeIndex = @enumFromInt(raw);
-                        bindings_buf[ti] = self.resolveTypeNode(ta_node);
+                    if (sr.end <= ext_len) {
+                        for (self.ast_ref.extra_data[sr.start..sr.end], 0..) |raw, ti| {
+                            if (ti >= tp_count) break;
+                            bindings[ti] = self.resolveTypeNode(@enumFromInt(raw));
+                        }
                     }
                 }
             }
         }
-
-        // Walk params + args, matching type-ref names against the
-        // type-parameter names to build bindings.
-        const arg_nodes = self.callArguments(call);
-        if (fd.params_end > ext_len) return null;
+        if (fd.params_end > ext_len) return tp_count;
         const params = self.ast_ref.extra_data[fd.params..fd.params_end];
-        var i: usize = 0;
-        while (i < params.len and i < arg_nodes.len) : (i += 1) {
-            const param: NodeIndex = @enumFromInt(params[i]);
-            const param_ty_node = self.paramAnnotationNode(param) orelse continue;
-            const arg_node: NodeIndex = @enumFromInt(arg_nodes[i]);
-            const arg_ty = self.typeOf(arg_node);
-            self.matchTypeParam(param_ty_node, arg_ty, tp_names_buf[0..tp_count], bindings_buf[0..tp_count]);
+        // Detect a trailing rest parameter (peel default/parameter-property).
+        var rest_pi: usize = std.math.maxInt(usize);
+        if (params.len > 0) {
+            var pn: NodeIndex = @enumFromInt(params[params.len - 1]);
+            if (self.ast_ref.nodeTag(pn) == .assignment_pattern) pn = self.ast_ref.nodeData(pn).lhs;
+            if (self.ast_ref.nodeTag(pn) == .ts_parameter_property) pn = self.ast_ref.nodeData(pn).lhs;
+            if (self.ast_ref.nodeTag(pn) == .rest_element) rest_pi = params.len - 1;
         }
-        // Anything still unbound stays as a constraint reference (or
-        // `any` if no constraint) — for substitution we just leave the
-        // type_ref alone, which behaves as "unknown" downstream.
+        const arg_nodes = self.callArguments(call);
+        for (arg_nodes, 0..) |arg_raw, ai| {
+            const pidx = if (ai < params.len) ai else rest_pi;
+            if (pidx == std.math.maxInt(usize) or pidx >= params.len) continue;
+            const param: NodeIndex = @enumFromInt(params[pidx]);
+            const param_ty_node = self.paramAnnotationNode(param) orelse continue;
+            const arg_ty = self.typeOf(@enumFromInt(arg_raw));
+            // For the rest param each trailing arg matches the rest ELEMENT.
+            const match_node = if (pidx == rest_pi) self.restElementMatchNode(param_ty_node) else param_ty_node;
+            self.matchTypeParam(match_node, arg_ty, names[0..tp_count], bindings[0..tp_count]);
+        }
+        return tp_count;
+    }
+
+    /// The node a rest parameter's trailing args should match against: the
+    /// element of `T[]` / `Array<T>`, else the annotation itself (a bare type
+    /// parameter `E`, matched directly — any-wins then widens it to `any`).
+    fn restElementMatchNode(self: *Checker, ty_node: NodeIndex) NodeIndex {
+        const tag = self.ast_ref.nodeTag(ty_node);
+        if (tag == .ts_array_type) return self.ast_ref.nodeData(ty_node).lhs;
+        if (tag == .ts_type_reference) {
+            const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ty_node));
+            if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+                const first = self.firstTypeArg(ty_node);
+                if (first != .none) return first;
+            }
+        }
+        return ty_node;
+    }
+
+    fn inferGenericReturn(self: *Checker, callee: NodeIndex, call: NodeIndex, return_ty: TypeId) ?TypeId {
+        var names_buf: [8][]const u8 = undefined;
+        var bindings_buf: [8]TypeId = undefined;
+        const tp_count = self.collectCallBindings(callee, call, &names_buf, &bindings_buf);
+        if (tp_count == 0) return null;
         var any_bound = false;
         for (bindings_buf[0..tp_count]) |b| {
             if (!b.eq(TypeId.none)) { any_bound = true; break; }
         }
         if (!any_bound) return null;
-        // Replace unbound entries with `unknown` so substituteTypeId
-        // doesn't preserve the literal name.
         for (bindings_buf[0..tp_count]) |*b| {
             if (b.eq(TypeId.none)) b.* = tymod.ID_UNKNOWN;
         }
-        return self.substituteTypeId(return_ty, tp_names_buf[0..tp_count], bindings_buf[0..tp_count]);
+        return self.substituteTypeId(return_ty, names_buf[0..tp_count], bindings_buf[0..tp_count]);
+    }
+
+    /// Instantiated type of parameter `param_index` for the generic call at
+    /// `call` — infer the callee's type args from the arguments, then substitute
+    /// them into that parameter's annotation.  Returns null when the callee
+    /// isn't a generic fn decl, the param has no annotation, or nothing bound.
+    /// Backs the type-aware facade's no-unsafe-argument (instantiated params).
+    pub fn inferGenericParamType(self: *Checker, call: NodeIndex, param_index: u32) ?TypeId {
+        const callee = self.ast_ref.nodeData(call).lhs;
+        if (callee == .none) return null;
+        const fn_decl = self.findCalleeFnDecl(callee) orelse return null;
+        const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(self.ast_ref.nodeData(fn_decl).lhs));
+        const ext_len: u32 = @intCast(self.ast_ref.extra_data.len);
+        if (fd.params_end > ext_len) return null;
+        const params = self.ast_ref.extra_data[fd.params..fd.params_end];
+        if (param_index >= params.len) return null;
+        const param: NodeIndex = @enumFromInt(params[param_index]);
+        const param_ty_node = self.paramAnnotationNode(param) orelse return null;
+        var names_buf: [8][]const u8 = undefined;
+        var bindings_buf: [8]TypeId = undefined;
+        const tp_count = self.collectCallBindings(callee, call, &names_buf, &bindings_buf);
+        if (tp_count == 0) return null;
+        for (bindings_buf[0..tp_count]) |*b| {
+            if (b.eq(TypeId.none)) b.* = tymod.ID_UNKNOWN;
+        }
+        return self.resolveTypeNodeWithSubst(param_ty_node, names_buf[0..tp_count], bindings_buf[0..tp_count]);
     }
 
     fn callArguments(self: *Checker, call: NodeIndex) []const u32 {
@@ -5014,7 +5073,14 @@ pub const Checker = struct {
         var p = param;
         if (self.ast_ref.nodeTag(p) == .assignment_pattern) p = self.ast_ref.nodeData(p).lhs;
         if (self.ast_ref.nodeTag(p) == .ts_parameter_property) p = self.ast_ref.nodeData(p).lhs;
-        if (self.ast_ref.nodeTag(p) == .rest_element) p = self.ast_ref.nodeData(p).lhs;
+        // A rest_element holds its annotation on `.rhs` (not on the inner
+        // identifier) — `...p: E` → rd.rhs is the ts_type_annotation for E.
+        if (self.ast_ref.nodeTag(p) == .rest_element) {
+            const rd = self.ast_ref.nodeData(p);
+            if (rd.rhs != .none and self.ast_ref.nodeTag(rd.rhs) == .ts_type_annotation)
+                return self.ast_ref.nodeData(rd.rhs).lhs;
+            return null;
+        }
         if (self.ast_ref.nodeTag(p) != .identifier) return null;
         const bd = self.ast_ref.nodeData(p);
         if (bd.rhs == .none or self.ast_ref.nodeTag(bd.rhs) != .ts_type_annotation) return null;
@@ -5039,7 +5105,14 @@ pub const Checker = struct {
             const tname = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
             for (names, 0..) |k, i| {
                 if (std.mem.eql(u8, k, tname)) {
-                    if (bindings[i].eq(TypeId.none)) bindings[i] = arg_ty;
+                    // any-wins: if any inference candidate for this type
+                    // parameter is `any`, the inferred type is `any` (TS
+                    // semantics).  Otherwise first-write-wins.
+                    if (tymod.isAny(&self.store, arg_ty)) {
+                        bindings[i] = tymod.ID_ANY;
+                    } else if (bindings[i].eq(TypeId.none)) {
+                        bindings[i] = arg_ty;
+                    }
                     return;
                 }
             }

@@ -324,6 +324,18 @@ pub export fn ez_type_sig_rest_index(h: usize, type_id: u32, sig_idx: u32) callc
     return s.rest_param_index;
 }
 
+/// Instantiated type of parameter `param_idx` for the GENERIC call at AST node
+/// `call_node_idx` — the checker infers the callee's type args from the argument
+/// types (any-wins, rest-spreading) and substitutes them into the param
+/// annotation.  Returns 0xFFFFFFFF when the call isn't a resolvable generic call
+/// (caller falls back to the un-instantiated signature param type).
+pub export fn ez_type_call_param_type(h: usize, call_node_idx: u32, param_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    if (call_node_idx >= ctx.ast.nodes.len) return NO_TYPE;
+    const t = ctx.checker.inferGenericParamType(@enumFromInt(call_node_idx), param_idx) orelse return NO_TYPE;
+    return t.toInt();
+}
+
 // ── Object properties ───────────────────────────────────────────────────────
 //
 // Named members of an object/class type, backing `type.getProperty(name)` and
@@ -507,4 +519,34 @@ test "type_ffi: Promise<T> type ref (name + type arg)" {
     try std.testing.expect(ez_type_type_arg_count(h, ret) >= 1);
     // The awaited type arg is string (flags 4).
     try std.testing.expectEqual(@as(u32, 4), ez_type_flags(h, ez_type_type_arg(h, ret, 0)));
+}
+
+test "type_ffi: generic param instantiation (any-wins + rest spread)" {
+    // Generic rest param: foo<E extends string[]>(...p: E). With an `any` in the
+    // args, any-wins infers E=any, so the instantiated param type is `any`.
+    const src = "declare function foo<E extends string[]>(...p: E): void; foo('a', 1 as any);";
+    const h = ez_type_open(src.ptr, @intCast(src.len), @intFromEnum(Language.ts), 1);
+    try std.testing.expect(h != 0);
+    defer ez_type_close(h);
+    const ctx = ctxFrom(h).?;
+    const tags = ctx.ast.nodes.items(.tag);
+    var call_idx: u32 = NO_TYPE;
+    for (tags, 0..) |tag, i| {
+        if (tag == .call_expr) { call_idx = @intCast(i); break; }
+    }
+    try std.testing.expect(call_idx != NO_TYPE);
+    const pt = ez_type_call_param_type(h, call_idx, 0);
+    try std.testing.expect(pt != NO_TYPE);
+    try std.testing.expectEqual(@as(u32, 1), ez_type_flags(h, pt)); // any
+
+    // Non-generic call → no instantiation (NO_TYPE).
+    const src2 = "function g(x: number) {} g(1);";
+    const h2 = ez_type_open(src2.ptr, @intCast(src2.len), @intFromEnum(Language.ts), 1);
+    defer ez_type_close(h2);
+    const ctx2 = ctxFrom(h2).?;
+    const tags2 = ctx2.ast.nodes.items(.tag);
+    var call2: u32 = NO_TYPE;
+    for (tags2, 0..) |tag, i| if (tag == .call_expr) { call2 = @intCast(i); break; };
+    try std.testing.expect(call2 != NO_TYPE);
+    try std.testing.expectEqual(@as(u32, NO_TYPE), ez_type_call_param_type(h2, call2, 0));
 }
