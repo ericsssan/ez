@@ -54,6 +54,7 @@ function binding() {
       ez_type_sig_flags:       { args: [H, U, U], returns: U },
       ez_type_sig_rest_index:  { args: [H, U, U], returns: U },
       ez_type_call_param_type: { args: [H, U, U], returns: U },
+      ez_type_assignable:      { args: [H, U, U], returns: FFIType.u8 },
       // Object properties (by-name lookup; name passed as utf8 ptr+len).
       ez_type_prop_count:         { args: [H, U], returns: U },
       ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
@@ -119,6 +120,8 @@ function _handleObj(b, h) {
       const r = b.sym.ez_type_call_param_type(h, callNodeIdx >>> 0, paramIdx >>> 0);
       return r === NO_TYPE ? null : r;
     },
+    // Three-valued assignability: 0=no, 1=yes, 2=unknown.
+    assignable(source, target) { return b.sym.ez_type_assignable(h, source >>> 0, target >>> 0); },
     // Object properties (by name).
     propCount(typeId) { return b.sym.ez_type_prop_count(h, typeId >>> 0); },
     propType(typeId, name) {

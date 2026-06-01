@@ -327,6 +327,15 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // safe: callers use it to read call signatures / properties, which we read
     // off the type directly.
     getApparentType(type) { return type; },
+    // Three-valued assignability mapped to the boolean rules expect, with
+    // `unknown` → true (assume assignable). The consumers (no-unsafe-type-
+    // assertion, related-getter-setter-pairs) treat assignable as "safe → no
+    // report", so true-on-uncertain is FP-safe (the rule only fires on a
+    // definite `no`). Synthetic / un-backed types → true (uncertain).
+    isTypeAssignableTo(source, target) {
+      if (!source || source.__ez_typeId == null || !target || target.__ez_typeId == null) return true;
+      return h.assignable(source.__ez_typeId, target.__ez_typeId) !== 0; // no(0)→false, yes(1)/unknown(2)→true
+    },
     // Resolve a call/new/tagged-template node to its callee's first call
     // signature (no overload resolution — first signature). no-unsafe-argument
     // nullThrows on a missing signature, so this must return one when the callee
