@@ -3,6 +3,7 @@
 // Forces inclusion of all pub export functions from cli/napi.zig.
 const napi = @import("cli/napi.zig");
 const ffi_dispatcher = @import("cli/ffi_dispatcher.zig");
+const type_ffi = @import("cli/type_ffi.zig");
 comptime {
     _ = napi.ez_parse;
     _ = napi.ez_lint;
@@ -11,4 +12,7 @@ comptime {
     // Bun-FFI selector dispatcher — used by js/ffi-dispatch.js to do
     // selector matching natively in one boundary crossing.
     _ = ffi_dispatcher.ez_ffi_dispatch;
+    // Persistent type-query handle — bun:ffi surface for the lazy type-aware
+    // JS bridge. Referencing one export forces the file's whole pub-export set.
+    _ = type_ffi.ez_type_open;
 }

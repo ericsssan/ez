@@ -43,6 +43,7 @@ pub const parallel_pool = @import("cli/parallel_pool.zig");
 pub const parallel_stage_pool = @import("cli/parallel_stage_pool.zig");
 pub const diagnostic_formatter = @import("cli/diagnostic_formatter.zig");
 pub const napi = @import("cli/napi.zig");
+pub const type_ffi = @import("cli/type_ffi.zig");
 
 test {
     _ = @import("es_parser");
@@ -51,5 +52,6 @@ test {
     _ = @import("cli/file_discovery.zig");
     _ = @import("cli/parallel.zig");
     _ = @import("cli/diagnostic_formatter.zig");
+    _ = @import("cli/type_ffi.zig");
     // napi.zig excluded from tests — NAPI extern symbols resolve at Node.js load time
 }

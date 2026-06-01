@@ -1,0 +1,95 @@
+"use strict";
+
+// bun:ffi binding for the persistent type-query handle (src/cli/type_ffi.zig).
+//
+// Backs the lazy type-aware bridge: open a handle for a source file, query node
+// types on demand, close it. The ts.Type facade (ts-services.js) sits on top of
+// these primitives. Degrades to null when bun:ffi or the native lib is absent —
+// callers fall back to the type-less light parserServices.
+
+const path = require("path");
+const fs = require("fs");
+
+const LANG = { js: 0, ts: 1, jsx: 2, tsx: 3, dts: 4 };
+const NO_TYPE = 0xffffffff;
+
+let _binding; // undefined = not tried, null = unavailable, object = ready
+
+function binding() {
+  if (_binding !== undefined) return _binding;
+  let dlopen, FFIType, ptr;
+  try {
+    ({ dlopen, FFIType, ptr } = require("bun:ffi"));
+  } catch {
+    _binding = null;
+    return null;
+  }
+  const candidates = [
+    path.join(__dirname, "../zig-out/lib/ez.node"),
+    path.join(__dirname, "../zig-out/lib/libez.dylib"),
+    path.join(__dirname, "../zig-out/lib/libez.so"),
+  ];
+  let dylib = null;
+  for (const c of candidates) if (fs.existsSync(c)) { dylib = c; break; }
+  if (!dylib) { _binding = null; return null; }
+
+  const U = FFIType.u32, H = FFIType.u64_fast;
+  let lib;
+  try {
+    lib = dlopen(dylib, {
+      ez_type_open:        { args: [FFIType.ptr, U, FFIType.u8, FFIType.u8], returns: H },
+      ez_type_close:       { args: [H], returns: FFIType.void },
+      ez_type_node_count:  { args: [H], returns: U },
+      ez_type_of_node:     { args: [H, U], returns: U },
+      ez_type_kind:        { args: [H, U], returns: FFIType.u8 },
+      ez_type_flags:       { args: [H, U], returns: U },
+      ez_type_array_elem:  { args: [H, U], returns: U },
+      ez_type_member_count:{ args: [H, U], returns: U },
+      ez_type_member_at:   { args: [H, U, U], returns: U },
+    });
+  } catch {
+    _binding = null;
+    return null;
+  }
+  _binding = { sym: lib.symbols, ptr };
+  return _binding;
+}
+
+function isAvailable() {
+  return binding() !== null;
+}
+
+/// Open a type-query handle for `source`. Returns a handle object with query
+/// methods, or null if the native bridge is unavailable. Caller MUST .close().
+function open(source, lang = "ts", isModule = true) {
+  const b = binding();
+  if (!b) return null;
+  const langCode = typeof lang === "number" ? lang : (LANG[lang] ?? LANG.ts);
+  const bytes = Buffer.from(source, "utf8");
+  const h = b.sym.ez_type_open(b.ptr(bytes), bytes.length, langCode, isModule ? 1 : 0);
+  if (!h || h === 0) return null;
+
+  return {
+    handle: h,
+    nodeCount() { return b.sym.ez_type_node_count(h); },
+    typeOfNode(nodeIdx) {
+      const tid = b.sym.ez_type_of_node(h, nodeIdx >>> 0);
+      return tid === NO_TYPE ? null : tid;
+    },
+    kind(typeId) { return b.sym.ez_type_kind(h, typeId >>> 0); },
+    flags(typeId) { return b.sym.ez_type_flags(h, typeId >>> 0); },
+    arrayElem(typeId) {
+      const e = b.sym.ez_type_array_elem(h, typeId >>> 0);
+      return e === NO_TYPE ? null : e;
+    },
+    members(typeId) {
+      const n = b.sym.ez_type_member_count(h, typeId >>> 0);
+      const out = new Array(n);
+      for (let i = 0; i < n; i++) out[i] = b.sym.ez_type_member_at(h, typeId >>> 0, i);
+      return out;
+    },
+    close() { b.sym.ez_type_close(h); },
+  };
+}
+
+module.exports = { open, isAvailable, LANG, NO_TYPE };

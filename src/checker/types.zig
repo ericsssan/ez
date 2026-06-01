@@ -188,6 +188,40 @@ pub const ID_ERROR: TypeId = @enumFromInt(12);
 
 pub const SINGLETON_COUNT: u32 = 13;
 
+/// Map an Ez `TypeKind` to the TypeScript `ts.TypeFlags` bitmask value the
+/// type-aware lint rules classify on (via `ts-api-utils` `isTypeFlagSet`).
+/// This is the core of the JS `ts.Type` facade — the facade reads this flag
+/// and the structural accessors instead of running tsc.  Values are the
+/// stable `ts.TypeFlags` constants.
+pub fn tsTypeFlags(kind: TypeKind) u32 {
+    return switch (kind) {
+        .any => 1, // Any
+        .unknown => 2, // Unknown
+        .string => 4, // String
+        .number => 8, // Number
+        .boolean => 16, // Boolean
+        .bigint => 64, // BigInt
+        .string_literal => 128, // StringLiteral
+        .number_literal => 256, // NumberLiteral
+        .boolean_literal => 512, // BooleanLiteral
+        .bigint_literal => 2048, // BigIntLiteral
+        .symbol => 4096, // ESSymbol
+        .void_t => 16384, // Void
+        .undefined_t => 32768, // Undefined
+        .null_t => 65536, // Null
+        .never => 131072, // Never
+        .type_param => 262144, // TypeParameter
+        // Object-ish kinds all carry the Object flag (Array/tuple/function are
+        // object types; type_ref resolves to a named object/class).
+        .object_t, .function_t, .array_t, .readonly_array_t, .tuple_t, .type_ref => 524288, // Object
+        .union_t => 1048576, // Union
+        .intersection_t => 2097152, // Intersection
+        .object_keyword => 67108864, // NonPrimitive ("object" keyword)
+        // TS's intrinsic error type behaves like `any` for rule purposes.
+        .error_t => 1, // Any
+    };
+}
+
 fn literalEql(a: LiteralValue, b: LiteralValue) bool {
     return switch (a) {
         .none => b == .none,
