@@ -163,6 +163,19 @@ pub fn build(b: *std.Build) void {
     const bench_stages_step = b.step("bench-parse-stages", "Per-stage pipeline timing breakdown");
     bench_stages_step.dependOn(&bench_stages_cmd.step);
 
+    // ── Eager type-inference probe (Path 1 transport decision) ──
+    const bench_te_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_type_eager.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_te_mod.addImport("ez", test_mod);
+    const bench_te = b.addExecutable(.{ .name = "bench_type_eager", .root_module = bench_te_mod });
+    const bench_te_cmd = b.addRunArtifact(bench_te);
+    bench_te_cmd.step.dependOn(b.getInstallStep());
+    const bench_te_step = b.step("bench-type-eager", "Eager whole-file typeOf() cost + serialization sizing");
+    bench_te_step.dependOn(&bench_te_cmd.step);
+
     // ── Events bench ─────────────────────────────────────────
     const bench_evt_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_events.zig"),

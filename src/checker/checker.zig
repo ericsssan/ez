@@ -46,6 +46,9 @@ pub const Checker = struct {
     node_types: []TypeId,
     /// sym → declared TypeId (lazy).
     sym_types: []TypeId,
+    /// identifier node index → resolved SymbolId (0xFFFFFFFF = none).  Built
+    /// once at init from the reference table so identifier inference is O(1).
+    node_to_sym: []u32,
     /// Set of type-name identifiers declared in the file (interfaces,
     /// type aliases, classes, enums, type params, imports).  A type
     /// reference to a name NOT in this set AND NOT a built-in resolves
@@ -57,6 +60,23 @@ pub const Checker = struct {
     /// for interfaces and classes — type aliases use the same mechanism
     /// when their RHS is a structural type.
     type_decl_nodes: std.StringHashMapUnmanaged(NodeIndex),
+
+    /// Flat index of every `ts_type_parameter` node in the file, collected
+    /// once during `buildKnownTypeNames`.  Generic-parameter resolution
+    /// (`resolveTypeParameterConstraint` / `findTypeParameterDecl`) iterates
+    /// this list — typically a few hundred entries — instead of re-scanning
+    /// all N AST nodes per type-reference, which was O(queries × nodes) on
+    /// generic-dense code.
+    type_param_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty,
+
+    /// Index: declaration name → `declarator` / `fn_decl`-family nodes that
+    /// bind it, in node order.  Built once during `buildKnownTypeNames`.
+    /// The by-name lookups on the call path (`findCalleeFnDecl`,
+    /// `functionTypeFromAllOverloads`, `typeOfNameByAstSearch`,
+    /// `constInitIsSymbolCall`) iterate the matching list instead of
+    /// re-scanning all N nodes per call — was O(calls × nodes) on
+    /// declaration-dense code.
+    value_decl_by_name: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(NodeIndex)) = .empty,
 
     /// Cache: type name → resolved TypeId for declared structural types.
     /// Populated lazily by `resolveDeclaredType`.  Recursion-safe via a
@@ -126,6 +146,23 @@ pub const Checker = struct {
         const sym_count = semantic.symbols.scope_ids.items.len;
         const sym_types = try gpa.alloc(TypeId, sym_count);
         @memset(sym_types, TypeId.none);
+        // Reverse index: identifier node → resolved SymbolId, built once from
+        // the reference table.  Replaces `symbolForIdentRef`'s O(refs) linear
+        // scan (run per identifier inference) with an O(1) lookup.  Sentinel
+        // 0xFFFFFFFF = no resolved symbol for that node.
+        const node_to_sym = try gpa.alloc(u32, node_count);
+        @memset(node_to_sym, 0xFFFFFFFF);
+        {
+            const refs = &semantic.references;
+            const ref_total = refs.count();
+            var ri: u32 = 0;
+            while (ri < ref_total) : (ri += 1) {
+                const rid = parser.reference.ReferenceId.fromInt(ri);
+                if (!refs.isResolved(rid)) continue;
+                const ni = refs.getNode(rid).toInt();
+                if (ni < node_count) node_to_sym[ni] = refs.getSymbol(rid).toInt();
+            }
+        }
         var self: Checker = .{
             .gpa = gpa,
             .ast_ref = ast_ref,
@@ -133,6 +170,7 @@ pub const Checker = struct {
             .store = try TypeStore.init(gpa),
             .node_types = node_types,
             .sym_types = sym_types,
+            .node_to_sym = node_to_sym,
             .known_type_names = .empty,
             .type_decl_nodes = .empty,
             .declared_type_cache = .empty,
@@ -149,6 +187,13 @@ pub const Checker = struct {
         self.store.deinit();
         self.gpa.free(self.node_types);
         self.gpa.free(self.sym_types);
+        self.gpa.free(self.node_to_sym);
+        self.type_param_nodes.deinit(self.gpa);
+        {
+            var vit = self.value_decl_by_name.valueIterator();
+            while (vit.next()) |list| list.deinit(self.gpa);
+            self.value_decl_by_name.deinit(self.gpa);
+        }
         self.known_type_names.deinit(self.gpa);
         self.enum_kinds.deinit(self.gpa);
         self.type_decl_nodes.deinit(self.gpa);
@@ -382,14 +427,12 @@ pub const Checker = struct {
     /// with the given name.  Returns the declared/inferred type, or null
     /// if not found.
     fn typeOfNameByAstSearch(self: *Checker, name: []const u8) ?TypeId {
-        const total: u32 = @intCast(self.ast_ref.nodes.len);
-        var i: u32 = 0;
         // For overloaded functions we prefer the implementation (fn_decl with
         // a body) over bare overload-signature declarations.  Track the first
         // declaration-without-body as a fallback.
         var fn_decl_fallback: NodeIndex = .none;
-        while (i < total) : (i += 1) {
-            const ni: NodeIndex = @enumFromInt(i);
+        const list = self.value_decl_by_name.get(name) orelse return null;
+        for (list.items) |ni| {
             const t = self.ast_ref.nodeTag(ni);
             switch (t) {
                 .declarator => {
@@ -1008,16 +1051,11 @@ pub const Checker = struct {
 
     /// Find the symbol bound to an identifier reference, if any.
     fn symbolForIdentRef(self: *Checker, ident_node: NodeIndex) ?symbol_mod.SymbolId {
-        const refs = &self.semantic.references;
-        const total = refs.count();
-        var i: u32 = 0;
-        while (i < total) : (i += 1) {
-            const rid = parser.reference.ReferenceId.fromInt(i);
-            if (refs.getNode(rid) != ident_node) continue;
-            if (!refs.isResolved(rid)) return null;
-            return refs.getSymbol(rid);
-        }
-        return null;
+        const ni = ident_node.toInt();
+        if (ni >= self.node_to_sym.len) return null;
+        const v = self.node_to_sym[ni];
+        if (v == 0xFFFFFFFF) return null;
+        return symbol_mod.SymbolId.fromInt(v);
     }
 
     fn declaredTypeForSymbol(self: *Checker, sym: symbol_mod.SymbolId) TypeId {
@@ -1486,10 +1524,8 @@ pub const Checker = struct {
     /// i.e., a declarator whose lhs is the identifier `name` and whose rhs
     /// is a call_expr whose callee is the global `Symbol` identifier.
     fn constInitIsSymbolCall(self: *Checker, name: []const u8) bool {
-        const total: u32 = @intCast(self.ast_ref.nodes.len);
-        var i: u32 = 0;
-        while (i < total) : (i += 1) {
-            const ni: NodeIndex = @enumFromInt(i);
+        const list = self.value_decl_by_name.get(name) orelse return false;
+        for (list.items) |ni| {
             if (self.ast_ref.nodeTag(ni) != .declarator) continue;
             const data = self.ast_ref.nodeData(ni);
             if (data.lhs == .none or data.rhs == .none) continue;
@@ -1655,13 +1691,11 @@ pub const Checker = struct {
     ///
     /// Returns null when no call-visible overloads are found.
     fn functionTypeFromAllOverloads(self: *Checker, fn_name: []const u8) ?TypeId {
-        const total: u32 = @intCast(self.ast_ref.nodes.len);
         var sig_buf: [16]tymod.Signature = undefined;
         var sig_count: usize = 0;
-        var i: u32 = 0;
-        while (i < total) : (i += 1) {
+        const list = self.value_decl_by_name.get(fn_name) orelse return null;
+        for (list.items) |ni| {
             if (sig_count >= sig_buf.len) break;
-            const ni: NodeIndex = @enumFromInt(i);
             const t = self.ast_ref.nodeTag(ni);
             switch (t) {
                 .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
@@ -3183,6 +3217,13 @@ pub const Checker = struct {
         try self.global_value_types.put(self.gpa, "self", tymod.ID_ANY);
     }
 
+    /// Append `node` to the value-declaration index under `name`.
+    fn appendValueDecl(self: *Checker, name: []const u8, node: NodeIndex) !void {
+        const gop = try self.value_decl_by_name.getOrPut(self.gpa, name);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.gpa, node);
+    }
+
     fn buildKnownTypeNames(self: *Checker) !void {
         const lib_types = [_][]const u8{
             "Array", "ReadonlyArray", "Promise", "Map", "Set", "WeakMap", "WeakSet",
@@ -3297,6 +3338,21 @@ pub const Checker = struct {
                 .ts_type_parameter => {
                     const tok = self.ast_ref.nodeMainToken(ni);
                     try self.known_type_names.put(self.gpa, self.ast_ref.tokenText(tok), {});
+                    try self.type_param_nodes.append(self.gpa, ni);
+                },
+                .declarator => {
+                    if (data.lhs != .none and self.ast_ref.nodeTag(data.lhs) == .identifier) {
+                        try self.appendValueDecl(self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.lhs)), ni);
+                    }
+                },
+                .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                .ts_declare_function => {
+                    if (data.lhs != .none) {
+                        const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(data.lhs));
+                        if (fd.name != .none) {
+                            try self.appendValueDecl(self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name)), ni);
+                        }
+                    }
                 },
                 .import_decl => {
                     const idata = self.ast_ref.extraData(ast.ImportData, @intFromEnum(data.lhs));
@@ -3556,16 +3612,12 @@ pub const Checker = struct {
         // candidates match, prefer the INNERMOST scope (matches TS's
         // shadowing rules) — track the best candidate's tp_pos and
         // override when we find a later one.
-        const total: u32 = @intCast(tree.nodes.len);
         const ty_main_tok = tree.nodeMainToken(ty_node);
         const ty_pos = tree.tokenStart(ty_main_tok);
         var best_tp_pos: u32 = 0;
         var best_constraint: NodeIndex = .none;
         var found_any = false;
-        var j: u32 = 0;
-        while (j < total) : (j += 1) {
-            const ni: NodeIndex = @enumFromInt(j);
-            if (tree.nodeTag(ni) != .ts_type_parameter) continue;
+        for (self.type_param_nodes.items) |ni| {
             if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
             const tp_pos = tree.tokenStart(tree.nodeMainToken(ni));
             if (tp_pos >= ty_pos) continue;
@@ -5088,10 +5140,8 @@ pub const Checker = struct {
         if (self.ast_ref.nodeTag(c) != .identifier) return null;
         const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(c));
         if (name.len == 0) return null;
-        const total: u32 = @intCast(self.ast_ref.nodes.len);
-        var i: u32 = 0;
-        while (i < total) : (i += 1) {
-            const ni: NodeIndex = @enumFromInt(i);
+        const list = self.value_decl_by_name.get(name) orelse return null;
+        for (list.items) |ni| {
             const t = self.ast_ref.nodeTag(ni);
             if (t == .fn_decl or t == .async_fn_decl or t == .ts_declare_function or
                 t == .generator_fn_decl or t == .async_generator_fn_decl)
@@ -5818,21 +5868,17 @@ pub const Checker = struct {
             anc_buf[nanc] = p;
             nanc += 1;
         }
-        const total: u32 = @intCast(tree.nodes.len);
         const ref_main_tok = tree.nodeMainToken(ref_node);
         const ref_pos = tree.tokenStart(ref_main_tok);
         // Pick the INNERMOST type parameter (highest tp_pos) — matches
         // TS's shadowing rules where an inner `<T>` shadows an outer.
         var best: NodeIndex = .none;
         var best_pos: u32 = 0;
-        var j: u32 = 0;
-        while (j < total) : (j += 1) {
-            const ni: NodeIndex = @enumFromInt(j);
-            if (tree.nodeTag(ni) != .ts_type_parameter) continue;
+        for (self.type_param_nodes.items) |ni| {
             if (!std.mem.eql(u8, tree.tokenText(tree.nodeMainToken(ni)), name)) continue;
             const tp_pos = tree.tokenStart(tree.nodeMainToken(ni));
             if (tp_pos >= ref_pos) continue;
-            const tp_parent = parents[j];
+            const tp_parent = parents[ni.toInt()];
             if (tp_parent == NONE) continue;
             var tp_p = tp_parent;
             var in_scope = false;

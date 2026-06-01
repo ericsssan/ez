@@ -188,9 +188,116 @@ pub const ID_ERROR: TypeId = @enumFromInt(12);
 
 pub const SINGLETON_COUNT: u32 = 13;
 
+fn literalEql(a: LiteralValue, b: LiteralValue) bool {
+    return switch (a) {
+        .none => b == .none,
+        .string => |s| b == .string and std.mem.eql(u8, s, b.string),
+        .number => |n| b == .number and n == b.number,
+        .bigint => |s| b == .bigint and std.mem.eql(u8, s, b.bigint),
+        .boolean => |x| b == .boolean and x == b.boolean,
+    };
+}
+
+/// Structural hash/eq context for type interning.  Two `Type`s are equal when
+/// their kind, literal value, name, and the *contents* behind their pool
+/// ranges (list_data / object_props / signatures) match — pool offsets differ
+/// between independently-built but structurally-identical types, so we compare
+/// dereferenced content, not the raw `{start,end}` ranges.  Children are
+/// already-interned canonical TypeIds, so child comparison is by value.
+pub const InternContext = struct {
+    store: *const TypeStore,
+
+    pub fn hash(self: InternContext, id: TypeId) u64 {
+        const t = &self.store.types.items[id.toInt()];
+        var h = std.hash.Wyhash.init(@intFromEnum(t.kind));
+        switch (t.literal_value) {
+            .none => {},
+            .string => |s| h.update(s),
+            .number => |n| h.update(std.mem.asBytes(&n)),
+            .bigint => |s| h.update(s),
+            .boolean => |b| {
+                const x: u8 = @intFromBool(b);
+                h.update(std.mem.asBytes(&x));
+            },
+        }
+        h.update(t.name);
+        for (self.store.idsOf(t.list_data)) |c| {
+            const v = c.toInt();
+            h.update(std.mem.asBytes(&v));
+        }
+        for (self.store.propsOf(t.object_props)) |p| {
+            h.update(p.name);
+            const v = p.type_id.toInt();
+            h.update(std.mem.asBytes(&v));
+            const flags = [_]u8{
+                @intFromBool(p.optional), @intFromBool(p.readonly),
+                @intFromBool(p.is_method), @intFromBool(p.is_fn_property),
+            };
+            h.update(&flags);
+        }
+        for (self.store.signaturesOf(t.signatures)) |s| {
+            for (self.store.signatureParamsOf(s)) |pp| {
+                const v = pp.toInt();
+                h.update(std.mem.asBytes(&v));
+            }
+            const rv = s.return_type.toInt();
+            h.update(std.mem.asBytes(&rv));
+            const flags = [_]u8{
+                @intFromBool(s.is_async), @intFromBool(s.is_generator), @intFromBool(s.is_assertion),
+            };
+            h.update(&flags);
+            h.update(std.mem.asBytes(&s.predicate_param_index));
+            const pt = s.predicate_target.toInt();
+            h.update(std.mem.asBytes(&pt));
+        }
+        return h.final();
+    }
+
+    pub fn eql(self: InternContext, a: TypeId, b: TypeId) bool {
+        if (a.eq(b)) return true;
+        const ta = &self.store.types.items[a.toInt()];
+        const tb = &self.store.types.items[b.toInt()];
+        if (ta.kind != tb.kind) return false;
+        if (!literalEql(ta.literal_value, tb.literal_value)) return false;
+        if (!std.mem.eql(u8, ta.name, tb.name)) return false;
+        const la = self.store.idsOf(ta.list_data);
+        const lb = self.store.idsOf(tb.list_data);
+        if (la.len != lb.len) return false;
+        for (la, lb) |x, y| if (!x.eq(y)) return false;
+        const pa = self.store.propsOf(ta.object_props);
+        const pb = self.store.propsOf(tb.object_props);
+        if (pa.len != pb.len) return false;
+        for (pa, pb) |x, y| {
+            if (!std.mem.eql(u8, x.name, y.name)) return false;
+            if (!x.type_id.eq(y.type_id)) return false;
+            if (x.optional != y.optional or x.readonly != y.readonly or
+                x.is_method != y.is_method or x.is_fn_property != y.is_fn_property) return false;
+        }
+        const sa = self.store.signaturesOf(ta.signatures);
+        const sb = self.store.signaturesOf(tb.signatures);
+        if (sa.len != sb.len) return false;
+        for (sa, sb) |x, y| {
+            if (!x.return_type.eq(y.return_type)) return false;
+            if (x.is_async != y.is_async or x.is_generator != y.is_generator or
+                x.is_assertion != y.is_assertion) return false;
+            if (x.predicate_param_index != y.predicate_param_index) return false;
+            if (!x.predicate_target.eq(y.predicate_target)) return false;
+            const xpa = self.store.signatureParamsOf(x);
+            const ypa = self.store.signatureParamsOf(y);
+            if (xpa.len != ypa.len) return false;
+            for (xpa, ypa) |m, nn| if (!m.eq(nn)) return false;
+        }
+        return true;
+    }
+};
+
 pub const TypeStore = struct {
     gpa: std.mem.Allocator,
     types: std.ArrayList(Type) = .empty,
+    /// Structural-interning index: dedups identical types so independently-
+    /// built-but-equal types share one slot.  Without it, generic/mapped-type
+    /// expansion produced hundreds of thousands of duplicate types.
+    intern: std.HashMapUnmanaged(TypeId, void, InternContext, std.hash_map.default_max_load_percentage) = .empty,
     /// Backing storage for TypeIdList payloads (union/intersection/tuple).
     type_id_pool: std.ArrayList(TypeId) = .empty,
     /// Backing storage for object_props.
@@ -216,11 +323,18 @@ pub const TypeStore = struct {
         try self.types.append(gpa, .{ .kind = .symbol });
         try self.types.append(gpa, .{ .kind = .object_keyword });
         try self.types.append(gpa, .{ .kind = .error_t });
+        // Register singletons so a stray `add(.{ .kind = .number })` etc.
+        // dedups to the canonical ID_* slot rather than creating a twin.
+        var i: u32 = 0;
+        while (i < SINGLETON_COUNT) : (i += 1) {
+            _ = try self.intern.getOrPutContext(gpa, .fromInt(i), .{ .store = &self });
+        }
         return self;
     }
 
     pub fn deinit(self: *TypeStore) void {
         self.types.deinit(self.gpa);
+        self.intern.deinit(self.gpa);
         self.type_id_pool.deinit(self.gpa);
         self.object_prop_pool.deinit(self.gpa);
         self.signature_pool.deinit(self.gpa);
@@ -232,8 +346,22 @@ pub const TypeStore = struct {
     }
 
     pub fn add(self: *TypeStore, ty: Type) !TypeId {
+        // Tentatively append so the intern context can hash/compare it, then
+        // dedup.  On a hit, discard the tentative type and reclaim the pool
+        // tails it just appended (append-then-add ⇒ those ranges are the tail).
         const id: TypeId = .fromInt(@intCast(self.types.items.len));
         try self.types.append(self.gpa, ty);
+        const gop = try self.intern.getOrPutContext(self.gpa, id, .{ .store = self });
+        if (gop.found_existing) {
+            self.types.items.len -= 1;
+            if (ty.list_data.end != 0 and ty.list_data.end == self.type_id_pool.items.len)
+                self.type_id_pool.items.len = ty.list_data.start;
+            if (ty.object_props.end != 0 and ty.object_props.end == self.object_prop_pool.items.len)
+                self.object_prop_pool.items.len = ty.object_props.start;
+            if (ty.signatures.end != 0 and ty.signatures.end == self.signature_pool.items.len)
+                self.signature_pool.items.len = ty.signatures.start;
+            return gop.key_ptr.*;
+        }
         return id;
     }
 
