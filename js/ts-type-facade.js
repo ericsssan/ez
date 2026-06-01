@@ -13,6 +13,14 @@
 
 const tf = require("./type-ffi");
 
+// Minimal synthetic ts.Declaration for param symbols (ts-api-utils reads
+// valueDeclaration.dotDotDotToken unguarded; kind 0 = Unknown so ts.isParameter
+// is false, dotDotDotToken undefined = not a rest parameter).
+const EMPTY_DECL = Object.freeze({ kind: 0, dotDotDotToken: undefined });
+// Minimal ts.TupleType.target for tuple/array types (spread-arg handling reads
+// `.target.combinedFlags`; 0 = no variable/rest tuple element).
+const TUPLE_TARGET = Object.freeze({ combinedFlags: 0, elementFlags: Object.freeze([]) });
+
 // ts.Type predicate methods (rules call type.isUnion() / isLiteral() / …).
 // Pure flag tests over the ts.TypeFlags bitmask.
 function defineTypePredicates(ty, flags) {
@@ -92,6 +100,13 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         return undefined;
       },
       getStringIndexType() { return undefined; },
+      // ts.TupleType.target — only meaningful for tuple/array kinds (spread-arg
+      // handling reads target.combinedFlags). Undefined elsewhere so
+      // isTypeReference-style checks are unaffected.
+      get target() {
+        const k = h.kind(typeId);
+        return (k === 23 /*tuple*/ || k === 21 /*array*/ || k === 22 /*readonly_array*/) ? TUPLE_TARGET : undefined;
+      },
       // Internal handle hooks (non-ts, for our own helpers).
       __ez_typeId: typeId,
       __ez_handle: h,
@@ -153,10 +168,32 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       getEscapedName() { return name; },
       getDeclarations() { return undefined; },
       getFlags() { return 0; },
-      valueDeclaration: undefined,
+      // A minimal synthetic declaration: ts-api-utils' isCallback reads
+      // `param.valueDeclaration.dotDotDotToken` unguarded for rest detection.
+      // kind 0 (Unknown) makes ts.isParameter() false; dotDotDotToken undefined
+      // means "not a rest parameter".
+      valueDeclaration: EMPTY_DECL,
       __ez_type: typeId,
       __ez_propFlags: propFlags || 0,
     };
+  }
+
+  // Contextual (assignment-target) type of an object-literal expression:
+  // `const x: T = {…}` / `x = {…}` and nested object-literal properties.
+  function contextualOfObject(obj) {
+    const p = obj && obj.parent;
+    if (!p) return undefined;
+    if (p.type === "VariableDeclarator" && p.id && p.id.typeAnnotation) return typeAt(p.id);
+    if (p.type === "AssignmentExpression" && p.right === obj) return typeAt(p.left);
+    // Nested: the object is a property value of an outer object that itself has
+    // a contextual type — recurse and project the matching property.
+    if (p.type === "Property" && p.parent && p.parent.type === "ObjectExpression") {
+      const outer = contextualOfObject(p.parent);
+      const k = p.key && (p.key.name != null ? p.key.name : p.key.value);
+      const s = outer && outer.getProperty && k != null ? outer.getProperty(String(k)) : undefined;
+      return s && s.__ez_type != null ? makeType(s.__ez_type) : undefined;
+    }
+    return undefined;
   }
 
   // Minimal synthetic ts.Type (no backing typeId) for derived/widened types.
@@ -224,7 +261,23 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       }
       return t;
     },
-    getContextualType() { return undefined; }, // contextual typing not modelled
+    // Contextual type of a value/key inside an object literal = the matching
+    // property of the literal's own contextual (assignment-target) type. This
+    // makes `const x: { p: unknown } = { p }` (p: any) safe — any→unknown — by
+    // resolving the receiver to `unknown` instead of falling back to the value's
+    // own `any` type. Other contextual positions (call args, returns) aren't
+    // modelled yet → undefined (callers fall back to getTypeAtLocation).
+    getContextualType(node) {
+      const est = node && (node._i != null ? node : node._estree);
+      if (!est) return undefined;
+      const prop = est.parent && est.parent.type === "Property" ? est.parent
+        : est.type === "Property" ? est : null;
+      if (!prop || !prop.parent || prop.parent.type !== "ObjectExpression") return undefined;
+      const objCtx = contextualOfObject(prop.parent);
+      const key = prop.key && (prop.key.name != null ? prop.key.name : prop.key.value);
+      const sym = objCtx && objCtx.getProperty && key != null ? objCtx.getProperty(String(key)) : undefined;
+      return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined;
+    },
     getSignaturesOfType(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
     // Symbol → its type (for getTypeOfSymbolAtLocation in no-unsafe-argument /
     // getTypeOfSymbol in no-for-in-array's length check).
@@ -240,12 +293,27 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // is callable. The node may be a synth ts-node (carries _estree).
     getResolvedSignature(callNode) {
       const est = callNode && (callNode._i != null ? callNode : callNode._estree);
-      if (!est) return undefined;
-      const callee = est.callee || est.tag; // Call/New.callee, TaggedTemplate.tag
-      if (!callee) return undefined;
-      const ct = typeAt(callee);
+      const callee = est && (est.callee || est.tag); // Call/New.callee, TaggedTemplate.tag
+      const ct = callee ? typeAt(callee) : undefined;
       const sigs = ct && ct.getCallSignatures ? ct.getCallSignatures() : [];
-      return sigs.length ? sigs[0] : undefined;
+      if (sigs.length) return sigs[0];
+      // Fallback: a permissive empty signature so callers that nullThrows on a
+      // missing resolved signature (no-unsafe-argument) don't crash. With no
+      // parameters, the rule finds nothing to check → FN, never FP.
+      return {
+        getReturnType() { return syntheticType(2 /*Unknown*/); },
+        getParameters() { return []; }, parameters: [], minArgumentCount: 0,
+        getTypeParameters() { return undefined; }, typeParameters: undefined,
+        getDeclaration() { return undefined; }, declaration: undefined,
+      };
+    },
+    // Type denoted by a TS type-annotation node. Resolved via the annotation's
+    // owner (the annotated identifier/declaration), whose binding carries the
+    // type. getContextualType calls this for var/param/property annotations.
+    getTypeFromTypeNode(typeNode) {
+      const est = typeNode && (typeNode._i != null ? typeNode : typeNode._estree);
+      const owner = est && est.parent;
+      return owner ? typeAt(owner) : undefined;
     },
     // Direct maps onto the signature/property surface.
     getReturnTypeOfSignature(sig) { return sig && sig.getReturnType ? sig.getReturnType() : undefined; },

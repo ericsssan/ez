@@ -27,11 +27,12 @@ const _TYPE_FACADE_RULES = new Set([
   // Unknown returned value -> discriminateAnyType=Safe -> no report; an Unknown
   // declared return -> matches the Any|Unknown early-return -> no report.
   "@typescript-eslint/no-unsafe-return",
-  // Fires when a DEFINITE-any argument is passed to a non-any parameter. Uses
-  // getResolvedSignature (resolve the call's callee -> first call signature ->
-  // param types). FP-safe: an Unknown argument -> not any -> no report; an
-  // Unknown/any param -> isUnsafeAssignment(any, unknown|any) is safe -> no report.
-  "@typescript-eslint/no-unsafe-argument",
+  // NOTE: no-unsafe-argument is intentionally NOT allowlisted — the facade audit
+  // found a real FP on generic rest params (`declare function f<E extends any[]>(
+  // ...params: E)`): the facade doesn't model rest-param-ness (Signature carries
+  // no per-param rest flag), so the rule mis-compares the spread. Re-add once
+  // rest params are modeled. The getResolvedSignature / getTypeFromTypeNode
+  // surface stays built (no-unsafe-return uses it); only this rule is off.
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading

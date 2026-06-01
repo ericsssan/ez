@@ -79,6 +79,17 @@ reports = runRule("no-unsafe-return", "function f(x: any): any { return x; }");
 assert(reports.length === 0, `must NOT fire returning any from :any (declared return is any); got ${reports.length}`);
 console.log("PASS: no false positive returning any from :any");
 
+// no-unsafe-assignment contextual: assigning any to an object-literal property
+// whose contextual (target) type is `unknown` is SAFE (any→unknown). The
+// receiver type comes from getContextualType (the literal's assignment target),
+// not the value's own `any` type — without that this false-positives.
+reports = runRule("no-unsafe-assignment", "type Foo = { bar: unknown };\nconst bar: any = 1;\nconst foo: Foo = { bar };");
+assert(reports.length === 0, `must NOT fire assigning any to an unknown-typed property; got ${reports.length}`);
+console.log("PASS: no false positive on any -> unknown object-literal property");
+reports = runRule("no-unsafe-assignment", "type Foo = { bar: number };\nconst bar: any = 1;\nconst foo: Foo = { bar };");
+assert(reports.length >= 1, `should fire assigning any to a number-typed property; got ${reports.length}`);
+console.log(`PASS: no-unsafe-assignment fired (${reports.length}) on any -> number object-literal property`);
+
 // no-unsafe-return async/Promise: the checker wraps async returns as Promise<T>;
 // getAwaitedType must unwrap it. Returning any to :Promise<string> fires (awaited
 // return is string); returning any to :Promise<any> must NOT fire (awaited is any
@@ -90,18 +101,8 @@ reports = runRule("no-unsafe-return", "async function f(x: any): Promise<any> { 
 assert(reports.length === 0, `must NOT fire returning any from :Promise<any> (awaited is any); got ${reports.length}`);
 console.log("PASS: no false positive returning any from :Promise<any> (awaited unwrap)");
 
-// no-unsafe-argument: passing a DEFINITE-any argument to a non-any parameter is
-// unsafe. Exercises getResolvedSignature (resolve call -> callee signature ->
-// param types) end-to-end.
-reports = runRule("no-unsafe-argument", "function f(a: number) {} function g(x: any) { f(x); }");
-assert(reports.length >= 1, `no-unsafe-argument should fire passing any to a number param; got ${reports.length}`);
-console.log(`PASS: no-unsafe-argument fired (${reports.length}) passing any to a number param`);
-reports = runRule("no-unsafe-argument", "function f(a: number) {} f(1);");
-assert(reports.length === 0, `must NOT fire passing number to a number param; got ${reports.length}`);
-console.log("PASS: no false positive passing number to a number param");
-reports = runRule("no-unsafe-argument", "function f(a: any) {} function g(x: any) { f(x); }");
-assert(reports.length === 0, `must NOT fire passing any to an any param; got ${reports.length}`);
-console.log("PASS: no false positive passing any to an any param");
+// (no-unsafe-argument is intentionally NOT allowlisted — see eslint-runner.js:
+// real FP on generic rest params until rest-param modeling lands.)
 
 // restrict-plus-operands must at least not CRASH and not false-positive on
 // number+number (its boolean/union categorization needs more facade surface —
