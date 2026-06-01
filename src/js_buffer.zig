@@ -1338,6 +1338,12 @@ pub const HeaderInfo = struct {
     comment_ends_offset: u32 = 0,
     comment_kinds_offset: u32 = 0,
     tok_ends_offset: u32 = 0,
+    // Override for the header's tok_starts_offset (the token starts JS reads as
+    // _tokStarts).  When non-zero, writeHeader points the header here instead of
+    // at tree.tokens.items(.start).  parseImpl keeps the MultiArrayList token
+    // starts in BYTE form (for type-checker reuse) and converts UTF-16 into a
+    // separate array, so it passes that array's offset here.  0 = use the tree.
+    tok_starts_offset: u32 = 0,
     node_start_pos_offset: u32 = 0,
     node_end_pos_offset: u32 = 0,
     line_starts_offset: u32 = 0,
@@ -1373,7 +1379,7 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .data_offset = if (n > 0) ptrOffset(buf, tree.nodes.items(.data).ptr) else 0,
         .extra_data_offset = if (e > 0) ptrOffset(buf, tree.extra_data.ptr) else 0,
         .tok_tags_offset = if (t > 0) ptrOffset(buf, tree.tokens.items(.tag).ptr) else 0,
-        .tok_starts_offset = if (t > 0) ptrOffset(buf, tree.tokens.items(.start).ptr) else 0,
+        .tok_starts_offset = if (info.tok_starts_offset != 0) info.tok_starts_offset else (if (t > 0) ptrOffset(buf, tree.tokens.items(.start).ptr) else 0),
         .source_offset = info.source_start,
         .total_used = info.total_used,
         .flags = info.flags,
@@ -1470,10 +1476,28 @@ pub fn convertSpansToUtf16(source: []const u8, tok_starts: []u32) u32 {
 /// All arrays must be sorted. Avoids re-scanning the source for each array.
 /// Returns the total UTF-16 length of the source.
 pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
-    // All-ASCII fast path: byte offsets already equal UTF-16 offsets — the
-    // arrays need no rewrite and the total length is just source.len.  One
-    // SIMD scan decides it.  Typical JS/TS source is pure ASCII.
-    if (isAllAscii(source)) return @intCast(source.len);
+    return convertMultiSpansImpl(false, source, arrays, arrays);
+}
+
+/// Out-of-place variant: reads byte offsets from `srcs[a]`, writes the UTF-16
+/// offsets to `dsts[a]` (parallel arrays, equal lengths).  Pass distinct dst
+/// arrays to PRESERVE the byte inputs — the type-checker reuse path keeps token
+/// starts in byte form (the checker indexes the byte source) while the JS side
+/// consumes the UTF-16 form.  For ordinary in-place conversion use the wrapper
+/// above.
+pub fn convertMultiSpansToUtf16Out(source: []const u8, srcs: []const []u32, dsts: []const []u32) u32 {
+    return convertMultiSpansImpl(true, source, srcs, dsts);
+}
+
+fn convertMultiSpansImpl(comptime out: bool, source: []const u8, srcs: []const []u32, dsts: []const []u32) u32 {
+    // All-ASCII fast path: byte offsets already equal UTF-16 offsets — no
+    // rewrite needed and the total length is just source.len.  One SIMD scan
+    // decides it.  Typical JS/TS source is pure ASCII.  Out-of-place callers
+    // still need the byte values copied into their dst arrays.
+    if (isAllAscii(source)) {
+        if (out) for (0..@min(srcs.len, dsts.len)) |a| @memcpy(dsts[a], srcs[a]);
+        return @intCast(source.len);
+    }
 
     // ASCII-run algorithm: use SIMD to find the longest contiguous ASCII run
     // starting at each block, then process all cursors in that run at once.
@@ -1486,9 +1510,9 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
     // For real-world JS/TS (e.g. angular-core.mjs: 1.58 MB, 1510 non-ASCII
     // runs), this reduces ASCII cursor-loop setups from ~98 K to ~1.5 K.
     const MAX_ARRAYS = 16;
-    std.debug.assert(arrays.len <= MAX_ARRAYS);
+    std.debug.assert(srcs.len <= MAX_ARRAYS and dsts.len == srcs.len);
     var cursors: [MAX_ARRAYS]usize = @splat(0);
-    const n = @min(arrays.len, MAX_ARRAYS);
+    const n = @min(srcs.len, MAX_ARRAYS);
     const src_len: u32 = @intCast(source.len);
 
     var byte_pos: u32 = 0;
@@ -1508,10 +1532,14 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
             std.debug.assert(byte_pos >= utf16_pos);
             const diff = byte_pos - utf16_pos;
             if (diff == 0) {
-                // utf16 == byte: no rewrite, just skip cursors past the run.
+                // utf16 == byte: in-place needs no rewrite, just skip cursors
+                // past the run; out-of-place copies the byte values into dst.
                 for (0..n) |a| {
+                    const sa = srcs[a];
                     var c = cursors[a];
-                    while (c < arrays[a].len and arrays[a][c] < run_end) c += 1;
+                    while (c < sa.len and sa[c] < run_end) : (c += 1) {
+                        if (out) dsts[a][c] = sa[c];
+                    }
                     cursors[a] = c;
                 }
             } else {
@@ -1520,15 +1548,16 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
                 // Sorted invariant: arr[c+3] < run_end implies arr[c..c+4] all in run.
                 const diff_splat: @Vector(4, u32) = @splat(diff);
                 for (0..n) |a| {
-                    const arr = arrays[a];
+                    const sa = srcs[a];
+                    const da = dsts[a];
                     var c = cursors[a];
-                    while (c + 4 <= arr.len and arr[c + 3] < run_end) {
-                        const v: @Vector(4, u32) = arr[c..][0..4].*;
-                        arr[c..][0..4].* = v - diff_splat;
+                    while (c + 4 <= sa.len and sa[c + 3] < run_end) {
+                        const v: @Vector(4, u32) = sa[c..][0..4].*;
+                        da[c..][0..4].* = v - diff_splat;
                         c += 4;
                     }
-                    while (c < arr.len and arr[c] < run_end) {
-                        arr[c] -= diff;
+                    while (c < sa.len and sa[c] < run_end) {
+                        da[c] = sa[c] - diff;
                         c += 1;
                     }
                     cursors[a] = c;
@@ -1541,8 +1570,8 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
             const block_end = byte_pos + 16;
             while (byte_pos < block_end and byte_pos < src_len) {
                 for (0..n) |a| {
-                    while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] == byte_pos) {
-                        arrays[a][cursors[a]] = utf16_pos;
+                    while (cursors[a] < srcs[a].len and srcs[a][cursors[a]] == byte_pos) {
+                        dsts[a][cursors[a]] = utf16_pos;
                         cursors[a] += 1;
                     }
                 }
@@ -1554,8 +1583,8 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
     // Tail: remaining bytes after the last full 16-byte block.
     while (byte_pos < src_len) {
         for (0..n) |a| {
-            while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] == byte_pos) {
-                arrays[a][cursors[a]] = utf16_pos;
+            while (cursors[a] < srcs[a].len and srcs[a][cursors[a]] == byte_pos) {
+                dsts[a][cursors[a]] = utf16_pos;
                 cursors[a] += 1;
             }
         }
@@ -1564,8 +1593,8 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
 
     // Flush any cursors pointing past end-of-source.
     for (0..n) |a| {
-        while (cursors[a] < arrays[a].len) {
-            arrays[a][cursors[a]] = utf16_pos;
+        while (cursors[a] < srcs[a].len) {
+            dsts[a][cursors[a]] = utf16_pos;
             cursors[a] += 1;
         }
     }
@@ -1576,7 +1605,7 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
 /// Fast SIMD scan: true if every byte in `source` is < 0x80.
 /// Used as fast-path gate for UTF-16 conversion (ASCII = byte offsets
 /// already correct; skip entire per-token rewrite pass).
-fn isAllAscii(source: []const u8) bool {
+pub fn isAllAscii(source: []const u8) bool {
     var i: usize = 0;
     const V = @Vector(16, u8);
     while (i + 16 <= source.len) : (i += 16) {

@@ -58,9 +58,21 @@ threadlocal var tl_last_ast: ?Ast = null;
 threadlocal var tl_last_sem: ?semantic.SemanticResult = null;
 threadlocal var tl_tagged_gen: u32 = 0;
 
+/// Invalidate any prior reuse stash on this thread.  Called by napi.parseImpl
+/// at the start of a reuse-eligible parse: if that parse returns early (error /
+/// unsupported path) without reaching `stashLastParse`, a later `openReuse`
+/// must fall back to re-parsing rather than returning the previous file's stash.
+pub fn invalidateReuseStash() void {
+    tl_last_ast = null;
+}
+
 /// Stash the latest parse for reuse.  Called by napi.parseImpl with the live
-/// `tree` (after `tree.parents` is set) and `sem`.  Copies the structs; their
-/// backing arrays are NOT copied (they stay in the buffer / sem arena).
+/// `tree` (after `tree.parents` is set) and `sem`.  Zero-copy: the AST/sem
+/// structs are shallow-copied and their backing arrays — including the token
+/// starts, which parseImpl keeps in BYTE form (the UTF-16 conversion writes a
+/// separate array for the JS side) so the checker can index the byte source —
+/// stay in the shared buffer / sem arena, valid until the next parse reuses the
+/// buffer.  The generation guard (`tl_tagged_gen`) rejects a stale stash.
 pub fn stashLastParse(ast: *const Ast, sem: *const semantic.SemanticResult) void {
     tl_last_ast = ast.*;
     tl_last_sem = sem.*;

@@ -323,6 +323,9 @@ fn parseImpl(
     const bom = js_buffer.stripBom(raw_source);
     const source = bom.text;
     const language: Language = @enumFromInt(lang);
+    // Only TS-family files can have type-aware rules, so only they pay the
+    // stash (tokens clone) that powers facade parse-reuse. JS parses skip it.
+    const stash_for_types = language == .ts or language == .tsx or language == .dts;
 
     // Streaming-sem decision: spawn the sem worker BEFORE parse so it can
     // consume events as the parser publishes them. Bump partition: main
@@ -614,6 +617,12 @@ fn parseImpl(
 
     var semantic_data_offset: u32 = 0;
     const stream_sem_handled: bool = use_stream_sem and stream_sem_thread != null;
+
+    // Invalidate any prior facade reuse stash now, so an early return below
+    // can't leave the previous file's stash live for a later openReuse. The
+    // actual stash happens at the end (stashLastParse); token starts are kept
+    // in byte form (the UTF-16 conversion writes a separate array), so no clone.
+    if (stash_for_types) type_ffi.invalidateReuseStash();
     // Worker was already given parents + signaled (above). Don't join yet —
     // main does UTF-16/spans/header next, then joins.
 
@@ -670,8 +679,10 @@ fn parseImpl(
                         if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
                             semantic_data_offset = off;
                         } else |_| {}
-                        tree.parents = traversal.parents; // for facade parse-reuse (see sequential path)
-                        type_ffi.stashLastParse(&tree, &sem);
+                        if (stash_for_types) {
+                            tree.parents = traversal.parents; // for facade parse-reuse (see sequential path)
+                            type_ffi.stashLastParse(&tree, &sem);
+                        }
                     } else |_| {}
                 } else |_| {}
             } else |_| {
@@ -698,8 +709,10 @@ fn parseImpl(
             // Stash for facade parse-reuse. The checker reads `ast.parents`;
             // set it (parseImpl otherwise leaves it empty). Valid until the
             // next parse on this thread (sem arena + buffer).
-            tree.parents = traversal.parents;
-            type_ffi.stashLastParse(&tree, &sem);
+            if (stash_for_types) {
+                tree.parents = traversal.parents;
+                type_ffi.stashLastParse(&tree, &sem);
+            }
         } else |_| {}
     }
 
@@ -823,11 +836,23 @@ fn parseImpl(
         node_name_ends_offset   = js_buffer.ptrOffsetPub(buf_ptr, node_name_ends.ptr);
     }
 
-    // Convert ALL byte-offset arrays to UTF-16 in a single source scan.
-    // node_name_starts/ends are intentionally excluded (see comment above).
-    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32 };
-    const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
-    // After this: tok_starts, tok_ends are now UTF-16 code-unit positions.
+    // Convert byte-offset arrays to UTF-16 in a single source scan.  tok_starts
+    // is converted OUT-OF-PLACE into tok_starts_u16: the MultiArrayList token
+    // starts stay BYTE so the type-checker reuse path (it indexes the byte
+    // source for token text) reads correct positions, while the JS-facing
+    // consumers below (node_name, tok_cmt_merge, node_pos / buildNodeSpans) use
+    // the UTF-16 form.  For ASCII source byte == UTF-16, so tok_starts_u16
+    // aliases tok_starts — no extra array, no conversion.  node_name_starts/ends
+    // are intentionally excluded (see comment above).
+    const src_ascii = js_buffer.isAllAscii(source);
+    const tok_starts_u16: []u32 = if (src_ascii) tok_starts else try alloc.alloc(u32, tok_starts.len);
+    const utf16_len = blk16: {
+        if (src_ascii) break :blk16 @as(u32, @intCast(source.len));
+        var srcs = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32 };
+        var dsts = [_][]u32{ tok_starts_u16, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32 };
+        break :blk16 js_buffer.convertMultiSpansToUtf16Out(source, &srcs, &dsts);
+    };
+    // After this: tok_starts_u16, tok_ends are UTF-16; tok_starts stays BYTE.
     // Post-pass: fill node_name_starts/ends from converted tok_starts/tok_ends.
     // node_name_starts[i] holds the private flag set pre-conversion:
     //   0 = not private, 1 = two-token private, 2 = single-token private.
@@ -838,15 +863,15 @@ fn parseImpl(
                 const mt = node_main_toks[i];
                 const flag = node_name_starts[i];
                 if (flag == 0) {
-                    node_name_starts[i] = tok_starts[mt];
+                    node_name_starts[i] = tok_starts_u16[mt];
                     node_name_ends[i] = tok_ends[mt];
                 } else if (flag == 1) {
                     // Two-token private: '#' tok + name tok (mt+1).
-                    node_name_starts[i] = tok_starts[mt] + 1;
+                    node_name_starts[i] = tok_starts_u16[mt] + 1;
                     node_name_ends[i] = if (mt + 1 < tok_starts.len) tok_ends[mt + 1] else tok_ends[mt];
                 } else {
                     // Single-token private: '#name' all in mt.
-                    node_name_starts[i] = tok_starts[mt] + 1;
+                    node_name_starts[i] = tok_starts_u16[mt] + 1;
                     node_name_ends[i] = tok_ends[mt];
                 }
             }
@@ -856,7 +881,14 @@ fn parseImpl(
     // Signal trav_thread that tok_starts/tok_ends are now in UTF-16 — it will
     // run buildNodeSpans now (~3.2 ms) parallel with main's tok_cmt_merge +
     // writeCfgGraph + sem_join wait, removing node_spans from main's tail.
-    if (use_stream_sem and stream_sem_thread != null) s_utf16_done.store(true, .release);
+    // Hand it the UTF-16 token starts: buildNodeSpans needs UTF-16, but the
+    // job was spawned with the byte MultiArrayList starts (preserved for reuse).
+    // The release store below publishes this write to the trav thread's acquire
+    // (it reads tok_starts only inside buildNodeSpans, after the acquire).
+    if (use_stream_sem and stream_sem_thread != null) {
+        trav_job.tok_starts = tok_starts_u16;
+        s_utf16_done.store(true, .release);
+    }
 
     // Build the token+comment merge order BEFORE joining the traversal thread.
     // The merge depends only on token starts and comment starts (parse outputs),
@@ -878,12 +910,13 @@ fn parseImpl(
         var ci: u32 = 0;
         while (ci < comment_count) : (ci += 1) {
             const c_start = cs[ci];
-            // Binary-search the boundary in tok_starts[ti..] where tok_starts[k] > c_start.
+            // Binary-search the boundary in tok_starts_u16[ti..] where it > c_start.
+            // c_start (cs) is UTF-16, so compare against the UTF-16 token starts.
             var lo: u32 = ti;
             var hi: u32 = tok_count_u32;
             while (lo < hi) {
                 const mid = lo + (hi - lo) / 2;
-                if (tok_starts[mid] <= c_start) lo = mid + 1 else hi = mid;
+                if (tok_starts_u16[mid] <= c_start) lo = mid + 1 else hi = mid;
             }
             // SIMD-fill merged[mi..mi+(lo-ti)] with [ti, ti+1, ...].
             const run = lo - ti;
@@ -963,7 +996,7 @@ fn parseImpl(
         alloc,
         tree.nodes.items(.tag),
         tokens.slice().items(.tag),
-        tok_starts,
+        tok_starts_u16,
         tok_ends,
         traversal.pre_order,
         tree.node_end_toks,
@@ -981,7 +1014,7 @@ fn parseImpl(
             const nt = node_tag_items[i];
             const nd = node_data_items[i];
             if (nt == .jsx_text_node) {
-                node_pos.ends[i] = tok_starts[nd.lhs.toInt()];
+                node_pos.ends[i] = tok_starts_u16[nd.lhs.toInt()];
                 needs_resort = true;
             }
         }
@@ -1041,6 +1074,9 @@ fn parseImpl(
         .comment_ends_offset = comment_ends_offset,
         .comment_kinds_offset = comment_kinds_offset,
         .tok_ends_offset = tok_ends_offset,
+        // JS reads token starts (_tokStarts) from here.  tree.tokens.items(.start)
+        // is kept BYTE for type-checker reuse; point JS at the UTF-16 array.
+        .tok_starts_offset = if (tokens.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_starts_u16.ptr) else 0,
         .node_start_pos_offset = node_start_pos_offset,
         .node_end_pos_offset = node_end_pos_offset,
         .line_starts_offset = line_starts_offset,
@@ -1088,7 +1124,7 @@ fn parseImpl(
             sd_off_addr.* = real_off;
             // Stash the streamed parse for facade reuse (kills the double-parse
             // for >=100KB files too). Worker used `stream_parents_for_worker`.
-            if (stream_sem_ctx.sem_value != null) {
+            if (stash_for_types and stream_sem_ctx.sem_value != null) {
                 tree.parents = stream_parents_for_worker;
                 type_ffi.stashLastParse(&tree, &stream_sem_ctx.sem_value.?);
             }
