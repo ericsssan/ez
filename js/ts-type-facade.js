@@ -13,6 +13,22 @@
 
 const tf = require("./type-ffi");
 
+// ts.Type predicate methods (rules call type.isUnion() / isLiteral() / …).
+// Pure flag tests over the ts.TypeFlags bitmask.
+function defineTypePredicates(ty, flags) {
+  ty.isUnion = () => (flags & 1048576) !== 0;
+  ty.isIntersection = () => (flags & 2097152) !== 0;
+  ty.isUnionOrIntersection = () => (flags & 3145728) !== 0;
+  ty.isLiteral = () => (flags & 2432) !== 0; // String|Number|BigInt literal
+  ty.isStringLiteral = () => (flags & 128) !== 0;
+  ty.isNumberLiteral = () => (flags & 256) !== 0;
+  ty.isTypeParameter = () => (flags & 262144) !== 0;
+  ty.isClass = () => false;
+  ty.isClassOrInterface = () => false;
+  ty.isIndexType = () => false;
+  return ty;
+}
+
 function makeFacade(source, lang = "ts", isModule = true) {
   const h = tf.open(source, lang, isModule);
   if (!h) return null;
@@ -42,6 +58,7 @@ function makeFacade(source, lang = "ts", isModule = true) {
       __ez_typeId: typeId,
       __ez_handle: h,
     };
+    defineTypePredicates(ty, flags);
     typeCache.set(typeId, ty);
     return ty;
   }
@@ -52,17 +69,55 @@ function makeFacade(source, lang = "ts", isModule = true) {
     return makeType(tid);
   }
 
+  // Minimal synthetic ts.Type (no backing typeId) for derived/widened types.
+  function syntheticType(flags) {
+    return defineTypePredicates(
+      { flags, getFlags() { return flags; }, types: undefined, symbol: undefined, getSymbol() { return undefined; } },
+      flags,
+    );
+  }
+  // ts.TypeFlags: literal → its base primitive.
+  const LITERAL_BASE = { 128: 4 /*String*/, 256: 8 /*Number*/, 512: 16 /*Boolean*/, 2048: 64 /*BigInt*/ };
+
   const checker = {
     getTypeAtLocation: typeAt,
-    // Constrained type ≈ the type itself for our model (no separate type-param
-    // constraint surfacing here yet); rules call this via getConstrainedTypeAtLocation.
-    getTypeAtLocationConstrained: typeAt,
+    // Widen a literal type to its base primitive (`1` → number, `'a'` → string),
+    // as tsc's getBaseTypeOfLiteralType does. Rules (restrict-plus-operands,
+    // restrict-template-expressions, …) call this before NumberLike/StringLike
+    // classification; without it a literal isn't recognized as its primitive.
+    getBaseTypeOfLiteralType(type) {
+      if (!type) return type;
+      const base = LITERAL_BASE[type.getFlags()];
+      return base != null ? syntheticType(base) : type;
+    },
+    // No separate constraint modelling yet — returning undefined makes
+    // getConstrainedTypeAtLocation fall back to the node's own type.
+    getBaseConstraintOfType() { return undefined; },
+    // Element type(s) of an array reference; [] otherwise. type-utils reads
+    // getTypeArguments(arrayType)[0] in a couple of any-detection paths.
+    getTypeArguments(type) {
+      if (!type || type.__ez_typeId == null) return [];
+      const elem = h.arrayElem(type.__ez_typeId);
+      return elem != null ? [makeType(elem)] : [];
+    },
     typeToString() { return ""; }, // printer not modelled yet
   };
 
+  const program = {
+    getTypeChecker() { return checker; },
+    // Several rules read compiler options in create() (e.g. no-unsafe-member-access
+    // checks `noImplicitThis`). We don't model a tsconfig — an empty options object
+    // lets those rules proceed; absent flags default falsy, matching "not set".
+    getCompilerOptions() { return {}; },
+    getSourceFiles() { return []; },
+  };
+
   return {
-    program: { getTypeChecker() { return checker; } },
+    program,
     checker,
+    // Services-level accessor — what rules call via
+    // `getParserServices(context).getTypeAtLocation(node)`.
+    getTypeAtLocation: typeAt,
     close() { h.close(); },
     __handle: h,
   };

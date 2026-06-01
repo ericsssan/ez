@@ -3,6 +3,26 @@
 const { nodeView, _nodeViewRaw, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
 const { RuleMetadataIndex, DEFAULT_STRATEGY } = require("./rule-metadata");
 
+// Rules verified to work with the native type facade (js/ts-type-facade.js) at
+// its current surface. ONLY these get a real `parserServices.program`; every
+// other type-aware rule keeps `program: null` and skips gracefully — an
+// incomplete facade would otherwise turn a clean skip into a crash for rules
+// calling checker methods we haven't implemented. Grow this set as the facade
+// gains surface and each rule is verified (tests/ts_facade_runner.js).
+const _TYPE_FACADE_RULES = new Set([
+  "@typescript-eslint/no-unsafe-member-access",
+  "@typescript-eslint/no-unsafe-assignment",
+]);
+// Rule id whose create() is currently executing. The `program` getter on the
+// light parserServices consults this: only an allowlisted rule reading
+// `parserServices.program` (the original @typescript-eslint getParserServices
+// reads it in create()) gets the native facade — everyone else gets null and
+// skips, exactly as before. Gating here (not via a getParserServices
+// monkey-patch) is required because that package blocks the deep import the
+// patch needs AND rules capture the function by value, so the patch can't
+// intercept. Set around each rule's create() by the runner.
+let _activeRuleId = null;
+
 // Monkey-patch @typescript-eslint/utils' getParserServices so rules that gate
 // on parserServices.esTreeNodeToTSNodeMap (TS-aware rules with the
 // allowWithoutFullTypeInformation=true flag) can run against ez's light
@@ -18,8 +38,6 @@ try {
     const original = tslintUtilsGPS.getParserServices;
     tslintUtilsGPS.getParserServices = function getParserServices(context, allowWithoutFullTypeInformation = false) {
       const ps = context.sourceCode && context.sourceCode.parserServices;
-      // ez's stub: provide a minimal services object on demand so light rules
-      // can run. Real maps/program would require running tsc — ez doesn't.
       if (ps && ps.__ez_light__) {
         if (!allowWithoutFullTypeInformation && ps.program == null) {
           return original(context, allowWithoutFullTypeInformation);
@@ -88,21 +106,72 @@ function tsSynth() {
 // synthesizer (ts-synth.js) that produces TS-shaped nodes on demand, so rule
 // autofixes inspecting `tsNode.parent.kind` / `tsNode.operatorToken.kind` /
 // etc. for precedence work without us shipping a real Program.
+let _typeFacadeMod = null;
+let _typeFacadeTried = false;
+function typeFacadeMod() {
+  if (!_typeFacadeTried) {
+    _typeFacadeTried = true;
+    try { _typeFacadeMod = require("./ts-type-facade"); } catch { _typeFacadeMod = null; }
+  }
+  return _typeFacadeMod;
+}
+
 function _makeLightParserServices(sourceCode) {
   const synth = tsSynth();
   const map = synth ? synth.buildEsTreeNodeToTSNodeMap(sourceCode.text) : null;
-  // Fall back to an empty WeakMap when typescript isn't installed — the
-  // @typescript-eslint/utils getParserServices patch only needs the map to
-  // be non-null; rule fixes that try to read tsNode properties will catch
-  // the resulting TypeError and emit fix=null (the prior behavior).
-  return {
+
+  // The native facade is surfaced ONLY via the `program` getter below, gated by
+  // `_activeRuleId` so non-allowlisted rules (es-x / sonarjs etc.) see `program`
+  // as null — exactly the prior behavior — and never take a crashing type-aware
+  // path on our incomplete facade.
+  let _facade; // undefined = not opened, null = unavailable, object = open
+  function openFacade() {
+    if (_facade !== undefined) return _facade;
+    const mod = typeFacadeMod();
+    if (!mod || !mod.isAvailable()) { _facade = null; return null; }
+    const lang = (sourceCode._ast && sourceCode._ast._lang != null) ? sourceCode._ast._lang : 1 /* ts */;
+    const isModule = sourceCode._sourceType !== "script" && sourceCode._sourceType !== "commonjs";
+    try { _facade = mod.makeFacade(sourceCode.text, lang, isModule) || null; }
+    catch { _facade = null; }
+    return _facade;
+  }
+
+  const base = {
     __ez_light__: true,
     esTreeNodeToTSNodeMap: map || new WeakMap(),
     tsNodeToESTreeNodeMap: new WeakMap(),
-    program: null,
     emitDecoratorMetadata: false,
     experimentalDecorators: false,
+    // Services-level type access used by rules / getConstrainedTypeAtLocation.
+    // Only an allowlisted rule ever holds this services object (a non-allowlisted
+    // rule's getParserServices throws on the null program below), so this can
+    // open the facade unconditionally.
+    getTypeAtLocation(node) {
+      const f = openFacade();
+      return f ? f.getTypeAtLocation(node) : undefined;
+    },
+    // Close hook used by the runner after each file's walk.
+    __ez_closeFacade() { if (_facade) { try { _facade.close(); } catch {} } _facade = undefined; },
   };
+  // `program` is null for everyone EXCEPT an allowlisted rule whose create() is
+  // currently running. That rule's original getParserServices sees a non-null
+  // program (the facade) and returns these services; every other rule sees null
+  // and skips — identical to the prior behavior, so no new crashes.
+  Object.defineProperty(base, "program", {
+    get() {
+      if (!_TYPE_FACADE_RULES.has(_activeRuleId)) return null;
+      const f = openFacade();
+      return f ? f.program : null;
+    },
+    enumerable: true, configurable: true,
+  });
+  return base;
+}
+
+// Close any open type handle attached to this file's parserServices.
+function _closeTypeFacade(sourceCode) {
+  const ps = sourceCode && sourceCode.parserServices;
+  if (ps && typeof ps.__ez_closeFacade === "function") ps.__ez_closeFacade();
 }
 let _esquery = null;
 function esquery() {
@@ -5089,10 +5158,12 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       const fileCtx = Object.create(perRuleCtxs[pi]);
       fileCtx._onListeners = null; // own property — context.on() appends here, not to perRuleCtxs[pi]
       let visitors = null;
+      _activeRuleId = pluginRuleIds[pi]; // gate parserServices.program to this rule during create()
       try {
         if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(pluginRuleIds[pi]);
         visitors = plugins[pi].create(fileCtx);
       } catch { /* empty-recipe match */ }
+      _activeRuleId = null;
       if (!visitors || typeof visitors !== 'object') visitors = {};
       // Merge context.on() listeners into visitors (used by unicorn / ESLint 9 rules).
       if (fileCtx._onListeners) Object.assign(visitors, fileCtx._onListeners);
@@ -5212,10 +5283,12 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     const recipe = [];
     let visitors;
     perRuleCtx._onListeners = null; // reset before create() so context.on() accumulates fresh
+    _activeRuleId = ruleId; // gate parserServices.program to this rule during create()
     try {
       if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(ruleId);
       visitors = plugin.create(perRuleCtx);
-    } catch { perPluginRecipe.push(recipe); pluginTagBitsets.push(null); continue; }
+    } catch { _activeRuleId = null; perPluginRecipe.push(recipe); pluginTagBitsets.push(null); continue; }
+    _activeRuleId = null;
     if (!visitors || typeof visitors !== 'object') visitors = {};
     // Merge context.on() listeners (used by unicorn and ESLint 9 rules) into visitors.
     if (perRuleCtx._onListeners) Object.assign(visitors, perRuleCtx._onListeners);
@@ -8862,7 +8935,12 @@ function runPlugins(ast, plugins, options = {}) {
   context._ruleSeverities = ruleSeverities;
 
   const visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
-  walkNodes(ast, visitorMapResult, context, _cachedInternedTagNames, plugins);
+  try {
+    walkNodes(ast, visitorMapResult, context, _cachedInternedTagNames, plugins);
+  } finally {
+    // Release any native type handle a type-aware rule opened for this file.
+    _closeTypeFacade(context.sourceCode);
+  }
 
   // Retain the pool for this AST; the owner check on the next entry wipes only when a
   // different AST comes in. Keeps populated views alive for repeated lintSource calls.

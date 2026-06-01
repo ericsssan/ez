@@ -379,7 +379,12 @@ function parseSource(source, options = {}) {
   } else if (options.sourceType === "module") {
     new DataView(buf).setUint32(84, 1, true);
   }
-  return new AstView(buf);
+  const view = new AstView(buf);
+  // Stash the exact base language the buffer was parsed with so the type-aware
+  // bridge (ts-type-facade) re-parses identically — guaranteeing node-index
+  // alignment between this buffer and the type handle's own parse.
+  view._lang = lang;
+  return view;
 }
 
 function parse(filePath, options = {}) {
