@@ -21,6 +21,13 @@ const _TYPE_FACADE_RULES = new Set([
 // monkey-patch) is required because that package blocks the deep import the
 // patch needs AND rules capture the function by value, so the patch can't
 // intercept. Set around each rule's create() by the runner.
+//
+// NOTE: this gates program reads during create() only. A rule that reads
+// `parserServices.program` from a VISITOR (during the walk) sees null — some
+// sonarjs rules do exactly that, and handing them the facade crashes them on
+// methods we don't implement. So allowlist only rules whose visitors get types
+// via `services.getTypeAtLocation` (ungated) rather than `services.program`.
+// Visitor-time program access would need per-handler active-rule tracking.
 let _activeRuleId = null;
 
 // Monkey-patch @typescript-eslint/utils' getParserServices so rules that gate
