@@ -65,6 +65,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/restrict-template-expressions",         // 22/22, 0 FP (tuple number-index + typeToString name + class name/bases + Error ctor + context-sensitive empty-array + base type_ref resolution)
   "@typescript-eslint/no-mixed-enums",                        // 9/21, 0 FP (enum id parent link + getSymbolAtLocation enum-decl branch)
   "@typescript-eslint/strict-boolean-expressions",            // 106/112, 0 FP (getTypePredicateOfSignature + getBaseConstraintOfType chain + any-arg→last-overload resolution)
+  "n/no-sync",                                                // eslint-plugin-n: calls getParserServices() unconditionally in its visitor; the facade program lets it run (vs throwing "requires type information") — syntactic for string ignores, type-aware for the `ignores` non-string option
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
