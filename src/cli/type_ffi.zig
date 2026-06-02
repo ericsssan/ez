@@ -589,6 +589,17 @@ pub export fn ez_type_ref_name(h: usize, type_id: u32, out: [*]u8, out_len: u32)
     return @intCast(n);
 }
 
+// Resolve a declared type NAME (user interface/class/alias/enum) to its TypeId,
+// or 0xFFFFFFFF if not declared in-file. Lets the facade replace a base
+// `type_ref` with the base's structural object_t (with ITS bases) so
+// matchesTypeOrBaseType walks a multi-level `extends` chain. Returns NO_TYPE for
+// lib types (Promise/etc — not user-declared) so those keep their type_ref form.
+pub export fn ez_type_resolve_declared(h: usize, name_ptr: [*]const u8, name_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    const t = ctx.checker.resolveDeclaredTypePub(name_ptr[0..name_len]) orelse return NO_TYPE;
+    return t.toInt();
+}
+
 // The type-alias name a type was resolved from (`type Foo = …` → "Foo"),
 // independent of the structural name — facade ts.Type.aliasSymbol.
 pub export fn ez_type_alias_name(h: usize, type_id: u32, out: [*]u8, out_len: u32) callconv(.c) u32 {

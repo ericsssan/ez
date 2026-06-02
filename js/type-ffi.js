@@ -78,6 +78,7 @@ function binding() {
       ez_type_name_eq:        { args: [H, U, FFIType.ptr, U], returns: FFIType.u8 },
       ez_type_ref_name:       { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_alias_name:     { args: [H, U, FFIType.ptr, U], returns: U },
+      ez_type_resolve_declared: { args: [H, FFIType.ptr, U], returns: U },
       ez_type_tag_last:    { args: [U], returns: FFIType.void },
       ez_type_open_reuse:  { args: [U], returns: H },
     });
@@ -228,6 +229,13 @@ function _handleObj(b, h) {
       const buf = Buffer.allocUnsafe(64);
       const n = b.sym.ez_type_alias_name(h, typeId >>> 0, b.ptr(buf), buf.length);
       return n > 0 ? buf.toString("utf8", 0, n) : "";
+    },
+    // Resolve a declared type name → its TypeId (user interface/class/alias), or
+    // null for lib/undeclared names. Lets the facade walk a base type_ref's bases.
+    resolveDeclared(name) {
+      const nb = Buffer.from(name, "utf8");
+      const r = b.sym.ez_type_resolve_declared(h, b.ptr(nb), nb.length);
+      return r === NO_TYPE ? null : r;
     },
     close() { b.sym.ez_type_close(h); },
   };

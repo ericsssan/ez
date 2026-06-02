@@ -107,6 +107,18 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
 
   const typeCache = new Map(); // typeId → Type object
 
+  // A base type is stored as a `type_ref` (just a name). Resolve it to the
+  // base's declared object_t (which carries ITS own bases) so a multi-level
+  // `extends` chain walks (matchesTypeOrBaseType). A lib/undeclared base
+  // (Promise, …) isn't user-declared → keep the original type_ref so its type
+  // args survive (no-floating-promises' `extends Promise<any>`).
+  function resolveBaseId(baseId) {
+    if (baseId == null) return baseId;
+    const nm = h.refName(baseId);
+    if (nm) { const d = h.resolveDeclared(nm); if (d != null) return d; }
+    return baseId;
+  }
+
   function makeType(typeId) {
     if (typeId == null) return undefined;
     const cached = typeCache.get(typeId);
@@ -205,7 +217,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         const n = h.baseCount(typeId);
         if (!n) return undefined;
         const out = [];
-        for (let i = 0; i < n; i++) { const b = h.baseAt(typeId, i); if (b != null) out.push(makeType(b)); }
+        for (let i = 0; i < n; i++) { const b = h.baseAt(typeId, i); if (b != null) out.push(makeType(resolveBaseId(b))); }
         return out.length ? out : undefined;
       },
       // Named property → a synthetic ts.Symbol carrying the property type, or
@@ -675,7 +687,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       if (!type || type.__ez_typeId == null) return [];
       const n = h.baseCount(type.__ez_typeId);
       const out = [];
-      for (let i = 0; i < n; i++) { const b = h.baseAt(type.__ez_typeId, i); if (b != null) out.push(makeType(b)); }
+      for (let i = 0; i < n; i++) { const b = h.baseAt(type.__ez_typeId, i); if (b != null) out.push(makeType(resolveBaseId(b))); }
       return out;
     },
     // Element type(s) of an array reference; [] otherwise. type-utils reads
