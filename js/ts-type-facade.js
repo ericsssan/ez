@@ -150,9 +150,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       getProperty(name) {
         const pid = h.propType(typeId, name);
         if (pid == null) {
-          // Promise<T> is thenable — hand isThenableType the synthetic `then`
-          // (our checker doesn't model Promise's methods structurally).
-          if (name === "then" && typeId != null && h.nameEq(typeId, "Promise")) return SYNTH_THEN_SYM;
+          // Promise<T> — and any interface that extends one — is thenable; hand
+          // isThenableType the synthetic `then` (Promise methods aren't modelled).
+          if (name === "then" && typeId != null && (h.nameEq(typeId, "Promise") || promiseBase(typeId) != null)) return SYNTH_THEN_SYM;
           return undefined;
         }
         return makeSymbol(name, pid, h.propFlags(typeId, name));
@@ -436,6 +436,15 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     };
   }
   const SYMBOL_FLAGS_INTERFACE = 64; // ts.SymbolFlags.Interface
+  // The `Promise<X>` base of an interface object_t (`interface A extends
+  // Promise<any>`), or null. Such an interface is thenable with awaited type X —
+  // discriminateAnyType uses this to flag returning it from an async function.
+  function promiseBase(tid) {
+    if (tid == null || h.kind(tid) !== 19 /*object_t*/) return null;
+    const n = h.baseCount(tid);
+    for (let i = 0; i < n; i++) { const b = h.baseAt(tid, i); if (b != null && h.nameEq(b, "Promise")) return b; }
+    return null;
+  }
   // ts.TypeFlags: literal → its base primitive.
   // literal flag → base-primitive flag (StringLiteral→String, etc.).
   const LITERAL_BASE = { 1024: 32 /*String*/, 2048: 64 /*Number*/, 8192: 256 /*Boolean*/, 4096: 128 /*BigInt*/ };
@@ -499,8 +508,12 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // signature return Promise<any> isn't flagged Any until unwrapped).
     getAwaitedType(type) {
       let t = type, guard = 0;
-      while (t && t.__ez_typeId != null && h.nameEq(t.__ez_typeId, "Promise") && guard++ < 16) {
-        const arg = h.typeArg(t.__ez_typeId, 0);
+      while (t && t.__ez_typeId != null && guard++ < 16) {
+        const id = t.__ez_typeId;
+        // `Promise<X>` → X; an interface extending `Promise<X>` → X.
+        const promiseId = h.nameEq(id, "Promise") ? id : promiseBase(id);
+        if (promiseId == null) break;
+        const arg = h.typeArgCount(promiseId) > 0 ? h.typeArg(promiseId, 0) : null;
         if (arg == null) break;
         t = makeType(arg);
       }

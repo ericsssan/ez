@@ -4752,7 +4752,11 @@ pub const Checker = struct {
                     self.ast_ref.nodeTag(ext_node) != .identifier) continue;
                 const ext_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ext_node));
                 if (base_n < base_buf.len) {
-                    if (self.store.typeRef(ext_name, &.{})) |br| {
+                    // Keep the base's type args (`extends Promise<any>`) so the
+                    // facade can unwrap an interface that extends a Promise.
+                    var ta_buf: [4]TypeId = undefined;
+                    const ta = self.collectTypeArgs(ext_node, &ta_buf);
+                    if (self.store.typeRef(ext_name, ta)) |br| {
                         base_buf[base_n] = br;
                         base_n += 1;
                     } else |_| {}
