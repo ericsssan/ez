@@ -475,6 +475,43 @@ pub export fn ez_type_constraint(h: usize, type_id: u32) callconv(.c) u32 {
     return ctx.checker.store.idsOf(t.list_data)[0].toInt();
 }
 
+/// String value of a string- or bigint-literal type (copied into `out`,
+/// truncated), returning the byte length. 0 for other types. Backs the facade's
+/// `.value` (string literal) / `.value.base10Value` (bigint literal).
+pub export fn ez_type_lit_string(h: usize, type_id: u32, out: [*]u8, out_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    const s: []const u8 = switch (ctx.checker.store.types.items[type_id].literal_value) {
+        .string => |x| x,
+        .bigint => |x| x,
+        else => return 0,
+    };
+    const n = @min(s.len, out_len);
+    @memcpy(out[0..n], s[0..n]);
+    return @intCast(n);
+}
+
+/// Numeric value of a number-literal type (0 otherwise). Backs `.value`.
+pub export fn ez_type_lit_number(h: usize, type_id: u32) callconv(.c) f64 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    return switch (ctx.checker.store.types.items[type_id].literal_value) {
+        .number => |x| x,
+        else => 0,
+    };
+}
+
+/// Boolean value of a boolean-literal type: 1 = true, 0 = false, 0xFF = not a
+/// boolean literal. Backs `.intrinsicName` ('true' / 'false').
+pub export fn ez_type_lit_bool(h: usize, type_id: u32) callconv(.c) u8 {
+    const ctx = ctxFrom(h) orelse return 0xFF;
+    if (type_id >= ctx.checker.store.types.items.len) return 0xFF;
+    return switch (ctx.checker.store.types.items[type_id].literal_value) {
+        .boolean => |b| if (b) 1 else 0,
+        else => 0xFF,
+    };
+}
+
 /// Number of direct base types of an interface object_t (its `extends` clause,
 /// stored in list_data); 0 otherwise. Backs the facade's getBaseTypes().
 pub export fn ez_type_base_count(h: usize, type_id: u32) callconv(.c) u32 {

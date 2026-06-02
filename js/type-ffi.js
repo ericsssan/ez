@@ -61,6 +61,9 @@ function binding() {
       ez_type_constraint: { args: [H, U], returns: U },
       ez_type_base_count: { args: [H, U], returns: U },
       ez_type_base_at: { args: [H, U, U], returns: U },
+      ez_type_lit_string: { args: [H, U, FFIType.ptr, U], returns: U },
+      ez_type_lit_number: { args: [H, U], returns: FFIType.f64 },
+      ez_type_lit_bool:   { args: [H, U], returns: FFIType.u8 },
       // Object properties (by-name lookup; name passed as utf8 ptr+len).
       ez_type_prop_count:         { args: [H, U], returns: U },
       ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
@@ -159,6 +162,14 @@ function _handleObj(b, h) {
       const r = b.sym.ez_type_base_at(h, typeId >>> 0, i >>> 0);
       return r === NO_TYPE ? null : r;
     },
+    // Literal type values (for ts.LiteralType `.value` / boolean intrinsicName).
+    litString(typeId) {
+      const buf = Buffer.allocUnsafe(256);
+      const n = b.sym.ez_type_lit_string(h, typeId >>> 0, b.ptr(buf), buf.length);
+      return buf.toString("utf8", 0, n);
+    },
+    litNumber(typeId) { return b.sym.ez_type_lit_number(h, typeId >>> 0); },
+    litBool(typeId) { return b.sym.ez_type_lit_bool(h, typeId >>> 0); }, // 1/0/0xFF
     // Object properties (by name).
     propCount(typeId) { return b.sym.ez_type_prop_count(h, typeId >>> 0); },
     propType(typeId, name) {

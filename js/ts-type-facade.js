@@ -129,6 +129,26 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         return c != null ? makeType(c) : undefined;
       },
       getDefault() { return undefined; },
+      // ts.LiteralType.value — string/number for those literals, a ts.PseudoBigInt
+      // ({negative, base10Value}) for bigint literals. Read by prefer-optional-chain
+      // (falsy-literal detection) etc.
+      get value() {
+        if (flags & 1024) return h.litString(typeId);   // StringLiteral
+        if (flags & 2048) return h.litNumber(typeId);   // NumberLiteral
+        if (flags & 4096) {                              // BigIntLiteral
+          const s = h.litString(typeId);
+          const neg = s.charCodeAt(0) === 45; // '-'
+          return { negative: neg, base10Value: neg ? s.slice(1) : s };
+        }
+        return undefined;
+      },
+      // ts.IntrinsicType.intrinsicName — 'true'/'false' for boolean literals,
+      // 'error' for the error type (isIntrinsicErrorType / isTypeAnyType read it).
+      get intrinsicName() {
+        if (flags & 8192) { const v = h.litBool(typeId); return v === 1 ? "true" : v === 0 ? "false" : undefined; }
+        if (typeId != null && h.kind(typeId) === 12 /*error_t*/) return "error";
+        return undefined;
+      },
       // Call signatures (params + return type) — the checker fills these for
       // function/method types. getCallSignaturesOfType / signature.getReturnType
       // (no-unsafe-return) read these.
