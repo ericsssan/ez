@@ -6197,12 +6197,31 @@ pub const Checker = struct {
         return self.ast_ref.extra_data[s..e];
     }
 
+    /// Element type for an empty array literal `[]`.  TS gives an empty array
+    /// BOUND to a variable (`const x = []`) the evolving-array element `any`,
+    /// but a bare `[]` expression (return/argument/template) stays `never`.
+    /// This matches both rules at once: `const arg = []` passes restrict-template-
+    /// expressions' allowArray (any element), while `return []` stays safe for
+    /// no-unsafe-return (never[] is not an any-array).
+    fn emptyArrayElem(self: *Checker, node: NodeIndex) TypeId {
+        const parents = self.ast_ref.parents;
+        if (node.toInt() >= parents.len) return tymod.ID_NEVER;
+        const p = parents[node.toInt()];
+        if (p == @intFromEnum(NodeIndex.none)) return tymod.ID_NEVER;
+        const pn: NodeIndex = @enumFromInt(p);
+        // The array is the initializer (rhs) of a `const`/`let`/`var` declarator.
+        if (self.ast_ref.nodeTag(pn) == .declarator and self.ast_ref.nodeData(pn).rhs == node) {
+            return tymod.ID_ANY;
+        }
+        return tymod.ID_NEVER;
+    }
+
     fn inferArrayLiteral(self: *Checker, node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(node);
         const slice = self.directRange(data.lhs, data.rhs) orelse {
-            return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
+            return self.store.arrayOf(self.emptyArrayElem(node)) catch tymod.ID_ANY;
         };
-        if (slice.len == 0) return self.store.arrayOf(tymod.ID_NEVER) catch tymod.ID_ANY;
+        if (slice.len == 0) return self.store.arrayOf(self.emptyArrayElem(node)) catch tymod.ID_ANY;
         // Element type = union of element types.
         var buf: [32]TypeId = undefined;
         const n = @min(slice.len, buf.len);
