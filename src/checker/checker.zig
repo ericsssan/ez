@@ -6087,8 +6087,14 @@ pub const Checker = struct {
                     };
                     n += 1;
                 },
-                // Bail on spread / computed / accessors — structural
-                // type would not be sound.
+                .spread_element => {
+                    // Spreading an `any` value makes the whole object `any`
+                    // (`{ ...(x as any) }`) — no-unsafe-assignment flags assigning
+                    // it. Other spreads widen beyond what we can represent → unknown.
+                    if (tymod.isAny(&self.store, self.typeOf(self.ast_ref.nodeData(p).lhs))) return tymod.ID_ANY;
+                    return tymod.ID_UNKNOWN;
+                },
+                // Bail on computed / accessors — structural type would not be sound.
                 else => return tymod.ID_UNKNOWN,
             }
         }
