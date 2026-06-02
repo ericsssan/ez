@@ -735,6 +735,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         : 1 /*Identifier*/;
       return { kind, parameterIndex: pi == null ? 0 : pi, type: target };
     },
+    // Index signatures (`[k: string]: T`) aren't modelled — `[]` is FP-safe:
+    // no-unnecessary-condition's index-signature nullability path just finds
+    // nothing (a recall loss, never a false positive).
+    getIndexInfosOfType() { return []; },
     getSignaturesOfType(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
     // Symbol → its type (for getTypeOfSymbolAtLocation in no-unsafe-argument /
     // getTypeOfSymbol in no-for-in-array's length check). A bare type parameter
