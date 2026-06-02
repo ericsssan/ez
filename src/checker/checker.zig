@@ -4644,7 +4644,7 @@ pub const Checker = struct {
         self.declared_type_cache.put(self.gpa, name, tymod.ID_UNKNOWN) catch return null;
         const result = switch (self.ast_ref.nodeTag(decl)) {
             .ts_interface_decl => self.buildInterfaceType(decl),
-            .class_decl => self.buildClassInstanceType(decl),
+            .class_decl => self.buildClassInstanceType(decl, name),
             .ts_namespace_decl, .ts_module_decl => self.buildNamespaceType(decl),
             .ts_type_alias_decl => blk: {
                 // `type Foo = ...` — resolve the alias body. The sentinel
@@ -4717,7 +4717,7 @@ pub const Checker = struct {
                 const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(self.ast_ref.nodeData(stmt).lhs));
                 if (cd.name == .none) return;
                 const cls_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(cd.name));
-                const cls_ty = self.buildClassInstanceType(stmt);
+                const cls_ty = self.buildClassInstanceType(stmt, cls_name);
                 props.append(self.gpa, .{ .name = cls_name, .type_id = cls_ty }) catch {};
             },
             .ts_enum_decl => {
@@ -5091,11 +5091,16 @@ pub const Checker = struct {
     /// Static members are not included (those live on the constructor).
     /// `extends ParentClass` contributes the parent's instance props so
     /// structural assignability (subclass → superclass) holds.
-    fn buildClassInstanceType(self: *Checker, decl: NodeIndex) TypeId {
+    fn buildClassInstanceType(self: *Checker, decl: NodeIndex, name: []const u8) TypeId {
         const data = self.ast_ref.nodeData(decl);
         const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
         var props: std.ArrayList(tymod.ObjectProp) = .empty;
         defer props.deinit(self.gpa);
+        // Direct base type — the `extends` superclass, recorded as a type_ref so
+        // the facade's getBaseTypes/matchesTypeOrBaseType can walk the hierarchy
+        // (restrict-template-expressions' `allow: {from:'file', name:'Base'}`).
+        var base_buf: [1]TypeId = undefined;
+        var base_n: usize = 0;
         // Inherit instance props through the full superclass chain.
         if (cd.super_class != .none) {
             var sc = cd.super_class;
@@ -5107,6 +5112,10 @@ pub const Checker = struct {
             var inherited = false;
             if (self.ast_ref.nodeTag(sc) == .identifier) {
                 const parent_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(sc));
+                if (self.store.typeRef(parent_name, &.{})) |br| {
+                    base_buf[0] = br;
+                    base_n = 1;
+                } else |_| {}
                 var seen: [8][]const u8 = undefined;
                 var seen_n: u8 = 0;
                 self.flattenInheritedProps(parent_name, 0, &seen, &seen_n, &props);
@@ -5121,14 +5130,15 @@ pub const Checker = struct {
                 props.append(self.gpa, .{ .name = "toString", .type_id = tymod.ID_ANY }) catch {};
             }
         }
+        const base_list = if (base_n == 0) tymod.TypeIdList.empty else (self.store.appendTypeIds(base_buf[0..base_n]) catch tymod.TypeIdList.empty);
         if (cd.body == .none) {
             const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
-            return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+            return self.store.add(.{ .kind = .object_t, .object_props = list, .name = name, .list_data = base_list }) catch tymod.ID_UNKNOWN;
         }
         const body_data = self.ast_ref.nodeData(cd.body);
         const slice = self.directRange(body_data.lhs, body_data.rhs) orelse {
             const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
-            return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+            return self.store.add(.{ .kind = .object_t, .object_props = list, .name = name, .list_data = base_list }) catch tymod.ID_UNKNOWN;
         };
         for (slice) |raw| {
             const member: NodeIndex = @enumFromInt(raw);
@@ -5146,7 +5156,7 @@ pub const Checker = struct {
             }
         }
         const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
-        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .object_t, .object_props = list, .name = name, .list_data = base_list }) catch tymod.ID_UNKNOWN;
     }
 
     fn classMemberToProp(self: *Checker, member: NodeIndex) ?tymod.ObjectProp {
@@ -7085,8 +7095,11 @@ pub const Checker = struct {
                     while (q != NONE) : (q = parents[q]) {
                         const qn: NodeIndex = @enumFromInt(q);
                         const qtag = self.ast_ref.nodeTag(qn);
-                        if (qtag == .class_decl) return self.buildClassInstanceType(qn);
-                        if (qtag == .class_expr) return self.buildClassInstanceType(qn);
+                        if (qtag == .class_decl or qtag == .class_expr) {
+                            const qcd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(self.ast_ref.nodeData(qn).lhs));
+                            const qname = if (qcd.name == .none) "" else self.ast_ref.tokenText(self.ast_ref.nodeMainToken(qcd.name));
+                            return self.buildClassInstanceType(qn, qname);
+                        }
                         // class_body sits between method_def and class_decl/expr;
                         // keep walking until we hit the decl/expr.
                         if (qtag == .class_body) continue;

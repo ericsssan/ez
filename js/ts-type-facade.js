@@ -118,9 +118,16 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       flags,
       getFlags() { return flags; },
       // Union / intersection constituents. `unionTypeParts` checks `.types`.
+      // Drop any self-referential member: a malformed type-parameter constraint
+      // can produce a union that lists itself (`U ∈ U.types`), which would make
+      // a rule walking `.types` (restrict-template-expressions' recursivelyCheck-
+      // Type) recurse forever. A type is never a member of its own union.
       get types() {
         const ids = h.members(typeId);
-        return ids.length ? ids.map(makeType) : undefined;
+        if (!ids.length) return undefined;
+        const out = [];
+        for (const id of ids) if (id !== typeId) out.push(makeType(id));
+        return out.length ? out : undefined;
       },
       // Named types (type_ref like `Function`/`Promise`/a user interface) carry
       // a symbol whose name + default-library origin back isBuiltinSymbolLike
@@ -233,6 +240,17 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
           const e = h.arrayElem(typeId);
           return e != null ? makeType(e) : undefined;
         }
+        // A tuple's number-index type is the union of its element types
+        // (restrict-template-expressions' Array tester reads it for `[a, b]`).
+        // Tuple elements are exposed as type arguments, not `members`.
+        if (k === 23 /*tuple*/) {
+          const n = h.typeArgCount(typeId);
+          if (n > 0) {
+            const elems = [];
+            for (let i = 0; i < n; i++) { const a = h.typeArg(typeId, i); if (a != null) elems.push(makeType(a)); }
+            if (elems.length) return syntheticUnion(elems);
+          }
+        }
         return undefined;
       },
       getStringIndexType() { return undefined; },
@@ -250,7 +268,12 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // nested in Set<any> / any[] / [any]).
       get objectFlags() {
         const k = h.kind(typeId);
-        return (k === 21 || k === 22 || k === 23 || k === 24) ? OBJECTFLAGS_REFERENCE : 0;
+        if (k === 21 || k === 22 || k === 23 || k === 24) return OBJECTFLAGS_REFERENCE;
+        // A named object_t is a class/interface instance — flag it Interface so
+        // base-type walkers (matchesTypeOrBaseType's getBaseTypesForType) descend
+        // into getBaseTypes (restrict-template-expressions' `allow` over a base).
+        if (k === 19 && h.refName(typeId)) return 2 /*ObjectFlags.Interface*/;
+        return 0;
       },
       // ts.TypeReference.typeArguments (the field isUnsafeAssignment reads).
       get typeArguments() {
@@ -508,28 +531,36 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     return defineTypePredicates(t, flags);
   }
 
-  // A synthetic `T | undefined` union — TS adds `undefined` to an optional
-  // property's type, so the rule's nullability checks (no-unnecessary-condition's
-  // getTypeOfPropertyOfType → isNullableType) see `obj.opt` as nullable. Carries
-  // the union shape unionConstituents/isUnion/isNullableType read, and delegates
-  // member/signature lookups to the underlying T.
-  function unionWithUndefined(t) {
-    if (!t) return t;
-    const undef = syntheticType(4 /*Undefined*/);
+  // A synthetic Union type over `members` (a ts.UnionType the rules' isUnion/
+  // .types/unionConstituents/isNullableType read). Delegates member/signature
+  // lookups to the first constituent. 0 → unknown, 1 → the member itself.
+  function syntheticUnion(members) {
+    const ms = members.filter(Boolean);
+    if (ms.length === 0) return syntheticType(2 /*Unknown*/);
+    if (ms.length === 1) return ms[0];
+    const head = ms[0];
     const u = {
       flags: 134217728 /*Union*/, getFlags() { return 134217728; },
-      types: [t, undef], symbol: undefined, getSymbol() { return undefined; }, aliasSymbol: undefined,
+      types: ms, symbol: undefined, getSymbol() { return undefined; }, aliasSymbol: undefined,
       getConstraint() { return undefined; }, getDefault() { return undefined; },
       get value() { return undefined; }, get intrinsicName() { return undefined; },
-      getCallSignatures() { return t.getCallSignatures ? t.getCallSignatures() : []; },
+      getCallSignatures() { return head.getCallSignatures ? head.getCallSignatures() : []; },
       getConstructSignatures() { return []; }, getBaseTypes() { return undefined; },
-      getProperty(n) { return t.getProperty ? t.getProperty(n) : undefined; },
-      getProperties() { return t.getProperties ? t.getProperties() : []; },
+      getProperty(n) { return head.getProperty ? head.getProperty(n) : undefined; },
+      getProperties() { return head.getProperties ? head.getProperties() : []; },
       getNumberIndexType() { return undefined; }, getStringIndexType() { return undefined; },
       target: undefined, objectFlags: 0, typeArguments: undefined, __ez_typeId: null,
     };
     u.getApparentType = () => u;
     return defineTypePredicates(u, 134217728);
+  }
+
+  // A synthetic `T | undefined` union — TS adds `undefined` to an optional
+  // property's type, so the rule's nullability checks (no-unnecessary-condition's
+  // getTypeOfPropertyOfType → isNullableType) see `obj.opt` as nullable.
+  function unionWithUndefined(t) {
+    if (!t) return t;
+    return syntheticUnion([t, syntheticType(4 /*Undefined*/)]);
   }
 
   // Synthetic thenable structure: ts-api-utils' isThenableType walks
@@ -661,7 +692,15 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const elem = h.arrayElem(type.__ez_typeId);
       return elem != null ? [makeType(elem)] : [];
     },
-    typeToString() { return ""; }, // printer not modelled yet
+    // Full type printing isn't modelled, but a NAMED type prints as its name —
+    // enough for getTypeName (restrict-template-expressions' allowRegExp tester
+    // is `getTypeName(type) === 'RegExp'`, and getTypeName falls back to
+    // typeToString for non-primitive types). Unnamed types stay "".
+    typeToString(type) {
+      const id = type && type.__ez_typeId;
+      if (id == null) return "";
+      return h.aliasName(id) || h.refName(id) || "";
+    },
     // ── Structural classification used by discriminateAnyType / no-for-in-array ──
     isArrayType(type) {
       if (!type || type.__ez_typeId == null) return false;
