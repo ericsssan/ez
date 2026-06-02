@@ -32,7 +32,13 @@ const TS_TYPE_NODES = new Set([
 ]);
 // Minimal ts.TupleType.target for tuple/array types (spread-arg handling reads
 // `.target.combinedFlags`; 0 = no variable/rest tuple element).
-const TUPLE_TARGET = Object.freeze({ combinedFlags: 0, elementFlags: Object.freeze([]) });
+// tsutils.isTypeReference rewrites `type = type.target` before reading the type
+// again (getSymbol/getBaseTypes/flags in containsAllTypesByName), so a target
+// must answer those like a minimal ts.Type — anonymous for tuples/arrays.
+const TUPLE_TARGET = Object.freeze({
+  combinedFlags: 0, elementFlags: Object.freeze([]), flags: 0,
+  getFlags() { return 0; }, getSymbol() { return undefined; }, getBaseTypes() { return undefined; },
+});
 // Per-generic-name `.target` identity: isUnsafeAssignment recurses into type
 // args only when `sender.target === receiver.target`, so Set<any> vs Set<number>
 // (same name "Set") share a target and recurse, while Set<any> vs
@@ -40,7 +46,17 @@ const TUPLE_TARGET = Object.freeze({ combinedFlags: 0, elementFlags: Object.free
 const _refTargetByName = new Map();
 function refTargetFor(name) {
   let t = _refTargetByName.get(name);
-  if (!t) { t = Object.freeze({ combinedFlags: 0, __name: name }); _refTargetByName.set(name, t); }
+  if (!t) {
+    // Carries the reference's name as a symbol so containsAllTypesByName (which
+    // does `type = type.target; type.getSymbol().name`) can match Promise/etc.
+    t = Object.freeze({
+      combinedFlags: 0, __name: name, flags: 0,
+      getFlags() { return 0; },
+      getSymbol() { return { name, escapedName: name, getName() { return name; }, getFlags() { return 0; }, getDeclarations() { return undefined; } }; },
+      getBaseTypes() { return undefined; },
+    });
+    _refTargetByName.set(name, t);
+  }
   return t;
 }
 const OBJECTFLAGS_REFERENCE = 4; // ts.ObjectFlags.Reference
@@ -164,6 +180,16 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         const out = [];
         for (let i = 0; i < n; i++) if (h.sigFlags(typeId, i) & 4) out.push(makeSignature(typeId, i));
         return out;
+      },
+      // Base types (the `extends` clause of an interface/class object_t). Mirrors
+      // checker.getBaseTypes — promise-function-async calls `type.getBaseTypes()`
+      // directly to walk toward a thenable base.
+      getBaseTypes() {
+        const n = h.baseCount(typeId);
+        if (!n) return undefined;
+        const out = [];
+        for (let i = 0; i < n; i++) { const b = h.baseAt(typeId, i); if (b != null) out.push(makeType(b)); }
+        return out.length ? out : undefined;
       },
       // Named property → a synthetic ts.Symbol carrying the property type, or
       // undefined if absent. getProperty('length')/'toString'/the accessed member.

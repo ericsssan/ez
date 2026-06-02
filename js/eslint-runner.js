@@ -56,6 +56,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/no-base-to-string",                     // 8% (FP-safe; checker recall-limited)
   "@typescript-eslint/prefer-optional-chain",                 // 586/587 (CRASH-batch: literal .value FFIs + `||` nullish strip)
   "@typescript-eslint/no-confusing-void-expression",          // 55/55 (CRASH-batch: getTypeFromTypeNode/getContextualType + arrow/call-arg contextual)
+  "@typescript-eslint/promise-function-async",                // 18/27, 0 FP (CRASH-batch: type.getBaseTypes + target.getSymbol/getBaseTypes)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
