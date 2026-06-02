@@ -2976,6 +2976,11 @@ pub const Checker = struct {
             };
             return if (any_unknown) .unknown else .yes;
         }
+        // The global `Function` type carries no specific call signature, so it
+        // is NOT assignable to a concrete function type (`Function as () => void`
+        // is unsafe). The reverse — a function value as `Function` — is fine and
+        // left to the type_ref path / unknown.
+        if (s.kind == .type_ref and std.mem.eql(u8, s.name, "Function") and t.kind == .function_t) return .no;
         // Function variance: arity + param contravariance + return covariance.
         if (s.kind == .function_t and t.kind == .function_t) {
             const s_sigs = self.store.signaturesOf(s.signatures);
