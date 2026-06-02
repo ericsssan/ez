@@ -599,7 +599,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // is callable. The node may be a synth ts-node (carries _estree).
     getResolvedSignature(callNode) {
       const est = callNode && (callNode._i != null ? callNode : callNode._estree);
-      const callee = est && (est.callee || est.tag); // Call/New.callee, TaggedTemplate.tag
+      let callee = est && (est.callee || est.tag); // Call/New.callee, TaggedTemplate.tag
+      // Peel an explicit type-argument wrapper (`foo<number>(…)` / `foo<number>\`…\``
+      // parses the callee/tag as a TSInstantiationExpression around `foo`).
+      while (callee && callee.type === "TSInstantiationExpression" && callee.expression) callee = callee.expression;
       const ct = callee ? typeAt(callee) : undefined;
       // Build the signature with call-site generic instantiation (callIdx) so
       // param types reflect the inferred type args (no-unsafe-argument).
