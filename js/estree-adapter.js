@@ -2684,6 +2684,24 @@ const NodeProto = {
       value = true;
     } else if (text === 'false') {
       value = false;
+    } else if (c === 45) {             // negative number/bigint literal type (`-1`, `-1n`)
+      // The '-' is the main token; the number is the NEXT token. typescript-eslint
+      // models the `.literal` as a UnaryExpression(operator '-', argument: the
+      // positive Literal). Ranges/value mirror the runner's TSLiteralType→Literal
+      // synthesis so native rules (no-magic-numbers) are byte-identical.
+      const numTok = tok + 1;
+      if (numTok >= ast.tokenCount) return undefined;
+      const numStart = ast._tokStarts[numTok];
+      const numEnd = ast._tokEnds ? ast._tokEnds[numTok]
+        : (numTok + 1 < ast.tokenCount ? ast._tokStarts[numTok + 1] : ast.source.length);
+      const numText = ast.source.slice(numStart, numEnd);
+      const numVal = numText.endsWith('n') ? BigInt(numText.slice(0, -1)) : Number(numText);
+      if (typeof numVal !== 'bigint' && isNaN(numVal)) return undefined;
+      const arg = _syntheticNode('Literal', numStart, numEnd, { value: numVal, raw: numText }, ast);
+      const unary = _syntheticNode('UnaryExpression', start, numEnd, { operator: '-', prefix: true, argument: arg }, ast);
+      arg.parent = unary;
+      unary.parent = nodeView(this._ast, this._i); // the TSLiteralType node
+      return unary;
     } else {
       return undefined; // not a literal type
     }

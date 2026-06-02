@@ -59,6 +59,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/promise-function-async",                // 18/27, 0 FP (CRASH-batch: type.getBaseTypes + target.getSymbol/getBaseTypes)
   "@typescript-eslint/no-misused-promises",                   // 25/88, 0 FP (CRASH-batch: never-undefined getTypeAtLocation + full synthetic-type surface)
   "@typescript-eslint/return-await",                          // 38/44, 0 FP (CRASH-batch: synth getChildAt + TryStatement tryBlock/catchClause/finallyBlock)
+  "@typescript-eslint/no-redundant-type-constituents",        // 46/49, 0 FP (CRASH-batch: adapter .literal negative-bigint + template-literal-type → String)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
@@ -8963,6 +8964,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       if (_litChild) {
+        // The adapter `.literal` getter now returns a UnaryExpression for a
+        // negative literal type (`-1`/`-1n`); the synthetic Literal event must
+        // fire on the inner Literal (its `.argument`, whose parent is the
+        // UnaryExpression) so rules like no-magic-numbers see a Literal node.
+        if (_litChild.type === 'UnaryExpression' && _litChild.argument) _litChild = _litChild.argument;
         if (!_litChild.parent) _litChild.parent = _tsLitParent;
         context._currentNodeIdx = nodeIdx;
         if (_tsLitLiteralEnterH) _invokeFused(_tsLitLiteralEnterH, _litChild, nodeIdx, context);
