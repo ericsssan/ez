@@ -352,6 +352,12 @@ const _tsNodeProto = {
     }
     return clauses.length > 0 ? clauses : undefined;
   },
+  // ts.TryStatement parts ← ESTree block/handler/finalizer. return-await compares
+  // a child node against each by identity; the wrap cache keys on the ESTree node,
+  // so wrap(block) here === the child synth node walking up from inside the block.
+  get tryBlock() { return this._wrap(this._estree.block); },
+  get catchClause() { return this._wrap(this._estree.handler); },
+  get finallyBlock() { return this._wrap(this._estree.finalizer); },
   get operatorToken() {
     const e = this._estree;
     const t = e.type;
@@ -377,6 +383,15 @@ const _tsNodeProto = {
     const range = e.range || (e.start != null ? [e.start, e.end] : null);
     if (!range || !this._source) return "";
     return this._source.slice(range[0], range[1]);
+  },
+  getChildAt(index) {
+    // TS interleaves keyword tokens as children. The only consumer (return-await)
+    // reads an AwaitExpression's getChildAt(1) — the operand after the `await`
+    // keyword (child 0). Other kinds aren't modelled; undefined feeds the
+    // facade's never-undefined getTypeAtLocation (→ unknown), so no crash.
+    const e = this._estree;
+    if (e.type === "AwaitExpression") return index >= 1 ? this._wrap(e.argument) : undefined;
+    return undefined;
   },
   getStart() {
     const e = this._estree;
