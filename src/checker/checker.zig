@@ -4728,6 +4728,11 @@ pub const Checker = struct {
         const id = self.ast_ref.extraData(ast.InterfaceData, @intFromEnum(data.lhs));
         var props: std.ArrayList(tymod.ObjectProp) = .empty;
         defer props.deinit(self.gpa);
+        // Direct base types (the `extends` clause) recorded as type_refs so the
+        // facade's getBaseTypes can answer isBuiltinSymbolLike — e.g.
+        // no-unsafe-call's `interface X extends Function` detection.
+        var base_buf: [8]TypeId = undefined;
+        var base_n: usize = 0;
         // Inherit props through the full extends chain.
         if (id.extends_end > id.extends_start) {
             var seen: [8][]const u8 = undefined;
@@ -4746,13 +4751,40 @@ pub const Checker = struct {
                 if (self.ast_ref.nodeTag(ext_node) != .ts_type_reference and
                     self.ast_ref.nodeTag(ext_node) != .identifier) continue;
                 const ext_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ext_node));
+                if (base_n < base_buf.len) {
+                    if (self.store.typeRef(ext_name, &.{})) |br| {
+                        base_buf[base_n] = br;
+                        base_n += 1;
+                    } else |_| {}
+                }
                 self.flattenInheritedProps(ext_name, 0, &seen, &seen_n, &props);
             }
         }
+        // Call/construct signatures (`(): T` / `new (): T`) — kept on the
+        // object's `.signatures` so the facade's getCallSignatures /
+        // getConstructSignatures work (no-unsafe-call's `interface X extends
+        // Function` decides safety from these).
+        var sig_buf: [8]tymod.Signature = undefined;
+        var sig_n: usize = 0;
         if (id.body_end > id.body_start) {
             const body = self.ast_ref.extra_data[id.body_start..id.body_end];
             for (body) |raw| {
                 const member: NodeIndex = @enumFromInt(raw);
+                const mtag = self.ast_ref.nodeTag(member);
+                if (mtag == .ts_call_signature or mtag == .ts_construct_signature) {
+                    const mdata = self.ast_ref.nodeData(member);
+                    if (mdata.lhs == .none) continue;
+                    const sd = self.ast_ref.extraData(ast.InterfaceSigData, @intFromEnum(mdata.lhs));
+                    if (self.buildSignatureRaw(sd.params_start, sd.params_end, sd.return_type, .none, false)) |raw_sig| {
+                        if (sig_n < sig_buf.len) {
+                            var sig = raw_sig;
+                            sig.is_construct = (mtag == .ts_construct_signature);
+                            sig_buf[sig_n] = sig;
+                            sig_n += 1;
+                        }
+                    }
+                    continue;
+                }
                 if (self.interfaceMemberToProp(member)) |p| {
                     props.append(self.gpa, p) catch {};
                 }
@@ -4855,7 +4887,12 @@ pub const Checker = struct {
             }
         }
         const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
-        return self.store.add(.{ .kind = .object_t, .object_props = list }) catch tymod.ID_UNKNOWN;
+        // Tag the object with the interface name + base-type refs (in list_data)
+        // — object_t doesn't otherwise use either — so the facade can expose
+        // getSymbol()/getBaseTypes() for isBuiltinSymbolLike.
+        const base_list = if (base_n == 0) tymod.TypeIdList.empty else (self.store.appendTypeIds(base_buf[0..base_n]) catch tymod.TypeIdList.empty);
+        const sig_list = if (sig_n == 0) tymod.SignatureList.empty else (self.store.appendSignatures(sig_buf[0..sig_n]) catch tymod.SignatureList.empty);
+        return self.store.add(.{ .kind = .object_t, .object_props = list, .name = iface_name, .list_data = base_list, .signatures = sig_list }) catch tymod.ID_UNKNOWN;
     }
 
     /// Return the index-signature sentinel for an interface/type-literal member.

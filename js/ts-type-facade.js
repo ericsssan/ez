@@ -112,9 +112,13 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // (rules guard `type.getSymbol()` / `.symbol`).
       symbol: undefined,
       getSymbol() {
-        if (typeId == null || h.kind(typeId) !== 24 /*type_ref*/) return undefined;
-        const nm = h.refName(typeId);
-        return nm ? makeTypeSymbol(nm) : undefined;
+        if (typeId == null) return undefined;
+        const k = h.kind(typeId);
+        if (k === 24 /*type_ref*/) { const nm = h.refName(typeId); return nm ? makeTypeSymbol(nm) : undefined; }
+        // A named object_t is an interface — carry SymbolFlags.Interface + the
+        // declared type so isBuiltinSymbolLike can walk its base types.
+        if (k === 19 /*object_t*/) { const nm = h.refName(typeId); return nm ? makeTypeSymbol(nm, SYMBOL_FLAGS_INTERFACE, typeId) : undefined; }
+        return undefined;
       },
       // Type-parameter constraint: a `.type_param` carries its constraint as its
       // sole type arg (none → unconstrained). Other types have no constraint —
@@ -130,11 +134,17 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // (no-unsafe-return) read these.
       getCallSignatures() {
         const n = h.sigCount(typeId);
-        const out = new Array(n);
-        for (let i = 0; i < n; i++) out[i] = makeSignature(typeId, i);
+        const out = [];
+        for (let i = 0; i < n; i++) if ((h.sigFlags(typeId, i) & 4) === 0) out.push(makeSignature(typeId, i));
         return out;
       },
-      getConstructSignatures() { return []; }, // construct sigs not modelled
+      // Construct signatures (`new (): T`) carry bit 4 in sigFlags.
+      getConstructSignatures() {
+        const n = h.sigCount(typeId);
+        const out = [];
+        for (let i = 0; i < n; i++) if (h.sigFlags(typeId, i) & 4) out.push(makeSignature(typeId, i));
+        return out;
+      },
       // Named property → a synthetic ts.Symbol carrying the property type, or
       // undefined if absent. getProperty('length')/'toString'/the accessed member.
       getProperty(name) {
@@ -415,14 +425,17 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     "Function", "Promise", "Error", "Array", "ReadonlyArray", "Object", "String",
     "Number", "Boolean", "RegExp", "Date", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "BigInt",
   ]);
-  function makeTypeSymbol(name) {
+  function makeTypeSymbol(name, flags, declTypeId) {
+    const f = flags || 0;
     const decl = { getSourceFile() { return DEFAULT_LIB_TYPE_NAMES.has(name) ? LIB_SOURCE_FILE : USER_SOURCE_FILE; } };
     return {
-      name, escapedName: name, flags: 0, valueDeclaration: decl,
+      name, escapedName: name, flags: f, valueDeclaration: decl,
       getName() { return name; }, getEscapedName() { return name; },
-      getDeclarations() { return [decl]; }, getFlags() { return 0; },
+      getDeclarations() { return [decl]; }, getFlags() { return f; },
+      __ez_declType: declTypeId, // for getDeclaredTypeOfSymbol (interface base walk)
     };
   }
+  const SYMBOL_FLAGS_INTERFACE = 64; // ts.SymbolFlags.Interface
   // ts.TypeFlags: literal → its base primitive.
   // literal flag → base-primitive flag (StringLiteral→String, etc.).
   const LITERAL_BASE = { 1024: 32 /*String*/, 2048: 64 /*Number*/, 8192: 256 /*Boolean*/, 4096: 128 /*BigInt*/ };
@@ -441,6 +454,17 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // No separate constraint modelling yet — returning undefined makes
     // getConstrainedTypeAtLocation fall back to the node's own type.
     getBaseConstraintOfType() { return undefined; },
+    // Declared type of an interface/class symbol (the symbol carries it) — and
+    // its base types (the `extends` clause). Together these let
+    // isBuiltinSymbolLike walk `interface X extends Function`.
+    getDeclaredTypeOfSymbol(sym) { return sym && sym.__ez_declType != null ? makeType(sym.__ez_declType) : undefined; },
+    getBaseTypes(type) {
+      if (!type || type.__ez_typeId == null) return [];
+      const n = h.baseCount(type.__ez_typeId);
+      const out = [];
+      for (let i = 0; i < n; i++) { const b = h.baseAt(type.__ez_typeId, i); if (b != null) out.push(makeType(b)); }
+      return out;
+    },
     // Element type(s) of an array reference; [] otherwise. type-utils reads
     // getTypeArguments(arrayType)[0] in a couple of any-detection paths.
     getTypeArguments(type) {

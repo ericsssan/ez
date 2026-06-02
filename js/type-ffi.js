@@ -59,6 +59,8 @@ function binding() {
       ez_type_resolve_type_node_param: { args: [H, U], returns: U },
       ez_type_of_node_param: { args: [H, U], returns: U },
       ez_type_constraint: { args: [H, U], returns: U },
+      ez_type_base_count: { args: [H, U], returns: U },
+      ez_type_base_at: { args: [H, U, U], returns: U },
       // Object properties (by-name lookup; name passed as utf8 ptr+len).
       ez_type_prop_count:         { args: [H, U], returns: U },
       ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
@@ -149,6 +151,12 @@ function _handleObj(b, h) {
     // Constraint TypeId of a `.type_param` (null if unconstrained / not a param).
     constraint(typeId) {
       const r = b.sym.ez_type_constraint(h, typeId >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
+    // Direct base types of an interface object_t (its `extends` clause).
+    baseCount(typeId) { return b.sym.ez_type_base_count(h, typeId >>> 0); },
+    baseAt(typeId, i) {
+      const r = b.sym.ez_type_base_at(h, typeId >>> 0, i >>> 0);
       return r === NO_TYPE ? null : r;
     },
     // Object properties (by name).

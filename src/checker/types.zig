@@ -111,6 +111,9 @@ pub const Signature = struct {
     return_type: TypeId,
     is_async: bool = false,
     is_generator: bool = false,
+    /// True for a construct signature (`new (): T`) — distinguishes
+    /// getConstructSignatures from getCallSignatures in the type-aware facade.
+    is_construct: bool = false,
     /// For `name is X` type-predicate return types: the zero-based
     /// parameter index that's being narrowed, or 0xFFFF when this
     /// signature isn't a type guard.

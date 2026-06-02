@@ -313,6 +313,7 @@ pub export fn ez_type_sig_flags(h: usize, type_id: u32, sig_idx: u32) callconv(.
     var f: u32 = 0;
     if (s.is_async) f |= 1;
     if (s.is_generator) f |= 2;
+    if (s.is_construct) f |= 4;
     return f;
 }
 
@@ -472,6 +473,26 @@ pub export fn ez_type_constraint(h: usize, type_id: u32) callconv(.c) u32 {
     const t = &ctx.checker.store.types.items[type_id];
     if (t.kind != .type_param or t.list_data.len() == 0) return NO_TYPE;
     return ctx.checker.store.idsOf(t.list_data)[0].toInt();
+}
+
+/// Number of direct base types of an interface object_t (its `extends` clause,
+/// stored in list_data); 0 otherwise. Backs the facade's getBaseTypes().
+pub export fn ez_type_base_count(h: usize, type_id: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    const t = &ctx.checker.store.types.items[type_id];
+    return if (t.kind == .object_t) t.list_data.len() else 0;
+}
+
+/// `i`-th base type of an interface object_t (0xFFFFFFFF if out of range).
+pub export fn ez_type_base_at(h: usize, type_id: u32, i: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    if (type_id >= ctx.checker.store.types.items.len) return NO_TYPE;
+    const t = &ctx.checker.store.types.items[type_id];
+    if (t.kind != .object_t) return NO_TYPE;
+    const ids = ctx.checker.store.idsOf(t.list_data);
+    if (i >= ids.len) return NO_TYPE;
+    return ids[i].toInt();
 }
 
 /// `i`-th type argument TypeId (0xFFFFFFFF if out of range).
