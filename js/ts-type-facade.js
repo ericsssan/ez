@@ -883,7 +883,17 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // Build the signature with call-site generic instantiation (callIdx) so
       // param types reflect the inferred type args (no-unsafe-argument).
       if (ct && ct.__ez_typeId != null && h.sigCount(ct.__ez_typeId) > 0) {
-        return makeSignature(ct.__ez_typeId, 0, est && est._i != null ? est._i : null);
+        const nsig = h.sigCount(ct.__ez_typeId);
+        // TS overload resolution: a call with an `any` argument resolves to the
+        // LAST (most permissive) signature, not the first — so an overload set
+        // ending in `(...args: any[]): void` falls through to that non-asserting
+        // tail (strict-boolean-expressions' assertion-overload case).
+        let sigIdx = 0;
+        if (nsig > 1 && est && Array.isArray(est.arguments) &&
+            est.arguments.some(a => { const at = a && typeAt(a); return at != null && (at.getFlags() & 1) !== 0; })) {
+          sigIdx = nsig - 1;
+        }
+        return makeSignature(ct.__ez_typeId, sigIdx, est && est._i != null ? est._i : null);
       }
       const sigs = ct && ct.getCallSignatures ? ct.getCallSignatures() : [];
       if (sigs.length) return sigs[0];
