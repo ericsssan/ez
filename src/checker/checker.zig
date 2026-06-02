@@ -5318,6 +5318,14 @@ pub const Checker = struct {
             const a_stripped = self.stripNullishUnion(a);
             return self.store.unionOf(&.{ a_stripped, b }) catch tymod.ID_ANY;
         }
+        // `a || b` evaluates to `a` when truthy, else `b` — so the result type
+        // drops the falsy part of the LHS. We strip null/undefined (the part that
+        // matters for nullability), matching TS: `(string|null) || 'a'` is
+        // `string | 'a'`, not nullish (prefer-optional-chain's requireNullish).
+        if (tag == .logical_or) {
+            const a_stripped = self.stripNullishUnion(a);
+            return self.store.unionOf(&.{ a_stripped, b }) catch tymod.ID_ANY;
+        }
         return self.store.unionOf(&.{ a, b }) catch tymod.ID_ANY;
     }
 

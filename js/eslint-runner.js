@@ -54,6 +54,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/use-unknown-in-catch-callback-variable",// 54%
   "@typescript-eslint/prefer-regexp-exec",                    // 25%
   "@typescript-eslint/no-base-to-string",                     // 8% (FP-safe; checker recall-limited)
+  "@typescript-eslint/prefer-optional-chain",                 // 586/587 (CRASH-batch: literal .value FFIs + `||` nullish strip)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
