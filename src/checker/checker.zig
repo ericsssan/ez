@@ -2368,6 +2368,13 @@ pub const Checker = struct {
             },
             .no => return self.resolveTypeNodeWithSubst(false_node, keys, vals),
             .unknown => {
+                // The check type is still a free type parameter (e.g. `D` in
+                // `D extends Wrapper<infer V> ? V : never` while D is generic):
+                // TS leaves the conditional *deferred* (an opaque type, not any).
+                // Evaluating both branches would yield a `branch | never` union
+                // whose `any` branch makes the whole thing read as `any` — a
+                // false positive for the no-unsafe-* rules. Keep it unknown.
+                if (check_t.kind == .type_param) return tymod.ID_UNKNOWN;
                 const a = blk: {
                     if (infer_count == 0) break :blk self.resolveTypeNodeWithSubst(true_node, keys, vals);
                     var mk: [8][]const u8 = undefined;
@@ -2644,7 +2651,17 @@ pub const Checker = struct {
             const arg: NodeIndex = @enumFromInt(self.ast_ref.extra_data[arg_range.start + i]);
             if (self.ast_ref.nodeTag(tp) != .ts_type_parameter) continue;
             keys_buf[nsub] = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(tp));
-            vals_buf[nsub] = self.resolveTypeNode(arg);
+            // A free type parameter as the argument (e.g. `Extractor<D>` where D
+            // is still generic) keeps a conditional-type alias *deferred* in TS:
+            // its check type isn't concrete, so neither branch is chosen. Binding
+            // it to the param's *constraint* (what resolveTypeNode does) would
+            // evaluate a `branch | never` union that reads as `any` when the
+            // constraint is `any`-ish. Mark it type_param so the conditional
+            // resolver defers to unknown instead.
+            vals_buf[nsub] = if (self.argIsInScopeTypeParam(arg))
+                (self.store.add(.{ .kind = .type_param }) catch tymod.ID_UNKNOWN)
+            else
+                self.resolveTypeNode(arg);
             nsub += 1;
         }
         if (nsub == 0) return null;
@@ -2775,9 +2792,22 @@ pub const Checker = struct {
         const s = self.store.get(source);
         const t = self.store.get(target);
         if (s.kind == .never) return .yes;
+        // `never` is the bottom type: only `never` is assignable to it (source
+        // `any`/`never` already returned above), so any other source → no.
+        if (t.kind == .never) return .no;
+        // `unknown` is the top type: assignable only to `unknown`/`any` (both
+        // handled above), so an `unknown` source flowing into any concrete
+        // target is NOT assignable (e.g. `unknown as number`, element of
+        // `unknown[] as number[]`). Decisive `.no`, not `.unknown`.
+        if (s.kind == .unknown) return .no;
         // Anything depending on a generic / error type → can't decide.
         if (s.kind == .type_param or t.kind == .type_param or
-            s.kind == .error_t or t.kind == .error_t or s.kind == .unknown) return .unknown;
+            s.kind == .error_t or t.kind == .error_t) return .unknown;
+        // Strict-null: `undefined`/`null` are not assignable to a scalar
+        // primitive (and vice versa) — `string | undefined as string` narrows
+        // unsafely. (`undefined → void` and the eq case are handled above/below.)
+        if ((s.kind == .undefined_t or s.kind == .null_t) and isScalarPrimKind(t.kind)) return .no;
+        if ((t.kind == .undefined_t or t.kind == .null_t) and isScalarPrimKind(s.kind)) return .no;
         // Union source: EVERY member assignable to target (check before
         // union-target so a union→union compares each source member, not the
         // whole union against each target member).
@@ -3763,6 +3793,24 @@ pub const Checker = struct {
         var args_buf: [8]TypeId = undefined;
         const args = self.collectTypeArgs(ty_node, &args_buf);
         return self.store.typeRef(name, args) catch tymod.ID_ANY;
+    }
+
+    /// True when `arg` (a type-position node, possibly parenthesized) is a bare
+    /// reference to a type parameter declared in an enclosing scope — i.e. a
+    /// *free* generic. Used to keep conditional-type aliases deferred.
+    fn argIsInScopeTypeParam(self: *Checker, arg: NodeIndex) bool {
+        var n = arg;
+        while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+        if (self.ast_ref.nodeTag(n) != .ts_type_reference) return false;
+        // A type ref with its own args is an instantiation, not a bare param.
+        if (self.ast_ref.nodeData(n).rhs != .none) return false;
+        const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+        const ty_pos = self.ast_ref.tokenStart(self.ast_ref.nodeMainToken(n));
+        for (self.type_param_nodes.items) |ni| {
+            if (!std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ni)), name)) continue;
+            if (self.ast_ref.tokenStart(self.ast_ref.nodeMainToken(ni)) < ty_pos) return true;
+        }
+        return false;
     }
 
     /// Find a `ts_type_parameter` declaration named `name` enclosing
@@ -5070,7 +5118,19 @@ pub const Checker = struct {
         if (self.ast_ref.nodeTag(node) == .new_expr or
             self.calleeIsConstructible(callee))
         {
-            if (self.newExprInstanceType(callee)) |ty| return ty;
+            // `new X<T>()` can parse as ts_instantiation_expr(new_expr, <T>) —
+            // the type args live on the new_expr's PARENT, not its callee.
+            // Resolve through the parent so `new Set<any>()` keeps its <any>.
+            var inst_callee = callee;
+            if (self.ast_ref.nodeTag(node) == .new_expr) {
+                const parents = self.ast_ref.parents;
+                if (node.toInt() < parents.len) {
+                    const par: NodeIndex = @enumFromInt(parents[node.toInt()]);
+                    if (par != .none and self.ast_ref.nodeTag(par) == .ts_instantiation_expr)
+                        inst_callee = par;
+                }
+            }
+            if (self.newExprInstanceType(inst_callee)) |ty| return ty;
         }
         const callee_ty = self.typeOf(callee);
         if (tymod.isAny(&self.store, callee_ty)) return tymod.ID_ANY;

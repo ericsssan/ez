@@ -198,29 +198,34 @@ pub const SINGLETON_COUNT: u32 = 13;
 /// and the structural accessors instead of running tsc.  Values are the
 /// stable `ts.TypeFlags` constants.
 pub fn tsTypeFlags(kind: TypeKind) u32 {
+    // NOTE: these are the bundled `typescript` package's actual ts.TypeFlags
+    // values (verified at runtime) — NOT the historical/standard layout. The JS
+    // rules compare `type.flags & ts.TypeFlags.X`, so these MUST match what
+    // `require("typescript")` exposes or every flag check except Any/Unknown
+    // silently fails. (Facade-only; native rules read TypeKind, not these.)
     return switch (kind) {
         .any => 1, // Any
         .unknown => 2, // Unknown
-        .string => 4, // String
-        .number => 8, // Number
-        .boolean => 16, // Boolean
-        .bigint => 64, // BigInt
-        .string_literal => 128, // StringLiteral
-        .number_literal => 256, // NumberLiteral
-        .boolean_literal => 512, // BooleanLiteral
-        .bigint_literal => 2048, // BigIntLiteral
-        .symbol => 4096, // ESSymbol
-        .void_t => 16384, // Void
-        .undefined_t => 32768, // Undefined
-        .null_t => 65536, // Null
-        .never => 131072, // Never
-        .type_param => 262144, // TypeParameter
+        .undefined_t => 4, // Undefined
+        .null_t => 8, // Null
+        .void_t => 16, // Void
+        .string => 32, // String
+        .number => 64, // Number
+        .bigint => 128, // BigInt
+        .boolean => 256, // Boolean
+        .symbol => 512, // ESSymbol
+        .string_literal => 1024, // StringLiteral
+        .number_literal => 2048, // NumberLiteral
+        .bigint_literal => 4096, // BigIntLiteral
+        .boolean_literal => 8192, // BooleanLiteral
+        .object_keyword => 131072, // NonPrimitive ("object" keyword)
+        .never => 262144, // Never
+        .type_param => 524288, // TypeParameter
         // Object-ish kinds all carry the Object flag (Array/tuple/function are
         // object types; type_ref resolves to a named object/class).
-        .object_t, .function_t, .array_t, .readonly_array_t, .tuple_t, .type_ref => 524288, // Object
-        .union_t => 1048576, // Union
-        .intersection_t => 2097152, // Intersection
-        .object_keyword => 67108864, // NonPrimitive ("object" keyword)
+        .object_t, .function_t, .array_t, .readonly_array_t, .tuple_t, .type_ref => 1048576, // Object
+        .union_t => 134217728, // Union
+        .intersection_t => 268435456, // Intersection
         // TS's intrinsic error type behaves like `any` for rule purposes.
         .error_t => 1, // Any
     };

@@ -5396,6 +5396,29 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
         selectorSlots.push(slot);
         selectorHandlers.push(slot);
         recipe.push({ visitorKey, sel: true, numSlots: 1 });
+        // Synthetic body nodes (TSInterfaceBody, …) aren't real DFS tags, so the
+        // selector engine never sees them — they fire only via a visitorMap key
+        // lookup. A pure `:matches(A, B, C)` (no attributes/combinators) where a
+        // branch is a synthetic body type must therefore also register a plain
+        // map entry, or e.g. related-getter-setter-pairs'
+        // `:matches(ClassBody, TSInterfaceBody, TSTypeLiteral):exit` never fires
+        // for interfaces. Real branches (ClassBody/TSTypeLiteral) keep firing via
+        // the selector engine — only synthetic types are added here.
+        if (/^:(?:matches|is)\(\s*[A-Z][A-Za-z0-9]*(?:\s*,\s*[A-Z][A-Za-z0-9]*)*\s*\)$/.test(selector)) {
+          const roots = _getSelectorRootTypes(selector);
+          if (Array.isArray(roots)) {
+            for (const rt of roots) {
+              if (!_SYNTHETIC_BODY_TYPES.has(rt)) continue;
+              const mapKey = isExit ? rt + ':exit' : rt;
+              if (!map.has(mapKey)) map.set(mapKey, []);
+              const safe = _makeSafeHandler(ruleId, pluginIdx, context);
+              safe._state.inner = handler;
+              const mslot = { handler: safe, _state: safe._state, ruleId, _ruleIdx: pluginIdx, ruleMeta, ruleOptions };
+              handlerSlots.push(mslot);
+              map.get(mapKey).push(mslot);
+            }
+          }
+        }
         continue;
       }
       const expandedKeys = _expandUnion(visitorKey);
@@ -6998,6 +7021,12 @@ function _ensureTagCaches(tagNames) {
 const _PSEUDO_CLASS_TYPES = {
   'function': ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'],
 };
+
+// ESTree node types that are synthesized by the adapter (not real DFS-buffer
+// nodes). They fire enter/exit only via a direct visitorMap key lookup in
+// walkNodes, so a `:matches(...)` selector naming one must register a plain map
+// entry too (see buildVisitorMap's selector branch).
+const _SYNTHETIC_BODY_TYPES = new Set(['TSInterfaceBody', 'TSEnumBody', 'TSModuleBlock']);
 
 /**
  * Extract the node type(s) that a CSS selector key can match.
@@ -8782,7 +8811,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Fires after all member DFS exits, before TSInterfaceDeclaration exits.
       if (_hasTsInterfaceBodySynth && tag === _tsInterfaceDeclTagNum) {
         const _ifaceNode2 = nodeView(ast, idx);
-        const _ifaceBody2 = _ifaceNode2._body; // use cached value to avoid recompute
+        const _ifaceBody2 = _ifaceNode2.body; // `.body` getter (_body cache moved to a WeakMap; raw read is always undefined)
         if (_ifaceBody2 && _tsInterfaceBodyExitH) {
           _invokeFused(_tsInterfaceBodyExitH, _ifaceBody2, idx, context);
         }

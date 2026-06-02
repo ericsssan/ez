@@ -33,6 +33,17 @@ const TS_TYPE_NODES = new Set([
 // Minimal ts.TupleType.target for tuple/array types (spread-arg handling reads
 // `.target.combinedFlags`; 0 = no variable/rest tuple element).
 const TUPLE_TARGET = Object.freeze({ combinedFlags: 0, elementFlags: Object.freeze([]) });
+// Per-generic-name `.target` identity: isUnsafeAssignment recurses into type
+// args only when `sender.target === receiver.target`, so Set<any> vs Set<number>
+// (same name "Set") share a target and recurse, while Set<any> vs
+// ReadonlySet<number> get distinct targets and don't (avoids a false unsafe).
+const _refTargetByName = new Map();
+function refTargetFor(name) {
+  let t = _refTargetByName.get(name);
+  if (!t) { t = Object.freeze({ combinedFlags: 0, __name: name }); _refTargetByName.set(name, t); }
+  return t;
+}
+const OBJECTFLAGS_REFERENCE = 4; // ts.ObjectFlags.Reference
 
 // Lazy `typescript` (already loaded — the rules require it) for the SyntaxKind
 // constants a rest-parameter declaration needs (isRestParameterDeclaration =
@@ -56,13 +67,14 @@ function restDecl() {
 // ts.Type predicate methods (rules call type.isUnion() / isLiteral() / …).
 // Pure flag tests over the ts.TypeFlags bitmask.
 function defineTypePredicates(ty, flags) {
-  ty.isUnion = () => (flags & 1048576) !== 0;
-  ty.isIntersection = () => (flags & 2097152) !== 0;
-  ty.isUnionOrIntersection = () => (flags & 3145728) !== 0;
-  ty.isLiteral = () => (flags & 2432) !== 0; // String|Number|BigInt literal
-  ty.isStringLiteral = () => (flags & 128) !== 0;
-  ty.isNumberLiteral = () => (flags & 256) !== 0;
-  ty.isTypeParameter = () => (flags & 262144) !== 0;
+  // ts.TypeFlags values from the bundled `typescript` (see types.zig tsTypeFlags).
+  ty.isUnion = () => (flags & 134217728) !== 0; // Union
+  ty.isIntersection = () => (flags & 268435456) !== 0; // Intersection
+  ty.isUnionOrIntersection = () => (flags & 402653184) !== 0; // Union|Intersection
+  ty.isLiteral = () => (flags & 7168) !== 0; // StringLiteral|NumberLiteral|BigIntLiteral (1024|2048|4096)
+  ty.isStringLiteral = () => (flags & 1024) !== 0;
+  ty.isNumberLiteral = () => (flags & 2048) !== 0;
+  ty.isTypeParameter = () => (flags & 524288) !== 0; // TypeParameter
   ty.isClass = () => false;
   ty.isClassOrInterface = () => false;
   ty.isIndexType = () => false;
@@ -94,10 +106,16 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         const ids = h.members(typeId);
         return ids.length ? ids.map(makeType) : undefined;
       },
-      // Symbol modelling is not wired yet — undefined is the safe ts.Type
-      // value (rules guard `type.getSymbol()` / `.symbol`).
+      // Named types (type_ref like `Function`/`Promise`/a user interface) carry
+      // a symbol whose name + default-library origin back isBuiltinSymbolLike
+      // (no-unsafe-call's bare-`Function` check). Unnamed types stay undefined
+      // (rules guard `type.getSymbol()` / `.symbol`).
       symbol: undefined,
-      getSymbol() { return undefined; },
+      getSymbol() {
+        if (typeId == null || h.kind(typeId) !== 24 /*type_ref*/) return undefined;
+        const nm = h.refName(typeId);
+        return nm ? makeTypeSymbol(nm) : undefined;
+      },
       // Type-parameter constraint — not modelled; undefined means "no
       // constraint", so constraint-walking helpers (isBuiltinSymbolLikeRecurser,
       // getConstrainedTypeAtLocation fallbacks) fall back to the type itself.
@@ -117,10 +135,26 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // undefined if absent. getProperty('length')/'toString'/the accessed member.
       getProperty(name) {
         const pid = h.propType(typeId, name);
-        if (pid == null) return undefined;
+        if (pid == null) {
+          // Promise<T> is thenable — hand isThenableType the synthetic `then`
+          // (our checker doesn't model Promise's methods structurally).
+          if (name === "then" && typeId != null && h.nameEq(typeId, "Promise")) return SYNTH_THEN_SYM;
+          return undefined;
+        }
         return makeSymbol(name, pid, h.propFlags(typeId, name));
       },
-      getProperties() { return []; }, // by-name only — no name iteration yet
+      // Enumerate all properties (name + type) — no-unsafe-assignment's
+      // object-destructure walk builds a name→type map from getProperties().
+      getProperties() {
+        const n = h.propCount(typeId);
+        const out = [];
+        for (let i = 0; i < n; i++) {
+          const nm = h.propNameAt(typeId, i);
+          if (!nm) continue;
+          out.push(makeSymbol(nm, h.propTypeAt(typeId, i), h.propFlags(typeId, nm)));
+        }
+        return out;
+      },
       getApparentType() { return ty; },
       // Arrays/tuples are number-indexed by their element type.
       getNumberIndexType() {
@@ -132,12 +166,29 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         return undefined;
       },
       getStringIndexType() { return undefined; },
-      // ts.TupleType.target — only meaningful for tuple/array kinds (spread-arg
-      // handling reads target.combinedFlags). Undefined elsewhere so
-      // isTypeReference-style checks are unaffected.
+      // ts.TupleType.target — arrays/tuples share TUPLE_TARGET (spread-arg
+      // handling reads .combinedFlags), type_refs share TYPEREF_TARGET, so
+      // isUnsafeAssignment recurses into type args for same-kind references.
       get target() {
         const k = h.kind(typeId);
-        return (k === 23 /*tuple*/ || k === 21 /*array*/ || k === 22 /*readonly_array*/) ? TUPLE_TARGET : undefined;
+        if (k === 23 /*tuple*/ || k === 21 /*array*/ || k === 22 /*readonly_array*/) return TUPLE_TARGET;
+        if (k === 24 /*type_ref*/) return refTargetFor(h.refName(typeId));
+        return undefined;
+      },
+      // ts.ObjectFlags — Reference for arrays/tuples/type_refs so isTypeReference
+      // is true and isUnsafeAssignment recurses into typeArguments (catches `any`
+      // nested in Set<any> / any[] / [any]).
+      get objectFlags() {
+        const k = h.kind(typeId);
+        return (k === 21 || k === 22 || k === 23 || k === 24) ? OBJECTFLAGS_REFERENCE : 0;
+      },
+      // ts.TypeReference.typeArguments (the field isUnsafeAssignment reads).
+      get typeArguments() {
+        const n = h.typeArgCount(typeId);
+        if (n === 0) return undefined;
+        const out = new Array(n);
+        for (let i = 0; i < n; i++) { const a = h.typeArg(typeId, i); out[i] = a != null ? makeType(a) : undefined; }
+        return out;
       },
       // Internal handle hooks (non-ts, for our own helpers).
       __ez_typeId: typeId,
@@ -186,6 +237,29 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       if (ann && ann._i != null) {
         const rt = h.resolveTypeNode(ann._i);
         if (rt != null && h.kind(rt) !== 1) tid = rt;
+      }
+    }
+    // An un-annotated assignment *receiver* (destructuring pattern, default-param
+    // binding, object-literal property key, class field/accessor key) has no type
+    // of its own in our checker (→ Unknown). TS types it as the assigned value's
+    // type; no-unsafe-assignment's `isTypeUnknownType(receiver)` guard would
+    // otherwise suppress an `any` value (Unknown swallows any → false negative).
+    if (tid == null || h.kind(tid) === 1) {
+      const p = est.parent;
+      let src = null;
+      if (est.type === "ArrayPattern" || est.type === "ObjectPattern") {
+        src = p && p.type === "VariableDeclarator" ? p.init
+          : p && p.type === "AssignmentExpression" ? p.right
+          : p && p.type === "AssignmentPattern" ? p.right : null;
+      } else if (p && p.type === "AssignmentPattern" && p.left === est) {
+        src = p.right; // default-param / default-destructure binding
+      } else if (p && (p.type === "Property" || p.type === "PropertyDefinition" ||
+                 p.type === "AccessorProperty") && p.key === est) {
+        src = p.value; // object-literal property / class field value
+      }
+      if (src && src._i != null) {
+        const st = h.typeOfNode(src._i);
+        if (st != null && h.kind(st) !== 1) tid = st;
       }
     }
     return makeType(tid);
@@ -263,6 +337,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
 
   // A symbol's type.
   function symType(sym) {
+    if (sym && sym.__ez_synthType) return sym.__ez_synthType;
     return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined;
   }
 
@@ -273,8 +348,53 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       flags,
     );
   }
+
+  // Synthetic thenable structure: ts-api-utils' isThenableType walks
+  // getApparentType → getProperty('then') → the then-signature's first param,
+  // which must itself be a callback (a function type with ≥1 call signature).
+  // Our checker doesn't model Promise.then, so we hand isThenableType exactly
+  // that shape for any `Promise<…>` type_ref. discriminateAnyType then unwraps
+  // Promise<any> (via getAwaitedType) and flags async functions returning any.
+  function synthFn(params, minArgs) {
+    const t = syntheticType(1048576 /*Object*/);
+    const sig = {
+      getReturnType: () => syntheticType(1 /*any*/), getParameters: () => params,
+      parameters: params, minArgumentCount: minArgs,
+      getTypeParameters: () => undefined, typeParameters: undefined,
+      getDeclaration: () => undefined, declaration: undefined,
+    };
+    t.getCallSignatures = () => [sig];
+    t.getNumberIndexType = () => undefined;
+    return t;
+  }
+  function synthParam(name, type) {
+    return { name, escapedName: name, getName() { return name; }, valueDeclaration: EMPTY_DECL,
+      getDeclarations() { return undefined; }, getFlags() { return 0; }, __ez_synthType: type };
+  }
+  const SYNTH_THEN_SYM = synthParam("then", synthFn([synthParam("onfulfilled", synthFn([], 0))], 1));
+
+  // ts.SourceFile sentinels: isSymbolFromDefaultLibrary checks whether a
+  // symbol's declaration lives in a lib.d.ts file. We don't model real
+  // declarations, so named builtins get a LIB sentinel and user types a USER
+  // one. no-unsafe-call's isBuiltinSymbolLike(type, 'Function') uses this to
+  // flag calling the bare `Function` type.
+  const LIB_SOURCE_FILE = Object.freeze({ __ez_lib: true });
+  const USER_SOURCE_FILE = Object.freeze({ __ez_lib: false });
+  const DEFAULT_LIB_TYPE_NAMES = new Set([
+    "Function", "Promise", "Error", "Array", "ReadonlyArray", "Object", "String",
+    "Number", "Boolean", "RegExp", "Date", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "BigInt",
+  ]);
+  function makeTypeSymbol(name) {
+    const decl = { getSourceFile() { return DEFAULT_LIB_TYPE_NAMES.has(name) ? LIB_SOURCE_FILE : USER_SOURCE_FILE; } };
+    return {
+      name, escapedName: name, flags: 0, valueDeclaration: decl,
+      getName() { return name; }, getEscapedName() { return name; },
+      getDeclarations() { return [decl]; }, getFlags() { return 0; },
+    };
+  }
   // ts.TypeFlags: literal → its base primitive.
-  const LITERAL_BASE = { 128: 4 /*String*/, 256: 8 /*Number*/, 512: 16 /*Boolean*/, 2048: 64 /*BigInt*/ };
+  // literal flag → base-primitive flag (StringLiteral→String, etc.).
+  const LITERAL_BASE = { 1024: 32 /*String*/, 2048: 64 /*Number*/, 8192: 256 /*Boolean*/, 4096: 128 /*BigInt*/ };
 
   const checker = {
     getTypeAtLocation: typeAt,
@@ -432,6 +552,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // lets those rules proceed; absent flags default falsy, matching "not set".
     getCompilerOptions() { return {}; },
     getSourceFiles() { return []; },
+    // True for our LIB sentinel source file (builtin types) — backs
+    // isSymbolFromDefaultLibrary in isBuiltinSymbolLike.
+    isSourceFileDefaultLibrary(sf) { return !!(sf && sf.__ez_lib); },
   };
 
   return {

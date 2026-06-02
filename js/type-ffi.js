@@ -60,10 +60,13 @@ function binding() {
       ez_type_prop_count:         { args: [H, U], returns: U },
       ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_prop_flags_by_name: { args: [H, U, FFIType.ptr, U], returns: U },
+      ez_type_prop_name_at:       { args: [H, U, U, FFIType.ptr, U], returns: U },
+      ez_type_prop_type_at:       { args: [H, U, U], returns: U },
       // Type arguments + name (type refs like Promise<T>).
       ez_type_type_arg_count: { args: [H, U], returns: U },
       ez_type_type_arg:       { args: [H, U, U], returns: U },
       ez_type_name_eq:        { args: [H, U, FFIType.ptr, U], returns: FFIType.u8 },
+      ez_type_ref_name:       { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_tag_last:    { args: [U], returns: FFIType.void },
       ez_type_open_reuse:  { args: [U], returns: H },
     });
@@ -141,6 +144,16 @@ function _handleObj(b, h) {
       const r = b.sym.ez_type_prop_flags_by_name(h, typeId >>> 0, b.ptr(buf), buf.length);
       return r === NO_TYPE ? -1 : r;
     },
+    // Enumerate properties by index — name + type (for getProperties()).
+    propNameAt(typeId, idx) {
+      const buf = Buffer.allocUnsafe(128);
+      const n = b.sym.ez_type_prop_name_at(h, typeId >>> 0, idx >>> 0, b.ptr(buf), buf.length);
+      return n > 0 ? buf.toString("utf8", 0, n) : "";
+    },
+    propTypeAt(typeId, idx) {
+      const r = b.sym.ez_type_prop_type_at(h, typeId >>> 0, idx >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
     // Type arguments (type refs like Promise<T>, arrays, tuples).
     typeArgCount(typeId) { return b.sym.ez_type_type_arg_count(h, typeId >>> 0); },
     typeArg(typeId, i) {
@@ -150,6 +163,13 @@ function _handleObj(b, h) {
     nameEq(typeId, name) {
       const buf = Buffer.from(name, "utf8");
       return b.sym.ez_type_name_eq(h, typeId >>> 0, b.ptr(buf), buf.length) === 1;
+    },
+    // The type's name (e.g. "Set", "Promise"), or "" if unnamed. Used to key
+    // per-generic ts.TypeReference.target identity in the facade.
+    refName(typeId) {
+      const buf = Buffer.allocUnsafe(64);
+      const n = b.sym.ez_type_ref_name(h, typeId >>> 0, b.ptr(buf), buf.length);
+      return n > 0 ? buf.toString("utf8", 0, n) : "";
     },
     close() { b.sym.ez_type_close(h); },
   };

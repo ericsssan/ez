@@ -403,6 +403,31 @@ pub export fn ez_type_prop_flags_by_name(h: usize, type_id: u32, name_ptr: [*]co
     return f;
 }
 
+/// Name of the `idx`-th property copied into `out` (truncated to out_len),
+/// returning its byte length. Backs the facade's getProperties() enumeration
+/// (no-unsafe-assignment's object-destructure walk reads every property name).
+pub export fn ez_type_prop_name_at(h: usize, type_id: u32, idx: u32, out: [*]u8, out_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    const pl = ctx.checker.store.types.items[type_id].object_props;
+    const props = ctx.checker.store.object_prop_pool.items[pl.start..pl.end];
+    if (idx >= props.len) return 0;
+    const name = props[idx].name;
+    const n = @min(name.len, out_len);
+    @memcpy(out[0..n], name[0..n]);
+    return @intCast(n);
+}
+
+/// TypeId of the `idx`-th property (0xFFFFFFFF if out of range).
+pub export fn ez_type_prop_type_at(h: usize, type_id: u32, idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    if (type_id >= ctx.checker.store.types.items.len) return NO_TYPE;
+    const pl = ctx.checker.store.types.items[type_id].object_props;
+    const props = ctx.checker.store.object_prop_pool.items[pl.start..pl.end];
+    if (idx >= props.len) return NO_TYPE;
+    return props[idx].type_id.toInt();
+}
+
 // ── Type arguments + name (type references, e.g. Promise<T>) ────────────────
 //
 // A `type_ref` (Foo<A,B>) and array/tuple kinds keep their type arguments in
@@ -444,6 +469,19 @@ pub export fn ez_type_name_eq(h: usize, type_id: u32, name_ptr: [*]const u8, nam
     return if (std.mem.eql(u8, t.name, name_ptr[0..name_len])) 1 else 0;
 }
 
+// Copy a type's name into `out` (truncated to out_len). Returns the byte length
+// written. The facade keys one synthetic ts.TypeReference.target object per
+// generic name so isUnsafeAssignment only recurses into type args of same-named
+// references (Set<any> vs Set<number> share target; Set vs ReadonlySet differ).
+pub export fn ez_type_ref_name(h: usize, type_id: u32, out: [*]u8, out_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    const name = ctx.checker.store.types.items[type_id].name;
+    const n = @min(name.len, out_len);
+    @memcpy(out[0..n], name[0..n]);
+    return @intCast(n);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 test "type_ffi: open → typeOf → kind/flags → close" {
@@ -461,12 +499,12 @@ test "type_ffi: open → typeOf → kind/flags → close" {
             const tid = ez_type_of_node(h, @intCast(i));
             try std.testing.expect(tid != NO_TYPE);
             try std.testing.expectEqual(@intFromEnum(tymod.TypeKind.number_literal), ez_type_kind(h, tid));
-            try std.testing.expectEqual(@as(u32, 256), ez_type_flags(h, tid)); // NumberLiteral
+            try std.testing.expectEqual(@as(u32, 2048), ez_type_flags(h, tid)); // NumberLiteral
             saw_num = true;
         }
         if (tag == .string_literal) {
             const tid = ez_type_of_node(h, @intCast(i));
-            try std.testing.expectEqual(@as(u32, 128), ez_type_flags(h, tid)); // StringLiteral
+            try std.testing.expectEqual(@as(u32, 1024), ez_type_flags(h, tid)); // StringLiteral
             saw_str = true;
         }
     }
@@ -496,8 +534,8 @@ test "type_ffi: call signatures (params + return type)" {
     try std.testing.expectEqual(@as(u32, 1), ez_type_sig_count(h, fn_tid));
     try std.testing.expectEqual(@as(u32, 2), ez_type_sig_param_count(h, fn_tid, 0));
     // param 0 is number (flags 8), return is string (flags 4).
-    try std.testing.expectEqual(@as(u32, 8), ez_type_flags(h, ez_type_sig_param(h, fn_tid, 0, 0)));
-    try std.testing.expectEqual(@as(u32, 4), ez_type_flags(h, ez_type_sig_return(h, fn_tid, 0)));
+    try std.testing.expectEqual(@as(u32, 64), ez_type_flags(h, ez_type_sig_param(h, fn_tid, 0, 0)));
+    try std.testing.expectEqual(@as(u32, 32), ez_type_flags(h, ez_type_sig_return(h, fn_tid, 0)));
 }
 
 test "type_ffi: object property by name" {
@@ -515,8 +553,8 @@ test "type_ffi: object property by name" {
     const cnt = "count";
     const count_tid = ez_type_prop_type_by_name(h, obj_tid, cnt.ptr, cnt.len);
     try std.testing.expect(count_tid != NO_TYPE);
-    const cf = ez_type_flags(h, count_tid); // number (8) or number-literal (256)
-    try std.testing.expect(cf == 8 or cf == 256);
+    const cf = ez_type_flags(h, count_tid); // number (64) or number-literal (2048)
+    try std.testing.expect(cf == 64 or cf == 2048);
     const missing = "nope";
     try std.testing.expectEqual(@as(u32, NO_TYPE), ez_type_prop_type_by_name(h, obj_tid, missing.ptr, missing.len));
 }
@@ -541,7 +579,7 @@ test "type_ffi: Promise<T> type ref (name + type arg)" {
     try std.testing.expectEqual(@as(u8, 1), ez_type_name_eq(h, ret, promise.ptr, promise.len));
     try std.testing.expect(ez_type_type_arg_count(h, ret) >= 1);
     // The awaited type arg is string (flags 4).
-    try std.testing.expectEqual(@as(u32, 4), ez_type_flags(h, ez_type_type_arg(h, ret, 0)));
+    try std.testing.expectEqual(@as(u32, 32), ez_type_flags(h, ez_type_type_arg(h, ret, 0)));
 }
 
 test "type_ffi: generic param instantiation (any-wins + rest spread)" {
