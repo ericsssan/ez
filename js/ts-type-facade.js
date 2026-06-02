@@ -922,7 +922,20 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // modelled (undefined → callers guard).
     getSymbolAtLocation(node) {
       const est = node && (node._i != null ? node : node._estree);
-      if (!est || est._i == null) return undefined;
+      if (!est) return undefined;
+      // An enum's name id → a symbol exposing the enum's own declaration so
+      // no-mixed-enums can read its first member. A merged enum's first-decl walk
+      // reduces to this single file (no FP). The enum id has no `_i` (token-based)
+      // but its parent links to the TSEnumDeclaration (estree-adapter).
+      const enumDecl = est.type === "TSEnumDeclaration" ? est
+        : (est.parent && est.parent.type === "TSEnumDeclaration" ? est.parent : null);
+      if (enumDecl) {
+        const decl = { members: (enumDecl.body && enumDecl.body.members) || enumDecl.members || [] };
+        const nm = est.name || "";
+        return { name: nm, escapedName: nm, getName() { return nm; }, getFlags() { return 0; },
+          valueDeclaration: decl, getDeclarations() { return [decl]; } };
+      }
+      if (est._i == null) return undefined;
       const t = typeAt(est);
       if (!t || t.__ez_typeId == null) return undefined;
       const name = est.name || (est.id && est.id.name) || "";

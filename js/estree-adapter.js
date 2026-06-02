@@ -2577,10 +2577,14 @@ const NodeProto = {
       const name_tok = ast._extraData[lhs];
       return _tokenIdentifier(ast, name_tok);
     }
-    // TSEnumDeclaration: still token-based for now.
+    // TSEnumDeclaration: token-based identifier, but link its parent to the enum
+    // so a rule resolving `getSymbolAtLocation(enum.id)` can reach the enum body
+    // (no-mixed-enums' merged-namespace branch).
     if (t === T.ts_enum_decl) {
       const name_tok = ast._extraData[lhs];
-      return _tokenIdentifier(ast, name_tok);
+      const idNode = _tokenIdentifier(ast, name_tok);
+      idNode.parent = nodeView(ast, this._i);
+      return idNode;
     }
     // TSModuleDeclaration / TSNamespaceDeclaration: id is lhs (Identifier node).
     if (t === T.ts_module_decl || t === T.ts_namespace_decl) {
