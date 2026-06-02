@@ -385,6 +385,9 @@ pub const Checker = struct {
         // back to the curated lib shapes so member access / calls type
         // correctly without modelling the full lib.d.ts.
         if (self.global_value_types.get(name)) |t| return t;
+        // Unresolved identifier — Unknown (FP-safe). NOT the error type: our
+        // globals model is incomplete, so real globals/constructors (`Map`,
+        // namespace refs) reach here too and must not read as unsafe.
         return tymod.ID_UNKNOWN;
     }
 
