@@ -2789,6 +2789,14 @@ pub const Checker = struct {
         };
     }
 
+    /// Property names present on every primitive's apparent (boxed) type — so a
+    /// primitive *is* assignable to an object requiring only these.
+    fn isApparentMember(name: []const u8) bool {
+        return std.mem.eql(u8, name, "toString") or std.mem.eql(u8, name, "valueOf") or
+            std.mem.eql(u8, name, "length") or std.mem.eql(u8, name, "constructor") or
+            std.mem.eql(u8, name, "hasOwnProperty");
+    }
+
     fn structuralAssignable(self: *Checker, source: TypeId, target: TypeId, depth: u8) AssignResult {
         if (source.eq(target)) return .yes;
         if (target.eq(tymod.ID_ANY) or source.eq(tymod.ID_ANY)) return .yes;
@@ -2913,6 +2921,18 @@ pub const Checker = struct {
                 }
             }
             return if (any_unknown) .unknown else .yes;
+        }
+        // Scalar primitive → object literal: not assignable when the object
+        // requires a "data" property the primitive lacks (`string as { hello:
+        // 'world' }`). Skip well-known apparent members (toString/valueOf/length)
+        // which a primitive's boxed type does provide — leave those `.unknown`
+        // rather than risk a false positive (we don't model apparent types).
+        if (isScalarPrimKind(s.kind) and t.kind == .object_t) {
+            for (self.store.propsOf(t.object_props)) |tp| {
+                if (tp.optional or isApparentMember(tp.name)) continue;
+                return .no;
+            }
+            return .unknown;
         }
         // Array / tuple covariance.
         if ((s.kind == .array_t or s.kind == .readonly_array_t) and
