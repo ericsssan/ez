@@ -2344,8 +2344,7 @@ pub const Checker = struct {
                 while (i < n) : (i += 1) {
                     buf[i] = self.resolveTypeNodeWithSubst(@enumFromInt(slice[i]), keys, vals);
                 }
-                if (intersectionIsImpossible(&self.store, buf[0..n])) return tymod.ID_NEVER;
-                return self.store.intersectionOf(buf[0..n]) catch tymod.ID_UNKNOWN;
+                return self.buildIntersection(buf[0..n]);
             },
             .ts_array_type => {
                 const elem = self.resolveTypeNodeWithSubst(
@@ -5236,10 +5235,9 @@ pub const Checker = struct {
             const m: NodeIndex = @enumFromInt(slice[i]);
             buf[i] = self.resolveTypeNode(m);
         }
-        // Incompatible primitive intersection → never.  E.g. `string &
-        // number` has no inhabitants.
-        if (intersectionIsImpossible(&self.store, buf[0..n])) return tymod.ID_NEVER;
-        return self.store.intersectionOf(buf[0..n]) catch tymod.ID_UNKNOWN;
+        // Incompatible primitive intersection → never (`string & number`); a
+        // union member distributes (`(A|B) & C` → `(A&C) | (B&C)`).
+        return self.buildIntersection(buf[0..n]);
     }
 
     fn intersectionIsImpossible(store: *const tymod.TypeStore, members: []const TypeId) bool {
@@ -5264,6 +5262,77 @@ pub const Checker = struct {
         if (saw_boolean) count += 1;
         if (saw_bigint) count += 1;
         return count >= 2;
+    }
+
+    /// Build an intersection, distributing over any union members so the result
+    /// matches TS normalization: `(A|B) & C` → `(A&C) | (B&C)`.  This keeps each
+    /// branch's primitive constituents directly reachable (a union member of an
+    /// intersection carries the `Union` flag, not `StringLike`, hiding the
+    /// falsy-capable `string` from no-unnecessary-condition's isPossiblyFalsy).
+    /// Impossible combos collapse to `never` and drop out; an explosion of
+    /// combinations falls back to the flat (undistributed) intersection.
+    fn buildIntersection(self: *Checker, members: []const TypeId) TypeId {
+        var has_union = false;
+        var total: usize = 1;
+        for (members) |m| {
+            const t = self.store.get(m);
+            if (t.kind == .union_t) {
+                has_union = true;
+                // Bounded: once we pass the cap we stop accumulating, so a large
+                // union can't overflow `total` before the >64 fallback fires.
+                if (total <= 64) total *= self.store.idsOf(t.list_data).len;
+            }
+        }
+        // No union to distribute, or too many combinations → flat intersection.
+        if (!has_union or total > 64) {
+            if (intersectionIsImpossible(&self.store, members)) return tymod.ID_NEVER;
+            return self.store.intersectionOf(members) catch tymod.ID_UNKNOWN;
+        }
+        var combo_buf: [64]TypeId = undefined; // resulting union members
+        var combo_n: usize = 0;
+        var part_buf: [16]TypeId = undefined; // one combination's intersection members
+        var idx_buf: [16]usize = undefined; // odometer over union indices
+        @memset(&idx_buf, 0);
+        const mn = @min(members.len, idx_buf.len);
+        while (true) {
+            // Build this combination: pick idx_buf[mi] from each union member,
+            // pass non-union members through.
+            var pn: usize = 0;
+            for (members[0..mn], 0..) |m, mi| {
+                const t = self.store.get(m);
+                const pick = if (t.kind == .union_t) self.store.idsOf(t.list_data)[idx_buf[mi]] else m;
+                if (pn < part_buf.len) {
+                    part_buf[pn] = pick;
+                    pn += 1;
+                }
+            }
+            // intersectionOf flattens nested intersections and returns `never`
+            // for an incompatible combo (e.g. `number & "foo"`); drop those.
+            const combo_ty = self.store.intersectionOf(part_buf[0..pn]) catch tymod.ID_UNKNOWN;
+            if (!combo_ty.eq(tymod.ID_NEVER) and combo_n < combo_buf.len) {
+                combo_buf[combo_n] = combo_ty;
+                combo_n += 1;
+            }
+            // Odometer increment: advance the rightmost union member, carrying left.
+            var k: usize = mn;
+            var advanced = false;
+            while (k > 0) {
+                k -= 1;
+                const t = self.store.get(members[k]);
+                if (t.kind != .union_t) continue;
+                const ulen = self.store.idsOf(t.list_data).len;
+                idx_buf[k] += 1;
+                if (idx_buf[k] < ulen) {
+                    advanced = true;
+                    break;
+                }
+                idx_buf[k] = 0;
+            }
+            if (!advanced) break;
+        }
+        if (combo_n == 0) return tymod.ID_NEVER;
+        if (combo_n == 1) return combo_buf[0];
+        return self.store.unionOf(combo_buf[0..combo_n]) catch tymod.ID_UNKNOWN;
     }
 
     // ── Expression helpers ────────────────────────────────

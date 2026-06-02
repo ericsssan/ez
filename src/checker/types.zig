@@ -509,6 +509,7 @@ pub const TypeStore = struct {
         var buf = std.ArrayList(TypeId).empty;
         defer buf.deinit(self.gpa);
         for (members) |m| {
+            if (m.eq(ID_NEVER)) continue; // `T | never` = `T`
             const t = self.get(m);
             if (t.kind == .union_t) {
                 for (self.idsOf(t.list_data)) |inner| {
@@ -555,6 +556,58 @@ pub const TypeStore = struct {
                 try addUnique(self.gpa, &buf, m);
             }
         }
+        // A literal subsumes its primitive within an intersection: `string & "x"`
+        // is just `"x"`.  Drop the plain primitive when a literal of the same
+        // family is present, so the truthy literal isn't masked by a (possibly
+        // falsy) primitive (no-unnecessary-condition's isPossiblyFalsy).
+        var has_str_lit = false;
+        var has_num_lit = false;
+        var has_bool_lit = false;
+        var has_bigint_lit = false;
+        for (buf.items) |m| switch (self.get(m).kind) {
+            .string_literal => has_str_lit = true,
+            .number_literal => has_num_lit = true,
+            .boolean_literal => has_bool_lit = true,
+            .bigint_literal => has_bigint_lit = true,
+            else => {},
+        };
+        if (has_str_lit or has_num_lit or has_bool_lit or has_bigint_lit) {
+            var w: usize = 0;
+            for (buf.items) |m| {
+                const drop = switch (self.get(m).kind) {
+                    .string => has_str_lit,
+                    .number => has_num_lit,
+                    .boolean => has_bool_lit,
+                    .bigint => has_bigint_lit,
+                    else => false,
+                };
+                if (!drop) {
+                    buf.items[w] = m;
+                    w += 1;
+                }
+            }
+            buf.items.len = w;
+        }
+        // Incompatible primitive families have no inhabitants (`string & number`,
+        // `"x" & 123`) → never.  Checked after flatten so a nested intersection's
+        // primitive is seen against a sibling literal.
+        var fam_str = false;
+        var fam_num = false;
+        var fam_bool = false;
+        var fam_bigint = false;
+        for (buf.items) |m| switch (self.get(m).kind) {
+            .string, .string_literal => fam_str = true,
+            .number, .number_literal => fam_num = true,
+            .boolean, .boolean_literal => fam_bool = true,
+            .bigint, .bigint_literal => fam_bigint = true,
+            else => {},
+        };
+        var fam_count: u32 = 0;
+        if (fam_str) fam_count += 1;
+        if (fam_num) fam_count += 1;
+        if (fam_bool) fam_count += 1;
+        if (fam_bigint) fam_count += 1;
+        if (fam_count >= 2) return ID_NEVER;
         if (buf.items.len == 0) return ID_NEVER;
         if (buf.items.len == 1) return buf.items[0];
         const list = try self.appendTypeIds(buf.items);
