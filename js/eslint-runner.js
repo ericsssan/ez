@@ -33,6 +33,12 @@ const _TYPE_FACADE_RULES = new Set([
   // so `<E extends string[]>(...p: E)` called with an `any` arg correctly infers
   // E=any (any-wins) → safe, instead of the old constraint-based FP. Audit: 0 FP.
   "@typescript-eslint/no-unsafe-argument",
+  // Flags an unsafe type assertion `x as T` (expression not assignable to T).
+  // Uses the checker's three-valued STRUCTURAL assignability (ez_type_assignable
+  // → structuralAssignable), `unknown` mapped to assignable (FP-safe), plus
+  // type-node resolution for the asserted type. Catches confident structural
+  // mismatches; generics/index-sigs stay unknown → FN. Audit: 0 FP, 31/62.
+  "@typescript-eslint/no-unsafe-type-assertion",
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading

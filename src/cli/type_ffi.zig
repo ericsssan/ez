@@ -324,13 +324,23 @@ pub export fn ez_type_sig_rest_index(h: usize, type_id: u32, sig_idx: u32) callc
     return s.rest_param_index;
 }
 
+/// Resolve a TS type-annotation AST node (`{a:number}`, `Foo<T>`, `number`, …)
+/// to its TypeId — the checker types VALUE nodes via ez_type_of_node, but a type
+/// node (e.g. the asserted type in `x as T`) must be resolved as a TYPE.  Returns
+/// 0xFFFFFFFF on a bad handle / out-of-range node.
+pub export fn ez_type_resolve_type_node(h: usize, node_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    if (node_idx >= ctx.ast.nodes.len) return NO_TYPE;
+    return ctx.checker.resolveTypeNode(@enumFromInt(node_idx)).toInt();
+}
+
 /// Three-valued assignability source→target: 0 = no, 1 = yes, 2 = unknown
 /// (depends on machinery we don't implement — objects, structural, generics).
 /// Callers map `unknown` per their FP-safe direction.
 pub export fn ez_type_assignable(h: usize, source: u32, target: u32) callconv(.c) u8 {
     const ctx = ctxFrom(h) orelse return 2;
     if (source >= ctx.checker.store.types.items.len or target >= ctx.checker.store.types.items.len) return 2;
-    return switch (ctx.checker.simpleAssignablePub(@enumFromInt(source), @enumFromInt(target))) {
+    return switch (ctx.checker.structuralAssignablePub(@enumFromInt(source), @enumFromInt(target))) {
         .no => 0,
         .yes => 1,
         .unknown => 2,

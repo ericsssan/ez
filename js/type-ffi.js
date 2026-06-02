@@ -55,6 +55,7 @@ function binding() {
       ez_type_sig_rest_index:  { args: [H, U, U], returns: U },
       ez_type_call_param_type: { args: [H, U, U], returns: U },
       ez_type_assignable:      { args: [H, U, U], returns: FFIType.u8 },
+      ez_type_resolve_type_node: { args: [H, U], returns: U },
       // Object properties (by-name lookup; name passed as utf8 ptr+len).
       ez_type_prop_count:         { args: [H, U], returns: U },
       ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
@@ -122,6 +123,11 @@ function _handleObj(b, h) {
     },
     // Three-valued assignability: 0=no, 1=yes, 2=unknown.
     assignable(source, target) { return b.sym.ez_type_assignable(h, source >>> 0, target >>> 0); },
+    // Resolve a TS type-annotation node to its type (null on bad node).
+    resolveTypeNode(nodeIdx) {
+      const r = b.sym.ez_type_resolve_type_node(h, nodeIdx >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
     // Object properties (by name).
     propCount(typeId) { return b.sym.ez_type_prop_count(h, typeId >>> 0); },
     propType(typeId, name) {

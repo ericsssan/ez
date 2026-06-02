@@ -2746,6 +2746,177 @@ pub const Checker = struct {
         return .unknown;
     }
 
+    /// Three-valued STRUCTURAL assignability — extends simpleAssignable to
+    /// objects / arrays / tuples / functions / type-refs, returning `.no` only
+    /// for confident mismatches (missing required prop, scalar-primitive clash,
+    /// readonly→mutable array, tuple-length / function-arity mismatch) and
+    /// `.unknown` for anything that depends on machinery we don't model (a
+    /// type_param/generic or error type on either side, named type_ref
+    /// mismatches, index/mapped/conditional types, recursion cutoff).  The
+    /// facade maps `.unknown` → assignable (FP-safe), so `.no` must be sound.
+    pub fn structuralAssignablePub(self: *Checker, source: TypeId, target: TypeId) AssignResult {
+        return self.structuralAssignable(source, target, 0);
+    }
+
+    fn isScalarPrimKind(k: tymod.TypeKind) bool {
+        return switch (k) {
+            .number, .string, .boolean, .bigint, .symbol,
+            .number_literal, .string_literal, .boolean_literal, .bigint_literal,
+            => true,
+            else => false,
+        };
+    }
+
+    fn structuralAssignable(self: *Checker, source: TypeId, target: TypeId, depth: u8) AssignResult {
+        if (source.eq(target)) return .yes;
+        if (target.eq(tymod.ID_ANY) or source.eq(tymod.ID_ANY)) return .yes;
+        if (target.eq(tymod.ID_UNKNOWN)) return .yes;
+        if (depth > 6) return .unknown; // recursion / cycle guard
+        const s = self.store.get(source);
+        const t = self.store.get(target);
+        if (s.kind == .never) return .yes;
+        // Anything depending on a generic / error type → can't decide.
+        if (s.kind == .type_param or t.kind == .type_param or
+            s.kind == .error_t or t.kind == .error_t or s.kind == .unknown) return .unknown;
+        // Union source: EVERY member assignable to target (check before
+        // union-target so a union→union compares each source member, not the
+        // whole union against each target member).
+        if (s.kind == .union_t) {
+            var any_unknown = false;
+            for (self.store.idsOf(s.list_data)) |m| switch (self.structuralAssignable(m, target, depth + 1)) {
+                .yes => {}, .no => return .no, .unknown => any_unknown = true,
+            };
+            return if (any_unknown) .unknown else .yes;
+        }
+        // Union target: assignable to ANY member.
+        if (t.kind == .union_t) {
+            var any_unknown = false;
+            for (self.store.idsOf(t.list_data)) |m| switch (self.structuralAssignable(source, m, depth + 1)) {
+                .yes => return .yes, .unknown => any_unknown = true, .no => {},
+            };
+            return if (any_unknown) .unknown else .no;
+        }
+        // Intersection target: assignable to EVERY member.
+        if (t.kind == .intersection_t) {
+            var any_unknown = false;
+            for (self.store.idsOf(t.list_data)) |m| switch (self.structuralAssignable(source, m, depth + 1)) {
+                .yes => {}, .no => return .no, .unknown => any_unknown = true,
+            };
+            return if (any_unknown) .unknown else .yes;
+        }
+        // Intersection source: ANY member assignable is enough.
+        if (s.kind == .intersection_t) {
+            var any_unknown = false;
+            for (self.store.idsOf(s.list_data)) |m| switch (self.structuralAssignable(m, target, depth + 1)) {
+                .yes => return .yes, .unknown => any_unknown = true, .no => {},
+            };
+            return if (any_unknown) .unknown else .no;
+        }
+        // Same-kind primitives.
+        if (s.kind == t.kind) switch (s.kind) {
+            .number, .string, .boolean, .bigint, .symbol,
+            .null_t, .undefined_t, .void_t, .object_keyword,
+            => return .yes,
+            else => {},
+        };
+        // Literal → base primitive.
+        if (t.kind == .number and s.kind == .number_literal) return .yes;
+        if (t.kind == .string and s.kind == .string_literal) return .yes;
+        if (t.kind == .boolean and s.kind == .boolean_literal) return .yes;
+        if (t.kind == .bigint and s.kind == .bigint_literal) return .yes;
+        // Literal → same-value literal (definite yes/no).
+        if (s.kind == .number_literal and t.kind == .number_literal)
+            return if (s.literal_value.number == t.literal_value.number) .yes else .no;
+        if (s.kind == .string_literal and t.kind == .string_literal)
+            return if (std.mem.eql(u8, s.literal_value.string, t.literal_value.string)) .yes else .no;
+        if (s.kind == .boolean_literal and t.kind == .boolean_literal)
+            return if (s.literal_value.boolean == t.literal_value.boolean) .yes else .no;
+        if (s.kind == .bigint_literal and t.kind == .bigint_literal)
+            return if (std.mem.eql(u8, s.literal_value.bigint, t.literal_value.bigint)) .yes else .no;
+        // Structural object: target's every prop present + assignable in source.
+        if (s.kind == .object_t and t.kind == .object_t) {
+            const s_props = self.store.propsOf(s.object_props);
+            var any_unknown = false;
+            for (self.store.propsOf(t.object_props)) |tp| {
+                var sp_opt: ?tymod.ObjectProp = null;
+                for (s_props) |sp| if (std.mem.eql(u8, sp.name, tp.name)) { sp_opt = sp; break; };
+                const sp = sp_opt orelse {
+                    if (tp.optional) continue;
+                    return .no; // missing required prop
+                };
+                if (sp.optional and !tp.optional) return .no;
+                switch (self.structuralAssignable(sp.type_id, tp.type_id, depth + 1)) {
+                    .yes => {}, .no => return .no, .unknown => any_unknown = true,
+                }
+            }
+            return if (any_unknown) .unknown else .yes;
+        }
+        // Array / tuple covariance.
+        if ((s.kind == .array_t or s.kind == .readonly_array_t) and
+            (t.kind == .array_t or t.kind == .readonly_array_t))
+        {
+            if (s.kind == .readonly_array_t and t.kind == .array_t) return .no;
+            const se = self.store.idsOf(s.list_data);
+            const te = self.store.idsOf(t.list_data);
+            if (se.len == 0 or te.len == 0) return .unknown;
+            return self.structuralAssignable(se[0], te[0], depth + 1);
+        }
+        if (s.kind == .tuple_t and t.kind == .tuple_t) {
+            const se = self.store.idsOf(s.list_data);
+            const te = self.store.idsOf(t.list_data);
+            if (se.len != te.len) return .no;
+            var any_unknown = false;
+            for (se, te) |a, bb| switch (self.structuralAssignable(a, bb, depth + 1)) {
+                .yes => {}, .no => return .no, .unknown => any_unknown = true,
+            };
+            return if (any_unknown) .unknown else .yes;
+        }
+        if (s.kind == .tuple_t and (t.kind == .array_t or t.kind == .readonly_array_t)) {
+            const se = self.store.idsOf(s.list_data);
+            const te = self.store.idsOf(t.list_data);
+            if (te.len == 0) return .unknown;
+            var any_unknown = false;
+            for (se) |e| switch (self.structuralAssignable(e, te[0], depth + 1)) {
+                .yes => {}, .no => return .no, .unknown => any_unknown = true,
+            };
+            return if (any_unknown) .unknown else .yes;
+        }
+        // type_ref: different NAMES — can't decide structurally → unknown.
+        if (s.kind == .type_ref and t.kind == .type_ref) {
+            if (!std.mem.eql(u8, s.name, t.name)) return .unknown;
+            const sa = self.store.idsOf(s.list_data);
+            const ta = self.store.idsOf(t.list_data);
+            if (sa.len != ta.len) return .unknown;
+            var any_unknown = false;
+            for (sa, ta) |a, bb| switch (self.structuralAssignable(a, bb, depth + 1)) {
+                .yes => {}, .no => return .no, .unknown => any_unknown = true,
+            };
+            return if (any_unknown) .unknown else .yes;
+        }
+        // Function variance: arity + param contravariance + return covariance.
+        if (s.kind == .function_t and t.kind == .function_t) {
+            const s_sigs = self.store.signaturesOf(s.signatures);
+            const t_sigs = self.store.signaturesOf(t.signatures);
+            if (s_sigs.len == 0 or t_sigs.len == 0) return .unknown;
+            const s_params = self.store.signatureParamsOf(s_sigs[0]);
+            const t_params = self.store.signatureParamsOf(t_sigs[0]);
+            if (t_params.len > s_params.len) return .no;
+            var any_unknown = false;
+            for (t_params, 0..) |tp, i| switch (self.structuralAssignable(tp, s_params[i], depth + 1)) {
+                .yes => {}, .no => return .no, .unknown => any_unknown = true,
+            };
+            switch (self.structuralAssignable(s_sigs[0].return_type, t_sigs[0].return_type, depth + 1)) {
+                .yes => {}, .no => return .no, .unknown => any_unknown = true,
+            }
+            return if (any_unknown) .unknown else .yes;
+        }
+        // Two distinct SCALAR primitives (number vs string, boolean vs literal,
+        // …) are confidently NOT assignable.  Everything else (object↔primitive,
+        // type_ref↔object, null/undefined/void edges) stays unknown → FP-safe.
+        if (isScalarPrimKind(s.kind) and isScalarPrimKind(t.kind)) return .no;
+        return .unknown;
+    }
+
     /// Evaluate a `ts_indexed_access_type` (`T[K]`) when both sides
     /// are statically resolvable: object types looked up by a string-
     /// literal key, array/tuple types indexed by `number` or a numeric

@@ -17,6 +17,19 @@ const tf = require("./type-ffi");
 // valueDeclaration.dotDotDotToken unguarded; kind 0 = Unknown so ts.isParameter
 // is false, dotDotDotToken undefined = not a rest parameter).
 const EMPTY_DECL = Object.freeze({ kind: 0, dotDotDotToken: undefined });
+
+// ESTree TS *type* nodes (type position, not value): when getTypeAtLocation is
+// called on one (e.g. the asserted type in `x as T`) it must resolve as a TYPE
+// via resolveTypeNode, since the checker value-types only value nodes.
+const TS_TYPE_NODES = new Set([
+  "TSTypeReference", "TSTypeLiteral", "TSArrayType", "TSTupleType", "TSUnionType",
+  "TSIntersectionType", "TSFunctionType", "TSConstructorType", "TSTypeOperator",
+  "TSIndexedAccessType", "TSLiteralType", "TSQualifiedName", "TSTypeQuery",
+  "TSParenthesizedType", "TSRestType", "TSOptionalType", "TSNamedTupleMember",
+  "TSNumberKeyword", "TSStringKeyword", "TSBooleanKeyword", "TSBigIntKeyword",
+  "TSSymbolKeyword", "TSObjectKeyword", "TSVoidKeyword", "TSNullKeyword",
+  "TSUndefinedKeyword", "TSAnyKeyword", "TSUnknownKeyword", "TSNeverKeyword",
+]);
 // Minimal ts.TupleType.target for tuple/array types (spread-arg handling reads
 // `.target.combinedFlags`; 0 = no variable/rest tuple element).
 const TUPLE_TARGET = Object.freeze({ combinedFlags: 0, elementFlags: Object.freeze([]) });
@@ -152,6 +165,16 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     if ((tid == null || h.kind(tid) === 1 /*unknown*/) && est.id && est.id._i != null) {
       const idTid = h.typeOfNode(est.id._i);
       if (idTid != null && h.kind(idTid) !== 1) tid = idTid;
+    }
+    // A TS type-annotation node (e.g. the asserted type in `x as T`) resolves
+    // as a TYPE, not a value — getTypeAtLocation is called on it directly.
+    // Exception: `as const` is a const assertion, not a real type (it makes the
+    // operand its readonly literal); resolving the bare `const` ref yields a
+    // spurious type, so leave it unknown (→ assignable → safe).
+    if ((tid == null || h.kind(tid) === 1) && TS_TYPE_NODES.has(est.type) &&
+        !(est.type === "TSTypeReference" && est.typeName && est.typeName.name === "const")) {
+      const rt = h.resolveTypeNode(est._i);
+      if (rt != null && h.kind(rt) !== 1) tid = rt;
     }
     return makeType(tid);
   }

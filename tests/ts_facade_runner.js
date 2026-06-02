@@ -113,6 +113,18 @@ reports = runRule("no-unsafe-argument", "declare function foo<E extends string[]
 assert(reports.length === 0, `must NOT fire on generic rest param with an any arg (E inferred any); got ${reports.length}`);
 console.log("PASS: no false positive on generic rest param (call-site inference)");
 
+// no-unsafe-type-assertion: structural assignability. `{} as {a:number}` is
+// unsafe (missing required prop); widening / `as const` are safe.
+reports = runRule("no-unsafe-type-assertion", "const x = {} as { a: number };");
+assert(reports.length >= 1, `should fire on '{} as {a:number}' (missing prop); got ${reports.length}`);
+console.log(`PASS: no-unsafe-type-assertion fired (${reports.length}) on '{} as {a:number}'`);
+reports = runRule("no-unsafe-type-assertion", "declare const a: string;\na as string | number;");
+assert(reports.length === 0, `must NOT fire on widening 'string as string|number'; got ${reports.length}`);
+console.log("PASS: no false positive on widening assertion");
+reports = runRule("no-unsafe-type-assertion", "const c = 'hello' as const;");
+assert(reports.length === 0, `must NOT fire on 'as const'; got ${reports.length}`);
+console.log("PASS: no false positive on 'as const'");
+
 // restrict-plus-operands must at least not CRASH and not false-positive on
 // number+number (its boolean/union categorization needs more facade surface —
 // tracked as incremental per-rule work).
