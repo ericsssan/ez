@@ -140,6 +140,16 @@ pub const Checker = struct {
     /// `T extends Array<T>`).
     tp_depth: u8 = 0,
 
+    /// General type-node resolution depth guard.  Recursive generic declarations
+    /// (e.g. bluebird's `then<U>(…): Bluebird<U>` over `type Resolvable<R> = R |
+    /// PromiseLike<R>`) can drive resolveTypeNode arbitrarily deep — especially
+    /// once type parameters resolve to genuine `.type_param`s that get
+    /// substituted through alias bodies.  The name-keyed declared-type sentinel
+    /// breaks *named* cycles, but not parametric-instantiation chains; this caps
+    /// total depth and bails to `unknown` (a safe leaf) before the native stack
+    /// overflows.  The cap is far above any real annotation's nesting.
+    resolve_depth: u16 = 0,
+
     pub fn init(
         gpa: std.mem.Allocator,
         ast_ref: *const Ast,
@@ -1929,6 +1939,11 @@ pub const Checker = struct {
     /// Map a TS type-position AST node to a TypeId.
     pub fn resolveTypeNode(self: *Checker, ty_node: NodeIndex) TypeId {
         if (ty_node == .none) return tymod.ID_ANY;
+        // Depth cap: bail to a safe leaf before a pathological recursive-generic
+        // chain overflows the native stack (see resolve_depth).
+        if (self.resolve_depth >= 256) return tymod.ID_UNKNOWN;
+        self.resolve_depth += 1;
+        defer self.resolve_depth -= 1;
         const tag = self.ast_ref.nodeTag(ty_node);
         return switch (tag) {
             .ts_type_reference => self.resolveTypeRef(ty_node),
@@ -2311,6 +2326,12 @@ pub const Checker = struct {
     ) TypeId {
         if (ty_node == .none) return tymod.ID_ANY;
         if (keys.len == 0) return self.resolveTypeNode(ty_node);
+        // Shares the resolveTypeNode depth budget — generic-alias substitution
+        // (`Resolvable<U>` over `type Resolvable<R> = R | PromiseLike<R>`) recurses
+        // here, not through resolveTypeNode.
+        if (self.resolve_depth >= 256) return tymod.ID_UNKNOWN;
+        self.resolve_depth += 1;
+        defer self.resolve_depth -= 1;
         const tag = self.ast_ref.nodeTag(ty_node);
         switch (tag) {
             .ts_type_reference => {
@@ -3915,6 +3936,13 @@ pub const Checker = struct {
         // constraint type (an over-approximation that lets `t: T` where
         // `T extends Foo` behave as `t: Foo`).
         if (self.resolveTypeParameterConstraint(ty_node, name)) |c| return c;
+        // An in-scope but UNCONSTRAINED type parameter (`<T>`) → a genuine
+        // `.type_param` (TypeParameter flag), not an opaque type_ref, so rules
+        // that special-case a naked type parameter recognize it (e.g.
+        // no-unnecessary-condition's isConditionalAlwaysNecessary via
+        // ts.TypeFlags.TypeVariable).  Constrained params already returned their
+        // constraint above.
+        if (self.argIsInScopeTypeParam(ty_node)) return self.buildTypeParam(ty_node, name);
         // Qualified type name (e.g. `Namespace.Enum`): `name` is the first
         // component; try the last component of the member_expr chain so
         // `A.B` resolves to the same TypeId as bare `B` when `B` is a
@@ -6754,6 +6782,14 @@ pub const Checker = struct {
     /// array, tuple, object props).  Returns the original id when no
     /// substitution happened.
     fn substituteTypeId(self: *Checker, id: TypeId, keys: []const []const u8, vals: []const TypeId) TypeId {
+        // Structural substitution recurses through union/intersection/array/object/
+        // function members; a self-referential instantiation (bluebird's
+        // `then<U>(…): Bluebird<U>` whose params substitute through `Resolvable<U>
+        // = U | PromiseLike<U>`) can loop unboundedly. Share the resolve depth
+        // budget and bail to the type unchanged on overflow.
+        if (self.resolve_depth >= 256) return id;
+        self.resolve_depth += 1;
+        defer self.resolve_depth -= 1;
         const t = self.store.get(id);
         switch (t.kind) {
             .type_ref => {
