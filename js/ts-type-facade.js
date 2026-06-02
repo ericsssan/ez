@@ -506,16 +506,29 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       }
       return t;
     },
-    // Contextual type of a value/key inside an object literal = the matching
-    // property of the literal's own contextual (assignment-target) type. This
-    // makes `const x: { p: unknown } = { p }` (p: any) safe — any→unknown — by
-    // resolving the receiver to `unknown` instead of falling back to the value's
-    // own `any` type. Other contextual positions (call args, returns) aren't
-    // modelled yet → undefined (callers fall back to getTypeAtLocation).
+    // Contextual type of an expression from its surrounding position:
+    //  - object-literal value → the matching property of the literal's own
+    //    contextual (assignment-target) type (makes `const x: {p: unknown} = {p}`
+    //    safe by resolving the receiver to `unknown`).
+    //  - call/new argument → the callee parameter's type at that index. Lets
+    //    no-unsafe-return see `receiver(() => new Set<any>())` against the
+    //    parameter's `() => Set<string>` and flag the unsafe return.
+    // Other positions → undefined (callers fall back to getTypeAtLocation).
     getContextualType(node) {
       const est = node && (node._i != null ? node : node._estree);
       if (!est) return undefined;
-      const prop = est.parent && est.parent.type === "Property" ? est.parent
+      const p = est.parent;
+      if (p && (p.type === "CallExpression" || p.type === "NewExpression") &&
+          Array.isArray(p.arguments) && p.callee) {
+        const idx = p.arguments.indexOf(est);
+        if (idx >= 0) {
+          const sigs = typeAt(p.callee).getCallSignatures();
+          const params = sigs.length ? sigs[0].getParameters() : null;
+          const sym = params && params[idx];
+          if (sym && sym.__ez_type != null) return makeType(sym.__ez_type);
+        }
+      }
+      const prop = p && p.type === "Property" ? p
         : est.type === "Property" ? est : null;
       if (!prop || !prop.parent || prop.parent.type !== "ObjectExpression") return undefined;
       const objCtx = contextualOfObject(prop.parent);
