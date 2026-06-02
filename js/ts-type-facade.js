@@ -508,6 +508,30 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     return defineTypePredicates(t, flags);
   }
 
+  // A synthetic `T | undefined` union — TS adds `undefined` to an optional
+  // property's type, so the rule's nullability checks (no-unnecessary-condition's
+  // getTypeOfPropertyOfType → isNullableType) see `obj.opt` as nullable. Carries
+  // the union shape unionConstituents/isUnion/isNullableType read, and delegates
+  // member/signature lookups to the underlying T.
+  function unionWithUndefined(t) {
+    if (!t) return t;
+    const undef = syntheticType(4 /*Undefined*/);
+    const u = {
+      flags: 134217728 /*Union*/, getFlags() { return 134217728; },
+      types: [t, undef], symbol: undefined, getSymbol() { return undefined; }, aliasSymbol: undefined,
+      getConstraint() { return undefined; }, getDefault() { return undefined; },
+      get value() { return undefined; }, get intrinsicName() { return undefined; },
+      getCallSignatures() { return t.getCallSignatures ? t.getCallSignatures() : []; },
+      getConstructSignatures() { return []; }, getBaseTypes() { return undefined; },
+      getProperty(n) { return t.getProperty ? t.getProperty(n) : undefined; },
+      getProperties() { return t.getProperties ? t.getProperties() : []; },
+      getNumberIndexType() { return undefined; }, getStringIndexType() { return undefined; },
+      target: undefined, objectFlags: 0, typeArguments: undefined, __ez_typeId: null,
+    };
+    u.getApparentType = () => u;
+    return defineTypePredicates(u, 134217728);
+  }
+
   // Synthetic thenable structure: ts-api-utils' isThenableType walks
   // getApparentType → getProperty('then') → the then-signature's first param,
   // which must itself be a callback (a function type with ≥1 call signature).
@@ -735,10 +759,17 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         : 1 /*Identifier*/;
       return { kind, parameterIndex: pi == null ? 0 : pi, type: target };
     },
-    // Index signatures (`[k: string]: T`) aren't modelled — `[]` is FP-safe:
-    // no-unnecessary-condition's index-signature nullability path just finds
-    // nothing (a recall loss, never a false positive).
-    getIndexInfosOfType() { return []; },
+    // Index signatures: the checker stores `[k: string]: V` as a sentinel
+    // property named "[]" carrying V. Surface it as a ts.IndexInfo with a string
+    // keyType (no-unnecessary-condition reads getTypeName(info.keyType) and
+    // info.type for optional-chain nullability over indexed access).
+    getIndexInfosOfType(type) {
+      const sym = type && type.getProperty ? type.getProperty("[]") : undefined;
+      if (sym && sym.__ez_type != null) {
+        return [{ keyType: syntheticType(32 /*String*/), type: makeType(sym.__ez_type) }];
+      }
+      return [];
+    },
     getSignaturesOfType(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
     // Symbol → its type (for getTypeOfSymbolAtLocation in no-unsafe-argument /
     // getTypeOfSymbol in no-for-in-array's length check). A bare type parameter
@@ -826,7 +857,11 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     getPropertyOfType(type, name) { return type && type.getProperty ? type.getProperty(name) : undefined; },
     getTypeOfPropertyOfType(type, name) {
       const s = type && type.getProperty ? type.getProperty(name) : undefined;
-      return s && s.__ez_type != null ? makeType(s.__ez_type) : undefined;
+      if (!s || s.__ez_type == null) return undefined;
+      const t = makeType(s.__ez_type);
+      // An optional property (`bar?: T`) is `T | undefined` — needed by
+      // no-unnecessary-condition's optional-chain nullability checks.
+      return (s.__ez_propFlags & 1) ? unionWithUndefined(t) : t;
     },
     getSignaturesOfType2(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
     // Best-effort symbol for a node: a synthetic symbol carrying the node's
