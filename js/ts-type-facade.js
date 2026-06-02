@@ -607,6 +607,8 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   const DEFAULT_LIB_TYPE_NAMES = new Set([
     "Function", "Promise", "Error", "Array", "ReadonlyArray", "Object", "String",
     "Number", "Boolean", "RegExp", "Date", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "BigInt",
+    "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError",
+    "AggregateError", "URL", "URLSearchParams",
   ]);
   function makeTypeSymbol(name, flags, declTypeId) {
     const f = flags || 0;

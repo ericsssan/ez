@@ -6113,7 +6113,15 @@ pub const Checker = struct {
             std.mem.eql(u8, name, "RegExp") or std.mem.eql(u8, name, "Array") or
             std.mem.eql(u8, name, "String") or std.mem.eql(u8, name, "Number") or
             std.mem.eql(u8, name, "Boolean") or std.mem.eql(u8, name, "Object") or
-            std.mem.eql(u8, name, "Symbol"))
+            std.mem.eql(u8, name, "Symbol") or
+            // Error family + URL — globals not declared in-file; produce a named
+            // type_ref so the facade's name/lib-specifier matching works
+            // (restrict-template-expressions' default `allow` includes Error/URL).
+            std.mem.eql(u8, name, "Error") or std.mem.eql(u8, name, "TypeError") or
+            std.mem.eql(u8, name, "RangeError") or std.mem.eql(u8, name, "SyntaxError") or
+            std.mem.eql(u8, name, "ReferenceError") or std.mem.eql(u8, name, "EvalError") or
+            std.mem.eql(u8, name, "URIError") or std.mem.eql(u8, name, "AggregateError") or
+            std.mem.eql(u8, name, "URL") or std.mem.eql(u8, name, "URLSearchParams"))
         {
             return self.store.typeRef(name, args) catch null;
         }
