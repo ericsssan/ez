@@ -5277,6 +5277,9 @@ pub const Checker = struct {
         const data = self.ast_ref.nodeData(node);
         const callee = data.lhs;
         if (callee == .none) return tymod.ID_UNKNOWN;
+        // `Object.create(...)` is typed `any` by the lib — surface that so
+        // no-unsafe-return / -assignment flag returning or assigning it.
+        if (self.calleeIsObjectCreate(callee)) return tymod.ID_ANY;
         if (self.ast_ref.nodeTag(node) == .new_expr or
             self.calleeIsConstructible(callee))
         {
@@ -5319,6 +5322,22 @@ pub const Checker = struct {
             }
         }
         return result;
+    }
+
+    /// True when `callee` is the member access `Object.create` (the global
+    /// `Object`, dot-accessed `create`). Its lib return type is `any`.
+    fn calleeIsObjectCreate(self: *Checker, callee: NodeIndex) bool {
+        var n = callee;
+        while (self.ast_ref.nodeTag(n) == .grouping_expr) n = self.ast_ref.nodeData(n).lhs;
+        const tag = self.ast_ref.nodeTag(n);
+        if (tag != .member_expr and tag != .optional_member_expr) return false;
+        const d = self.ast_ref.nodeData(n);
+        if (d.lhs == .none or d.rhs == .none) return false;
+        if (self.ast_ref.nodeTag(d.lhs) != .identifier) return false;
+        if (!std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(d.lhs)), "Object")) return false;
+        // Not a user-shadowed local `Object`.
+        if (self.symbolForIdentRef(d.lhs) != null) return false;
+        return std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(d.rhs)), "create");
     }
 
     /// Match argument types against parameter types looking for
@@ -6663,12 +6682,26 @@ pub const Checker = struct {
         return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
     }
 
+    /// A function's explicit `this: T` parameter type, or null when absent.
+    /// The `this` param is a leading identifier named `this` with an annotation;
+    /// it is not a real runtime parameter.
+    fn functionThisParamType(self: *Checker, fn_node: NodeIndex) ?TypeId {
+        const data = self.ast_ref.nodeData(fn_node);
+        if (data.lhs == .none) return null;
+        const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(data.lhs));
+        if (fd.params >= fd.params_end or fd.params_end > self.ast_ref.extra_data.len) return null;
+        const first: NodeIndex = @enumFromInt(self.ast_ref.extra_data[fd.params]);
+        if (self.ast_ref.nodeTag(first) != .identifier) return null;
+        if (!std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(first)), "this")) return null;
+        const bd = self.ast_ref.nodeData(first);
+        if (bd.rhs == .none or self.ast_ref.nodeTag(bd.rhs) != .ts_type_annotation) return null;
+        return self.resolveTypeNode(self.ast_ref.nodeData(bd.rhs).lhs);
+    }
+
     /// `this` inside a class method/getter/setter/constructor resolves
     /// to the enclosing class's instance type.  Walks parents to find
-    /// the nearest method-or-class declaration; bails (returns unknown)
-    /// for `this` in a stand-alone function (no class context) or at
-    /// module level — those cases need `noImplicitThis` compiler-options
-    /// awareness we don't track.
+    /// the nearest method-or-class declaration.  A stand-alone function's
+    /// `this` is its `this: T` annotation, else implicit `any` (strict).
     fn inferThis(self: *Checker, node: NodeIndex) TypeId {
         const parents = self.ast_ref.parents;
         if (parents.len == 0) return tymod.ID_UNKNOWN;
@@ -6698,11 +6731,16 @@ pub const Checker = struct {
                     }
                     return tymod.ID_UNKNOWN;
                 },
-                // Hit a function context that owns its own `this` binding
-                // — `this` here doesn't belong to an enclosing class.
+                // Hit a function context that owns its own `this` binding —
+                // `this` here doesn't belong to an enclosing class. A `this: T`
+                // parameter annotation types it; otherwise it's implicit `any`
+                // (strict noImplicitThis), which the no-unsafe-* rules flag.
                 .fn_decl, .async_fn_decl, .generator_fn_decl,
                 .async_generator_fn_decl, .fn_expr, .async_fn_expr,
-                .generator_fn_expr, .async_generator_fn_expr => return tymod.ID_UNKNOWN,
+                .generator_fn_expr, .async_generator_fn_expr => {
+                    if (self.functionThisParamType(pn)) |tp| return tp;
+                    return tymod.ID_ANY;
+                },
                 else => {},
             }
         }
