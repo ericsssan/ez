@@ -209,8 +209,23 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // checker.getTypeAtLocation(esTreeNodeToTSNodeMap.get(estNode)).
   function typeAt(node) {
     if (!node) return makeType(undefined);
-    const est = node._i != null ? node : node._estree;
-    if (!est || est._i == null) return makeType(undefined);
+    // Prefer the node's own Ez index; else the mapped ESTree node; else the node
+    // itself (a synthetic ESTree node with neither — e.g. a getter's body-less
+    // value in a `declare class`).
+    const est = node._i != null ? node : (node._estree || node);
+    if (!est) return makeType(undefined);
+    // A getter accessor's function-expression value can be a synthetic, body-less
+    // node (no `_i`) — e.g. `get a(): T;` in a `declare class`. Resolve it from
+    // the return-type annotation (which is a real node) so related-getter-setter
+    // sees the property type, not Unknown.
+    if (est._i == null) {
+      const rta = est.returnType && est.returnType.typeAnnotation;
+      if (rta && rta._i != null && est.parent && est.parent.kind === "get") {
+        const rt = h.resolveTypeNode(rta._i);
+        if (rt != null && h.kind(rt) !== 1) return makeType(rt);
+      }
+      return makeType(undefined);
+    }
     let tid = h.typeOfNode(est._i);
     // A value whose binding is annotated with a bare in-scope type parameter
     // (`a: T`) is the parameter `T` itself, not its constraint — so `a as T`
