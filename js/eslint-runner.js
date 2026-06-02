@@ -39,6 +39,11 @@ const _TYPE_FACADE_RULES = new Set([
   // type-node resolution for the asserted type. Catches confident structural
   // mismatches; generics/index-sigs stay unknown → FN. Audit: 0 FP, 31/62.
   "@typescript-eslint/no-unsafe-type-assertion",
+  // Flags a getter whose type isn't assignable to its paired setter's param.
+  // Needs getTypeAtLocation to resolve a getter's return annotation + a setter
+  // param's annotation (added to facade typeAt) + structural assignability.
+  // Audit: 0 FP, 2/7 (the rest resolve to unknown → assignable → FN).
+  "@typescript-eslint/related-getter-setter-pairs",
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading

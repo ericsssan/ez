@@ -125,6 +125,14 @@ reports = runRule("no-unsafe-type-assertion", "const c = 'hello' as const;");
 assert(reports.length === 0, `must NOT fire on 'as const'; got ${reports.length}`);
 console.log("PASS: no false positive on 'as const'");
 
+// related-getter-setter-pairs: getter type must be assignable to setter param.
+reports = runRule("related-getter-setter-pairs", "type Foo = {\n  get a(): { a: string; b: string };\n  set a(x: { c: string });\n};");
+assert(reports.length >= 1, `should fire when getter type isn't assignable to setter param; got ${reports.length}`);
+console.log(`PASS: related-getter-setter-pairs fired (${reports.length}) on mismatched get/set types`);
+reports = runRule("related-getter-setter-pairs", "type Foo = {\n  get a(): string;\n  set a(x: string);\n};");
+assert(reports.length === 0, `must NOT fire when get/set types match; got ${reports.length}`);
+console.log("PASS: no false positive on matching get/set types");
+
 // restrict-plus-operands must at least not CRASH and not false-positive on
 // number+number (its boolean/union categorization needs more facade surface —
 // tracked as incremental per-rule work).

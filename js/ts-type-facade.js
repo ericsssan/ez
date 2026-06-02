@@ -176,6 +176,18 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const rt = h.resolveTypeNode(est._i);
       if (rt != null && h.kind(rt) !== 1) tid = rt;
     }
+    // An annotated binding (param / var id) → its declared annotation type; a
+    // getter accessor / get-method → its return-type annotation (the property
+    // type). Needed by related-getter-setter-pairs (setter param + getter type).
+    if (tid == null || h.kind(tid) === 1) {
+      let ann = null;
+      if (est.type === "Identifier" && est.typeAnnotation) ann = est.typeAnnotation.typeAnnotation;
+      else if (est.returnType && (est.kind === "get" || (est.parent && est.parent.kind === "get"))) ann = est.returnType.typeAnnotation;
+      if (ann && ann._i != null) {
+        const rt = h.resolveTypeNode(ann._i);
+        if (rt != null && h.kind(rt) !== 1) tid = rt;
+      }
+    }
     return makeType(tid);
   }
 
