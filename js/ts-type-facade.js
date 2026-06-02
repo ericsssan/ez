@@ -127,6 +127,16 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // (no-unsafe-call's bare-`Function` check). Unnamed types stay undefined
       // (rules guard `type.getSymbol()` / `.symbol`).
       symbol: undefined,
+      // ts.Type.aliasSymbol — the type-alias name this type was resolved from
+      // (`type Foo = …` → "Foo"), carried independently of the structural symbol.
+      // specifierNameMatches checks this first (no-floating-promises'
+      // allowForKnownSafePromises `{from:'file', name:'Foo'}`). makeTypeSymbol
+      // gives it the USER source-file declaration the `from:'file'` check reads.
+      get aliasSymbol() {
+        if (typeId == null) return undefined;
+        const an = h.aliasName(typeId);
+        return an ? makeTypeSymbol(an) : undefined;
+      },
       getSymbol() {
         if (typeId == null) return undefined;
         const k = h.kind(typeId);
@@ -522,8 +532,18 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // declarations, so named builtins get a LIB sentinel and user types a USER
   // one. no-unsafe-call's isBuiltinSymbolLike(type, 'Function') uses this to
   // flag calling the bare `Function` type.
-  const LIB_SOURCE_FILE = Object.freeze({ __ez_lib: true });
-  const USER_SOURCE_FILE = Object.freeze({ __ez_lib: false });
+  // `.fileName` is read by no-floating-promises' typeMatchesSpecifier path
+  // (typeDeclaredInFile/Package → getCanonicalFileName(fileName)); undefined
+  // crashes node:path. Give each a non-empty absolute path that matches no
+  // user-supplied `from:'file'`/`'package'` specifier (FP-safe — a facade type
+  // is never genuinely declared in the user's named file/package) and never
+  // `.startsWith(".")` (the relativePath==null branch's cwd is ".").
+  const LIB_SOURCE_FILE = Object.freeze({ __ez_lib: true, fileName: "/lib.es5.d.ts" });
+  // Empty fileName → getCanonicalFileName("") === "." === the rule's cwd, so a
+  // file-local type matches a `from:'file'` specifier with no path (the type IS
+  // declared in the user's file). The specifierNameMatches gate runs first, so
+  // this never over-matches a differently-named type.
+  const USER_SOURCE_FILE = Object.freeze({ __ez_lib: false, fileName: "" });
   const DEFAULT_LIB_TYPE_NAMES = new Set([
     "Function", "Promise", "Error", "Array", "ReadonlyArray", "Object", "String",
     "Number", "Boolean", "RegExp", "Date", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "BigInt",
@@ -788,6 +808,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // lets those rules proceed; absent flags default falsy, matching "not set".
     getCompilerOptions() { return {}; },
     getSourceFiles() { return []; },
+    // no-floating-promises reads program.getCurrentDirectory() to build a
+    // module resolution host; we don't model the filesystem — empty cwd is inert.
+    getCurrentDirectory() { return ""; },
     // True for our LIB sentinel source file (builtin types) — backs
     // isSymbolFromDefaultLibrary in isBuiltinSymbolLike.
     isSourceFileDefaultLibrary(sf) { return !!(sf && sf.__ez_lib); },

@@ -3745,6 +3745,25 @@ pub const Checker = struct {
         }
     }
 
+    /// Tag a type-alias resolution with the alias name (`type Foo = …` → the
+    /// resolved type carries name "Foo"), so the facade can expose it as
+    /// ts.Type.aliasSymbol (e.g. no-floating-promises' allowForKnownSafePromises
+    /// `{from:'file', name:'Foo'}` matching). `name` is part of structural
+    /// interning, so a named copy stays distinct from the bare structural type —
+    /// no pollution. Scoped: only composite types with no existing name (interface/
+    /// class names are kept; primitives/keywords are never copied).
+    fn tagAliasName(self: *Checker, id: TypeId, name: []const u8) TypeId {
+        const t = self.store.get(id);
+        if (std.mem.eql(u8, t.alias_name, name)) return id;
+        switch (t.kind) {
+            .object_t, .intersection_t, .union_t, .tuple_t, .type_ref, .function_t => {},
+            else => return id,
+        }
+        var copy = t.*;
+        copy.alias_name = name;
+        return self.store.add(copy) catch id;
+    }
+
     fn resolveTypeRef(self: *Checker, ty_node: NodeIndex) TypeId {
         const name_tok = self.ast_ref.nodeMainToken(ty_node);
         const name = self.ast_ref.tokenText(name_tok);
@@ -3879,11 +3898,13 @@ pub const Checker = struct {
                 if (self.ast_ref.nodeTag(decl) == .ts_type_alias_decl) {
                     const ta_dd = self.ast_ref.nodeData(decl);
                     const ta_ad = self.ast_ref.extraData(ast.TypeAliasData, @intFromEnum(ta_dd.lhs));
+                    var result = resolved;
                     if (self.isConditionalBody(ta_ad.type_node)) {
-                        if (self.resolveConditionalAliasWithArgs(decl, ty_node, ta_ad)) |inst| return inst;
+                        if (self.resolveConditionalAliasWithArgs(decl, ty_node, ta_ad)) |inst| result = inst;
                     } else {
-                        if (self.substituteAliasArgs(decl, ty_node, resolved)) |inst| return inst;
+                        if (self.substituteAliasArgs(decl, ty_node, resolved)) |inst| result = inst;
                     }
+                    return self.tagAliasName(result, name);
                 }
             }
             return resolved;

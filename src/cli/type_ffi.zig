@@ -569,6 +569,17 @@ pub export fn ez_type_ref_name(h: usize, type_id: u32, out: [*]u8, out_len: u32)
     return @intCast(n);
 }
 
+// The type-alias name a type was resolved from (`type Foo = …` → "Foo"),
+// independent of the structural name — facade ts.Type.aliasSymbol.
+pub export fn ez_type_alias_name(h: usize, type_id: u32, out: [*]u8, out_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    const name = ctx.checker.store.types.items[type_id].alias_name;
+    const n = @min(name.len, out_len);
+    @memcpy(out[0..n], name[0..n]);
+    return @intCast(n);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 test "type_ffi: open → typeOf → kind/flags → close" {

@@ -75,6 +75,7 @@ function binding() {
       ez_type_type_arg:       { args: [H, U, U], returns: U },
       ez_type_name_eq:        { args: [H, U, FFIType.ptr, U], returns: FFIType.u8 },
       ez_type_ref_name:       { args: [H, U, FFIType.ptr, U], returns: U },
+      ez_type_alias_name:     { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_tag_last:    { args: [U], returns: FFIType.void },
       ez_type_open_reuse:  { args: [U], returns: H },
     });
@@ -208,6 +209,13 @@ function _handleObj(b, h) {
     refName(typeId) {
       const buf = Buffer.allocUnsafe(64);
       const n = b.sym.ez_type_ref_name(h, typeId >>> 0, b.ptr(buf), buf.length);
+      return n > 0 ? buf.toString("utf8", 0, n) : "";
+    },
+    // The type-alias name this type was resolved from (`type Foo = …` → "Foo"),
+    // or "" — facade ts.Type.aliasSymbol.
+    aliasName(typeId) {
+      const buf = Buffer.allocUnsafe(64);
+      const n = b.sym.ez_type_alias_name(h, typeId >>> 0, b.ptr(buf), buf.length);
       return n > 0 ? buf.toString("utf8", 0, n) : "";
     },
     close() { b.sym.ez_type_close(h); },

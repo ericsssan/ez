@@ -145,6 +145,11 @@ pub const Type = struct {
     object_props: ObjectPropList = ObjectPropList.empty,
     signatures: SignatureList = SignatureList.empty,
     name: []const u8 = "",
+    /// Type-alias name this type was resolved from (`type Foo = …` → "Foo"),
+    /// independent of the structural `name`. Surfaced to the facade as
+    /// ts.Type.aliasSymbol. Part of interning identity (see hash/eql) so an
+    /// alias-tagged type stays distinct from its bare structural form.
+    alias_name: []const u8 = "",
 };
 
 pub const LiteralValue = union(enum) {
@@ -267,6 +272,7 @@ pub const InternContext = struct {
             },
         }
         h.update(t.name);
+        h.update(t.alias_name);
         for (self.store.idsOf(t.list_data)) |c| {
             const v = c.toInt();
             h.update(std.mem.asBytes(&v));
@@ -306,6 +312,7 @@ pub const InternContext = struct {
         if (ta.kind != tb.kind) return false;
         if (!literalEql(ta.literal_value, tb.literal_value)) return false;
         if (!std.mem.eql(u8, ta.name, tb.name)) return false;
+        if (!std.mem.eql(u8, ta.alias_name, tb.alias_name)) return false;
         const la = self.store.idsOf(ta.list_data);
         const lb = self.store.idsOf(tb.list_data);
         if (la.len != lb.len) return false;
