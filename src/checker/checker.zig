@@ -5280,6 +5280,9 @@ pub const Checker = struct {
         // `Object.create(...)` is typed `any` by the lib — surface that so
         // no-unsafe-return / -assignment flag returning or assigning it.
         if (self.calleeIsObjectCreate(callee)) return tymod.ID_ANY;
+        // `Promise.resolve<T>(...)` → `Promise<T>` (uses the explicit type arg) so
+        // no-unsafe-return's Promise<any> detection fires.
+        if (self.promiseResolveReturn(callee)) |ty| return ty;
         if (self.ast_ref.nodeTag(node) == .new_expr or
             self.calleeIsConstructible(callee))
         {
@@ -5338,6 +5341,34 @@ pub const Checker = struct {
         // Not a user-shadowed local `Object`.
         if (self.symbolForIdentRef(d.lhs) != null) return false;
         return std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(d.rhs)), "create");
+    }
+
+    /// `Promise.resolve<T>(x)` → `Promise<T>` (the global `Promise`, dot-accessed
+    /// `resolve`, using its explicit type argument). Returns null for any other
+    /// callee. Lets no-unsafe-return flag returning `Promise.resolve<any>(…)`.
+    fn promiseResolveReturn(self: *Checker, callee: NodeIndex) ?TypeId {
+        var c = callee;
+        var type_arg: NodeIndex = .none;
+        if (self.ast_ref.nodeTag(c) == .ts_instantiation_expr) {
+            const d = self.ast_ref.nodeData(c);
+            c = d.lhs;
+            if (d.rhs != .none) {
+                const sr = self.ast_ref.extraData(ast.SubRange, @intFromEnum(d.rhs));
+                if (sr.start < sr.end and sr.end <= self.ast_ref.extra_data.len)
+                    type_arg = @enumFromInt(self.ast_ref.extra_data[sr.start]);
+            }
+        }
+        while (self.ast_ref.nodeTag(c) == .grouping_expr) c = self.ast_ref.nodeData(c).lhs;
+        const tag = self.ast_ref.nodeTag(c);
+        if (tag != .member_expr and tag != .optional_member_expr) return null;
+        const md = self.ast_ref.nodeData(c);
+        if (md.lhs == .none or md.rhs == .none) return null;
+        if (self.ast_ref.nodeTag(md.lhs) != .identifier) return null;
+        if (!std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.lhs)), "Promise")) return null;
+        if (self.symbolForIdentRef(md.lhs) != null) return null; // user-shadowed local `Promise`
+        if (!std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.rhs)), "resolve")) return null;
+        const inner: TypeId = if (type_arg != .none) self.resolveTypeNode(type_arg) else tymod.ID_UNKNOWN;
+        return self.store.typeRef("Promise", &.{inner}) catch tymod.ID_UNKNOWN;
     }
 
     /// Match argument types against parameter types looking for
