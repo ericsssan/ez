@@ -53,6 +53,8 @@ function binding() {
       ez_type_sig_param:       { args: [H, U, U, U], returns: U },
       ez_type_sig_flags:       { args: [H, U, U], returns: U },
       ez_type_sig_rest_index:  { args: [H, U, U], returns: U },
+      ez_type_sig_predicate_param:  { args: [H, U, U], returns: U },
+      ez_type_sig_predicate_target: { args: [H, U, U], returns: U },
       ez_type_call_param_type: { args: [H, U, U], returns: U },
       ez_type_assignable:      { args: [H, U, U], returns: FFIType.u8 },
       ez_type_resolve_type_node: { args: [H, U], returns: U },
@@ -127,6 +129,15 @@ function _handleObj(b, h) {
     sigRestIndex(typeId, sigIdx) {
       const r = b.sym.ez_type_sig_rest_index(h, typeId >>> 0, sigIdx >>> 0);
       return r === 0xffff ? null : r;
+    },
+    // Type-predicate signature: narrowed parameter index (or null) + target type.
+    sigPredicateParam(typeId, sigIdx) {
+      const r = b.sym.ez_type_sig_predicate_param(h, typeId >>> 0, sigIdx >>> 0);
+      return r === 0xffff ? null : r;
+    },
+    sigPredicateTarget(typeId, sigIdx) {
+      const r = b.sym.ez_type_sig_predicate_target(h, typeId >>> 0, sigIdx >>> 0);
+      return r === NO_TYPE ? null : r;
     },
     // Instantiated type of a generic call's param (null if not a generic call).
     callParamType(callNodeIdx, paramIdx) {

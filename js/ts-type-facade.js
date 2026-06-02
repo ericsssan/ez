@@ -415,6 +415,11 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       typeParameters: undefined,
       getDeclaration() { return undefined; },
       declaration: undefined,
+      // Type-predicate info (`name is X` / `asserts name is X`), read by the
+      // checker's getTypePredicateOfSignature. predParam null → not a guard.
+      __ez_predParam: h.sigPredicateParam(typeId, sigIdx),
+      __ez_predTarget: h.sigPredicateTarget(typeId, sigIdx),
+      __ez_asserts: (h.sigFlags(typeId, sigIdx) & 8) !== 0,
     };
   }
 
@@ -586,9 +591,25 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const base = LITERAL_BASE[type.getFlags()];
       return base != null ? syntheticType(base) : type;
     },
-    // No separate constraint modelling yet — returning undefined makes
-    // getConstrainedTypeAtLocation fall back to the node's own type.
-    getBaseConstraintOfType() { return undefined; },
+    // Base constraint of a type parameter (`T extends boolean` → boolean). The
+    // facade types a bare `x: T` value as the genuine type_param; rules like
+    // strict-boolean-expressions / no-unnecessary-condition resolve it through
+    // getConstrainedTypeAtLocation before classifying, else a TypeParameter reads
+    // as `any`. undefined for non-type-params → getConstrainedTypeAtLocation
+    // keeps the node's own type.
+    getBaseConstraintOfType(type) {
+      let c = type && type.getConstraint ? type.getConstraint() : undefined;
+      // Follow the chain through nested type params (`T extends R`): the BASE
+      // constraint is the first non-type-param in the chain. A chain that bottoms
+      // out on a bare/unconstrained type param has no base constraint (undefined),
+      // so needsToBeAwaited etc. treat it as unknown — not a definite non-thenable.
+      let guard = 0;
+      while (c && c.getConstraint && (c.getFlags() & 524288) !== 0 /*TypeParameter*/ && guard++ < 8) {
+        c = c.getConstraint();
+      }
+      if (c && (c.getFlags() & 524288) !== 0) return undefined; // ended on an unconstrained param
+      return c || undefined;
+    },
     // Declared type of an interface/class symbol (the symbol carries it) — and
     // its base types (the `extends` clause). Together these let
     // isBuiltinSymbolLike walk `interface X extends Function`.
@@ -697,6 +718,22 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const key = prop.key && (prop.key.name != null ? prop.key.name : prop.key.value);
       const sym = objCtx && objCtx.getProperty && key != null ? objCtx.getProperty(String(key)) : undefined;
       return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined;
+    },
+    // ts.TypePredicate of a signature, or undefined when it isn't a type guard.
+    // strict-boolean-expressions / no-unnecessary-condition use this to treat an
+    // assertion/guard call argument as a boolean-context test. Kinds: This=0,
+    // Identifier=1, AssertsThis=2, AssertsIdentifier=3 (bundled ts.TypePredicateKind).
+    getTypePredicateOfSignature(sig) {
+      if (!sig) return undefined;
+      const asserts = !!sig.__ez_asserts;
+      const pi = sig.__ez_predParam;
+      // A guard narrows a named parameter (pi != null); a bare `asserts x` has no
+      // target type but still asserts. Non-guard, non-assertion → no predicate.
+      if (pi == null && !asserts) return undefined;
+      const target = sig.__ez_predTarget != null ? makeType(sig.__ez_predTarget) : undefined;
+      const kind = asserts ? (pi == null ? 2 /*AssertsThis*/ : 3 /*AssertsIdentifier*/)
+        : 1 /*Identifier*/;
+      return { kind, parameterIndex: pi == null ? 0 : pi, type: target };
     },
     getSignaturesOfType(type) { return type && type.getCallSignatures ? type.getCallSignatures() : []; },
     // Symbol → its type (for getTypeOfSymbolAtLocation in no-unsafe-argument /

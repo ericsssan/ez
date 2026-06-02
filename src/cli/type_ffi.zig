@@ -314,7 +314,27 @@ pub export fn ez_type_sig_flags(h: usize, type_id: u32, sig_idx: u32) callconv(.
     if (s.is_async) f |= 1;
     if (s.is_generator) f |= 2;
     if (s.is_construct) f |= 4;
+    if (s.is_assertion) f |= 8;
     return f;
+}
+
+/// Zero-based parameter index narrowed by a `name is X` / `asserts name is X`
+/// type-predicate signature, or 0xFFFF when the signature isn't a type guard.
+/// Backs the facade's getTypePredicateOfSignature (strict-boolean-expressions,
+/// no-unnecessary-condition assertion-function handling).
+pub export fn ez_type_sig_predicate_param(h: usize, type_id: u32, sig_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0xFFFF;
+    const s = sigAt(ctx, type_id, sig_idx) orelse return 0xFFFF;
+    return s.predicate_param_index;
+}
+
+/// The predicate target type (`X` in `name is X`), or 0xFFFFFFFF when the
+/// signature isn't a type guard or the predicate has no type (`asserts name`).
+pub export fn ez_type_sig_predicate_target(h: usize, type_id: u32, sig_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    const s = sigAt(ctx, type_id, sig_idx) orelse return NO_TYPE;
+    if (s.predicate_param_index == 0xFFFF or s.predicate_target == .none) return NO_TYPE;
+    return s.predicate_target.toInt();
 }
 
 /// Zero-based index of the signature's rest parameter (`...args`), or 0xFFFF if
