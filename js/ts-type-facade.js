@@ -309,6 +309,21 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         if (st != null && h.kind(st) !== 1) tid = st;
       }
     }
+    // A JSX attribute name (`a` in `<Foo a={…}/>`) is typed as the component's
+    // matching prop — the callee's param 0 (`props`) property. Lets
+    // no-unsafe-assignment flag `<Foo a={x as any}/>` against `props.a`.
+    if (unresolved(tid) && est.type === "JSXIdentifier" &&
+        est.parent && est.parent.type === "JSXAttribute" &&
+        est.parent.parent && est.parent.parent.type === "JSXOpeningElement" &&
+        est.parent.parent.name) {
+      const sigs = typeAt(est.parent.parent.name).getCallSignatures();
+      const propsSym = sigs.length ? sigs[0].getParameters()[0] : null;
+      if (propsSym && propsSym.__ez_type != null) {
+        const props = makeType(propsSym.__ez_type);
+        const attr = props && props.getProperty ? props.getProperty(est.name) : undefined;
+        if (attr && attr.__ez_type != null) tid = attr.__ez_type;
+      }
+    }
     return makeType(tid);
   }
 

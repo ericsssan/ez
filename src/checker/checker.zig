@@ -248,6 +248,9 @@ pub const Checker = struct {
             .super_expr => tymod.ID_UNKNOWN,
 
             .identifier => self.inferIdentifier(node),
+            // A JSX element name (`<Foo .../>`) references a value — resolve it
+            // like an identifier so the facade can read the component's props.
+            .jsx_identifier => self.inferIdentifier(node),
 
             .ts_as_expr, .ts_type_assertion => self.inferAsCast(node, t),
             .ts_satisfies_expr => self.inferSatisfies(node),
