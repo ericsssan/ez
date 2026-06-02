@@ -853,6 +853,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, inner, "boolean")) return .boolean;
         if (std.mem.eql(u8, inner, "bigint")) return .bigint;
         if (std.mem.eql(u8, inner, "undefined")) return .undefined_t;
+        if (std.mem.eql(u8, inner, "function")) return .function;
         return null;
     }
 
@@ -870,6 +871,8 @@ pub const Checker = struct {
             .undefined_t => tymod.ID_UNDEFINED,
             .null_t => tymod.ID_NULL,
             .void_t => tymod.ID_VOID,
+            // `typeof x === 'function'` narrows to the broad `Function` type.
+            .function => self.store.typeRef("Function", &.{}) catch return ty,
             .none => return ty,
         };
         const t = self.store.get(ty);
@@ -885,7 +888,7 @@ pub const Checker = struct {
         return self.narrowUnion(ty, kind, keep_only);
     }
 
-    const Narrowable = enum(u8) { none, null_t, undefined_t, void_t, string, number, boolean, bigint };
+    const Narrowable = enum(u8) { none, null_t, undefined_t, void_t, string, number, boolean, bigint, function };
 
     fn narrowKindFromLiteral(self: *Checker, lit: NodeIndex) Narrowable {
         var n = lit;
@@ -937,6 +940,7 @@ pub const Checker = struct {
             .number => id.eq(tymod.ID_NUMBER),
             .boolean => id.eq(tymod.ID_BOOLEAN),
             .bigint => id.eq(tymod.ID_BIGINT),
+            .function => k == .function_t,
             .none => false,
         };
     }
@@ -950,6 +954,7 @@ pub const Checker = struct {
             .undefined_t => k == .undefined_t or k == .void_t,
             .null_t => k == .null_t,
             .void_t => k == .void_t,
+            .function => k == .function_t,
             .none => false,
         };
     }
