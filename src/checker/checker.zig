@@ -5946,6 +5946,7 @@ pub const Checker = struct {
         // Element type = union of element types.
         var buf: [32]TypeId = undefined;
         const n = @min(slice.len, buf.len);
+        var has_spread = false;
         var i: usize = 0;
         while (i < n) : (i += 1) {
             const elem_node: NodeIndex = @enumFromInt(slice[i]);
@@ -5955,6 +5956,7 @@ pub const Checker = struct {
             }
             const elem_tag = self.ast_ref.nodeTag(elem_node);
             if (elem_tag == .spread_element) {
+                has_spread = true;
                 // Best-effort: if spread source is array, peel; else any.
                 const inner = self.typeOf(self.ast_ref.nodeData(elem_node).lhs);
                 const t = self.store.get(inner);
@@ -5967,6 +5969,15 @@ pub const Checker = struct {
             } else {
                 buf[i] = self.typeOf(elem_node);
             }
+        }
+        // A fresh array literal with no spread is a fixed-length *tuple* (TS types
+        // it so before any widening). Preserving each element's type lets
+        // no-unsafe-assignment's destructuring walk recurse into nested patterns
+        // (`[[[[x]]]] = [[[[1 as any]]]]`). With a spread, fall back to array-of-union.
+        if (!has_spread) {
+            const list = self.store.appendTypeIds(buf[0..n]) catch
+                return self.store.arrayOf(self.store.unionOf(buf[0..n]) catch tymod.ID_ANY) catch tymod.ID_ANY;
+            return self.store.add(.{ .kind = .tuple_t, .list_data = list }) catch tymod.ID_ANY;
         }
         const elem_t = self.store.unionOf(buf[0..n]) catch tymod.ID_ANY;
         return self.store.arrayOf(elem_t) catch tymod.ID_ANY;
