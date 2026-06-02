@@ -1061,8 +1061,6 @@ test "no-unsafe-return" {
         .rule = "no-unsafe-return",
         .lang = .ts,
         .valid = &.{
-            // No declared return type → no check.
-            "function f() { return anything; }",
             // Declared return type is any → opt-in.
             "declare const a: any; function f(): any { return a; }",
             // Declared return type is void → returning any is fine.
@@ -1077,6 +1075,9 @@ test "no-unsafe-return" {
             "declare const a: any; function f(): number { return a as number; }",
         },
         .invalid = &.{
+            // Returning a genuinely-undeclared identifier (the error type, which
+            // `isTypeAnyType` treats as `any`) is unsafe.
+            .{ .code = "function f() { return anything; }" },
             // any → number.
             .{ .code = "declare const a: any; function f(): number { return a; }" },
             // any → number[] (containsAny on array element check).

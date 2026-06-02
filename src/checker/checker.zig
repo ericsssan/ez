@@ -385,10 +385,63 @@ pub const Checker = struct {
         // back to the curated lib shapes so member access / calls type
         // correctly without modelling the full lib.d.ts.
         if (self.global_value_types.get(name)) |t| return t;
-        // Unresolved identifier — Unknown (FP-safe). NOT the error type: our
-        // globals model is incomplete, so real globals/constructors (`Map`,
-        // namespace refs) reach here too and must not read as unsafe.
-        return tymod.ID_UNKNOWN;
+        // A known lib.d.ts global we don't model structurally (`Map`, `Reflect`,
+        // a TypedArray, …) → Unknown (FP-safe), NOT the error type. A name that
+        // is neither in scope nor a known global is genuinely undeclared, which
+        // TS types as the *error* type — the type-aware rules flag using it.
+        if (isKnownGlobalValue(name)) return tymod.ID_UNKNOWN;
+        // …unless it's in a type position (`implements FG.A`, `x: Foo`) — a
+        // type/namespace reference, not a value, so don't read it as an unsafe
+        // value (no-unsafe-member-access excludes heritage member expressions).
+        if (self.identifierInTypePosition(node)) return tymod.ID_UNKNOWN;
+        return tymod.ID_ERROR;
+    }
+
+    /// True when `node` (an identifier) sits in a type position — a qualified
+    /// name inside a `ts_type_reference` / `ts_type_query` / type annotation —
+    /// rather than a value position.
+    fn identifierInTypePosition(self: *Checker, node: NodeIndex) bool {
+        const parents = self.ast_ref.parents;
+        if (parents.len == 0) return false;
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        var p = parents[node.toInt()];
+        var guard: u8 = 0;
+        while (p != NONE and guard < 8) : (guard += 1) {
+            switch (self.ast_ref.nodeTag(@enumFromInt(p))) {
+                // Parts of a qualified name (`FG.A`) — keep walking up.
+                .member_expr, .optional_member_expr, .identifier, .grouping_expr => {},
+                .ts_type_reference, .ts_type_query, .ts_type_annotation => return true,
+                else => return false,
+            }
+            p = parents[p];
+        }
+        return false;
+    }
+
+    /// ECMAScript global *value* names (lib.es*) that we don't give a structural
+    /// shape. Used to tell a real-but-unmodelled global from a genuinely
+    /// undeclared identifier so the latter reads as the error type.
+    fn isKnownGlobalValue(name: []const u8) bool {
+        const names = [_][]const u8{
+            "Object",      "Function",   "Array",         "Number",        "Boolean",
+            "String",      "Symbol",     "BigInt",        "Math",          "Date",
+            "RegExp",      "Error",      "EvalError",     "RangeError",    "ReferenceError",
+            "SyntaxError", "TypeError",  "URIError",      "AggregateError", "JSON",
+            "Promise",     "Map",        "Set",           "WeakMap",       "WeakSet",
+            "WeakRef",     "FinalizationRegistry",        "Proxy",         "Reflect",
+            "ArrayBuffer", "SharedArrayBuffer",           "DataView",      "Atomics",
+            "Int8Array",   "Uint8Array", "Uint8ClampedArray",              "Int16Array",
+            "Uint16Array", "Int32Array", "Uint32Array",   "Float32Array",  "Float64Array",
+            "BigInt64Array", "BigUint64Array",            "console",       "globalThis",
+            "NaN",         "Infinity",   "undefined",     "parseInt",      "parseFloat",
+            "isNaN",       "isFinite",   "decodeURI",     "decodeURIComponent",
+            "encodeURI",   "encodeURIComponent",          "eval",          "escape",
+            "unescape",    "queueMicrotask",              "structuredClone",
+        };
+        inline for (names) |g| {
+            if (std.mem.eql(u8, name, g)) return true;
+        }
+        return false;
     }
 
     /// Build an object_t for an enum's value-side shape — each enum

@@ -224,6 +224,12 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // value in a `declare class`).
     const est = node._i != null ? node : (node._estree || node);
     if (!est) return makeType(undefined);
+    // A node is "unresolved" when our checker gave it Unknown OR the error type.
+    // The error type is what a genuinely-undeclared identifier resolves to, but
+    // our symbol resolver is incomplete (e.g. declare-class setter params reach
+    // it too) — so the annotation/binding fallbacks below must still run and only
+    // keep the error type when nothing real resolves.
+    const unresolved = (t) => t == null || h.kind(t) === 1 /*unknown*/ || h.kind(t) === 12 /*error*/;
     // A getter accessor's function-expression value can be a synthetic, body-less
     // node (no `_i`) — e.g. `get a(): T;` in a `declare class`. Resolve it from
     // the return-type annotation (which is a real node) so related-getter-setter
@@ -250,7 +256,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // lives on `fn.id`, while the statement node is Unknown. Rules call
     // getTypeAtLocation(functionNode)/(classNode) expecting the declared type,
     // so fall back to the id's type when the node itself is untyped (Unknown).
-    if ((tid == null || h.kind(tid) === 1 /*unknown*/) && est.id && est.id._i != null) {
+    if (unresolved(tid) && est.id && est.id._i != null) {
       const idTid = h.typeOfNode(est.id._i);
       if (idTid != null && h.kind(idTid) !== 1) tid = idTid;
     }
@@ -259,7 +265,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // Exception: `as const` is a const assertion, not a real type (it makes the
     // operand its readonly literal); resolving the bare `const` ref yields a
     // spurious type, so leave it unknown (→ assignable → safe).
-    if ((tid == null || h.kind(tid) === 1) && TS_TYPE_NODES.has(est.type) &&
+    if (unresolved(tid) && TS_TYPE_NODES.has(est.type) &&
         !(est.type === "TSTypeReference" && est.typeName && est.typeName.name === "const")) {
       // Param-aware: a bare in-scope type parameter (`x as T`) resolves to a
       // genuine `.type_param` so isTypeParameter/getConstraint work and the
@@ -271,7 +277,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // An annotated binding (param / var id) → its declared annotation type; a
     // getter accessor / get-method → its return-type annotation (the property
     // type). Needed by related-getter-setter-pairs (setter param + getter type).
-    if (tid == null || h.kind(tid) === 1) {
+    if (unresolved(tid)) {
       let ann = null;
       if (est.type === "Identifier" && est.typeAnnotation) ann = est.typeAnnotation.typeAnnotation;
       else if (est.returnType && (est.kind === "get" || (est.parent && est.parent.kind === "get"))) ann = est.returnType.typeAnnotation;
@@ -285,7 +291,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // of its own in our checker (→ Unknown). TS types it as the assigned value's
     // type; no-unsafe-assignment's `isTypeUnknownType(receiver)` guard would
     // otherwise suppress an `any` value (Unknown swallows any → false negative).
-    if (tid == null || h.kind(tid) === 1) {
+    if (unresolved(tid)) {
       const p = est.parent;
       let src = null;
       if (est.type === "ArrayPattern" || est.type === "ObjectPattern") {

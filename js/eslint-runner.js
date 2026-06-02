@@ -6358,6 +6358,24 @@ function _collectIdentifierTypes(selectors) {
   return types;
 }
 
+// Extract the ancestor type from each `:not(ANCESTOR DESCENDANT)` branch — e.g.
+// no-unsafe-member-access's `:not(TSClassImplements MemberExpression, …)` which
+// excludes member expressions inside a heritage clause. Returns the list of
+// ancestor type names to exclude (the node is excluded when any ancestor
+// matches), or null if any branch isn't a simple `Identifier Identifier`
+// descendant combinator.
+function _collectNotAncestorTypes(selectors) {
+  if (!Array.isArray(selectors)) return null;
+  const anc = [];
+  for (const s of selectors) {
+    if (s.type !== 'descendant' || !s.left || !s.right) return null;
+    if (s.left.type !== 'identifier' || s.left.value === '*') return null;
+    if (s.right.type !== 'identifier') return null; // right = the node type (the outer dispatch already checks it)
+    anc.push(s.left.value);
+  }
+  return anc.length ? anc : null;
+}
+
 function _compileSelectorFastMatcher(parsedSelector) {
   if (!parsedSelector) return null;
   const t = parsedSelector.type;
@@ -6376,16 +6394,27 @@ function _compileSelectorFastMatcher(parsedSelector) {
   if (t === 'compound') {
     // compound: identifier/wildcard + zero or more attribute/simple-:not selectors
     let typeValue = null;
+    let usesAncestors = false;
     const attrChecks = [];
     for (const s of parsedSelector.selectors) {
       if (s.type === 'identifier') { typeValue = s.value !== '*' ? s.value : null; continue; }
       if (s.type === 'wildcard') continue;
       if (s.type === 'not') {
         const negTypes = _collectIdentifierTypes(s.selectors);
-        if (!negTypes) return null;
-        if (negTypes.length === 1) { const tv = negTypes[0]; attrChecks.push((n) => n.type !== tv); continue; }
-        if (negTypes.length > 1) { const set = new Set(negTypes); attrChecks.push((n) => !set.has(n.type)); continue; }
-        continue; // empty :not() → no-op
+        if (negTypes) {
+          if (negTypes.length === 1) { const tv = negTypes[0]; attrChecks.push((n) => n.type !== tv); continue; }
+          if (negTypes.length > 1) { const set = new Set(negTypes); attrChecks.push((n) => !set.has(n.type)); continue; }
+          continue; // empty :not() → no-op
+        }
+        // :not(ANCESTOR DESCENDANT) — exclude when any ancestor matches.
+        const ancTypes = _collectNotAncestorTypes(s.selectors);
+        if (ancTypes) {
+          const set = new Set(ancTypes);
+          attrChecks.push((_n, anc) => !(anc && anc.some((p) => set.has(p.type))));
+          usesAncestors = true;
+          continue;
+        }
+        return null;
       }
       if (s.type !== 'attribute') return null; // pseudo-class, field, etc. — can't compile
       const check = _compileAttrCheck(s);
@@ -6402,17 +6431,20 @@ function _compileSelectorFastMatcher(parsedSelector) {
           ? (n) => n.type === 'JSXOpeningElement' || n.type === 'JSXElement'
           : (n) => n.type === typeValue)
       : null;
+    // Some attr-checks (compiled from `:not(ANCESTOR DESCENDANT)`) read the
+    // ancestor array (second arg); flag needsAncestors so the dispatcher supplies it.
+    const na = usesAncestors ? { needsAncestors: true } : null;
     if (attrChecks.length === 0) {
       if (typeCheck) return { fn: (n, _a) => typeCheck(n), complete: true };
       return { fn: (_n, _a) => true, complete: true };
     }
     if (attrChecks.length === 1) {
       const c = attrChecks[0];
-      if (typeCheck) return { fn: (n, _a) => typeCheck(n) && c(n), complete: true };
-      return { fn: (n, _a) => c(n), complete: true };
+      if (typeCheck) return { fn: (n, a) => typeCheck(n) && c(n, a), complete: true, ...na };
+      return { fn: (n, a) => c(n, a), complete: true, ...na };
     }
-    if (typeCheck) return { fn: (n, _a) => { if (!typeCheck(n)) return false; for (const c of attrChecks) if (!c(n)) return false; return true; }, complete: true };
-    return { fn: (n, _a) => { for (const c of attrChecks) if (!c(n)) return false; return true; }, complete: true };
+    if (typeCheck) return { fn: (n, a) => { if (!typeCheck(n)) return false; for (const c of attrChecks) if (!c(n, a)) return false; return true; }, complete: true, ...na };
+    return { fn: (n, a) => { for (const c of attrChecks) if (!c(n, a)) return false; return true; }, complete: true, ...na };
   }
 
   if (t === 'child') {
