@@ -5334,8 +5334,13 @@ pub const Checker = struct {
         const tag = self.ast_ref.nodeTag(node);
         // `a ?? b` evaluates to a (when non-nullish) or b — the result
         // type is `(a - null - undefined) | b`.  Stripping nullish from
-        // the LHS catches `x?: true; x ?? true` → `true`.
+        // the LHS catches `x?: true; x ?? true` → `true`.  When the LHS's
+        // nullishness is statically known the unused branch is unreachable
+        // (control-flow narrowing): a never-nullish `a` ⇒ `a`; an always-nullish
+        // `a` ⇒ `b`.
         if (tag == .nullish_coalesce) {
+            if (self.neverNullish(a)) return a;
+            if (self.alwaysNullish(a)) return b;
             const a_stripped = self.stripNullishUnion(a);
             return self.store.unionOf(&.{ a_stripped, b }) catch tymod.ID_ANY;
         }
@@ -5343,11 +5348,119 @@ pub const Checker = struct {
         // drops the falsy part of the LHS. We strip null/undefined (the part that
         // matters for nullability), matching TS: `(string|null) || 'a'` is
         // `string | 'a'`, not nullish (prefer-optional-chain's requireNullish).
+        // A statically-truthy LHS short-circuits to `a` (RHS unreachable); a
+        // statically-falsy LHS evaluates to `b`.
         if (tag == .logical_or) {
+            if (self.alwaysTruthy(a)) return a;
+            if (self.alwaysFalsy(a)) return b;
             const a_stripped = self.stripNullishUnion(a);
             return self.store.unionOf(&.{ a_stripped, b }) catch tymod.ID_ANY;
         }
+        // `a && b` evaluates to `a` when falsy, else `b`.  A statically-falsy LHS
+        // short-circuits to `a` (RHS unreachable — `false && p()` is just `false`,
+        // not `false | Promise`); a statically-truthy LHS evaluates to `b`.
+        if (self.alwaysFalsy(a)) return a;
+        if (self.alwaysTruthy(a)) return b;
         return self.store.unionOf(&.{ a, b }) catch tymod.ID_ANY;
+    }
+
+    /// A bigint literal whose textual value is zero (`0n` / `-0n`).
+    fn isZeroBigint(s: []const u8) bool {
+        return std.mem.eql(u8, s, "0") or std.mem.eql(u8, s, "0n") or
+            std.mem.eql(u8, s, "-0") or std.mem.eql(u8, s, "-0n");
+    }
+
+    /// A type that can only ever be falsy at runtime — `false`, `0`, `0n`, `""`,
+    /// `null`, `undefined`, `void`.  Lets `a && b` / `a || b` constant-fold the
+    /// short-circuit (control-flow narrowing of the logical result).
+    fn alwaysFalsy(self: *Checker, id: TypeId) bool {
+        const t = self.store.get(id);
+        return switch (t.kind) {
+            .null_t, .undefined_t, .void_t => true,
+            .boolean_literal => switch (t.literal_value) {
+                .boolean => |v| v == false,
+                else => false,
+            },
+            .number_literal => switch (t.literal_value) {
+                .number => |v| v == 0,
+                else => false,
+            },
+            .string_literal => switch (t.literal_value) {
+                .string => |v| v.len == 0,
+                else => false,
+            },
+            .bigint_literal => switch (t.literal_value) {
+                .bigint => |v| isZeroBigint(v),
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    /// A type that can only ever be truthy at runtime — a `true`/non-zero/
+    /// non-empty literal.  Conservative: composite types (object/function/array)
+    /// are NOT folded here, to keep the blast radius to constant short-circuits.
+    fn alwaysTruthy(self: *Checker, id: TypeId) bool {
+        const t = self.store.get(id);
+        return switch (t.kind) {
+            .boolean_literal => switch (t.literal_value) {
+                .boolean => |v| v == true,
+                else => false,
+            },
+            .number_literal => switch (t.literal_value) {
+                .number => |v| v != 0,
+                else => false,
+            },
+            .string_literal => switch (t.literal_value) {
+                .string => |v| v.len != 0,
+                else => false,
+            },
+            .bigint_literal => switch (t.literal_value) {
+                .bigint => |v| !isZeroBigint(v),
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    /// True when `id` provably has no null/undefined/void constituent (so the
+    /// RHS of `a ?? b` is unreachable).  `any`/`unknown`/`error` could be
+    /// nullish → not folded.
+    fn neverNullish(self: *Checker, id: TypeId) bool {
+        const t = self.store.get(id);
+        return switch (t.kind) {
+            .null_t, .undefined_t, .void_t, .any, .unknown, .error_t => false,
+            .union_t => blk: {
+                for (self.store.idsOf(t.list_data)) |m| {
+                    switch (self.store.get(m).kind) {
+                        .null_t, .undefined_t, .void_t, .any, .unknown, .error_t => break :blk false,
+                        else => {},
+                    }
+                }
+                break :blk true;
+            },
+            else => true,
+        };
+    }
+
+    /// True when `id` is entirely null/undefined/void (so `a ?? b` is just `b`).
+    fn alwaysNullish(self: *Checker, id: TypeId) bool {
+        const t = self.store.get(id);
+        return switch (t.kind) {
+            .null_t, .undefined_t, .void_t => true,
+            .union_t => blk: {
+                const ids = self.store.idsOf(t.list_data);
+                if (ids.len == 0) break :blk false;
+                for (ids) |m| {
+                    switch (self.store.get(m).kind) {
+                        .null_t, .undefined_t, .void_t => {},
+                        else => break :blk false,
+                    }
+                }
+                break :blk true;
+            },
+            else => false,
+        };
     }
 
     fn stripNullishUnion(self: *Checker, id: TypeId) TypeId {

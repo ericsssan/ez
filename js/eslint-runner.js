@@ -60,6 +60,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/no-misused-promises",                   // 25/88, 0 FP (CRASH-batch: never-undefined getTypeAtLocation + full synthetic-type surface)
   "@typescript-eslint/return-await",                          // 38/44, 0 FP (CRASH-batch: synth getChildAt + TryStatement tryBlock/catchClause/finallyBlock)
   "@typescript-eslint/no-redundant-type-constituents",        // 46/49, 0 FP (CRASH-batch: adapter .literal negative-bigint + template-literal-type → String)
+  "@typescript-eslint/no-floating-promises",                  // 69/101, 0 FP (alias-name preservation + getCurrentDirectory/fileName + CFA logical short-circuit)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
