@@ -471,11 +471,22 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   }
 
   // Minimal synthetic ts.Type (no backing typeId) for derived/widened types.
+  // Carries the full ts.Type method surface (empty/unknown answers) so a rule
+  // that reaches for getCallSignatures/getProperty/etc. on a fallback type never
+  // crashes — it just finds nothing (FN-safe).
   function syntheticType(flags) {
-    return defineTypePredicates(
-      { flags, getFlags() { return flags; }, types: undefined, symbol: undefined, getSymbol() { return undefined; }, getConstraint() { return undefined; }, getDefault() { return undefined; } },
-      flags,
-    );
+    const t = {
+      flags, getFlags() { return flags; }, types: undefined, symbol: undefined,
+      getSymbol() { return undefined; }, getConstraint() { return undefined; }, getDefault() { return undefined; },
+      get value() { return undefined; }, get intrinsicName() { return flags & 2 ? undefined : undefined; },
+      getCallSignatures() { return []; }, getConstructSignatures() { return []; },
+      getBaseTypes() { return undefined; }, getProperty() { return undefined; }, getProperties() { return []; },
+      getNumberIndexType() { return undefined; }, getStringIndexType() { return undefined; },
+      target: undefined, objectFlags: 0, typeArguments: undefined,
+      __ez_typeId: null,
+    };
+    t.getApparentType = () => t;
+    return defineTypePredicates(t, flags);
   }
 
   // Synthetic thenable structure: ts-api-utils' isThenableType walks
@@ -538,7 +549,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   const LITERAL_BASE = { 1024: 32 /*String*/, 2048: 64 /*Number*/, 8192: 256 /*Boolean*/, 4096: 128 /*BigInt*/ };
 
   const checker = {
-    getTypeAtLocation: typeAt,
+    // An unresolvable node is semantically `unknown` to the facade. Rules feed
+    // this straight into isTypeFlagSet / unionConstituents (`.flags`) without a
+    // null-guard, so the checker entry point must never hand back undefined.
+    getTypeAtLocation(node) { return typeAt(node) || syntheticType(2 /*Unknown*/); },
     // Widen a literal type to its base primitive (`1` → number, `'a'` → string),
     // as tsc's getBaseTypeOfLiteralType does. Rules (restrict-plus-operands,
     // restrict-template-expressions, …) call this before NumberLike/StringLike
@@ -673,7 +687,30 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // Apparent type (primitives' object-ish view) isn't modelled — identity is
     // safe: callers use it to read call signatures / properties, which we read
     // off the type directly.
-    getApparentType(type) { return type; },
+    getApparentType(type) { return type || syntheticType(2 /*Unknown*/); },
+    // Strip null/undefined constituents from a union (`T | null` → `T`); a
+    // non-union or non-nullable type passes through. no-misused-promises reads
+    // the result's `.flags`, so never return undefined.
+    getNonNullableType(type) {
+      if (!type) return syntheticType(2 /*Unknown*/);
+      const parts = type.types;
+      if (!Array.isArray(parts)) return type;
+      const kept = parts.filter(t => t && (t.getFlags() & (4 /*Undefined*/ | 8 /*Null*/)) === 0);
+      if (kept.length === parts.length) return type;
+      if (kept.length === 1) return kept[0];
+      return kept.length ? kept[0] : syntheticType(2 /*Unknown*/);
+    },
+    // Contextual type of a call/new argument at `index` — the callee parameter's
+    // type. no-misused-promises uses it to detect a promise passed where a void
+    // callback is expected.
+    getContextualTypeForArgumentAtIndex(node, index) {
+      const est = (node && (node._i != null ? node : node._estree)) || node;
+      const callee = est && est.callee;
+      if (!callee) return undefined;
+      const sigs = typeAt(callee).getCallSignatures();
+      const sym = sigs.length ? sigs[0].getParameters()[index] : null;
+      return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined;
+    },
     // Three-valued assignability mapped to the boolean rules expect, with
     // `unknown` → true (assume assignable). The consumers (no-unsafe-type-
     // assertion, related-getter-setter-pairs) treat assignable as "safe → no
