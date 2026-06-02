@@ -42,8 +42,18 @@ const _TYPE_FACADE_RULES = new Set([
   // Flags a getter whose type isn't assignable to its paired setter's param.
   // Needs getTypeAtLocation to resolve a getter's return annotation + a setter
   // param's annotation (added to facade typeAt) + structural assignability.
-  // Audit: 0 FP, 2/7 (the rest resolve to unknown → assignable → FN).
   "@typescript-eslint/related-getter-setter-pairs",
+  // ── Promoted batch (facade_audit: type-aware, 0 FP). Recall in parens. ──
+  "@typescript-eslint/no-meaningless-void-operator",          // 100%
+  "@typescript-eslint/require-await",                         // 100%
+  "@typescript-eslint/prefer-string-starts-ends-with",        // 98%
+  "@typescript-eslint/no-array-delete",                       // 95%
+  "@typescript-eslint/prefer-find",                           // 92%
+  "@typescript-eslint/no-unnecessary-boolean-literal-compare",// 70%
+  "@typescript-eslint/prefer-reduce-type-parameter",          // 57%
+  "@typescript-eslint/use-unknown-in-catch-callback-variable",// 54%
+  "@typescript-eslint/prefer-regexp-exec",                    // 25%
+  "@typescript-eslint/no-base-to-string",                     // 8% (FP-safe; checker recall-limited)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
