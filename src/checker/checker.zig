@@ -2836,13 +2836,15 @@ pub const Checker = struct {
             }
             return .no;
         }
-        // Source type_param: T is a subtype of its constraint, so it's assignable
-        // to whatever the constraint is assignable to; the constraint failing
-        // doesn't prove T fails (T is narrower) → only trust `.yes`.
+        // Source type_param: TS treats a type parameter as a source as assignable
+        // exactly when its constraint is — so pass the constraint's result through
+        // (`T extends boolean as true` → boolean→true = no → unsafe). An
+        // unconstrained T is a fresh type variable assignable only to
+        // any/unknown/itself (handled above) → not to any concrete target.
         if (s.kind == .type_param) {
             const cs = self.store.idsOf(s.list_data);
-            if (cs.len == 0) return .unknown; // unconstrained
-            return if (self.structuralAssignable(cs[0], target, depth + 1) == .yes) .yes else .unknown;
+            if (cs.len == 0) return .no; // unconstrained
+            return self.structuralAssignable(cs[0], target, depth + 1);
         }
         // Strict-null: `undefined`/`null` are not assignable to a scalar
         // primitive (and vice versa) — `string | undefined as string` narrows
