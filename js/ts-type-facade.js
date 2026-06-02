@@ -406,6 +406,27 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     if (!p) return undefined;
     if (p.type === "VariableDeclarator" && p.id && p.id.typeAnnotation) return typeAt(p.id);
     if (p.type === "AssignmentExpression" && p.right === obj) return typeAt(p.left);
+    if (p.type === "TSAsExpression" && p.expression === obj && p.typeAnnotation) return typeAt(p.typeAnnotation);
+    // A call/new argument → the callee parameter's type at that index
+    // (`foo({ cb: () => … })` against `foo(o: { cb: () => void })`).
+    if ((p.type === "CallExpression" || p.type === "NewExpression") && Array.isArray(p.arguments) && p.callee) {
+      const idx = p.arguments.indexOf(obj);
+      if (idx >= 0) {
+        const sigs = typeAt(p.callee).getCallSignatures();
+        const sym = sigs.length ? sigs[0].getParameters()[idx] : null;
+        if (sym && sym.__ez_type != null) return makeType(sym.__ez_type);
+      }
+    }
+    // Returned from a function with a declared return type (`function f(): T {
+    // return {…} }` or `(): T => ({…})`) → that return type T.
+    if (p.type === "ReturnStatement" || p.type === "ArrowFunctionExpression") {
+      let fn = p.type === "ArrowFunctionExpression" ? p : p.parent, guard = 0;
+      while (fn && guard++ < 20 &&
+             !(fn.type === "FunctionDeclaration" || fn.type === "FunctionExpression" || fn.type === "ArrowFunctionExpression")) {
+        fn = fn.parent;
+      }
+      if (fn && fn.returnType) return typeAt(fn.returnType.typeAnnotation || fn.returnType);
+    }
     // Nested: the object is a property value of an outer object that itself has
     // a contextual type — recurse and project the matching property.
     if (p.type === "Property" && p.parent && p.parent.type === "ObjectExpression") {
@@ -572,6 +593,29 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const est = node && (node._i != null ? node : node._estree);
       if (!est) return undefined;
       const p = est.parent;
+      // `expr as T` — the asserted type is expr's contextual type (an arrow
+      // `(() => …) as () => void` is contextually a void-returning function;
+      // no-confusing-void-expression exempts it).
+      if (p && p.type === "TSAsExpression" && p.expression === est && p.typeAnnotation) {
+        return typeAt(p.typeAnnotation);
+      }
+      // A value assigned to a typed declaration (`const x: T = expr`,
+      // `class { f: T = expr }`) is contextually typed by the declared type T.
+      if (p && (p.type === "PropertyDefinition" || p.type === "AccessorProperty") &&
+          p.value === est && p.typeAnnotation) {
+        const ta = p.typeAnnotation.typeAnnotation || p.typeAnnotation;
+        return typeAt(ta);
+      }
+      if (p && p.type === "VariableDeclarator" && p.init === est && p.id && p.id.typeAnnotation) {
+        return typeAt(p.id);
+      }
+      // An arrow whose body IS this expression → the parent arrow's contextual
+      // return type (`const x: () => () => void = () => () => …`). Recurses.
+      if (p && p.type === "ArrowFunctionExpression" && p.body === est) {
+        const pc = checker.getContextualType(p);
+        const sigs = pc && pc.getCallSignatures ? pc.getCallSignatures() : [];
+        if (sigs.length) return sigs[0].getReturnType();
+      }
       if (p && (p.type === "CallExpression" || p.type === "NewExpression") &&
           Array.isArray(p.arguments) && p.callee) {
         const idx = p.arguments.indexOf(est);
@@ -688,6 +732,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // Services-level accessor — what rules call via
     // `getParserServices(context).getTypeAtLocation(node)`.
     getTypeAtLocation: typeAt,
+    // Services-level type-of-a-type-node — `services.getTypeFromTypeNode(
+    // fn.returnType.typeAnnotation)` (no-confusing-void-expression). typeAt
+    // resolves TS type nodes via resolveTypeNode.
+    getTypeFromTypeNode: typeAt,
     close() { h.close(); },
     __handle: h,
   };

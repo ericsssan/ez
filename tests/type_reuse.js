@@ -33,17 +33,25 @@ assert.strictEqual(mismatches, 0, `${mismatches} type mismatches between reuse a
 assert.strictEqual(tf.openReuse(999999), null, "stale generation must not reuse");
 console.log(`PASS: reuse matches fresh parse across ${checked} nodes; stale gen rejected`);
 
-// Streaming path (>=100KB): the reuse must be AVAILABLE (no re-parse). We do
-// NOT compare types against a fresh ez_type_open here — the reuse uses the
-// RUNNER's parse (the source of truth for the rules' scope), while ez_type_open
-// is a separate parse entry that can diverge on real files; end-to-end rule
-// correctness on big files is checked in tests/ts_facade_runner.js instead.
+// Streaming path (>=100KB) on a REAL file WITH non-ASCII chars: reuse must
+// match a fresh parse byte-for-byte. This is the regression test for the
+// UTF-16-conversion bug — token starts are rewritten to UTF-16 in place after
+// the parse, so the reuse must clone byte offsets BEFORE that conversion or
+// every token after a non-ASCII char resolves to the wrong name (Unknown).
 const fs = require("fs"), path = require("path");
 const bigSrc = fs.readFileSync(path.join(__dirname, "../bench/fixtures/app-render.tsx"), "utf8");
 assert(bigSrc.length > 100 * 1024, "fixture should exceed the 100KB stream threshold");
+assert([...bigSrc].some(c => c.codePointAt(0) > 127), "fixture must contain non-ASCII to exercise the UTF-16 path");
 const bAst = parseSource(bigSrc, { filename: "big.tsx", lang: "tsx", sourceType: "module" });
 const bReuse = tf.openReuse(bAst._parseGen);
 assert(bReuse, "streaming-path parse should be reusable (no re-parse)");
-assert.strictEqual(bReuse.nodeCount(), bAst.nodeCount, "reuse node count matches the buffer");
-bReuse.close();
-console.log(`PASS: streaming-path (${(bigSrc.length/1024|0)}KB) reuse available, aligned with buffer`);
+const bFresh = tf.open(bigSrc, "tsx", true);
+assert.strictEqual(bReuse.nodeCount(), bFresh.nodeCount(), "streaming node counts match");
+let bMis = 0;
+for (let i = 0; i < bAst.nodeCount; i++) {
+  const rt = bReuse.typeOfNode(i), ft = bFresh.typeOfNode(i);
+  if ((rt != null ? bReuse.flags(rt) : null) !== (ft != null ? bFresh.flags(ft) : null)) bMis++;
+}
+bReuse.close(); bFresh.close();
+assert.strictEqual(bMis, 0, `streaming reuse (non-ASCII) mismatched ${bMis} node types — UTF-16 byte-offset bug`);
+console.log(`PASS: streaming-path (${(bigSrc.length/1024|0)}KB, non-ASCII) reuse matches fresh across ${bAst.nodeCount} nodes`);

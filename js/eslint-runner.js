@@ -55,6 +55,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/prefer-regexp-exec",                    // 25%
   "@typescript-eslint/no-base-to-string",                     // 8% (FP-safe; checker recall-limited)
   "@typescript-eslint/prefer-optional-chain",                 // 586/587 (CRASH-batch: literal .value FFIs + `||` nullish strip)
+  "@typescript-eslint/no-confusing-void-expression",          // 55/55 (CRASH-batch: getTypeFromTypeNode/getContextualType + arrow/call-arg contextual)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
@@ -224,6 +225,18 @@ function _makeLightParserServices(sourceCode) {
     getTypeAtLocation(node) {
       const f = openFacade();
       return f ? f.getTypeAtLocation(node) : undefined;
+    },
+    // Type of a TS type-annotation node, e.g. a function's return-type
+    // annotation (no-confusing-void-expression).
+    getTypeFromTypeNode(node) {
+      const f = openFacade();
+      return f && f.getTypeFromTypeNode ? f.getTypeFromTypeNode(node) : undefined;
+    },
+    // Contextual type of an expression at its position (no-confusing-void-expression
+    // checks a function expression's contextual type).
+    getContextualType(node) {
+      const f = openFacade();
+      return f && f.checker.getContextualType ? f.checker.getContextualType(node) : undefined;
     },
     // Some type-aware rules call these directly on parserServices (not via the
     // checker). Delegate to the facade's checker, which resolves synth ts-nodes.
