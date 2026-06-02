@@ -334,6 +334,25 @@ pub export fn ez_type_resolve_type_node(h: usize, node_idx: u32) callconv(.c) u3
     return ctx.checker.resolveTypeNode(@enumFromInt(node_idx)).toInt();
 }
 
+// Like ez_type_resolve_type_node, but a bare in-scope type parameter resolves
+// to a genuine `.type_param` (carrying its constraint) rather than to the
+// constraint. The facade uses this for asserted types (`x as T`).
+pub export fn ez_type_resolve_type_node_param(h: usize, node_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    if (node_idx >= ctx.ast.nodes.len) return NO_TYPE;
+    return ctx.checker.resolveTypeNodeParamAware(@enumFromInt(node_idx)).toInt();
+}
+
+// The `.type_param` for an identifier value declared with a bare in-scope
+// type-parameter annotation (`a: T`), else NO_TYPE. Lets the facade match
+// `a as T` as a safe identity. Pure query — stored value types are unchanged.
+pub export fn ez_type_of_node_param(h: usize, node_idx: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    if (node_idx >= ctx.ast.nodes.len) return NO_TYPE;
+    const t = ctx.checker.valueTypeParam(@enumFromInt(node_idx)) orelse return NO_TYPE;
+    return t.toInt();
+}
+
 /// Three-valued assignability source→target: 0 = no, 1 = yes, 2 = unknown
 /// (depends on machinery we don't implement — objects, structural, generics).
 /// Callers map `unknown` per their FP-safe direction.
@@ -443,6 +462,16 @@ pub export fn ez_type_type_arg_count(h: usize, type_id: u32) callconv(.c) u32 {
         .type_ref, .tuple_t, .array_t, .readonly_array_t => t.list_data.len(),
         else => 0,
     };
+}
+
+/// Constraint of a `.type_param` (its sole `list_data` slot), or 0xFFFFFFFF when
+/// unconstrained / not a type parameter. Backs the facade's getConstraint().
+pub export fn ez_type_constraint(h: usize, type_id: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    if (type_id >= ctx.checker.store.types.items.len) return NO_TYPE;
+    const t = &ctx.checker.store.types.items[type_id];
+    if (t.kind != .type_param or t.list_data.len() == 0) return NO_TYPE;
+    return ctx.checker.store.idsOf(t.list_data)[0].toInt();
 }
 
 /// `i`-th type argument TypeId (0xFFFFFFFF if out of range).

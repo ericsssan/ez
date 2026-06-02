@@ -135,6 +135,11 @@ pub const Checker = struct {
     /// Prevents stack overflow on deeply nested generic conditional types.
     subst_depth: u8 = 0,
 
+    /// Recursion guard for buildTypeParam → resolveTypeNodeParamAware → buildTypeParam
+    /// (constraint chains like `V extends T`, and self-referential ones such as
+    /// `T extends Array<T>`).
+    tp_depth: u8 = 0,
+
     pub fn init(
         gpa: std.mem.Allocator,
         ast_ref: *const Ast,
@@ -2800,9 +2805,37 @@ pub const Checker = struct {
         // target is NOT assignable (e.g. `unknown as number`, element of
         // `unknown[] as number[]`). Decisive `.no`, not `.unknown`.
         if (s.kind == .unknown) return .no;
-        // Anything depending on a generic / error type → can't decide.
-        if (s.kind == .type_param or t.kind == .type_param or
-            s.kind == .error_t or t.kind == .error_t) return .unknown;
+        // Error type → can't decide.
+        if (s.kind == .error_t or t.kind == .error_t) return .unknown;
+        // Target type_param: assignable only if the source IS that variable, or a
+        // type parameter whose constraint chain reaches it (`V extends T` → V ⊆ T,
+        // so `V as T` is safe). A concrete type — even the constraint — or an
+        // unrelated parameter is NOT assignable (`x as T`, `T as V` are unsafe).
+        if (t.kind == .type_param) {
+            if (s.kind != .type_param) return .no;
+            if (std.mem.eql(u8, s.name, t.name)) return .yes; // same parameter
+            var cur = source;
+            var guard: u8 = 0;
+            while (guard < 8) : (guard += 1) {
+                const cs = self.store.idsOf(self.store.get(cur).list_data);
+                if (cs.len == 0) break;
+                const c = cs[0];
+                const ct = self.store.get(c);
+                if (ct.kind != .type_param) break;
+                if (std.mem.eql(u8, ct.name, t.name)) return .yes; // reached target via chain
+                if (c.eq(cur)) break;
+                cur = c;
+            }
+            return .no;
+        }
+        // Source type_param: T is a subtype of its constraint, so it's assignable
+        // to whatever the constraint is assignable to; the constraint failing
+        // doesn't prove T fails (T is narrower) → only trust `.yes`.
+        if (s.kind == .type_param) {
+            const cs = self.store.idsOf(s.list_data);
+            if (cs.len == 0) return .unknown; // unconstrained
+            return if (self.structuralAssignable(cs[0], target, depth + 1) == .yes) .yes else .unknown;
+        }
         // Strict-null: `undefined`/`null` are not assignable to a scalar
         // primitive (and vice versa) — `string | undefined as string` narrows
         // unsafely. (`undefined → void` and the eq case are handled above/below.)
@@ -3813,11 +3846,60 @@ pub const Checker = struct {
         return false;
     }
 
+    /// If `node` is an identifier whose binding is declared with a bare in-scope
+    /// type-parameter annotation (`a: T`), return that `.type_param` (carrying its
+    /// constraint); otherwise null. Lets the facade see such a value as the
+    /// parameter `T` itself — so `a as T` is a safe identity, while `y as T`
+    /// (y: string) is still flagged — without changing stored value types (which
+    /// keep the constraint over-approximation the checker's inference relies on).
+    pub fn valueTypeParam(self: *Checker, node: NodeIndex) ?TypeId {
+        if (self.ast_ref.nodeTag(node) != .identifier) return null;
+        const sym = self.symbolForIdentRef(node) orelse return null;
+        const decl = self.semantic.symbols.getDeclNode(sym);
+        if (decl == .none or self.ast_ref.nodeTag(decl) != .identifier) return null;
+        const bd = self.ast_ref.nodeData(decl);
+        if (bd.rhs == .none or self.ast_ref.nodeTag(bd.rhs) != .ts_type_annotation) return null;
+        const ty_node = self.ast_ref.nodeData(bd.rhs).lhs;
+        if (!self.argIsInScopeTypeParam(ty_node)) return null;
+        const nm = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(ty_node));
+        return self.buildTypeParam(ty_node, nm);
+    }
+
+    /// Resolve a type node like `resolveTypeNode`, except a bare reference to an
+    /// in-scope type parameter yields a genuine `.type_param` type (carrying its
+    /// constraint) instead of the constraint itself. Used by the type-aware
+    /// facade for *asserted* types (`x as T`) so isTypeParameter/getConstraint
+    /// work and `concrete as T` is flagged unsafe — without disturbing the
+    /// constraint over-approximation that value-position typing relies on.
+    pub fn resolveTypeNodeParamAware(self: *Checker, ty_node: NodeIndex) TypeId {
+        if (self.argIsInScopeTypeParam(ty_node)) {
+            var n = ty_node;
+            while (self.ast_ref.nodeTag(n) == .ts_parenthesized_type) n = self.ast_ref.nodeData(n).lhs;
+            const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(n));
+            return self.buildTypeParam(n, name);
+        }
+        return self.resolveTypeNode(ty_node);
+    }
+
     /// Find a `ts_type_parameter` declaration named `name` enclosing
     /// `ty_node` and return its constraint's resolved TypeId.  Falls
     /// back to null when no such parameter is found or it has no
     /// constraint.
     fn resolveTypeParameterConstraint(self: *Checker, ty_node: NodeIndex, name: []const u8) ?TypeId {
+        const best_constraint = self.typeParamConstraintNode(ty_node, name) orelse return null;
+        const resolved = self.resolveTypeNode(best_constraint);
+        // Don't substitute when the constraint is `any` — TS treats
+        // `<T extends any>` as an unconstrained type parameter.
+        if (tymod.isAny(&self.store, resolved)) return null;
+        return resolved;
+    }
+
+    /// The constraint type *node* of the in-scope type parameter named `name`
+    /// enclosing `ty_node` (innermost wins), or null if none / no constraint.
+    /// Split out so type_param construction can resolve the constraint
+    /// param-aware (`V extends T` → constraint is the parameter T, not its
+    /// over-approximation) for constraint-chain assignability.
+    fn typeParamConstraintNode(self: *Checker, ty_node: NodeIndex, name: []const u8) ?NodeIndex {
         // Walk the parent index to find an enclosing fn/class/alias
         // scope; if one is found, look for a ts_type_parameter whose
         // parent chain reaches the same scope (using main-token
@@ -3881,11 +3963,27 @@ pub const Checker = struct {
         }
         if (!found_any) return null;
         if (best_constraint == .none) return null;
-        const resolved = self.resolveTypeNode(best_constraint);
-        // Don't substitute when the constraint is `any` — TS treats
-        // `<T extends any>` as an unconstrained type parameter.
-        if (tymod.isAny(&self.store, resolved)) return null;
-        return resolved;
+        return best_constraint;
+    }
+
+    /// Build a `.type_param` for the in-scope parameter `name` at `ref_node`,
+    /// resolving its constraint param-aware so nested parameters (`V extends T`)
+    /// stay `.type_param` — letting constraint-chain assignability decide
+    /// `V as T` (safe) vs `T as V` (unsafe).
+    fn buildTypeParam(self: *Checker, ref_node: NodeIndex, name: []const u8) TypeId {
+        var c: TypeId = .none;
+        // Resolve the constraint param-aware (so `V extends T` carries the
+        // parameter T), but cap the depth — self/mutually-referential
+        // constraints (`T extends Array<T>`) would otherwise recurse forever.
+        if (self.tp_depth < 4) {
+            if (self.typeParamConstraintNode(ref_node, name)) |cn| {
+                self.tp_depth += 1;
+                const r = self.resolveTypeNodeParamAware(cn);
+                self.tp_depth -= 1;
+                if (!tymod.isAny(&self.store, r)) c = r;
+            }
+        }
+        return self.store.typeParam(name, c) catch tymod.ID_UNKNOWN;
     }
 
     /// Hardcoded lib type seeds for the most common parameterized types.

@@ -116,10 +116,14 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         const nm = h.refName(typeId);
         return nm ? makeTypeSymbol(nm) : undefined;
       },
-      // Type-parameter constraint — not modelled; undefined means "no
-      // constraint", so constraint-walking helpers (isBuiltinSymbolLikeRecurser,
-      // getConstrainedTypeAtLocation fallbacks) fall back to the type itself.
-      getConstraint() { return undefined; },
+      // Type-parameter constraint: a `.type_param` carries its constraint as its
+      // sole type arg (none → unconstrained). Other types have no constraint —
+      // undefined makes constraint-walking helpers fall back to the type itself.
+      getConstraint() {
+        if (typeId == null || h.kind(typeId) !== 25 /*type_param*/) return undefined;
+        const c = h.constraint(typeId);
+        return c != null ? makeType(c) : undefined;
+      },
       getDefault() { return undefined; },
       // Call signatures (params + return type) — the checker fills these for
       // function/method types. getCallSignaturesOfType / signature.getReturnType
@@ -208,6 +212,14 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     const est = node._i != null ? node : node._estree;
     if (!est || est._i == null) return makeType(undefined);
     let tid = h.typeOfNode(est._i);
+    // A value whose binding is annotated with a bare in-scope type parameter
+    // (`a: T`) is the parameter `T` itself, not its constraint — so `a as T`
+    // reads as a safe identity assertion (eq) rather than a concrete→param
+    // narrowing. Stored value types keep the constraint; this is facade-only.
+    if (est.type === "Identifier") {
+      const pp = h.typeOfNodeParam(est._i);
+      if (pp != null) tid = pp;
+    }
     // The checker types a declaration's BINDING (its name id), not the
     // declaration statement node — e.g. a FunctionDeclaration's function type
     // lives on `fn.id`, while the statement node is Unknown. Rules call
@@ -224,7 +236,11 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // spurious type, so leave it unknown (→ assignable → safe).
     if ((tid == null || h.kind(tid) === 1) && TS_TYPE_NODES.has(est.type) &&
         !(est.type === "TSTypeReference" && est.typeName && est.typeName.name === "const")) {
-      const rt = h.resolveTypeNode(est._i);
+      // Param-aware: a bare in-scope type parameter (`x as T`) resolves to a
+      // genuine `.type_param` so isTypeParameter/getConstraint work and the
+      // assertion is correctly flagged unsafe (concrete value not assignable to
+      // a fresh type variable). Non-param type nodes resolve as usual.
+      const rt = h.resolveTypeNodeParam(est._i);
       if (rt != null && h.kind(rt) !== 1) tid = rt;
     }
     // An annotated binding (param / var id) → its declared annotation type; a

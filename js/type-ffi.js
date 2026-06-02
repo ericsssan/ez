@@ -56,6 +56,9 @@ function binding() {
       ez_type_call_param_type: { args: [H, U, U], returns: U },
       ez_type_assignable:      { args: [H, U, U], returns: FFIType.u8 },
       ez_type_resolve_type_node: { args: [H, U], returns: U },
+      ez_type_resolve_type_node_param: { args: [H, U], returns: U },
+      ez_type_of_node_param: { args: [H, U], returns: U },
+      ez_type_constraint: { args: [H, U], returns: U },
       // Object properties (by-name lookup; name passed as utf8 ptr+len).
       ez_type_prop_count:         { args: [H, U], returns: U },
       ez_type_prop_type_by_name:  { args: [H, U, FFIType.ptr, U], returns: U },
@@ -129,6 +132,23 @@ function _handleObj(b, h) {
     // Resolve a TS type-annotation node to its type (null on bad node).
     resolveTypeNode(nodeIdx) {
       const r = b.sym.ez_type_resolve_type_node(h, nodeIdx >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
+    // Like resolveTypeNode, but a bare in-scope type parameter → a `.type_param`
+    // type (carrying its constraint), for asserted types (`x as T`).
+    resolveTypeNodeParam(nodeIdx) {
+      const r = b.sym.ez_type_resolve_type_node_param(h, nodeIdx >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
+    // `.type_param` for an identifier value with a bare-param annotation (`a: T`),
+    // or null. Used so the facade sees `a as T` as an identity assertion.
+    typeOfNodeParam(nodeIdx) {
+      const r = b.sym.ez_type_of_node_param(h, nodeIdx >>> 0);
+      return r === NO_TYPE ? null : r;
+    },
+    // Constraint TypeId of a `.type_param` (null if unconstrained / not a param).
+    constraint(typeId) {
+      const r = b.sym.ez_type_constraint(h, typeId >>> 0);
       return r === NO_TYPE ? null : r;
     },
     // Object properties (by name).

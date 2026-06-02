@@ -568,6 +568,15 @@ pub const TypeStore = struct {
         return try self.add(.{ .kind = .type_ref, .name = name, .list_data = list });
     }
 
+    /// A type-parameter type carrying its constraint (in `list_data[0]`, empty
+    /// when unconstrained). `name` is the parameter name (`T`). Distinct from a
+    /// `type_ref` so the facade's isTypeParameter / getConstraint work and
+    /// assignability can treat `concrete → type_param` as not-assignable.
+    pub fn typeParam(self: *TypeStore, name: []const u8, constraint: TypeId) !TypeId {
+        const list = if (constraint == .none) TypeIdList.empty else try self.appendTypeIds(&.{constraint});
+        return try self.add(.{ .kind = .type_param, .name = name, .list_data = list });
+    }
+
     fn addUnique(gpa: std.mem.Allocator, buf: *std.ArrayList(TypeId), id: TypeId) !void {
         for (buf.items) |x| if (x.eq(id)) return;
         try buf.append(gpa, id);
