@@ -185,6 +185,23 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         // A named object_t is an interface — carry SymbolFlags.Interface + the
         // declared type so isBuiltinSymbolLike can walk its base types.
         if (k === 19 /*object_t*/) { const nm = h.refName(typeId); return nm ? makeTypeSymbol(nm, SYMBOL_FLAGS_INTERFACE, typeId) : undefined; }
+        // A type parameter's symbol must carry its declaration so getTypeName /
+        // getConstraintInfo can read the constraint via the AST path
+        // (symbol.getDeclarations()[0] is a TypeParameterDeclaration whose
+        // `.constraint` type node feeds getTypeFromTypeNode) — they deliberately
+        // bypass type.getConstraint(). Synthesize that shape from h.constraint.
+        if (k === 25 /*type_param*/) {
+          const cTid = h.constraint(typeId);
+          const ts = tsMod();
+          const decl = {
+            kind: ts ? ts.SyntaxKind.TypeParameter : 168,
+            constraint: cTid != null ? { __ez_constraintTid: cTid } : undefined,
+          };
+          return {
+            name: "", escapedName: "", getName: () => "", getEscapedName: () => "",
+            getFlags: () => 0, getDeclarations: () => [decl], valueDeclaration: decl,
+          };
+        }
         return undefined;
       },
       // Type-parameter constraint: a `.type_param` carries its constraint as its
@@ -353,6 +370,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // checker.getTypeAtLocation(esTreeNodeToTSNodeMap.get(estNode)).
   function typeAt(node) {
     if (!node) return makeType(undefined);
+    // Synthetic constraint node from a type parameter's synthesized declaration
+    // (getSymbol().getDeclarations()[0].constraint) — resolves straight to the
+    // stored constraint type for getTypeName/getConstraintInfo's AST path.
+    if (node.__ez_constraintTid != null) return makeType(node.__ez_constraintTid);
     // Prefer the node's own Ez index; else the mapped ESTree node; else the node
     // itself (a synthetic ESTree node with neither — e.g. a getter's body-less
     // value in a `declare class`).
