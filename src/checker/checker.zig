@@ -5716,8 +5716,20 @@ pub const Checker = struct {
         if (self.ast_ref.nodeTag(md.lhs) != .identifier) return null;
         if (!std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.lhs)), "Promise")) return null;
         if (self.symbolForIdentRef(md.lhs) != null) return null; // user-shadowed local `Promise`
-        if (!std.mem.eql(u8, self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.rhs)), "resolve")) return null;
-        const inner: TypeId = if (type_arg != .none) self.resolveTypeNode(type_arg) else tymod.ID_UNKNOWN;
+        // The static Promise producers — each returns a Promise so
+        // no-floating-promises / no-misused-promises see a thenable result.
+        //   resolve<T> → Promise<T>;  reject → Promise<never>;
+        //   all/allSettled/race/any → Promise<unknown>.
+        const method = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.rhs));
+        const inner: TypeId = if (std.mem.eql(u8, method, "resolve"))
+            (if (type_arg != .none) self.resolveTypeNode(type_arg) else tymod.ID_UNKNOWN)
+        else if (std.mem.eql(u8, method, "reject"))
+            tymod.ID_NEVER
+        else if (std.mem.eql(u8, method, "all") or std.mem.eql(u8, method, "allSettled") or
+            std.mem.eql(u8, method, "race") or std.mem.eql(u8, method, "any"))
+            tymod.ID_UNKNOWN
+        else
+            return null;
         return self.store.typeRef("Promise", &.{inner}) catch tymod.ID_UNKNOWN;
     }
 
