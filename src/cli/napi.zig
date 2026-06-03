@@ -2057,32 +2057,37 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
 
 const ReadFileResult = struct { source_start: u32, source_len: u32 };
 
+/// Lazily-created blocking I/O for cross-platform file ops (Io.Dir.statFile/
+/// readFile). The raw libc `std.c` file APIs aren't portable — `std.c.Stat` is
+/// `void` on linux — so file access goes through this Zig's `Io` abstraction
+/// (the same path src/main.zig uses). Created once; sequential use.
+var g_io_threaded: std.Io.Threaded = undefined;
+var g_io_ready: bool = false;
+fn getIo() std.Io {
+    if (!g_io_ready) {
+        g_io_threaded = std.Io.Threaded.init(std.heap.c_allocator, .{});
+        g_io_ready = true;
+    }
+    return g_io_threaded.io();
+}
+
 fn readFileIntoBuf(buf_ptr: [*]u8, buf_len: u32, path_z: [:0]const u8) !ReadFileResult {
-    const fd = std.c.open(path_z.ptr, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
-    if (fd < 0) return error.FileOpenFailed;
-    defer _ = std.c.close(fd);
-
-    var stat: std.c.Stat = undefined;
-    if (std.c.fstat(fd, &stat) != 0 or stat.size < 0) return error.FileStatFailed;
-    if (stat.size == 0) return .{ .source_start = buf_len, .source_len = 0 };
-    const file_size: u32 = @intCast(stat.size);
-
-    if (file_size >= buf_len) {
+    const io = getIo();
+    const path = std.mem.span(path_z.ptr);
+    const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return error.FileStatFailed;
+    if (st.size == 0) return .{ .source_start = buf_len, .source_len = 0 };
+    if (st.size >= buf_len) {
         // Signal "buffer too small" — write needed size at buf[0..4].
         const needed: *align(1) u32 = @ptrCast(buf_ptr);
-        needed.* = file_size;
+        needed.* = @intCast(st.size);
         return error.BufferTooSmall;
     }
-
+    const file_size: u32 = @intCast(st.size);
     const source_start = buf_len - file_size;
-    var offset: usize = 0;
-    while (offset < file_size) {
-        const nread = std.c.read(fd, buf_ptr + source_start + offset, file_size - offset);
-        if (nread <= 0) break;
-        offset += @intCast(nread);
-    }
-    if (offset != file_size) return error.ReadFailed;
-
+    // Read the file into the tail of the buffer.
+    const dst = buf_ptr[source_start..buf_len];
+    const got = std.Io.Dir.cwd().readFile(io, path, dst) catch return error.ReadFailed;
+    if (got.len != file_size) return error.ReadFailed;
     return .{ .source_start = source_start, .source_len = file_size };
 }
 
@@ -2344,8 +2349,9 @@ const FileEntry = struct { path: [:0]const u8, size: u32 };
 
 /// fstatat(AT_FDCWD, path, ...) — portable replacement for stat() on the path.
 /// Works on macOS and Linux; follows symlinks (flag = 0).
-fn statPath(path_z: [:0]const u8, st: *std.c.Stat) bool {
-    return std.c.fstatat(std.c.AT.FDCWD, path_z.ptr, st, 0) == 0;
+fn statPath(path_z: [:0]const u8, st: *std.Io.File.Stat) bool {
+    st.* = std.Io.Dir.cwd().statFile(getIo(), std.mem.span(path_z.ptr), .{}) catch return false;
+    return true;
 }
 
 /// Walk `dir_path_z` using POSIX opendir/readdir. Uses d_type for fast type
@@ -2376,17 +2382,16 @@ fn walkDirPosix(
         } else if (dt == std.c.DT.REG or dt == std.c.DT.LNK) {
             if (!hasJsExtension(raw_name)) continue;
             if (isDtsFile(raw_name)) continue;
-            var st: std.c.Stat = undefined;
+            var st: std.Io.File.Stat = undefined;
             const size: u32 = if (statPath(child_z, &st)) @intCast(@min(st.size, std.math.maxInt(u32))) else 0;
             list.append(alloc, .{ .path = child_z, .size = size }) catch {};
         } else if (dt == std.c.DT.UNKNOWN) {
             // Slow path: stat to determine type (rare on APFS/ext4)
-            var st: std.c.Stat = undefined;
+            var st: std.Io.File.Stat = undefined;
             if (!statPath(child_z, &st)) continue;
-            const m = st.mode & std.c.S.IFMT;
-            if (m == std.c.S.IFDIR) {
+                        if (st.kind == .directory) {
                 walkDirPosix(child_z, list, alloc);
-            } else if (m == std.c.S.IFREG or m == std.c.S.IFLNK) {
+            } else if (st.kind == .file or st.kind == .sym_link) {
                 if (!hasJsExtension(raw_name)) continue;
                 if (isDtsFile(raw_name)) continue;
                 list.append(alloc, .{ .path = child_z, .size = @intCast(@min(st.size, std.math.maxInt(u32))) }) catch {};
@@ -2403,13 +2408,12 @@ fn discoverRoot(root: []const u8, list: *std.ArrayList(FileEntry), alloc: std.me
         break :blk buf;
     };
 
-    var st: std.c.Stat = undefined;
+    var st: std.Io.File.Stat = undefined;
     if (!statPath(root_z, &st)) return;
 
-    const mode = st.mode & std.c.S.IFMT;
-    if (mode == std.c.S.IFDIR) {
+        if (st.kind == .directory) {
         walkDirPosix(root_z, list, alloc);
-    } else if (mode == std.c.S.IFREG or mode == std.c.S.IFLNK) {
+    } else if (st.kind == .file or st.kind == .sym_link) {
         const basename = std.fs.path.basename(root);
         if (!hasJsExtension(basename) or isDtsFile(basename)) return;
         list.append(alloc, .{ .path = root_z, .size = @intCast(@min(st.size, std.math.maxInt(u32))) }) catch {};

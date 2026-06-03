@@ -254,29 +254,20 @@ fn fileExists(path: []const u8) bool {
     return true;
 }
 
-fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (path.len >= path_buf.len) return error.NameTooLong;
-    @memcpy(path_buf[0..path.len], path);
-    path_buf[path.len] = 0;
-    const path_z: [*:0]const u8 = @ptrCast(&path_buf);
-    const fd = try std.posix.openatZ(std.posix.AT.FDCWD, path_z, .{ .ACCMODE = .RDONLY }, 0);
-    defer _ = std.c.close(fd);
-
-    var stat: std.posix.Stat = undefined;
-    if (std.c.fstat(fd, &stat) != 0) return error.AccessDenied;
-    const size: usize = @intCast(stat.size);
-    if (size > 16 * 1024 * 1024) return error.FileTooBig;
-
-    const buf = try gpa.alloc(u8, size);
-    errdefer gpa.free(buf);
-    var off: usize = 0;
-    while (off < size) {
-        const n = try std.posix.read(fd, buf[off..]);
-        if (n == 0) break;
-        off += n;
+// Blocking I/O for cross-platform file reads — `std.c.fstat`/`std.fs.File`
+// aren't available on this Zig's targets; `Io` is the portable path.
+var g_io_threaded: std.Io.Threaded = undefined;
+var g_io_ready: bool = false;
+fn getIo() std.Io {
+    if (!g_io_ready) {
+        g_io_threaded = std.Io.Threaded.init(std.heap.c_allocator, .{});
+        g_io_ready = true;
     }
-    return buf[0..off];
+    return g_io_threaded.io();
+}
+
+fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(getIo(), path, gpa, std.Io.Limit.limited(16 * 1024 * 1024));
 }
 
 // ── Type cloning ─────────────────────────────────────────────────────────

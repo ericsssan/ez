@@ -96,12 +96,13 @@ ezlint: napi
 # `zig build napi -Dtarget=…` overwrites zig-out/lib/ez.node which the embed
 # reads. The host lib is restored at the end so the dev tree is left native.
 #
-# darwin-only for now: linux/windows need napi.zig + module_cache.zig ported off
-# raw libc (std.c.fstat/Stat/opendir) to this Zig's Io/std.fs abstraction (the
-# rest of the tree already uses Io.Dir/Io.File). Add those entries once that
-# lands: linux-x64:x86_64-linux-gnu:bun-linux-x64, etc.
+# darwin + linux. Windows still needs the opendir/readdir directory walker in
+# napi.zig ported to Io.Dir.iterate (POSIX-only today); file stat/read already
+# go through Io (cross-platform) after the napi.zig/module_cache.zig port.
 EZLINT_MATRIX = darwin-arm64:aarch64-macos:bun-darwin-arm64 \
-                darwin-x64:x86_64-macos:bun-darwin-x64
+                darwin-x64:x86_64-macos:bun-darwin-x64 \
+                linux-x64:x86_64-linux-gnu:bun-linux-x64 \
+                linux-arm64:aarch64-linux-gnu:bun-linux-arm64
 
 ezlint-matrix:
 	@mkdir -p dist
