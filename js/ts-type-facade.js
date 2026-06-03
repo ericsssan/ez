@@ -1001,6 +1001,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // owner (the annotated identifier/declaration), whose binding carries the
     // type. getContextualType calls this for var/param/property annotations.
     getTypeFromTypeNode(typeNode) {
+      // Synthetic constraint node from a type parameter's synthesized declaration
+      // (see getSymbol for type_param) — resolve straight to the stored type.
+      if (typeNode && typeNode.__ez_constraintTid != null) return makeType(typeNode.__ez_constraintTid);
       const est = typeNode && (typeNode._i != null ? typeNode : typeNode._estree);
       const owner = est && est.parent;
       return owner ? typeAt(owner) : undefined;
