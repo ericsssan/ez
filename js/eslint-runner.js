@@ -2131,6 +2131,34 @@ class SourceCode {
   }
 
   /**
+   * ESLint SourceCode API: return the token (or comment, with includeComments)
+   * whose range START is exactly `offset`, else null. _tokStarts share the
+   * ESTree range coordinate (UTF-16 source indices), so this is an exact-match
+   * binary search. Used by no-unnecessary-template-expression to fetch the
+   * token at a TemplateElement's start.
+   */
+  getTokenByRangeStart(offset, opts) {
+    const ast = this._ast;
+    const idx = this._tokenIndexAtOrBefore(offset);
+    if (idx >= 0 && idx < ast.tokenCount && ast._tokStarts[idx] === offset) {
+      const tok = this._makeToken(idx);
+      if (tok !== null) return tok; // null = shadowed (private-id name part)
+    }
+    if (opts && opts.includeComments) {
+      const merged = this._getTokensAndCommentsMerged();
+      let lo = 0, hi = merged.length - 1;
+      while (lo <= hi) {
+        const m = (lo + hi) >> 1;
+        const s = merged[m].range[0];
+        if (s < offset) lo = m + 1;
+        else if (s > offset) hi = m - 1;
+        else return merged[m];
+      }
+    }
+    return null;
+  }
+
+  /**
    * Get the first token between two nodes that matches an optional filter.
    * Used by rules like eqeqeq to find the operator token.
    */

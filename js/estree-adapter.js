@@ -2814,10 +2814,27 @@ const NodeProto = {
    */
   get types() {
     const t = this._tag;
-    if (t !== T.ts_union_type && t !== T.ts_intersection_type) return undefined;
-    const lhs = this._ast.nodeLhs(this._i);
-    const rhs = this._ast.nodeRhs(this._i);
-    return this._ast._nodesFromRange(lhs, rhs);
+    if (t === T.ts_union_type || t === T.ts_intersection_type) {
+      const lhs = this._ast.nodeLhs(this._i);
+      const rhs = this._ast.nodeRhs(this._i);
+      return this._ast._nodesFromRange(lhs, rhs);
+    }
+    // TSTemplateLiteralType.types — the interpolated types, i.e. the children
+    // that are NOT template_element quasis (the range interleaves both).
+    if (t === T.ts_template_literal_type) {
+      const ast = this._ast;
+      const lhs = ast.nodeLhs(this._i), rhs = ast.nodeRhs(this._i);
+      const extra = ast._extraData;
+      const result = [];
+      for (let i = lhs; i < rhs; i++) {
+        const idx = extra[i];
+        if (idx !== NONE && ast._nodeTags[idx] !== T.template_element) {
+          result.push(nodeView(ast, idx));
+        }
+      }
+      return result;
+    }
+    return undefined;
   },
 
   /** TSConditionalType.checkType / extendsType / trueType / falseType — the
@@ -3564,10 +3581,12 @@ const NodeProto = {
   },
 
   /**
-   * node.quasis — TemplateElement nodes in a TemplateLiteral.
+   * node.quasis — TemplateElement nodes in a TemplateLiteral or
+   * TSTemplateLiteralType (both store the parts as template_element children in
+   * the same lhs..rhs extra_data range).
    */
   get quasis() {
-    if (this._tag !== T.template_literal) return undefined;
+    if (this._tag !== T.template_literal && this._tag !== T.ts_template_literal_type) return undefined;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i), rhs = ast.nodeRhs(this._i);
     const result = [];
