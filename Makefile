@@ -1,7 +1,7 @@
 ZIG ?= /Users/ericsan/.local/share/zigup/master/files/zig
 LINK_FLAGS :=
 
-.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi ezlint submodules
+.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi ezlint ezlint-matrix ezlint-rules submodules
 
 test: test-unit test-linter test-recovery test-config
 
@@ -89,6 +89,32 @@ ezlint: napi
 	  ./src/bun/lint.js ./src/bun/lint-worker.js \
 	  --outfile=dist/ezlint
 	@ls -lh dist/ezlint
+
+# Cross-platform build matrix. Each entry is out:zig-target:bun-target. For each,
+# build the matching-arch native lib (so js/native-embed.mjs embeds the right
+# ez.node into the binary) THEN bun-compile for that platform — order matters,
+# `zig build napi -Dtarget=…` overwrites zig-out/lib/ez.node which the embed
+# reads. The host lib is restored at the end so the dev tree is left native.
+#
+# darwin-only for now: linux/windows need napi.zig + module_cache.zig ported off
+# raw libc (std.c.fstat/Stat/opendir) to this Zig's Io/std.fs abstraction (the
+# rest of the tree already uses Io.Dir/Io.File). Add those entries once that
+# lands: linux-x64:x86_64-linux-gnu:bun-linux-x64, etc.
+EZLINT_MATRIX = darwin-arm64:aarch64-macos:bun-darwin-arm64 \
+                darwin-x64:x86_64-macos:bun-darwin-x64
+
+ezlint-matrix:
+	@mkdir -p dist
+	@for spec in $(EZLINT_MATRIX); do \
+	  out=$${spec%%:*}; rest=$${spec#*:}; ztgt=$${rest%%:*}; btgt=$${rest##*:}; \
+	  echo "=== ezlint-$$out  (zig=$$ztgt  bun=$$btgt) ==="; \
+	  zig build napi -Dtarget=$$ztgt || exit 1; \
+	  bun build --compile --packages=bundle --target=$$btgt \
+	    ./src/bun/lint.js ./src/bun/lint-worker.js \
+	    --outfile=dist/ezlint-$$out || exit 1; \
+	  ls -lh dist/ezlint-$$out; \
+	done
+	@echo "--- restoring host native lib ---"; zig build napi >/dev/null
 
 submodules:
 	git submodule update --init --depth 1

@@ -30,13 +30,18 @@ function _tryLoad() {
   try { ({ dlopen, FFIType, ptr } = require("bun:ffi")); }
   catch { _binding = false; return false; }
 
-  const candidates = [
-    path.join(__dirname, "../zig-out/lib/ez.node"),
-    path.join(__dirname, "../zig-out/lib/libez.dylib"),
-    path.join(__dirname, "../zig-out/lib/libez.so"),
-  ];
+  // Prefer the embedded lib in a compiled binary (see js/native-embed.mjs);
+  // fall back to the on-disk zig-out lib when running from source.
   let dylib = null;
-  for (const c of candidates) if (fs.existsSync(c)) { dylib = c; break; }
+  try { const p = require("./native-embed.mjs").default; if (p) dylib = p; } catch {}
+  if (!dylib) {
+    const candidates = [
+      path.join(__dirname, "../zig-out/lib/ez.node"),
+      path.join(__dirname, "../zig-out/lib/libez.dylib"),
+      path.join(__dirname, "../zig-out/lib/libez.so"),
+    ];
+    for (const c of candidates) if (fs.existsSync(c)) { dylib = c; break; }
+  }
   if (!dylib) { _binding = false; return false; }
 
   let lib;

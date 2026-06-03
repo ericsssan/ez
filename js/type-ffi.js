@@ -24,13 +24,18 @@ function binding() {
     _binding = null;
     return null;
   }
-  const candidates = [
-    path.join(__dirname, "../zig-out/lib/ez.node"),
-    path.join(__dirname, "../zig-out/lib/libez.dylib"),
-    path.join(__dirname, "../zig-out/lib/libez.so"),
-  ];
+  // In a `bun build --compile` binary, prefer the embedded lib (a /$bunfs path
+  // dlopen can open). Uncompiled, this require throws → fall back to on-disk.
   let dylib = null;
-  for (const c of candidates) if (fs.existsSync(c)) { dylib = c; break; }
+  try { const p = require("./native-embed.mjs").default; if (p) dylib = p; } catch {}
+  if (!dylib) {
+    const candidates = [
+      path.join(__dirname, "../zig-out/lib/ez.node"),
+      path.join(__dirname, "../zig-out/lib/libez.dylib"),
+      path.join(__dirname, "../zig-out/lib/libez.so"),
+    ];
+    for (const c of candidates) if (fs.existsSync(c)) { dylib = c; break; }
+  }
   if (!dylib) { _binding = null; return null; }
 
   const U = FFIType.u32, H = FFIType.u64_fast;
