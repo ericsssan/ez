@@ -2354,54 +2354,56 @@ fn statPath(path_z: [:0]const u8, st: *std.Io.File.Stat) bool {
     return true;
 }
 
-/// Walk `dir_path_z` using POSIX opendir/readdir. Uses d_type for fast type
-/// detection; falls back to fstatat on DT_UNKNOWN filesystems.
-fn walkDirPosix(
-    dir_path_z: [:0]const u8,
+/// Recursively walk an open directory via `Io.Dir.iterate`, collecting JS source
+/// files (with size). Cross-platform — unlike POSIX opendir/readdir it works on
+/// Windows. Subdirectories are opened relative to the parent handle; the full
+/// path (for later reading) is rebuilt for the FileEntry list.
+fn walkDir(
+    io: std.Io,
+    dir: std.Io.Dir,
+    dir_path: []const u8,
     list: *std.ArrayList(FileEntry),
     alloc: std.mem.Allocator,
 ) void {
-    const dp = std.c.opendir(dir_path_z.ptr) orelse return;
-    defer _ = std.c.closedir(dp);
+    var it = dir.iterate();
+    while (it.next(io) catch return) |entry| {
+        const name = entry.name; // valid until the next it.next()
+        if (name.len == 0 or name[0] == '.') continue;
+        if (std.mem.eql(u8, name, "node_modules")) continue;
 
-    while (std.c.readdir(dp)) |entry| {
-        const raw_name = std.mem.sliceTo(&entry.name, 0);
-        if (raw_name.len == 0 or raw_name[0] == '.') continue;
-        if (std.mem.eql(u8, raw_name, "node_modules")) continue;
+        // iterate may report `.unknown` on some filesystems — resolve via stat.
+        var kind = entry.kind;
+        if (kind == .unknown) {
+            const st = dir.statFile(io, name, .{}) catch continue;
+            kind = st.kind;
+        }
 
-        const joined = std.fs.path.join(alloc, &.{ dir_path_z, raw_name }) catch continue;
-        const child_z = blk: {
-            const buf = alloc.allocSentinel(u8, joined.len, 0) catch continue;
-            @memcpy(buf, joined);
-            break :blk buf;
-        };
-
-        const dt = entry.@"type";
-        if (dt == std.c.DT.DIR) {
-            walkDirPosix(child_z, list, alloc);
-        } else if (dt == std.c.DT.REG or dt == std.c.DT.LNK) {
-            if (!hasJsExtension(raw_name)) continue;
-            if (isDtsFile(raw_name)) continue;
-            var st: std.Io.File.Stat = undefined;
-            const size: u32 = if (statPath(child_z, &st)) @intCast(@min(st.size, std.math.maxInt(u32))) else 0;
-            list.append(alloc, .{ .path = child_z, .size = size }) catch {};
-        } else if (dt == std.c.DT.UNKNOWN) {
-            // Slow path: stat to determine type (rare on APFS/ext4)
-            var st: std.Io.File.Stat = undefined;
-            if (!statPath(child_z, &st)) continue;
-                        if (st.kind == .directory) {
-                walkDirPosix(child_z, list, alloc);
-            } else if (st.kind == .file or st.kind == .sym_link) {
-                if (!hasJsExtension(raw_name)) continue;
-                if (isDtsFile(raw_name)) continue;
-                list.append(alloc, .{ .path = child_z, .size = @intCast(@min(st.size, std.math.maxInt(u32))) }) catch {};
-            }
+        if (kind == .directory) {
+            const sub_path = std.fs.path.join(alloc, &.{ dir_path, name }) catch continue;
+            var child = dir.openDir(io, name, .{ .iterate = true }) catch continue;
+            defer child.close(io);
+            walkDir(io, child, sub_path, list, alloc);
+        } else if (kind == .file or kind == .sym_link) {
+            if (!hasJsExtension(name)) continue;
+            if (isDtsFile(name)) continue;
+            const joined = std.fs.path.join(alloc, &.{ dir_path, name }) catch continue;
+            const path_z = blk: {
+                const buf = alloc.allocSentinel(u8, joined.len, 0) catch continue;
+                @memcpy(buf, joined);
+                break :blk buf;
+            };
+            const size: u32 = if (dir.statFile(io, name, .{})) |st|
+                @intCast(@min(st.size, std.math.maxInt(u32)))
+            else |_|
+                0;
+            list.append(alloc, .{ .path = path_z, .size = size }) catch {};
         }
     }
 }
 
 /// Add a single root path (file or directory) into `list`.
 fn discoverRoot(root: []const u8, list: *std.ArrayList(FileEntry), alloc: std.mem.Allocator) void {
+    const io = getIo();
     const root_z = blk: {
         const buf = alloc.allocSentinel(u8, root.len, 0) catch return;
         @memcpy(buf, root);
@@ -2411,8 +2413,13 @@ fn discoverRoot(root: []const u8, list: *std.ArrayList(FileEntry), alloc: std.me
     var st: std.Io.File.Stat = undefined;
     if (!statPath(root_z, &st)) return;
 
-        if (st.kind == .directory) {
-        walkDirPosix(root_z, list, alloc);
+    if (st.kind == .directory) {
+        var dir = (if (std.fs.path.isAbsolute(root))
+            std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true })
+        else
+            std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true })) catch return;
+        defer dir.close(io);
+        walkDir(io, dir, root, list, alloc);
     } else if (st.kind == .file or st.kind == .sym_link) {
         const basename = std.fs.path.basename(root);
         if (!hasJsExtension(basename) or isDtsFile(basename)) return;
