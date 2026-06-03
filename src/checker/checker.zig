@@ -4882,6 +4882,11 @@ pub const Checker = struct {
         // Function` decides safety from these).
         var sig_buf: [8]tymod.Signature = undefined;
         var sig_n: usize = 0;
+        // Call/construct signatures contributed by merged (extra) declarations of
+        // the same interface name. TS orders later-declared overloads BEFORE the
+        // first declaration's, so these are emitted first in the final list.
+        var extra_sig_buf: [8]tymod.Signature = undefined;
+        var extra_sig_n: usize = 0;
         if (id.body_end > id.body_start) {
             const body = self.ast_ref.extra_data[id.body_start..id.body_end];
             for (body) |raw| {
@@ -4916,6 +4921,24 @@ pub const Checker = struct {
                 const extra_body = self.ast_ref.extra_data[extra_id.body_start..extra_id.body_end];
                 for (extra_body) |raw| {
                     const member: NodeIndex = @enumFromInt(raw);
+                    const mtag = self.ast_ref.nodeTag(member);
+                    // Call/construct signatures from merged declarations must be
+                    // carried too (no-misused-promises reads all overloads to
+                    // decide if a thenable callback is accepted by any of them).
+                    if (mtag == .ts_call_signature or mtag == .ts_construct_signature) {
+                        const mdata = self.ast_ref.nodeData(member);
+                        if (mdata.lhs == .none) continue;
+                        const sd = self.ast_ref.extraData(ast.InterfaceSigData, @intFromEnum(mdata.lhs));
+                        if (self.buildSignatureRaw(sd.params_start, sd.params_end, sd.return_type, .none, false)) |raw_sig| {
+                            if (extra_sig_n < extra_sig_buf.len) {
+                                var sig = raw_sig;
+                                sig.is_construct = (mtag == .ts_construct_signature);
+                                extra_sig_buf[extra_sig_n] = sig;
+                                extra_sig_n += 1;
+                            }
+                        }
+                        continue;
+                    }
                     if (self.interfaceMemberToProp(member)) |p| {
                         props.append(self.gpa, p) catch {};
                     }
@@ -5007,7 +5030,17 @@ pub const Checker = struct {
         // — object_t doesn't otherwise use either — so the facade can expose
         // getSymbol()/getBaseTypes() for isBuiltinSymbolLike.
         const base_list = if (base_n == 0) tymod.TypeIdList.empty else (self.store.appendTypeIds(base_buf[0..base_n]) catch tymod.TypeIdList.empty);
-        const sig_list = if (sig_n == 0) tymod.SignatureList.empty else (self.store.appendSignatures(sig_buf[0..sig_n]) catch tymod.SignatureList.empty);
+        // Merge signatures: later-declared (extra) overloads first, then the
+        // first declaration's — matching TS overload precedence.
+        var all_sig_buf: [16]tymod.Signature = undefined;
+        var all_sig_n: usize = 0;
+        for (extra_sig_buf[0..extra_sig_n]) |s| {
+            if (all_sig_n < all_sig_buf.len) { all_sig_buf[all_sig_n] = s; all_sig_n += 1; }
+        }
+        for (sig_buf[0..sig_n]) |s| {
+            if (all_sig_n < all_sig_buf.len) { all_sig_buf[all_sig_n] = s; all_sig_n += 1; }
+        }
+        const sig_list = if (all_sig_n == 0) tymod.SignatureList.empty else (self.store.appendSignatures(all_sig_buf[0..all_sig_n]) catch tymod.SignatureList.empty);
         return self.store.add(.{ .kind = .object_t, .object_props = list, .name = iface_name, .list_data = base_list, .signatures = sig_list }) catch tymod.ID_UNKNOWN;
     }
 
@@ -6834,10 +6867,15 @@ pub const Checker = struct {
                     if (std.mem.eql(u8, k, t.name)) return v;
                 }
                 // Substitute through type args (e.g. `Promise<T>`).
-                const args = self.store.idsOf(t.list_data);
-                if (args.len == 0) return id;
+                const args_slice = self.store.idsOf(t.list_data);
+                if (args_slice.len == 0) return id;
+                var args_buf: [8]TypeId = undefined;
+                if (args_slice.len > args_buf.len) return id;
+                // Snapshot args before recursing: substituteTypeId can append to
+                // type_id_pool (typeRef/unionOf/…), reallocating the slice we borrow.
+                @memcpy(args_buf[0..args_slice.len], args_slice);
+                const args = args_buf[0..args_slice.len];
                 var new_args_buf: [8]TypeId = undefined;
-                if (args.len > new_args_buf.len) return id;
                 var changed = false;
                 for (args, 0..) |a, i| {
                     new_args_buf[i] = self.substituteTypeId(a, keys, vals);
@@ -6852,15 +6890,26 @@ pub const Checker = struct {
             .object_t => return self.substituteObject(id, t, keys, vals),
             .function_t => {
                 // Substitute type params into each signature's param types and return type.
-                const sigs = self.store.signaturesOf(t.signatures);
-                if (sigs.len == 0) return id;
-                var changed = false;
+                const sigs_slice = self.store.signaturesOf(t.signatures);
+                if (sigs_slice.len == 0) return id;
                 var new_sigs_buf: [4]tymod.Signature = undefined;
-                if (sigs.len > new_sigs_buf.len) return id;
+                if (sigs_slice.len > new_sigs_buf.len) return id;
+                // Snapshot the signatures BEFORE recursing: substituteTypeId below
+                // can appendSignatureParams/appendSignatures, reallocating the
+                // pools and invalidating any slice still borrowed from them.
+                var sigs_buf: [4]tymod.Signature = undefined;
+                @memcpy(sigs_buf[0..sigs_slice.len], sigs_slice);
+                const sigs = sigs_buf[0..sigs_slice.len];
+                var changed = false;
                 for (sigs, 0..) |sig, si| {
-                    const old_params = self.store.signatureParamsOf(sig);
+                    const op_slice = self.store.signatureParamsOf(sig);
+                    var op_buf: [8]TypeId = undefined;
+                    if (op_slice.len > op_buf.len) return id;
+                    // Same hazard: copy the params out of signature_param_pool
+                    // before the substitution recursion can grow (realloc) it.
+                    @memcpy(op_buf[0..op_slice.len], op_slice);
+                    const old_params = op_buf[0..op_slice.len];
                     var new_params_buf: [8]TypeId = undefined;
-                    if (old_params.len > new_params_buf.len) return id;
                     for (old_params, 0..) |p, pi| {
                         new_params_buf[pi] = self.substituteTypeId(p, keys, vals);
                         if (!new_params_buf[pi].eq(p)) changed = true;
@@ -6868,12 +6917,13 @@ pub const Checker = struct {
                     const new_ret = self.substituteTypeId(sig.return_type, keys, vals);
                     if (!new_ret.eq(sig.return_type)) changed = true;
                     const pr = self.store.appendSignatureParams(new_params_buf[0..old_params.len]) catch return id;
-                    new_sigs_buf[si] = .{
-                        .params_start = pr.start,
-                        .params_end = pr.end,
-                        .return_type = new_ret,
-                        .is_async = sig.is_async,
-                    };
+                    // Preserve all other signature fields (is_construct, predicate,
+                    // assertion) — only the param range and return type change.
+                    var ns = sig;
+                    ns.params_start = pr.start;
+                    ns.params_end = pr.end;
+                    ns.return_type = new_ret;
+                    new_sigs_buf[si] = ns;
                 }
                 if (!changed) return id;
                 const sl = self.store.appendSignatures(new_sigs_buf[0..sigs.len]) catch return id;
@@ -6884,10 +6934,14 @@ pub const Checker = struct {
     }
 
     fn substituteList(self: *Checker, id: TypeId, t: *const tymod.Type, keys: []const []const u8, vals: []const TypeId, kind: tymod.TypeKind) TypeId {
-        const members = self.store.idsOf(t.list_data);
-        if (members.len == 0) return id;
+        const members_slice = self.store.idsOf(t.list_data);
+        if (members_slice.len == 0) return id;
+        var members_buf: [16]TypeId = undefined;
+        if (members_slice.len > members_buf.len) return id;
+        // Snapshot before recursing — substituteTypeId can realloc type_id_pool.
+        @memcpy(members_buf[0..members_slice.len], members_slice);
+        const members = members_buf[0..members_slice.len];
         var new_buf: [16]TypeId = undefined;
-        if (members.len > new_buf.len) return id;
         var changed = false;
         for (members, 0..) |m, i| {
             new_buf[i] = self.substituteTypeId(m, keys, vals);
@@ -6899,11 +6953,15 @@ pub const Checker = struct {
     }
 
     fn substituteArrayLike(self: *Checker, id: TypeId, t: *const tymod.Type, keys: []const []const u8, vals: []const TypeId) TypeId {
-        const elems = self.store.idsOf(t.list_data);
-        if (elems.len == 0) return id;
+        const elems_slice = self.store.idsOf(t.list_data);
+        if (elems_slice.len == 0) return id;
         if (t.kind == .tuple_t) {
+            var elems_buf: [16]TypeId = undefined;
+            if (elems_slice.len > elems_buf.len) return id;
+            // Snapshot before recursing — substituteTypeId can realloc type_id_pool.
+            @memcpy(elems_buf[0..elems_slice.len], elems_slice);
+            const elems = elems_buf[0..elems_slice.len];
             var new_buf: [16]TypeId = undefined;
-            if (elems.len > new_buf.len) return id;
             var changed = false;
             for (elems, 0..) |m, i| {
                 new_buf[i] = self.substituteTypeId(m, keys, vals);
@@ -6912,17 +6970,24 @@ pub const Checker = struct {
             if (!changed) return id;
             return self.store.tupleOf(new_buf[0..elems.len]) catch id;
         }
-        const new_elem = self.substituteTypeId(elems[0], keys, vals);
-        if (new_elem.eq(elems[0])) return id;
+        // Copy the element id out before recursing (the borrowed slice dangles).
+        const elem0 = elems_slice[0];
+        const new_elem = self.substituteTypeId(elem0, keys, vals);
+        if (new_elem.eq(elem0)) return id;
         if (t.kind == .readonly_array_t) return self.store.readonlyArrayOf(new_elem) catch id;
         return self.store.arrayOf(new_elem) catch id;
     }
 
     fn substituteObject(self: *Checker, id: TypeId, t: *const tymod.Type, keys: []const []const u8, vals: []const TypeId) TypeId {
-        const props = self.store.propsOf(t.object_props);
-        if (props.len == 0) return id;
+        const props_slice = self.store.propsOf(t.object_props);
+        if (props_slice.len == 0) return id;
+        var props_buf: [16]tymod.ObjectProp = undefined;
+        if (props_slice.len > props_buf.len) return id;
+        // Snapshot before recursing — substituteTypeId can realloc object_prop_pool
+        // (a nested object substitution), invalidating the borrowed `props` slice.
+        @memcpy(props_buf[0..props_slice.len], props_slice);
+        const props = props_buf[0..props_slice.len];
         var new_buf: [16]tymod.ObjectProp = undefined;
-        if (props.len > new_buf.len) return id;
         var changed = false;
         for (props, 0..) |p, i| {
             const new_pty = self.substituteTypeId(p.type_id, keys, vals);

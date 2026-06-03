@@ -106,6 +106,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   if (!h) return null;
 
   const typeCache = new Map(); // typeId → Type object
+  const synthCache = new Map(); // flags → synthetic Type object (identity-stable)
 
   // A base type is stored as a `type_ref` (just a name). Resolve it to the
   // base's declared object_t (which carries ITS own bases) so a multi-level
@@ -529,6 +530,13 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // that reaches for getCallSignatures/getProperty/etc. on a fallback type never
   // crashes — it just finds nothing (FN-safe).
   function syntheticType(flags) {
+    // Cache by flags so repeated calls return the SAME object. Identity matters:
+    // no-misused-promises' checkThenableOrVoidArgument recurses while
+    // `getContextualTypeForArgumentAtIndex(...) !== type`; an un-backed param
+    // resolves to Unknown on both sides, so the two must be the same object or
+    // the recursion never terminates.
+    const cachedSynth = synthCache.get(flags);
+    if (cachedSynth) return cachedSynth;
     const t = {
       flags, getFlags() { return flags; }, types: undefined, symbol: undefined,
       getSymbol() { return undefined; }, getConstraint() { return undefined; }, getDefault() { return undefined; },
@@ -540,7 +548,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       __ez_typeId: null,
     };
     t.getApparentType = () => t;
-    return defineTypePredicates(t, flags);
+    const dt = defineTypePredicates(t, flags);
+    synthCache.set(flags, dt);
+    return dt;
   }
 
   // A synthetic Union type over `members` (a ts.UnionType the rules' isUnion/
@@ -831,8 +841,12 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // it as its safe supertype `unknown` so `any` flowing into a generic position
     // (e.g. a generic rest param) is NOT flagged unsafe (FP); precision lost is
     // FN (safe). See no-unsafe-argument's generic-rest-param case.
-    getTypeOfSymbol(sym) { return symType(sym); },
-    getTypeOfSymbolAtLocation(sym) { return symType(sym); },
+    getTypeOfSymbol(sym) { return symType(sym) || syntheticType(2 /*Unknown*/); },
+    // Never undefined: callers (no-misused-promises' isVoidReturningFunctionType)
+    // feed the result straight into tsutils.unionConstituents/isTypeFlagSet, which
+    // dereference `.flags`. An un-backed param (null sig param type) → Unknown,
+    // which carries no call signatures → not void/thenable → FP-safe.
+    getTypeOfSymbolAtLocation(sym) { return symType(sym) || syntheticType(2 /*Unknown*/); },
     // Apparent type (primitives' object-ish view) isn't modelled — identity is
     // safe: callers use it to read call signatures / properties, which we read
     // off the type directly.
@@ -856,9 +870,22 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const est = (node && (node._i != null ? node : node._estree)) || node;
       const callee = est && est.callee;
       if (!callee) return undefined;
-      const sigs = typeAt(callee).getCallSignatures();
+      const ct = typeAt(callee);
+      // The callee may be a union (`(F) | null` — an optional-call target): the
+      // call signatures live on the constituents, not the union, so walk them —
+      // mirroring voidFunctionArguments' own unionConstituents loop.
+      let sigs = ct.getCallSignatures();
+      if (!sigs.length && ct.isUnion && ct.isUnion()) {
+        for (const sub of ct.types || []) {
+          const s = sub.getCallSignatures ? sub.getCallSignatures() : [];
+          if (s.length) { sigs = s; break; }
+        }
+      }
       const sym = sigs.length ? sigs[0].getParameters()[index] : null;
-      return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : undefined;
+      // Never undefined: the rule recurses while the result `!== type` and feeds
+      // it to unionConstituents (which dereferences `.flags`). An identity-stable
+      // Unknown (synthCache) makes the recursion terminate without a crash.
+      return sym && sym.__ez_type != null ? makeType(sym.__ez_type) : syntheticType(2 /*Unknown*/);
     },
     // Three-valued assignability mapped to the boolean rules expect, with
     // `unknown` → true (assume assignable). The consumers (no-unsafe-type-

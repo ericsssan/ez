@@ -360,6 +360,16 @@ pub const TypeStore = struct {
     signature_pool: std.ArrayList(Signature) = .empty,
     signature_param_pool: std.ArrayList(TypeId) = .empty,
 
+    /// "Committed" pool lengths — the prefix referenced by KEPT (interned)
+    /// types. The dedup reclaim in `add` may only give back tail ranges that lie
+    /// entirely beyond these watermarks; a range that starts before its
+    /// watermark is shared with a kept type (e.g. tagAliasName copies a Type's
+    /// struct, sharing its range fields) and truncating it would corrupt that
+    /// kept type. Updated after every kept add.
+    committed_ids: u32 = 0,
+    committed_props: u32 = 0,
+    committed_sigs: u32 = 0,
+
     pub fn init(gpa: std.mem.Allocator) !TypeStore {
         var self: TypeStore = .{ .gpa = gpa };
         try self.types.ensureTotalCapacity(gpa, SINGLETON_COUNT);
@@ -408,14 +418,23 @@ pub const TypeStore = struct {
         const gop = try self.intern.getOrPutContext(self.gpa, id, .{ .store = self });
         if (gop.found_existing) {
             self.types.items.len -= 1;
-            if (ty.list_data.end != 0 and ty.list_data.end == self.type_id_pool.items.len)
+            // Reclaim ONLY genuinely-fresh tail ranges: the range must be the pool
+            // tail AND start at/after the committed watermark. A range starting
+            // before its watermark is shared with a kept type (tagAliasName copies
+            // a Type's range fields without re-appending) — truncating it would
+            // corrupt that kept type's data.
+            if (ty.list_data.end != 0 and ty.list_data.end == self.type_id_pool.items.len and ty.list_data.start >= self.committed_ids)
                 self.type_id_pool.items.len = ty.list_data.start;
-            if (ty.object_props.end != 0 and ty.object_props.end == self.object_prop_pool.items.len)
+            if (ty.object_props.end != 0 and ty.object_props.end == self.object_prop_pool.items.len and ty.object_props.start >= self.committed_props)
                 self.object_prop_pool.items.len = ty.object_props.start;
-            if (ty.signatures.end != 0 and ty.signatures.end == self.signature_pool.items.len)
+            if (ty.signatures.end != 0 and ty.signatures.end == self.signature_pool.items.len and ty.signatures.start >= self.committed_sigs)
                 self.signature_pool.items.len = ty.signatures.start;
             return gop.key_ptr.*;
         }
+        // Kept: this type's pool data is now referenced — advance the watermarks.
+        self.committed_ids = @intCast(self.type_id_pool.items.len);
+        self.committed_props = @intCast(self.object_prop_pool.items.len);
+        self.committed_sigs = @intCast(self.signature_pool.items.len);
         return id;
     }
 

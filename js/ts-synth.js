@@ -280,7 +280,17 @@ const _tsNodeProto = {
     return this._wrap(this._estree.parent);
   },
   get expression() {
-    return this._wrap(this._estree.expression);
+    // TS's `.expression` maps to different ESTree fields by node kind: a
+    // CallExpression/NewExpression's callee is `.callee`, a member access's
+    // object is `.object`. ESTree CallExpression has no `.expression`, so the
+    // bare `_estree.expression` would be undefined for the most common
+    // value-position consumer (getTypeAtLocation(call.expression)).
+    const e = this._estree;
+    const t = e.type;
+    if (t === "CallExpression" || t === "NewExpression") return this._wrap(e.callee);
+    if (t === "MemberExpression") return this._wrap(e.object);
+    if (t === "AwaitExpression") return this._wrap(e.argument);
+    return this._wrap(e.expression);
   },
   get left() {
     return this._wrap(this._estree.left);
