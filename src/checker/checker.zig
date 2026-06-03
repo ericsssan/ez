@@ -3465,6 +3465,13 @@ pub const Checker = struct {
         };
         const h = Helper{ .checker = self };
 
+        // The global `Promise` value is the PromiseConstructor — its symbol name
+        // is what @typescript-eslint's isPromiseConstructorLike (isBuiltinSymbolLike
+        // 'PromiseConstructor') checks (prefer-promise-reject-errors:
+        // `Promise.reject(nonError)`). Modelled as a named type_ref so the facade
+        // surfaces getSymbol().getName() === "PromiseConstructor".
+        try self.global_value_types.put(self.gpa, "Promise", try self.store.typeRef("PromiseConstructor", &.{}));
+
         // Console — every method returns void.
         const void_fn = try h.fnType(tymod.ID_VOID);
         const console_methods = [_][]const u8{

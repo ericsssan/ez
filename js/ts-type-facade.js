@@ -181,7 +181,14 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       getSymbol() {
         if (typeId == null) return undefined;
         const k = h.kind(typeId);
-        if (k === 24 /*type_ref*/) { const nm = h.refName(typeId); return nm ? makeTypeSymbol(nm) : undefined; }
+        if (k === 24 /*type_ref*/) {
+          const nm = h.refName(typeId);
+          if (!nm) return undefined;
+          // Error subclasses carry Interface flag + declared type so the
+          // isBuiltinSymbolLike base-walk reaches their `Error` base.
+          if (ERROR_SUBCLASSES.has(nm)) return makeTypeSymbol(nm, SYMBOL_FLAGS_INTERFACE, typeId);
+          return makeTypeSymbol(nm);
+        }
         // A named object_t is an interface — carry SymbolFlags.Interface + the
         // declared type so isBuiltinSymbolLike can walk its base types.
         if (k === 19 /*object_t*/) { const nm = h.refName(typeId); return nm ? makeTypeSymbol(nm, SYMBOL_FLAGS_INTERFACE, typeId) : undefined; }
@@ -690,7 +697,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // this never over-matches a differently-named type.
   const USER_SOURCE_FILE = Object.freeze({ __ez_lib: false, fileName: "" });
   const DEFAULT_LIB_TYPE_NAMES = new Set([
-    "Function", "Promise", "Error", "Array", "ReadonlyArray", "Object", "String",
+    "Function", "Promise", "PromiseConstructor", "Error", "Array", "ReadonlyArray", "Object", "String",
     "Number", "Boolean", "RegExp", "Date", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "BigInt",
     "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError",
     "AggregateError", "URL", "URLSearchParams",
@@ -706,6 +713,27 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     };
   }
   const SYMBOL_FLAGS_INTERFACE = 64; // ts.SymbolFlags.Interface
+  // The built-in Error subclasses all `extends Error`. isErrorLike walks base
+  // types via isBuiltinSymbolLikeRecurser (symbol must be Class|Interface →
+  // getDeclaredTypeOfSymbol → getBaseTypes), so these expose `Error` as a base.
+  const ERROR_SUBCLASSES = new Set([
+    "TypeError", "RangeError", "SyntaxError", "ReferenceError",
+    "EvalError", "URIError", "AggregateError",
+  ]);
+  // A synthetic `Error` base type — only needs a default-library symbol named
+  // "Error" so the recurser's predicate matches.
+  let _errorBaseType;
+  function errorBaseType() {
+    if (_errorBaseType) return _errorBaseType;
+    const sym = makeTypeSymbol("Error");
+    _errorBaseType = {
+      flags: 0, getFlags: () => 0, getSymbol: () => sym, symbol: sym,
+      getBaseTypes: () => undefined, getProperty: () => undefined, getProperties: () => [],
+      isUnion: () => false, isIntersection: () => false, isTypeParameter: () => false,
+      __ez_typeId: null,
+    };
+    return _errorBaseType;
+  }
   // The `Promise<X>` base of an interface object_t (`interface A extends
   // Promise<any>`), or null. Such an interface is thenable with awaited type X —
   // discriminateAnyType uses this to flag returning it from an async function.
@@ -758,6 +786,11 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     getDeclaredTypeOfSymbol(sym) { return sym && sym.__ez_declType != null ? makeType(sym.__ez_declType) : undefined; },
     getBaseTypes(type) {
       if (!type || type.__ez_typeId == null) return [];
+      // Built-in Error subclasses extend Error — surface the synthetic base.
+      if (h.kind(type.__ez_typeId) === 24 /*type_ref*/) {
+        const nm = h.refName(type.__ez_typeId);
+        if (nm && ERROR_SUBCLASSES.has(nm)) return [errorBaseType()];
+      }
       const n = h.baseCount(type.__ez_typeId);
       const out = [];
       for (let i = 0; i < n; i++) { const b = h.baseAt(type.__ez_typeId, i); if (b != null) out.push(makeType(resolveBaseId(b))); }
