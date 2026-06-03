@@ -501,10 +501,13 @@ pub const Checker = struct {
     /// with the given name.  Returns the declared/inferred type, or null
     /// if not found.
     fn typeOfNameByAstSearch(self: *Checker, name: []const u8) ?TypeId {
-        // For overloaded functions we prefer the implementation (fn_decl with
-        // a body) over bare overload-signature declarations.  Track the first
-        // declaration-without-body as a fallback.
-        var fn_decl_fallback: NodeIndex = .none;
+        // Overload handling: when both signature declarations (no body) AND an
+        // implementation exist, TS exposes the OVERLOAD SET, not the impl's
+        // inferred type — so `function a(): Promise<void>; function a(x): void;
+        // function a(x?) {…}` types `a` as `(Promise<void>) | (void)`, not the
+        // impl's body-inferred return. Track both; resolve after the scan.
+        var fn_decl_fallback: NodeIndex = .none; // first no-body signature
+        var fn_impl: NodeIndex = .none; // implementation (with body)
         const list = self.value_decl_by_name.get(name) orelse return null;
         for (list.items) |ni| {
             const t = self.ast_ref.nodeTag(ni);
@@ -533,15 +536,22 @@ pub const Checker = struct {
                     if (fd.name == .none) continue;
                     const dn = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
                     if (!std.mem.eql(u8, dn, name)) continue;
-                    // Implementation with body → return immediately (most-general type).
-                    if (fd.body != .none) return self.functionTypeFromFnDecl(ni);
-                    // Overload signature without body → keep scanning for implementation.
-                    if (fn_decl_fallback == .none) fn_decl_fallback = ni;
+                    if (fd.body != .none) {
+                        if (fn_impl == .none) fn_impl = ni;
+                    } else if (fn_decl_fallback == .none) {
+                        fn_decl_fallback = ni;
+                    }
                 },
                 else => {},
             }
         }
-        if (fn_decl_fallback != .none) return self.functionTypeFromFnDecl(fn_decl_fallback);
+        // Overload signatures present → the overload set is the type.
+        if (fn_decl_fallback != .none) {
+            if (self.functionTypeFromAllOverloads(name)) |t| return t;
+            return self.functionTypeFromFnDecl(fn_decl_fallback);
+        }
+        // No overloads → the implementation's own (most-general) type.
+        if (fn_impl != .none) return self.functionTypeFromFnDecl(fn_impl);
         return null;
     }
 
@@ -1220,7 +1230,12 @@ pub const Checker = struct {
                 const pdata = self.ast_ref.nodeData(parent);
                 if (pdata.lhs != .none) {
                     const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(pdata.lhs));
-                    if (fd.body == .none and fd.name != .none) {
+                    if (fd.name != .none) {
+                        // An overloaded function's type is its overload signatures —
+                        // exposed on EVERY declaration including the implementation
+                        // (with a body), per TS. functionTypeFromAllOverloads only
+                        // collects no-body signature decls, so it returns null for a
+                        // plain single-bodied function → falls through to its own type.
                         const fn_name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(fd.name));
                         if (self.functionTypeFromAllOverloads(fn_name)) |t| return t;
                     }
@@ -7228,14 +7243,12 @@ pub const Checker = struct {
     }
 
     fn inferAwait(self: *Checker, node: NodeIndex) TypeId {
-        // await Promise<T> → T; otherwise unchanged.
+        // await unwraps Promise<T> → T, recursing through unions (await of
+        // `Promise<A> | Promise<B>` → `A | B`) and nested promises — so a
+        // conditional like `if (await (p ?? Promise.reject()))` is seen as its
+        // awaited value, not a thenable.
         const inner = self.typeOf(self.ast_ref.nodeData(node).lhs);
-        const t = self.store.get(inner);
-        if (t.kind == .type_ref and std.mem.eql(u8, t.name, "Promise")) {
-            const args = self.store.idsOf(t.list_data);
-            if (args.len > 0) return args[0];
-        }
-        return inner;
+        return self.resolveAwaited(inner);
     }
 
     /// True when the class/function declaration `decl_node` has a decorator
