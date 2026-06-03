@@ -80,6 +80,27 @@ function restDecl() {
   return _restDecl;
 }
 
+// no-base-to-string distinguishes a value-coercion method (toString /
+// toLocaleString / valueOf) inherited from `interface Object` (=> "[object
+// Object]", reportable) from one the type declares itself (user-defined, safe).
+// It reads `candidate.getDeclarations()[].parent` and tests
+// `ts.isInterfaceDeclaration(parent) && parent.name.text === 'Object'`. We don't
+// model lib.d.ts, so synthesize the two declaration shapes.
+const OBJ_COERCION_METHODS = new Set(["toString", "toLocaleString", "valueOf"]);
+let _objMethodDecls;
+function objMethodDecls() {
+  if (_objMethodDecls !== undefined) return _objMethodDecls;
+  const ts = tsMod();
+  const ifaceKind = ts ? ts.SyntaxKind.InterfaceDeclaration : 264;
+  const methKind = ts ? ts.SyntaxKind.MethodSignature : 171;
+  const mk = (ifaceName) => Object.freeze({
+    kind: methKind,
+    parent: Object.freeze({ kind: ifaceKind, name: Object.freeze({ kind: ts ? ts.SyntaxKind.Identifier : 80, text: ifaceName, escapedText: ifaceName }) }),
+  });
+  _objMethodDecls = { onObject: mk("Object"), userDefined: mk("__ez_user__") };
+  return _objMethodDecls;
+}
+
 // ts.Type predicate methods (rules call type.isUnion() / isLiteral() / …).
 // Pure flag tests over the ts.TypeFlags bitmask.
 function defineTypePredicates(ty, flags) {
@@ -225,6 +246,27 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // undefined if absent. getProperty('length')/'toString'/the accessed member.
       getProperty(name) {
         const pid = h.propType(typeId, name);
+        // An object type's toString/toLocaleString/valueOf: inherited from
+        // interface Object when not declared (=> base-to-string reportable), or
+        // user-declared on the object (safe). Only for plain object types —
+        // primitives/arrays/tuples are handled by the rule's earlier branches,
+        // and giving them a synthetic Object method would be wrong.
+        if (typeId != null && OBJ_COERCION_METHODS.has(name)) {
+          const k = h.kind(typeId);
+          if (k === 19 /*object_t*/ || k === 11 /*object_keyword*/) {
+            const decls = objMethodDecls();
+            // A `[Symbol.toPrimitive]` member (stored as "@@toPrimitive") gives the
+            // object custom stringification → treat as user-defined (safe). So
+            // base-Object only when neither this method nor toPrimitive is declared.
+            const onObject = pid == null && h.propType(typeId, "@@toPrimitive") == null;
+            const decl = onObject ? decls.onObject : decls.userDefined;
+            return {
+              name, escapedName: name, getName: () => name, getEscapedName: () => name,
+              getFlags: () => 0, getDeclarations: () => [decl], valueDeclaration: decl,
+              __ez_type: pid != null ? pid : null,
+            };
+          }
+        }
         if (pid == null) {
           // Promise<T> — and any interface that extends one — is thenable; hand
           // isThenableType the synthetic `then` (Promise methods aren't modelled).
