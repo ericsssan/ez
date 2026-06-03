@@ -3118,21 +3118,17 @@ pub const Checker = struct {
         // string literal types directly and unions of them.
         var key_buf: [16][]const u8 = undefined;
         const key_count = self.collectStringLiteralKeys(data.rhs, &key_buf, 0) orelse {
-            // `keyof T` / `number` index → return any prop's union; for
-            // arrays index = number → element type.
-            const idx_tag = self.ast_ref.nodeTag(data.rhs);
-            if (idx_tag == .ts_type_reference) {
-                const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.rhs));
-                if (std.mem.eql(u8, name, "number")) {
-                    const ot = self.store.get(obj_ty);
-                    if (ot.kind == .array_t or ot.kind == .readonly_array_t or ot.kind == .tuple_t) {
-                        const elems = self.store.idsOf(ot.list_data);
-                        if (ot.kind == .tuple_t and elems.len > 0) {
-                            return self.store.unionOf(elems) catch tymod.ID_UNKNOWN;
-                        }
-                        if (elems.len > 0) return elems[0];
-                    }
-                }
+            // Non-string-literal index. On an array/tuple this is a numeric index —
+            // the `number` keyword OR a numeric literal (`arr[5]`) OR `arr[i]` —
+            // and all resolve to the element type. (Object types with a non-string
+            // index aren't modelled → unknown.)
+            const ot = self.store.get(obj_ty);
+            if (ot.kind == .array_t or ot.kind == .readonly_array_t) {
+                const elems = self.store.idsOf(ot.list_data);
+                if (elems.len > 0) return elems[0];
+            } else if (ot.kind == .tuple_t) {
+                const elems = self.store.idsOf(ot.list_data);
+                if (elems.len > 0) return self.store.unionOf(elems) catch tymod.ID_UNKNOWN;
             }
             return tymod.ID_UNKNOWN;
         };
@@ -6896,6 +6892,15 @@ pub const Checker = struct {
         defer self.resolve_depth -= 1;
         const t = self.store.get(id);
         switch (t.kind) {
+            // A bare type parameter (`T` resolved to its own param type, e.g. the
+            // element of `Readonly<T>[]` after Readonly unwraps) — substitute by
+            // name. Without this, `Alias<Arg>['prop']` leaves T unsubstituted.
+            .type_param => {
+                for (keys, vals) |k, v| {
+                    if (std.mem.eql(u8, k, t.name)) return v;
+                }
+                return id;
+            },
             .type_ref => {
                 for (keys, vals) |k, v| {
                     if (std.mem.eql(u8, k, t.name)) return v;
