@@ -576,10 +576,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       }
       return makeType(undefined);
     }
-    // A template-literal type (`\`${string}\``) isn't modelled by the checker and
-    // would resolve to the error/any type — tripping no-redundant-type-constituents'
-    // any-override check (FP). It's a string-like type; surface it as String.
-    if (est.type === "TSTemplateLiteralType") return syntheticType(32 /*String*/);
+    // A template-literal type (`\`${string}\``) isn't modelled by the checker.
+    // Surface it as TemplateLiteral (4194304) so no-redundant-type-constituents
+    // can map it to String and flag `\`…\` | string` as redundant.
+    if (est.type === "TSTemplateLiteralType") return syntheticType(4194304 /*TemplateLiteral*/);
     let tid = h.typeOfNode(est._i);
     // A value whose binding is annotated with a bare in-scope type parameter
     // (`a: T`) is the parameter `T` itself, not its constraint — so `a as T`

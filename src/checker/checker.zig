@@ -253,7 +253,18 @@ pub const Checker = struct {
             .null_literal => tymod.ID_NULL,
             .regex_literal => self.regexpRefType(),
             .template_literal => tymod.ID_STRING,
-            .tagged_template => tymod.ID_UNKNOWN,
+            .tagged_template => blk: {
+                const tag = self.ast_ref.nodeData(node).lhs;
+                if (tag == .none) break :blk tymod.ID_UNKNOWN;
+                const tag_ty = self.typeOf(tag);
+                if (tymod.isAny(&self.store, tag_ty)) break :blk tymod.ID_ANY;
+                const tf = self.store.get(tag_ty);
+                if (tf.kind == .function_t) {
+                    const sigs = self.store.signaturesOf(tf.signatures);
+                    if (sigs.len > 0) break :blk sigs[0].return_type;
+                }
+                break :blk tymod.ID_UNKNOWN;
+            },
             .this_expr => self.inferThis(node),
             .super_expr => tymod.ID_UNKNOWN,
 
