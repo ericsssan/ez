@@ -1299,9 +1299,108 @@ pub const Checker = struct {
                 // the callee's signature to find the matching arg slot's
                 // param type.
                 if (self.contextualCallbackParamType(binding)) |t| return t;
+                // Promise rejection callback: `p.catch(e => …)` (arg 0) or
+                // `p.then(onF, e => …)` (arg 1) — `e` is the rejection reason,
+                // contextually `any` (lib.es5 onrejected is `(reason: any)`).
+                if (self.contextualPromiseRejectionParamType(binding)) |t| return t;
                 return tymod.ID_UNKNOWN;
             },
         }
+    }
+
+    /// True when the parameter carries an explicit type annotation. Used to
+    /// distinguish an un-annotated param (defaults to unknown) from one
+    /// explicitly annotated `: unknown`, so contextual typing only fills the
+    /// former.
+    fn paramHasAnnotation(self: *Checker, param: NodeIndex) bool {
+        var node = param;
+        if (self.ast_ref.nodeTag(node) == .assignment_pattern) node = self.ast_ref.nodeData(node).lhs;
+        if (self.ast_ref.nodeTag(node) == .ts_parameter_property) node = self.ast_ref.nodeData(node).lhs;
+        const d = self.ast_ref.nodeData(node);
+        return d.rhs != .none and self.ast_ref.nodeTag(d.rhs) == .ts_type_annotation;
+    }
+
+    /// Peel parameter wrappers (default value, parameter property, rest) to the
+    /// inner binding target. Object/array patterns are left intact.
+    fn peelParamWrappers(self: *Checker, node: NodeIndex) NodeIndex {
+        var n = node;
+        while (true) {
+            switch (self.ast_ref.nodeTag(n)) {
+                .assignment_pattern, .ts_parameter_property, .rest_element => n = self.ast_ref.nodeData(n).lhs,
+                else => return n,
+            }
+        }
+    }
+
+    /// Contextual typing for Promise rejection callbacks. The first parameter
+    /// of `promise.catch(cb)` (the sole arg) or `promise.then(onF, onR)` (the
+    /// second arg) is the rejection `reason`, which lib.es5 types `any`. Guarded
+    /// by a Promise-typed receiver so non-Promise `.then`/`.catch` methods keep
+    /// their declared param types.
+    fn contextualPromiseRejectionParamType(self: *Checker, binding: NodeIndex) ?TypeId {
+        const parents = self.ast_ref.parents;
+        if (parents.len == 0) return null;
+        const NONE: u32 = @intFromEnum(NodeIndex.none);
+        // binding → arrow/fn-expr (the callback).
+        var cur = parents[binding.toInt()];
+        if (cur == NONE) return null;
+        var fn_node: NodeIndex = .none;
+        var depth: u32 = 0;
+        while (cur != NONE and depth < 8) : ({ cur = parents[cur]; depth += 1; }) {
+            switch (self.ast_ref.nodeTag(@enumFromInt(cur))) {
+                .arrow_fn, .async_arrow_fn, .fn_expr, .async_fn_expr => { fn_node = @enumFromInt(cur); break; },
+                else => {},
+            }
+        }
+        if (fn_node == .none) return null;
+        // binding must be the callback's FIRST parameter.
+        var pstart: u32 = 0;
+        var pend: u32 = 0;
+        switch (self.ast_ref.nodeTag(fn_node)) {
+            .arrow_fn, .async_arrow_fn => {
+                const fd_d = self.ast_ref.nodeData(fn_node);
+                if (fd_d.lhs == .none) return null;
+                const adp = self.ast_ref.extraData(ast.ArrowData, @intFromEnum(fd_d.lhs));
+                pstart = adp.params_start; pend = adp.params_end;
+            },
+            else => {
+                const fd_d = self.ast_ref.nodeData(fn_node);
+                if (fd_d.lhs == .none) return null;
+                const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(fd_d.lhs));
+                pstart = fd.params; pend = fd.params_end;
+            },
+        }
+        if (pend <= pstart or pend > self.ast_ref.extra_data.len) return null;
+        const params = self.ast_ref.extra_data[pstart..pend];
+        // Accept `binding` whether it was passed as the raw first-param node
+        // (from buildSignatureRaw) or the inner identifier (from the binding
+        // resolver) — peel default / parameter-property / rest on both sides.
+        if (self.peelParamWrappers(@enumFromInt(params[0])) != self.peelParamWrappers(binding)) return null;
+        // The callback must be an argument of a `<recv>.catch(…)` / `<recv>.then(…)` call.
+        const fn_parent = parents[fn_node.toInt()];
+        if (fn_parent == NONE) return null;
+        const call_node: NodeIndex = @enumFromInt(fn_parent);
+        if (self.ast_ref.nodeTag(call_node) != .call_expr) return null;
+        const cd = self.ast_ref.nodeData(call_node);
+        var callee = cd.lhs;
+        while (self.ast_ref.nodeTag(callee) == .grouping_expr) callee = self.ast_ref.nodeData(callee).lhs;
+        const callee_tag = self.ast_ref.nodeTag(callee);
+        if (callee_tag != .member_expr and callee_tag != .optional_member_expr) return null;
+        const md = self.ast_ref.nodeData(callee);
+        if (md.rhs == .none) return null;
+        const method = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(md.rhs));
+        const reject_slot: usize = if (std.mem.eql(u8, method, "catch")) 0
+            else if (std.mem.eql(u8, method, "then")) 1
+            else return null;
+        if (cd.rhs == .none) return null;
+        const sr = self.ast_ref.extraData(ast.SubRange, @intFromEnum(cd.rhs));
+        if (sr.start >= sr.end or sr.end > self.ast_ref.extra_data.len) return null;
+        const args = self.ast_ref.extra_data[sr.start..sr.end];
+        if (reject_slot >= args.len) return null;
+        if (args[reject_slot] != fn_node.toInt()) return null;
+        // Receiver must be a Promise.
+        if (!tymod.isPromiseRef(&self.store, self.typeOf(md.lhs))) return null;
+        return tymod.ID_ANY;
     }
 
     /// If `binding` is the first parameter of an arrow/function-expression
@@ -1751,7 +1850,14 @@ pub const Checker = struct {
                 if (self.ast_ref.nodeTag(pn) == .assignment_pattern) pn = self.ast_ref.nodeData(pn).lhs;
                 if (self.ast_ref.nodeTag(pn) == .ts_parameter_property) pn = self.ast_ref.nodeData(pn).lhs;
                 if (self.ast_ref.nodeTag(pn) == .rest_element) rest_idx = @intCast(count);
-                param_buf[count] = self.paramDeclaredType(param);
+                var pty = self.paramDeclaredType(param);
+                // An un-annotated first parameter of a Promise rejection
+                // callback (`p.catch(e=>…)` / `p.then(onF, e=>…)`) is `any`,
+                // not `unknown` — drives use-unknown-in-catch-callback-variable.
+                if (count == 0 and pty.eq(tymod.ID_UNKNOWN) and !self.paramHasAnnotation(param)) {
+                    if (self.contextualPromiseRejectionParamType(param)) |t| pty = t;
+                }
+                param_buf[count] = pty;
                 count += 1;
             }
         }

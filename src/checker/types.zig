@@ -917,6 +917,14 @@ pub fn isPromiseOfAny(store: *const TypeStore, id: TypeId) bool {
     return containsAny(store, args[0]);
 }
 
+/// True when the type is a `Promise<…>` reference (any type args, or none).
+/// Looser than isPromiseOfAny — used to recognise a Promise receiver for
+/// contextual typing of `.then`/`.catch` rejection callbacks.
+pub fn isPromiseRef(store: *const TypeStore, id: TypeId) bool {
+    const t = store.get(id);
+    return t.kind == .type_ref and std.mem.eql(u8, t.name, "Promise");
+}
+
 /// True when the type is `any[]` / `readonly any[]` / `Array<any>` /
 /// `ReadonlyArray<any>` — TSe's "any array" classification.
 pub fn isAnyArray(store: *const TypeStore, id: TypeId) bool {
