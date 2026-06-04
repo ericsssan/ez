@@ -401,7 +401,7 @@ pub fn runWithMessageId(ctx: *const LintContext, message_id: []const u8) void {
     const opts = parseOptions(ctx);
     const refs = ctx.references();
     const syms = ctx.symbols();
-    const n = refs.symbol_ids.items.len;
+    const n = refs.list.len;
 
     for (0..n) |i| {
         const ref_id = ReferenceId.fromInt(@intCast(i));

@@ -745,7 +745,9 @@ fn parseImpl(
     // Publish tok_ends to trav_thread (it'll read after s_utf16_done acquire).
     if (use_stream_sem and stream_sem_thread != null) trav_tok_ends_slot = tok_ends;
 
-    const line_starts = lex_result.line_starts;
+    // es-parser v0.2.0+ drops lexer line_starts; build it in the bump buffer so
+    // the offset math below (ptrOffsetPub) stays valid.
+    const line_starts = try parser.span.computeLineStarts(alloc, source);
     const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     // Collect JSX position-override nodes (byte offsets) for UTF-16 conversion.
@@ -1274,7 +1276,8 @@ fn parseAndLintImpl(
     for (tok_ends, tok_starts, tok_lens) |*te, ts, tl| te.* = ts + tl;
     const tok_ends_offset = if (tok_ends.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_ends.ptr) else 0;
 
-    const line_starts = lex_result.line_starts;
+    // es-parser v0.2.0+ drops lexer line_starts; build it in the bump buffer.
+    const line_starts = try parser.span.computeLineStarts(alloc, source);
     const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     // Collect JSX position-override nodes for UTF-16 conversion (see parseImpl for details).

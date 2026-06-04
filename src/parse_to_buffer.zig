@@ -82,6 +82,9 @@ pub fn parseToBuffer(
     // ── Lex ──
     const lex_result = try Lexer.tokenizeWithOptions(alloc, source, language, is_module);
     var tokens = lex_result.tokens;
+    // es-parser v0.2.0+ no longer produces line_starts in the lexer; build it
+    // lazily here (needed for diagnostic line/column mapping + the JS buffer).
+    const line_starts = try parser_mod.span.computeLineStarts(alloc, source);
 
     // ── Parse with event emission (needed for scope/symbol resolution) ──
     var tree = try Parser.parseWithOptions(alloc, source, tokens.slice(), .{
@@ -129,7 +132,7 @@ pub fn parseToBuffer(
         else
             try linter_mod.lint(sem_alloc, &tree, &sem, null, language);
         for (diag_list) |d| {
-            const loc = Location.fromLineStarts(lex_result.line_starts, source, d.span.start);
+            const loc = Location.fromLineStarts(line_starts, source, d.span.start);
             const rule_name = if (d.rule_index < linter_mod.rule_names.len)
                 linter_mod.rule_names[d.rule_index]
             else
@@ -181,11 +184,11 @@ pub fn parseToBuffer(
     );
 
     // ── Line starts (copy from lex result into the bump) ──
-    const ls_count: u32 = @intCast(lex_result.line_starts.len);
+    const ls_count: u32 = @intCast(line_starts.len);
     var line_starts_offset: u32 = 0;
     if (ls_count > 0) {
         const ls_buf = try alloc.alloc(u32, ls_count);
-        @memcpy(ls_buf, lex_result.line_starts);
+        @memcpy(ls_buf, line_starts);
         line_starts_offset = js_buffer.ptrOffsetPub(buf_ptr, ls_buf.ptr);
     }
 

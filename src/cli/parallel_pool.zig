@@ -458,10 +458,14 @@ fn handleBigLex(ctx: *PoolCtxV2, idx: u32) void {
     ctx.gen_queue.pushConcurrent(.{ .big_sem   = idx });
 
     const lang = Language.fromExtension(state.file_path) orelse .js;
-    var result = Lexer.tokenizeWithBuf(
+    // es-parser v0.2.0+ removed the streaming `tokenizeWithBuf` (write-into-
+    // caller-buffer) entry point in favor of an allocate-and-return scalar lexer.
+    // Tokenize in full and publish the count at the end; the parse/sem workers
+    // that spin on `published` then proceed once tokens are ready (this loses the
+    // lex↔parse overlap of the old streaming path, an experimental big-file
+    // pipeline not on the production NAPI/LSP path).
+    var result = Lexer.tokenizeWithLanguage(
         state.arena_parse.allocator(), state.source, lang,
-        .{ .publish_to = &state.published },
-        &state.tokens_buf,
     ) catch {
         state.lex_failed.store(true, .release);
         state.lex_done.store(true, .release);

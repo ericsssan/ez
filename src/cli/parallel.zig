@@ -1114,6 +1114,9 @@ pub const ParallelRunner = struct {
             return;
         };
         var tokens = lex_result.tokens;
+        // es-parser v0.2.0+ drops lexer line_starts; build it lazily for the
+        // diagnostic line/column mapping below.
+        const line_starts = parser.span.computeLineStarts(arena, source) catch &.{};
         if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.lex_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         const is_module = std.mem.endsWith(u8, file_path, ".mjs") or std.mem.endsWith(u8, file_path, ".mts");
@@ -1185,7 +1188,7 @@ pub const ParallelRunner = struct {
             lex_result.comment_ends,
             lex_result.comment_kinds,
         ) catch InlineDisables.empty();
-        const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, lex_result.line_starts, source) catch raw_diagnostics;
+        const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, line_starts, source) catch raw_diagnostics;
 
         // Count total diagnostics (parse errors + lint diagnostics).
         const total_count = tree.errors.len + diagnostics.len;
@@ -1223,7 +1226,7 @@ pub const ParallelRunner = struct {
         }
         // Binary-search line_starts for each diagnostic's line/column — no sort needed.
         for (diag_refs[0..dr]) |ref| {
-            const loc = Location.fromLineStarts(lex_result.line_starts, source, ref.offset);
+            const loc = Location.fromLineStarts(line_starts, source, ref.offset);
             const column = loc.column;
 
             switch (ref.kind) {
@@ -1940,10 +1943,11 @@ pub const ParallelRunner = struct {
         const lex_runner = struct {
             fn go(c: *LexCtx) void {
                 c.t_start.* = nowNs();
-                var result = Lexer.tokenizeWithBuf(
+                // es-parser v0.2.0+ removed the streaming `tokenizeWithBuf` entry
+                // point; tokenize in full and publish the count at the end (loses
+                // the lex↔parse overlap of this experimental 2-stage pipeline).
+                var result = Lexer.tokenizeWithLanguage(
                     c.alloc, c.source, c.lang,
-                    .{ .publish_to = c.publish, .publish_batch_mask = c.lex_batch_mask },
-                    c.tokens_buf,
                 ) catch {
                     c.lex_done.store(true, .release);
                     c.t_end.* = nowNs();

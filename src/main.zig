@@ -263,16 +263,19 @@ pub fn main(init: std.process.Init) !void {
         var tree = try parser.Parser.parseWithLanguage(allocator, source, lex.tokens.slice(), lang, is_module);
         defer tree.deinit(allocator);
 
+        const line_starts = try parser.span.computeLineStarts(allocator, source);
+        defer allocator.free(line_starts);
+
         if (tree.errors.len > 0) {
             for (tree.errors) |err| {
-                try err.format(lex.line_starts, source, file_path, stdout);
+                try err.format(line_starts, source, file_path, stdout);
             }
         }
 
         if (!json_format) {
             try debug.dumpAst(&tree, stdout);
         } else {
-            try diagnostic.formatJson(tree.errors, lex.line_starts, source, file_path, stdout);
+            try diagnostic.formatJson(tree.errors, line_starts, source, file_path, stdout);
         }
         try stdout.flush();
     }
@@ -309,9 +312,12 @@ fn lintSingleFile(
     var tree = try parser.Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, isModuleFile(file_path));
     defer tree.deinit(allocator);
 
+    const line_starts = try parser.span.computeLineStarts(allocator, source);
+    defer allocator.free(line_starts);
+
     if (tree.errors.len > 0) {
         for (tree.errors) |err| {
-            try err.format(lex_result.line_starts, source, file_path, stdout);
+            try err.format(line_starts, source, file_path, stdout);
         }
     }
 
@@ -334,11 +340,11 @@ fn lintSingleFile(
         lex_result.comment_kinds,
     ) catch InlineDisables.empty();
     defer disables.deinit();
-    const lint_diagnostics = try linter.filterByInlineDisables(allocator, raw_diagnostics, &disables, lex_result.line_starts, source);
+    const lint_diagnostics = try linter.filterByInlineDisables(allocator, raw_diagnostics, &disables, line_starts, source);
     defer allocator.free(lint_diagnostics);
 
     for (lint_diagnostics) |*diag| {
-        try diag.format(lex_result.line_starts, source, file_path, &linter.rule_names, stdout);
+        try diag.format(line_starts, source, file_path, &linter.rule_names, stdout);
     }
     try stdout.flush();
 

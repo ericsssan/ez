@@ -683,7 +683,7 @@ pub const LintContext = struct {
         // The semantic stage records every binding decl; iterate to find
         // a class_decl whose name matches.  Cheap for typical files.
         const syms = &self.semantic.symbols;
-        const total: u32 = @intCast(syms.scope_ids.items.len);
+        const total: u32 = @intCast(syms.list.len);
         var i: u32 = 0;
         while (i < total) : (i += 1) {
             const s = symbol_mod.SymbolId.fromInt(i);
@@ -5904,7 +5904,7 @@ pub const LintContext = struct {
     /// member-expression property name, declaration site, etc.).
     pub fn nodeRefId(self: *const LintContext, n: NodeIndex) ReferenceId {
         if (n == .none) return .none;
-        const node_ids = self.semantic.references.node_ids.items;
+        const node_ids = self.semantic.references.list.items(.node_id);
         for (node_ids, 0..) |nid, i| {
             if (nid == n) return ReferenceId.fromInt(@intCast(i));
         }
@@ -6393,7 +6393,7 @@ pub const LintContext = struct {
     /// appended after user symbols).
     fn scopeHasUserBindingNamed(self: *const LintContext, sid: scope_mod.ScopeId, name: []const u8) bool {
         const syms = &self.semantic.symbols;
-        const total: u32 = @intCast(syms.scope_ids.items.len);
+        const total: u32 = @intCast(syms.list.len);
         var i: u32 = 0;
         while (i < total) : (i += 1) {
             const sym = symbol_mod.SymbolId.fromInt(i);
@@ -11716,7 +11716,7 @@ pub const LintContext = struct {
     /// hoisted alias and the canonical entry share the same decl node.
     fn findSymbolByDeclNode(self: *const LintContext, id_node: NodeIndex) ?symbol_mod.SymbolId {
         const syms = &self.semantic.symbols;
-        const total: u32 = @intCast(syms.scope_ids.items.len);
+        const total: u32 = @intCast(syms.list.len);
         var fallback: ?symbol_mod.SymbolId = null;
         var i: u32 = 0;
         while (i < total) : (i += 1) {

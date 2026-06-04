@@ -158,7 +158,7 @@ pub const Checker = struct {
         const node_count = ast_ref.nodes.len;
         const node_types = try gpa.alloc(TypeId, node_count);
         @memset(node_types, TypeId.none);
-        const sym_count = semantic.symbols.scope_ids.items.len;
+        const sym_count = semantic.symbols.list.len;
         const sym_types = try gpa.alloc(TypeId, sym_count);
         @memset(sym_types, TypeId.none);
         // Reverse index: identifier node → resolved SymbolId, built once from

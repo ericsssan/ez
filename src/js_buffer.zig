@@ -415,9 +415,9 @@ pub fn writeSemanticData(
     cfg_offset_late: ?*const u32,
 ) !u32 {
     const alloc = backing.allocator();
-    const scope_count: u32 = @intCast(sem.scopes.kinds.items.len);
-    const symbol_count: u32 = @intCast(sem.symbols.names.items.len);
-    const ref_count: u32 = @intCast(sem.references.symbol_ids.items.len);
+    const scope_count: u32 = @intCast(sem.scopes.list.len);
+    const symbol_count: u32 = @intCast(sem.symbols.list.len);
+    const ref_count: u32 = @intCast(sem.references.list.len);
     const none32: u32 = std.math.maxInt(u32);
 
     // ── Scope arrays ────────────────────────────────────────────
@@ -428,15 +428,21 @@ pub fn writeSemanticData(
     const scope_bindings_start = try alloc.alloc(u32, scope_count);
     const scope_bindings_count = try alloc.alloc(u32, scope_count);
 
+    const sc_kinds = sem.scopes.list.items(.kind);
+    const sc_flags = sem.scopes.list.items(.flags);
+    const sc_parents = sem.scopes.list.items(.parent);
+    const sc_node_ids = sem.scopes.list.items(.node_id);
+    const sc_bstart = sem.scopes.list.items(.bindings_start);
+    const sc_bcount = sem.scopes.list.items(.bindings_count);
     for (0..scope_count) |i| {
-        scope_kinds[i] = @intFromEnum(sem.scopes.kinds.items[i]);
-        scope_flags[i] = @bitCast(sem.scopes.flags.items[i]);
-        const p = sem.scopes.parents.items[i];
+        scope_kinds[i] = @intFromEnum(sc_kinds[i]);
+        scope_flags[i] = @bitCast(sc_flags[i]);
+        const p = sc_parents[i];
         scope_parents[i] = if (p == .none) none32 else @intFromEnum(p);
-        const nid = sem.scopes.node_ids.items[i];
+        const nid = sc_node_ids[i];
         scope_node_ids[i] = if (nid == .none) none32 else @intFromEnum(nid);
-        scope_bindings_start[i] = sem.scopes.bindings_start.items[i];
-        scope_bindings_count[i] = sem.scopes.bindings_count.items[i];
+        scope_bindings_start[i] = sc_bstart[i];
+        scope_bindings_count[i] = sc_bcount[i];
     }
 
     // ── Symbol arrays ────────────────────────────────────────────
@@ -449,20 +455,26 @@ pub fn writeSemanticData(
     const symbol_name_starts = try alloc.alloc(u32, symbol_count);
     const symbol_name_lens = try alloc.alloc(u32, symbol_count);
 
+    const sy_flags = sem.symbols.list.items(.flags);
+    const sy_kinds = sem.symbols.list.items(.binding_kind);
+    const sy_scope_ids = sem.symbols.list.items(.scope_id);
+    const sy_decl_nodes = sem.symbols.list.items(.decl_node);
+    const sy_refs = sem.symbols.list.items(.ref_range);
+    const sy_names = sem.symbols.list.items(.name);
     for (0..symbol_count) |i| {
-        symbol_flags[i] = @bitCast(sem.symbols.flags.items[i]);
-        symbol_kinds[i] = @intFromEnum(sem.symbols.binding_kinds.items[i]);
-        const sid = sem.symbols.scope_ids.items[i];
+        symbol_flags[i] = @bitCast(sy_flags[i]);
+        symbol_kinds[i] = @intFromEnum(sy_kinds[i]);
+        const sid = sy_scope_ids[i];
         symbol_scope_ids[i] = if (sid == .none) none32 else @intFromEnum(sid);
-        const dn = sem.symbols.decl_nodes.items[i];
+        const dn = sy_decl_nodes[i];
         symbol_decl_nodes[i] = if (dn == .none) none32 else @intFromEnum(dn);
-        const rr = sem.symbols.references.items[i];
+        const rr = sy_refs[i];
         symbol_ref_starts[i] = rr.start;
         symbol_ref_ends[i] = rr.end;
         // Names: store byte offset from buffer base and byte length.
         // These are byte offsets; the JS side converts to UTF-16 indices.
-        const name = sem.symbols.names.items[i];
-        const is_implicit = sem.symbols.flags.items[i].is_implicit_global;
+        const name = sy_names[i];
+        const is_implicit = sy_flags[i].is_implicit_global;
         if (is_implicit and name.len > 0) {
             // Implicit global names point into the external JS globals buffer, not the
             // source buffer.  Copy into the bump region so the JS offset math is valid.
@@ -483,15 +495,20 @@ pub fn writeSemanticData(
     const ref_scope_ids = try alloc.alloc(u32, ref_count);
     const ref_write_expr_ids = try alloc.alloc(u32, ref_count);
 
+    const rf_syms = sem.references.list.items(.symbol_id);
+    const rf_kinds = sem.references.list.items(.kind);
+    const rf_node_ids = sem.references.list.items(.node_id);
+    const rf_scope_ids = sem.references.list.items(.scope_id);
+    const rf_write_exprs = sem.references.list.items(.write_expr_id);
     for (0..ref_count) |i| {
-        const rsym = sem.references.symbol_ids.items[i];
+        const rsym = rf_syms[i];
         ref_symbol_ids[i] = if (rsym == .none) none32 else @intFromEnum(rsym);
-        ref_kinds[i] = @intFromEnum(sem.references.kinds.items[i]);
-        const rn = sem.references.node_ids.items[i];
+        ref_kinds[i] = @intFromEnum(rf_kinds[i]);
+        const rn = rf_node_ids[i];
         ref_node_ids[i] = if (rn == .none) none32 else @intFromEnum(rn);
-        const rsc = sem.references.scope_ids.items[i];
+        const rsc = rf_scope_ids[i];
         ref_scope_ids[i] = if (rsc == .none) none32 else @intFromEnum(rsc);
-        const rwe = sem.references.write_expr_ids.items[i];
+        const rwe = rf_write_exprs[i];
         ref_write_expr_ids[i] = if (rwe == .none) none32 else @intFromEnum(rwe);
     }
 
@@ -507,7 +524,7 @@ pub fn writeSemanticData(
     // record which scope ID each node "opens". Nodes without a scope entry
     // inherit from their parent node (via parent pointer data, done outside).
     for (0..scope_count) |i| {
-        const nid = sem.scopes.node_ids.items[i];
+        const nid = sc_node_ids[i];
         if (nid != .none) {
             const idx: u32 = @intFromEnum(nid);
             if (idx < node_count) {
@@ -568,17 +585,21 @@ pub fn writeSemanticData(
             @memset(self.scope_ref_counts, 0);
             @memset(self.scope_through_ref_counts, 0);
             var total_through: u32 = 0;
+            const rf_scopes = self.sem.references.list.items(.scope_id);
+            const rf_syms2 = self.sem.references.list.items(.symbol_id);
+            const sy_scopes = self.sem.symbols.list.items(.scope_id);
+            const sc_parents2 = self.sem.scopes.list.items(.parent);
             // FUSED count pass — chain walks for through-ref tally.
             for (0..rc) |i| {
-                const rsc = self.sem.references.scope_ids.items[i];
+                const rsc = rf_scopes[i];
                 const s = if (rsc == .none) none32_local else @intFromEnum(rsc);
                 if (s < sc) self.scope_ref_counts[s] += 1;
                 if (rsc == .none) continue;
-                const sym_id = self.sem.references.symbol_ids.items[i];
+                const sym_id = rf_syms2[i];
                 if (sym_id == .none) continue;
                 const sid: u32 = @intFromEnum(sym_id);
                 if (sid >= sym_c) continue;
-                const tsc = self.sem.symbols.scope_ids.items[sid];
+                const tsc = sy_scopes[sid];
                 const target_scope: u32 = if (tsc == .none) none32_local else @intFromEnum(tsc);
                 var x: u32 = @intFromEnum(rsc);
                 while (x != none32_local and x != target_scope) {
@@ -586,7 +607,7 @@ pub fn writeSemanticData(
                         self.scope_through_ref_counts[x] += 1;
                         total_through += 1;
                     }
-                    const p = self.sem.scopes.parents.items[x];
+                    const p = sc_parents2[x];
                     x = if (p == .none) none32_local else @intFromEnum(p);
                 }
             }
@@ -610,18 +631,18 @@ pub fn writeSemanticData(
             @memcpy(self.scope_ref_cursor, self.scope_ref_starts);
             @memcpy(self.scope_through_ref_cursor, self.scope_through_ref_starts);
             for (0..rc) |i| {
-                const rsc = self.sem.references.scope_ids.items[i];
+                const rsc = rf_scopes[i];
                 const s = if (rsc == .none) none32_local else @intFromEnum(rsc);
                 if (s < sc) {
                     self.scope_ref_ids[self.scope_ref_cursor[s]] = @intCast(i);
                     self.scope_ref_cursor[s] += 1;
                 }
                 if (rsc == .none) continue;
-                const sym_id = self.sem.references.symbol_ids.items[i];
+                const sym_id = rf_syms2[i];
                 if (sym_id == .none) continue;
                 const sid: u32 = @intFromEnum(sym_id);
                 if (sid >= sym_c) continue;
-                const tsc = self.sem.symbols.scope_ids.items[sid];
+                const tsc = sy_scopes[sid];
                 const target_scope: u32 = if (tsc == .none) none32_local else @intFromEnum(tsc);
                 var x: u32 = @intFromEnum(rsc);
                 while (x != none32_local and x != target_scope) {
@@ -629,7 +650,7 @@ pub fn writeSemanticData(
                         self.scope_through_ref_ids[self.scope_through_ref_cursor[x]] = @intCast(i);
                         self.scope_through_ref_cursor[x] += 1;
                     }
-                    const p = self.sem.scopes.parents.items[x];
+                    const p = sc_parents2[x];
                     x = if (p == .none) none32_local else @intFromEnum(p);
                 }
             }
@@ -682,7 +703,7 @@ pub fn writeSemanticData(
         }
         // Step 2: scatter sym indices into sorted order
         for (0..symbol_count) |i| {
-            const ssc = sem.symbols.scope_ids.items[i];
+            const ssc = sy_scope_ids[i];
             const s = if (ssc == .none) none32 else @intFromEnum(ssc);
             if (s < scope_count) {
                 scope_sym_ids[sym_cursor[s]] = @intCast(i);
@@ -698,7 +719,7 @@ pub fn writeSemanticData(
     @memset(scope_child_counts, 0);
     if (scope_count > 0) {
         for (0..scope_count) |i| {
-            const p = sem.scopes.parents.items[i];
+            const p = sc_parents[i];
             const pid = if (p == .none) none32 else @intFromEnum(p);
             if (pid < scope_count) {
                 scope_child_counts[pid] += 1;
@@ -720,7 +741,7 @@ pub fn writeSemanticData(
         const ccursor = try alloc.alloc(u32, scope_count);
         @memcpy(ccursor, scope_child_starts);
         for (0..scope_count) |i| {
-            const p = sem.scopes.parents.items[i];
+            const p = sc_parents[i];
             const pid = if (p == .none) none32 else @intFromEnum(p);
             if (pid < scope_count) {
                 scope_child_ids[ccursor[pid]] = @intCast(i);
