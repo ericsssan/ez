@@ -675,6 +675,24 @@ const _FN_TAGS = new Set([
 ]);
 const _CLASS_TAG_SET = new Set([T.class_decl, T.class_expr]);
 
+// Hosts of a synthetic TSTypeParameterDeclaration (`<T, U>`): generic
+// declarations whose `.typeParameters` getter materializes one. Hosts of a
+// synthetic TSTypeParameterInstantiation (`<number>`): nodes whose
+// `.typeArguments` getter materializes one. These synthetic wrappers aren't real
+// buffer nodes, so the DFS never visits them — the type-param synth dispatch
+// fires their visitors when the host node is walked (no-unnecessary-type-arguments
+// and any rule keyed on these node types).
+const _TPD_HOST_TAGS = new Set([
+  T.fn_decl, T.async_fn_decl, T.generator_fn_decl, T.async_generator_fn_decl,
+  T.fn_expr, T.async_fn_expr, T.generator_fn_expr, T.async_generator_fn_expr,
+  T.class_decl, T.class_expr, T.ts_interface_decl, T.ts_type_alias_decl,
+  T.ts_function_type, T.ts_constructor_type, T.ts_declare_function,
+  T.ts_call_signature, T.ts_construct_signature, T.ts_method_signature,
+]);
+const _TPI_HOST_TAGS = new Set([
+  T.call_expr, T.optional_call_expr, T.new_expr, T.ts_type_reference, T.ts_instantiation_expr,
+]);
+
 // ── Hot ast-utils helpers (buffer-direct) ────────────────────────────
 //
 // ESLint rules import `astUtils.isFunction(node)` etc. The vendored impls
@@ -7902,6 +7920,54 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const hasMethodFn  = visitorMap.has('FunctionExpression') || visitorMap.has('FunctionExpression:exit') ||
                        visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd') ||
                        hasSelectors;
+  // Synthetic type-param wrapper visits. Gated precisely on a registered visitor
+  // for these node types — they're rare, so the entire dispatch (and its per-node
+  // Set.has) is skipped for every other rule. Rules use direct visitor keys
+  // (`TSTypeParameterInstantiation(node)`); compound selectors targeting these are
+  // not modelled here.
+  const _tpdInterest = visitorMap.has('TSTypeParameterDeclaration') || visitorMap.has('TSTypeParameterDeclaration:exit');
+  const _tpiInterest = visitorMap.has('TSTypeParameterInstantiation') || visitorMap.has('TSTypeParameterInstantiation:exit');
+  const _hasTypeParamSynth = _tpdInterest || _tpiInterest;
+  // Fire the visitor(s) of a node's synthetic type-param wrapper(s). The wrapper
+  // borrows the host's node index; its `.parent` is the host (set by the getter).
+  function _fireTypeParamSynthVisitor(synthNode, hostIdx, hostNode, isExit, typeName) {
+    synthNode._ast = ast;
+    synthNode._i = hostIdx;
+    if (synthNode.parent == null) synthNode.parent = hostNode;
+    const key = isExit ? typeName + ':exit' : typeName;
+    if (visitorMap.has(key)) invokeHandlersWithNode(key, synthNode, hostIdx);
+    // Universal selectors (these synthetic types have no tag, so by-tag dispatch
+    // never reaches them — only the universal bucket can match).
+    const universal = isExit ? _universalExit : _universalEnter;
+    if (universal && universal.length > 0) {
+      const savedShNode = _shNode, savedShNodeIdx = _shNodeIdx, savedShAncestors = _shAncestors, savedShSynthParentIdx = _shSynthParentIdx;
+      _shNode = synthNode; _shNodeIdx = hostIdx; _shSynthParentIdx = hostIdx;
+      _shAncestors = [hostNode, ...getAncestorsFor(hostIdx)];
+      _runSelectorList(universal);
+      _shNode = savedShNode; _shNodeIdx = savedShNodeIdx; _shAncestors = savedShAncestors; _shSynthParentIdx = savedShSynthParentIdx;
+    }
+  }
+  function invokeTypeParamSynthHandlers(idx, isExit) {
+    const tag = nodeTags[idx];
+    let node = null;
+    if (_tpdInterest && _TPD_HOST_TAGS.has(tag)) {
+      node = nodeView(ast, idx);
+      const tpd = node.typeParameters;
+      if (tpd && tpd.type === 'TSTypeParameterDeclaration') {
+        _fireTypeParamSynthVisitor(tpd, idx, node, isExit, 'TSTypeParameterDeclaration');
+      }
+    }
+    if (_tpiInterest && _TPI_HOST_TAGS.has(tag)) {
+      if (node === null) node = nodeView(ast, idx);
+      const tpi = node.typeArguments;
+      // `.parent === node` dedups `f<T>()`: the call hoists the instantiation, so
+      // both the call_expr and the ts_instantiation_expr callee expose it, but its
+      // parent is the call — fire once, on the call (matching @typescript-eslint).
+      if (tpi && tpi.type === 'TSTypeParameterInstantiation' && tpi.parent === node) {
+        _fireTypeParamSynthVisitor(tpi, idx, node, isExit, 'TSTypeParameterInstantiation');
+      }
+    }
+  }
   // canSkip: true allows the DFS to skip nodes with no handlers or flags.
   // With selector type-filtering (FLAG_SELECTOR in tagFlags), we can skip even with selectors.
   // Set to true always; FLAG_SELECTOR handles selector-relevant tags.
@@ -8216,6 +8282,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (T.computed_member_expr < relevantTag.length)          relevantTag[T.computed_member_expr] = 1;
     if (T.call_expr < relevantTag.length)                     relevantTag[T.call_expr] = 1;
   }
+  // Type-param synth wrappers (TSTypeParameterDeclaration / TSTypeParameterInstantiation)
+  // are emitted on host nodes during enter/exit; mark the host buffer tags relevant so
+  // they survive subtree pruning and the synth dispatch can fire.
+  if (_tpdInterest) for (const _t of _TPD_HOST_TAGS) if (_t < relevantTag.length) relevantTag[_t] = 1;
+  if (_tpiInterest) for (const _t of _TPI_HOST_TAGS) if (_t < relevantTag.length) relevantTag[_t] = 1;
   // JSXOpeningFragment / JSXClosingFragment are synthetic — emitted during JSXFragment enter/exit.
   const jsxOpeningFragH  = visitorMap.get('JSXOpeningFragment') || null;
   const jsxOpeningFragExH = visitorMap.get('JSXOpeningFragment:exit') || null;
@@ -8606,6 +8677,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (baseWork || (tagEnterHandlers[_t] != null)) _enterMustProcess[_t] = 1;
     if (baseWork || (tagExitHandlers[_t]  != null)) _exitMustProcess[_t]  = 1;
   }
+  // A rule with only TSTypeParameterDeclaration/Instantiation visitors has no
+  // handler on the host buffer nodes — keep those nodes from being skipped so the
+  // type-param synth dispatch can fire their synthetic-wrapper visitors.
+  if (_tpdInterest) for (const _t of _TPD_HOST_TAGS) { _enterMustProcess[_t] = 1; _exitMustProcess[_t] = 1; }
+  if (_tpiInterest) for (const _t of _TPI_HOST_TAGS) { _enterMustProcess[_t] = 1; _exitMustProcess[_t] = 1; }
 
   // Pre-pass: assign synthetic parent to orphan ts_type_reference nodes
   // (pd[i] === NONE) BEFORE DFS. These are leftover speculative-parse nodes
@@ -8781,6 +8857,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, false);
+      if (_hasTypeParamSynth) invokeTypeParamSynthHandlers(idx, false);
       // TSLiteralType Literal synthesis is handled in a post-DFS CSR pass (see below).
       // Synthesize KEY Identifier visit for shorthand_property with default (`{ a = expr }`).
       // In Espree, `{ a = expr }` has Property.key = Identifier visited with parent=Property.
@@ -8894,6 +8971,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // exit nests inside the parent's exit. Without this ordering, rules that pair
       // FE-enter with FE-exit see the parent's exit interleaved.
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
+      if (_hasTypeParamSynth) invokeTypeParamSynthHandlers(idx, true);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
