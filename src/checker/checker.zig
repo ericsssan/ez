@@ -357,7 +357,7 @@ pub const Checker = struct {
                 const is_async = (md.modifiers & ast.ModifierBit.@"async") != 0;
                 const is_generator = (md.modifiers & ast.ModifierBit.generator) != 0;
                 break :blk self.buildFunctionType(
-                    md.params_start, md.params_end, md.return_type, .none, is_async, is_generator,
+                    md.params_start, md.params_end, md.return_type, md.body, is_async, is_generator,
                 );
             },
             .class_expr => tymod.ID_UNKNOWN,
