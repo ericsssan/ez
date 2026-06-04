@@ -155,6 +155,43 @@ function asyncIteratorProp() {
   return _asyncIterProp;
 }
 
+// prefer-includes resolves `a.indexOf`'s symbol, walks to its declarations'
+// parent type, and checks that type has an `includes` method with the SAME
+// parameters (compared by each parameter's getText()). We don't model lib.d.ts,
+// so for string/array-like receivers — which genuinely have matching indexOf /
+// includes — synthesize that method pair: both methods are function-like
+// (MethodSignature) and share one parameter array, so hasSameParameters trivially
+// holds, and indexOfDecl.parent resolves (getTypeAtLocation) to a host type whose
+// getProperty('includes') yields includesDecl.
+let _indexOfIncludesPair;
+function indexOfIncludesPair() {
+  if (_indexOfIncludesPair !== undefined) return _indexOfIncludesPair;
+  const ts = tsMod();
+  const methKind = ts ? ts.SyntaxKind.MethodSignature : 171;
+  const params = [{ getText: () => "searchElement" }, { getText: () => "fromIndex" }];
+  const typeDecl = { __ez_includesHost: true };
+  const indexOfDecl = { kind: methKind, parameters: params, parent: typeDecl };
+  const includesDecl = { kind: methKind, parameters: params, parent: typeDecl };
+  const includesSym = {
+    name: "includes", escapedName: "includes", getName: () => "includes",
+    getDeclarations: () => [includesDecl], valueDeclaration: includesDecl, getFlags: () => 0,
+  };
+  // ts.Type-shaped host: only getProperty('includes') matters to the rule.
+  const hostType = {
+    flags: 1048576, getFlags: () => 1048576, types: undefined, symbol: undefined,
+    getProperty: (n) => (n === "includes" ? includesSym : undefined),
+    getProperties: () => [includesSym], getCallSignatures: () => [], getConstructSignatures: () => [],
+    getBaseTypes: () => undefined, getApparentType() { return hostType; },
+  };
+  defineTypePredicates(hostType, 1048576);
+  const indexOfSym = {
+    name: "indexOf", escapedName: "indexOf", getName: () => "indexOf",
+    getDeclarations: () => [indexOfDecl], valueDeclaration: indexOfDecl, getFlags: () => 0,
+  };
+  _indexOfIncludesPair = { indexOfSym, hostType };
+  return _indexOfIncludesPair;
+}
+
 // ts.Type predicate methods (rules call type.isUnion() / isLiteral() / …).
 // Pure flag tests over the ts.TypeFlags bitmask.
 function defineTypePredicates(ty, flags) {
@@ -506,6 +543,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // getTypeAtLocation(symbol.valueDeclaration.parent)) → the identity-stable
     // base enum type for that enum name.
     if (node.__ez_enumBase != null) return baseEnumType(node.__ez_enumBase);
+    // Synthetic host of the indexOf declaration (prefer-includes' getTypeAtLocation
+    // (indexOfDecl.parent)) → the type whose getProperty('includes') resolves.
+    if (node.__ez_includesHost) return indexOfIncludesPair().hostType;
     // Synthetic constraint node from a type parameter's synthesized declaration
     // (getSymbol().getDeclarations()[0].constraint) — resolves straight to the
     // stored constraint type for getTypeName/getConstraintInfo's AST path.
@@ -884,6 +924,34 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // The `Promise<X>` base of an interface object_t (`interface A extends
   // Promise<any>`), or null. Such an interface is thenable with awaited type X —
   // discriminateAnyType uses this to flag returning it from an async function.
+  // Receivers that have matching `indexOf` + `includes` (prefer-includes):
+  // string, arrays/tuples, and the typed arrays. A nullable union (`string |
+  // undefined` from `a?: string`) qualifies when every non-nullish member does.
+  const TYPED_ARRAY_NAMES = new Set([
+    "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array",
+    "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
+  ]);
+  function includesCapableSingle(tid) {
+    const k = h.kind(tid);
+    return k === 7 /*string*/ || k === 13 /*string_literal*/ ||
+      k === 21 /*array*/ || k === 22 /*readonly_array*/ || k === 23 /*tuple*/ ||
+      (k === 24 /*type_ref*/ && TYPED_ARRAY_NAMES.has(h.refName(tid)));
+  }
+  function includesCapable(tid) {
+    if (includesCapableSingle(tid)) return true;
+    if (h.kind(tid) === 17 /*union*/) {
+      let any = false;
+      for (const id of h.members(tid)) {
+        const mk = h.kind(id);
+        if (mk === 3 /*null*/ || mk === 4 /*undefined*/) continue;
+        any = true;
+        if (!includesCapableSingle(id)) return false;
+      }
+      return any;
+    }
+    return false;
+  }
+
   function promiseBase(tid, depth) {
     if (tid == null) return null;
     // A named base (`type_ref` Foo) → its declared object_t, so we can read its
@@ -1231,6 +1299,19 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
           valueDeclaration: decl, getDeclarations() { return [decl]; } };
       }
       if (est._i == null) return undefined;
+      // The `indexOf` property of a string/array-like receiver → a symbol whose
+      // declarations live on a host type that also has a matching `includes`
+      // (prefer-includes). We don't model lib.d.ts; synthesize the pair only for
+      // receivers that genuinely have both (string/array/tuple), so we never
+      // over-report on a custom object that has indexOf but no includes.
+      if (est.type === "Identifier" && est.name === "indexOf" &&
+          est.parent && est.parent.type === "MemberExpression" &&
+          est.parent.property === est && !est.parent.computed) {
+        const ot = typeAt(est.parent.object);
+        if (ot && ot.__ez_typeId != null && includesCapable(ot.__ez_typeId)) {
+          return indexOfIncludesPair().indexOfSym;
+        }
+      }
       // A member access `obj.prop` → a symbol whose valueDeclaration.kind tells
       // unbound-method whether `prop` is a method (dangerous) or a field (safe).
       // The object type carries per-property is_method (propFlags bit 4).
