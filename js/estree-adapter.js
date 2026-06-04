@@ -4230,6 +4230,11 @@ const NodeProto = {
       else if (tag <= 6) type = 'Template';
       else if (tag === 7) type = 'RegularExpression';
       else if (tag === 8) type = 'Identifier';
+      // Contextual keywords ESLint tokenizes as Identifier (mirrors _tokType in
+      // eslint-runner.js): of(43) async(44) await(45) get(47) set(48) from(49)
+      // as(50) namespace(59) module(70).
+      else if (tag === 43 || tag === 44 || tag === 45 || tag === 47 || tag === 48 ||
+               tag === 49 || tag === 50 || tag === 59 || tag === 70) type = 'Identifier';
       else if (tag <= 71) type = 'Keyword';
       else type = 'Punctuator';
       // Compute loc

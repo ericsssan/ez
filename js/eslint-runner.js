@@ -870,8 +870,10 @@ function _findLine(ls, pos) {
  *   131  = eof                      → (not emitted)
  */
 // Contextual keywords that Espree/ESLint returns as "Identifier" (not "Keyword"):
-// async(44), of(43), from(49), as(50), get(47), set(48), await(45)
-const _CONTEXTUAL_KW_TAGS = new Set([43, 44, 45, 47, 48, 49, 50]);
+// async(44), of(43), from(49), as(50), get(47), set(48), await(45),
+// namespace(59), module(70) — typescript-estree tokenizes the latter two as
+// Identifier (prefer-namespace-keyword checks `token.type === 'Identifier'`).
+const _CONTEXTUAL_KW_TAGS = new Set([43, 44, 45, 47, 48, 49, 50, 59, 70]);
 function _tokType(tag) {
   if (tag <= 1) return 'Numeric';
   if (tag === 2) return 'String';
