@@ -4598,6 +4598,86 @@ pub const Checker = struct {
         return self.resolveDeclaredType(name);
     }
 
+    /// The declaration node of a named type or value (class/interface/alias/enum
+    /// via type_decl_nodes, or a function via value_decl_by_name).
+    fn declNodeForName(self: *Checker, name: []const u8) ?NodeIndex {
+        if (self.type_decl_nodes.get(name)) |d| return d;
+        if (self.value_decl_by_name.get(name)) |list| {
+            for (list.items) |ni| switch (self.ast_ref.nodeTag(ni)) {
+                .fn_decl, .async_fn_decl, .generator_fn_decl,
+                .async_generator_fn_decl, .ts_declare_function => return ni,
+                else => {},
+            };
+        }
+        return null;
+    }
+
+    /// `[type_params, type_params_end)` extra-data range for a generic declaration.
+    fn typeParamsRangeOf(self: *Checker, decl: NodeIndex) ?struct { start: u32, end: u32 } {
+        const data = self.ast_ref.nodeData(decl);
+        if (data.lhs == .none) return null;
+        const lhs = @intFromEnum(data.lhs);
+        return switch (self.ast_ref.nodeTag(decl)) {
+            .fn_decl, .async_fn_decl, .generator_fn_decl,
+            .async_generator_fn_decl, .ts_declare_function => blk: {
+                const d = self.ast_ref.extraData(ast.FnData, lhs);
+                break :blk .{ .start = d.type_params, .end = d.type_params_end };
+            },
+            .class_decl, .class_expr => blk: {
+                const d = self.ast_ref.extraData(ast.ClassData, lhs);
+                break :blk .{ .start = d.type_params, .end = d.type_params_end };
+            },
+            .ts_interface_decl => blk: {
+                const d = self.ast_ref.extraData(ast.InterfaceData, lhs);
+                break :blk .{ .start = d.type_params, .end = d.type_params_end };
+            },
+            .ts_type_alias_decl => blk: {
+                const d = self.ast_ref.extraData(ast.TypeAliasData, lhs);
+                break :blk .{ .start = d.type_params, .end = d.type_params_end };
+            },
+            else => null,
+        };
+    }
+
+    /// Resolved default type of the `index`-th type parameter of the declaration
+    /// named `name` (`<T = number>` → number), or null if absent / no default.
+    /// Backs no-unnecessary-type-arguments (`f<number>()` where `f<T = number>`).
+    /// True when `name` has more than one declaration (interface merging, or a
+    /// type + a separately-declared value like `interface Foo{} declare var Foo`).
+    /// no-unnecessary-type-arguments must pick the right one per type/value
+    /// context; we model a single decl, so stay conservative (skip) when merged.
+    fn isAmbiguousDecl(self: *Checker, name: []const u8) bool {
+        var nodes: [8]NodeIndex = undefined;
+        var n: usize = 0;
+        const add = struct {
+            fn f(arr: []NodeIndex, cnt: *usize, node: NodeIndex) void {
+                for (arr[0..cnt.*]) |x| if (x == node) return;
+                if (cnt.* < arr.len) {
+                    arr[cnt.*] = node;
+                    cnt.* += 1;
+                }
+            }
+        }.f;
+        if (self.type_decl_nodes.get(name)) |d| add(&nodes, &n, d);
+        if (self.value_decl_by_name.get(name)) |list| for (list.items) |ni| add(&nodes, &n, ni);
+        for (self.merged_iface_extra.items) |e| if (std.mem.eql(u8, e.name, name)) add(&nodes, &n, e.node);
+        return n > 1;
+    }
+
+    pub fn typeParamDefaultAtPub(self: *Checker, name: []const u8, index: u32) ?TypeId {
+        if (self.isAmbiguousDecl(name)) return null;
+        const decl = self.declNodeForName(name) orelse return null;
+        const range = self.typeParamsRangeOf(decl) orelse return null;
+        if (range.start >= range.end) return null;
+        if (index >= range.end - range.start) return null;
+        if (range.end > self.ast_ref.extra_data.len) return null;
+        const tp: NodeIndex = @enumFromInt(self.ast_ref.extra_data[range.start + index]);
+        if (self.ast_ref.nodeTag(tp) != .ts_type_parameter) return null;
+        const def = self.ast_ref.nodeData(tp).rhs;
+        if (def == .none) return null;
+        return self.resolveTypeNode(def);
+    }
+
     /// True when the TypeId reaches a class/interface named `name`
     /// through its declaration's `extends` chain.  Walks unions/
     /// intersections and follows declared parent classes via AST.

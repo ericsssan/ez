@@ -86,6 +86,7 @@ function binding() {
       ez_type_alias_name:     { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_enum_name:      { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_resolve_declared: { args: [H, FFIType.ptr, U], returns: U },
+      ez_type_param_default_at:  { args: [H, FFIType.ptr, U, U], returns: U },
       ez_type_tag_last:    { args: [U], returns: FFIType.void },
       ez_type_open_reuse:  { args: [U], returns: H },
     });
@@ -253,6 +254,12 @@ function _handleObj(b, h) {
     resolveDeclared(name) {
       const nb = Buffer.from(name, "utf8");
       const r = b.sym.ez_type_resolve_declared(h, b.ptr(nb), nb.length);
+      return r === NO_TYPE ? null : r;
+    },
+    // Default type of the index-th type param of the declaration named `name`, or null.
+    typeParamDefaultAt(name, index) {
+      const nb = Buffer.from(name, "utf8");
+      const r = b.sym.ez_type_param_default_at(h, b.ptr(nb), nb.length, index >>> 0);
       return r === NO_TYPE ? null : r;
     },
     close() { b.sym.ez_type_close(h); },

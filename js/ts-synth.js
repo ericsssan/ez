@@ -256,6 +256,13 @@ function _refineKind(ts, estNode) {
 function _makeTsNodeFactory(ts, cache, source) {
   function wrap(estNode) {
     if (estNode == null || typeof estNode !== "object" || !estNode.type) return undefined;
+    // TS has no distinct node for type arguments — they're a property of the
+    // call/typeref/new. typescript-eslint maps the synthetic ESTree
+    // TSTypeParameterInstantiation to its TS parent, so rules can ts.isCall/
+    // isTypeReference on the mapped node (no-unnecessary-type-arguments).
+    if (estNode.type === "TSTypeParameterInstantiation" && estNode.parent) {
+      return wrap(estNode.parent);
+    }
     let n = cache.get(estNode);
     if (n) return n;
     const refined = _refineKind(ts, estNode);

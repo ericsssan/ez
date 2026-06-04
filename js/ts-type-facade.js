@@ -546,6 +546,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // Synthetic host of the indexOf declaration (prefer-includes' getTypeAtLocation
     // (indexOfDecl.parent)) → the type whose getProperty('includes') resolves.
     if (node.__ez_includesHost) return indexOfIncludesPair().hostType;
+    // Synthetic type-parameter default node (no-unnecessary-type-arguments reads
+    // checker.getTypeAtLocation(param.default)) → the resolved default type.
+    if (node.__ez_defaultTypeId != null) return makeType(node.__ez_defaultTypeId);
     // Synthetic constraint node from a type parameter's synthesized declaration
     // (getSymbol().getDeclarations()[0].constraint) — resolves straight to the
     // stored constraint type for getTypeName/getConstraintInfo's AST path.
@@ -695,6 +698,57 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       __ez_predParam: h.sigPredicateParam(typeId, sigIdx),
       __ez_predTarget: h.sigPredicateTarget(typeId, sigIdx),
       __ez_asserts: (h.sigFlags(typeId, sigIdx) & 8) !== 0,
+    };
+  }
+
+  // no-unnecessary-type-arguments resolves the instantiated decl's type
+  // parameters and compares each arg to the param's default. We don't model real
+  // declaration nodes; synthesize a decl whose .typeParameters.at(i).default
+  // carries the i-th param's resolved default type (via FFI), keyed by name.
+  function synthGenericDecl(name) {
+    const ts = tsMod();
+    return {
+      // InterfaceDeclaration kind → ts.isInterfaceDeclaration(decl) is true, so the
+      // rule's `isTypeAliasDeclaration||isInterfaceDeclaration||isClassLike` branch
+      // returns these typeParameters (the kind doesn't otherwise matter here).
+      kind: ts ? ts.SyntaxKind.InterfaceDeclaration : 265,
+      typeParameters: {
+        at(i) {
+          const tid = h.typeParamDefaultAt(name, i >>> 0);
+          return {
+            kind: ts ? ts.SyntaxKind.TypeParameter : 169,
+            default: tid != null ? { __ez_defaultTypeId: tid } : undefined,
+          };
+        },
+      },
+    };
+  }
+  // True when the node sits inside a `declare module`/namespace block, where a
+  // type name can be re-declared (shadowed). We don't model module-scoped type
+  // resolution, so a shadowed instantiation would compare equal to the outer
+  // default and false-positive — skip the no-unnecessary-type-arguments check there.
+  function insideModuleBlock(est) {
+    let p = est && est.parent, guard = 0;
+    while (p && guard++ < 64) {
+      if (p.type === "TSModuleDeclaration" || p.type === "TSModuleBlock") return true;
+      p = p.parent;
+    }
+    return false;
+  }
+  // synthGenericDecl(name) gated on the name actually being generic-with-default.
+  function synthGenericDeclIfGeneric(name) {
+    if (!name || h.typeParamDefaultAt(name, 0) == null) return null;
+    return synthGenericDecl(name);
+  }
+  // A symbol whose getDeclarations() yields the synthetic generic decl for `name`,
+  // or null when `name` has no type-parameter default to compare against.
+  function genericDeclSymbol(name) {
+    if (!name) return null;
+    if (h.typeParamDefaultAt(name, 0) == null) return null; // not a generic-with-default
+    const decl = synthGenericDecl(name);
+    return {
+      name, escapedName: name, getName: () => name, getEscapedName: () => name,
+      getFlags: () => 0, getDeclarations: () => [decl], valueDeclaration: decl,
     };
   }
 
@@ -1247,14 +1301,15 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       }
       const sigs = ct && ct.getCallSignatures ? ct.getCallSignatures() : [];
       if (sigs.length) return sigs[0];
-      // Fallback: a permissive empty signature so callers that nullThrows on a
-      // missing resolved signature (no-unsafe-argument) don't crash. With no
-      // parameters, the rule finds nothing to check → FN, never FP.
+      // Fallback signature. getDeclaration() exposes the generic callee's type
+      // parameters (no-unnecessary-type-arguments' getTypeParametersFromCall);
+      // null elsewhere. With no params, no-unsafe-argument finds nothing → FN.
+      const gdecl = (callee && callee.type === "Identifier" && !insideModuleBlock(callee)) ? synthGenericDeclIfGeneric(callee.name) : null;
       return {
         getReturnType() { return syntheticType(2 /*Unknown*/); },
         getParameters() { return []; }, parameters: [], minArgumentCount: 0,
         getTypeParameters() { return undefined; }, typeParameters: undefined,
-        getDeclaration() { return undefined; }, declaration: undefined,
+        getDeclaration() { return gdecl; }, declaration: gdecl,
       };
     },
     // Type denoted by a TS type-annotation node. Resolved via the annotation's
@@ -1286,6 +1341,15 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     getSymbolAtLocation(node) {
       const est = node && (node._i != null ? node : node._estree);
       if (!est) return undefined;
+      // A type-reference name (`C` in `C<number>` / `extends C<number>`) whose
+      // declaration is generic-with-default → a symbol exposing that decl's type
+      // parameters, for no-unnecessary-type-arguments' getTypeParametersFromType.
+      if (est.type === "Identifier" && est.parent &&
+          (est.parent.type === "TSTypeReference" || est.parent.type === "TSInstantiationExpression") &&
+          !insideModuleBlock(est)) {
+        const gs = genericDeclSymbol(est.name);
+        if (gs) return gs;
+      }
       // An enum's name id → a symbol exposing the enum's own declaration so
       // no-mixed-enums can read its first member. A merged enum's first-decl walk
       // reduces to this single file (no FP). The enum id has no `_i` (token-based)

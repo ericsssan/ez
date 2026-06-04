@@ -620,6 +620,15 @@ pub export fn ez_type_resolve_declared(h: usize, name_ptr: [*]const u8, name_len
     return t.toInt();
 }
 
+// Resolved default type of the `index`-th type parameter of the declaration named
+// `name` (`<T = number>` -> number's TypeId), or NO_TYPE if absent/no default.
+// Backs no-unnecessary-type-arguments.
+pub export fn ez_type_param_default_at(h: usize, name_ptr: [*]const u8, name_len: u32, index: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    const t = ctx.checker.typeParamDefaultAtPub(name_ptr[0..name_len], index) orelse return NO_TYPE;
+    return t.toInt();
+}
+
 // The type-alias name a type was resolved from (`type Foo = …` → "Foo"),
 // independent of the structural name — facade ts.Type.aliasSymbol.
 pub export fn ez_type_alias_name(h: usize, type_id: u32, out: [*]u8, out_len: u32) callconv(.c) u32 {
