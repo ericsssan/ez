@@ -169,6 +169,12 @@ function ruleNameFromRuleId(ruleId) {
 // TS def type strings match @typescript-eslint/scope-manager DefinitionType values:
 // 'Type' for type aliases/interfaces, 'TSEnumName' for enums, 'TSModuleName' for namespaces
 const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName','FunctionName','ClassName','TypeParameter'];
+// Definition.isVariableDefinition / .isTypeDefinition, mirroring
+// @typescript-eslint/scope-manager's per-DefinitionType getters. A value binding
+// is a variable def (catch params included — only-throw-error's allowRethrowing
+// filters defs by isVariableDefinition); pure type-space bindings are type defs.
+const _VAR_DEF_TYPES = new Set(['Variable','Parameter','CatchClause','FunctionName','ClassName','ImportBinding','TSEnumName','TSModuleName','ImplicitGlobalVariable']);
+const _TYPE_DEF_TYPES = new Set(['ClassName','ImportBinding','TSEnumName','TSModuleName','Type','TypeParameter']);
 const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with','class-field-initializer',null/*elided*/,'function'/*arrow_function*/];
 let _tsServices = null;
 function tsServices() {
@@ -3526,7 +3532,8 @@ class SourceCode {
     }
 
     const defKind = (defType === 'Variable') ? (is_const ? 'const' : is_let ? 'let' : 'var') : undefined;
-    return [{ type: defType, kind: defKind, name: identNode, node: defNode, parent: defNode ? defNode.parent || null : null }];
+    return [{ type: defType, kind: defKind, name: identNode, node: defNode, parent: defNode ? defNode.parent || null : null,
+      isVariableDefinition: _VAR_DEF_TYPES.has(defType), isTypeDefinition: _TYPE_DEF_TYPES.has(defType) }];
   }
 
   /**
