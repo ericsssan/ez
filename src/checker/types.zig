@@ -556,6 +556,40 @@ pub const TypeStore = struct {
                 try addUnique(self.gpa, &buf, m);
             }
         }
+        // Literal absorption: a literal is subsumed by its broad primitive base
+        // when both appear in the union — TS collapses `'a' | string` to `string`
+        // (and `Str.A | string` to `string`). Required for no-unsafe-enum-
+        // comparison's `Enum | string` / `Enum | number` exemption (an enum whose
+        // members are absorbed by their base primitive is no longer an enum type).
+        {
+            var has_string = false;
+            var has_number = false;
+            var has_boolean = false;
+            var has_bigint = false;
+            for (buf.items) |m| {
+                if (m.eq(ID_STRING)) has_string = true
+                else if (m.eq(ID_NUMBER)) has_number = true
+                else if (m.eq(ID_BOOLEAN)) has_boolean = true
+                else if (m.eq(ID_BIGINT)) has_bigint = true;
+            }
+            if (has_string or has_number or has_boolean or has_bigint) {
+                var w: usize = 0;
+                for (buf.items) |m| {
+                    const drop = switch (self.get(m).kind) {
+                        .string_literal => has_string,
+                        .number_literal => has_number,
+                        .boolean_literal => has_boolean,
+                        .bigint_literal => has_bigint,
+                        else => false,
+                    };
+                    if (!drop) {
+                        buf.items[w] = m;
+                        w += 1;
+                    }
+                }
+                buf.shrinkRetainingCapacity(w);
+            }
+        }
         if (buf.items.len == 0) return ID_NEVER;
         if (buf.items.len == 1) return buf.items[0];
         // any-in-union collapses to any (TS semantics).

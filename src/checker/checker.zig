@@ -299,7 +299,20 @@ pub const Checker = struct {
             .void_expr => tymod.ID_UNDEFINED,
             .delete_expr => tymod.ID_BOOLEAN,
 
-            .unary_plus, .unary_minus, .bitwise_not,
+            // Fold `-<numeric literal>` / `+<numeric literal>` to a number
+            // literal so e.g. `-1` matches a `-1` literal type by identity
+            // (no-unsafe-enum-comparison's `Fruit | -1; x === -1` overlap check).
+            .unary_minus, .unary_plus => blk: {
+                const operand = self.ast_ref.nodeData(node).lhs;
+                if (operand == .none) break :blk tymod.ID_NUMBER;
+                const ot = self.typeOf(operand);
+                const lit = self.store.get(ot);
+                if (lit.kind != .number_literal) break :blk tymod.ID_NUMBER;
+                if (self.ast_ref.nodeTag(node) == .unary_plus) break :blk ot;
+                break :blk self.store.numberLiteral(-lit.literal_value.number) catch tymod.ID_NUMBER;
+            },
+
+            .bitwise_not,
             .bitwise_and, .bitwise_or, .bitwise_xor,
             .shift_left, .shift_right, .unsigned_shift_right,
             .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec => tymod.ID_NUMBER,
@@ -503,6 +516,27 @@ pub const Checker = struct {
         }
         const list = self.store.appendObjectProps(props_buf[0..n]) catch return null;
         return self.store.add(.{ .kind = .object_t, .object_props = list }) catch null;
+    }
+
+    /// Build the *type-side* of an enum — the union of its member literals (each
+    /// enum-tagged), which is what a value annotated `: Fruit` has. Matches tsc:
+    /// a single-member enum collapses to that one literal (unionOf), and a
+    /// `Fruit | string` wrapping union absorbs string members into `string`.
+    /// Backs no-unsafe-enum-comparison when the enum is a declared type rather
+    /// than a `Fruit.X` value access.
+    fn buildEnumUnionType(self: *Checker, enum_name: []const u8) ?TypeId {
+        const obj = self.buildEnumObjectType(enum_name) orelse return null;
+        const ot = self.store.get(obj);
+        if (ot.kind != .object_t) return null;
+        var members_buf: [64]TypeId = undefined;
+        var n: usize = 0;
+        for (self.store.propsOf(ot.object_props)) |p| {
+            if (n >= members_buf.len) break;
+            members_buf[n] = p.type_id; // already enum-tagged by buildEnumObjectType
+            n += 1;
+        }
+        if (n == 0) return null;
+        return self.store.unionOf(members_buf[0..n]) catch null;
     }
 
     /// Walk the AST looking for a top-level declarator/fn_decl/class_decl
@@ -4676,13 +4710,15 @@ pub const Checker = struct {
         const result = switch (self.ast_ref.nodeTag(decl)) {
             .ts_interface_decl => self.buildInterfaceType(decl),
             .class_decl => self.buildClassInstanceType(decl, name),
-            // NOTE: the enum *type-side* (a `: Fruit`-annotated value as the union
-            // of its members) is intentionally NOT modelled here. Doing so makes
-            // no-unsafe-enum-comparison's getEnumLiterals/getBaseEnumType path
-            // require faithful TS enum-union representation (atomic-vs-expanded),
-            // negative-literal folding for its overlap check, and the `| string`
-            // exemption — a multi-layer change with FP/crash risk. The value-side
-            // (`Fruit.X` access) is modelled and FP-safe; type-side is a follow-up.
+            // A value typed `: Fruit` has the union of the enum's member literals
+            // (the enum's type-side). unionOf collapses a single-member enum to
+            // its one literal and absorbs members into `string`/`number` in a
+            // wrapping union — matching tsc, which is what keeps
+            // no-unsafe-enum-comparison FP-safe on `Enum | string` etc.
+            .ts_enum_decl => self.buildEnumUnionType(name) orelse {
+                _ = self.declared_type_cache.remove(name);
+                return null;
+            },
             .ts_namespace_decl, .ts_module_decl => self.buildNamespaceType(decl),
             .ts_type_alias_decl => blk: {
                 // `type Foo = ...` — resolve the alias body. The sentinel
