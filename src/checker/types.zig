@@ -627,6 +627,16 @@ pub const TypeStore = struct {
                 try addUnique(self.gpa, &buf, m);
             }
         }
+        // `any` / `error` / `never` absorb within an intersection (TS: `any & T`
+        // = `any`, `never & T` = `never`; the error type behaves as `any`).
+        // Without this, `Enum1.A & string` (where the undefined `Enum1.A` is the
+        // error/any type) stays `[any, string]` and reads as string-like — a
+        // no-unnecessary-template-expression false positive.
+        for (buf.items) |m| if (self.get(m).kind == .never) return ID_NEVER;
+        for (buf.items) |m| {
+            const k = self.get(m).kind;
+            if (k == .any or k == .error_t) return m;
+        }
         // A literal subsumes its primitive within an intersection: `string & "x"`
         // is just `"x"`.  Drop the plain primitive when a literal of the same
         // family is present, so the truthy literal isn't masked by a (possibly
