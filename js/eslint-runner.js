@@ -2423,7 +2423,58 @@ class SourceCode {
     }
     if (nodeIdx === 0) return this._buildScope(0);
     const scopeId = nodeIdx >= 0 ? ast._scopeForNode(nodeIdx) : 0;
-    return this._buildScope(scopeId);
+    const built = this._buildScope(scopeId);
+    // @typescript-eslint/scope-manager creates a dedicated `tsEnum` scope for
+    // each TSEnumDeclaration, nested under the scope that holds the enum's
+    // (possibly merged) name binding. es-parser doesn't emit an enum scope, so
+    // getScope(enumNode) returns the parent scope directly — one level too
+    // shallow. Rules like no-mixed-enums read `scope.upper.set` to find earlier
+    // merged declarations, so synthesize the intermediate scope here.
+    if (nodeIdx >= 0 && node.type === 'TSEnumDeclaration') {
+      return this._buildTsEnumScope(nodeIdx, node, built);
+    }
+    return built;
+  }
+
+  // Synthetic `tsEnum` scope (see getScope). All backing arrays are
+  // pre-populated empty so the lazy _scopeProto getters short-circuit without
+  // touching the Zig scope CSR (this scope has no _scopeId). `upper` is the
+  // real scope that owns the enum name binding, which is what consumers read.
+  _buildTsEnumScope(nodeIdx, node, upper) {
+    // Cache per-AST: the runner instance is reused across parses, and nodeIdx
+    // values repeat between ASTs, so a Map keyed by nodeIdx alone would leak a
+    // stale scope (with an `upper` from a previous AST's module scope) into a
+    // later file. Reset whenever the backing AST changes.
+    if (!this._tsEnumScopeCache || this._tsEnumScopeCacheAst !== this._ast) {
+      this._tsEnumScopeCache = new Map();
+      this._tsEnumScopeCacheAst = this._ast;
+    }
+    const cached = this._tsEnumScopeCache.get(nodeIdx);
+    if (cached) return cached;
+    const scope = Object.create(_scopeProto);
+    scope.type = 'tsEnum';
+    scope.isStrict = upper ? upper.isStrict : true;
+    scope.block = node;
+    scope.upper = upper;
+    scope.implicit = { variables: [], left: [], leftToBeResolved: [] };
+    scope._sc = this;
+    scope._ast = this._ast;
+    scope._scopeId = NONE;
+    scope._kind = 10;
+    scope._vars = [];
+    scope._set = new Map();
+    scope._refs = [];
+    scope._through = [];
+    scope._throughResolved = [];
+    scope._throughUnresolved = [];
+    scope._children = [];
+    scope._thisFound = false;
+    scope._refsBuilding = false;
+    scope._fenScope = null;
+    scope._fenVarRef = null;
+    scope.variableScope = upper ? (upper.variableScope || upper) : scope;
+    this._tsEnumScopeCache.set(nodeIdx, scope);
+    return scope;
   }
 
   // Wrap a module-scope so that ReferenceTracker can find global variables.
