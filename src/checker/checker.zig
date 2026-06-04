@@ -5596,6 +5596,10 @@ pub const Checker = struct {
         // A statically-truthy LHS short-circuits to `a` (RHS unreachable); a
         // statically-falsy LHS evaluates to `b`.
         if (tag == .logical_or) {
+            // A constructor result (`new X()`) is always a fresh object → truthy,
+            // even when X's instance type is a named lib ref (Error/URL/…) that
+            // alwaysTruthy can't see through. `new Error() || 'x'` is `Error`.
+            if (self.ast_ref.nodeTag(data.lhs) == .new_expr) return a;
             if (self.alwaysTruthy(a)) return a;
             if (self.alwaysFalsy(a)) return b;
             const a_stripped = self.stripNullishUnion(a);
@@ -5664,6 +5668,9 @@ pub const Checker = struct {
                 .bigint => |v| !isZeroBigint(v),
                 else => false,
             },
+            // Object-like types have no falsy values — always truthy
+            // (`{a:1} || x` / `[1] || x` / `(()=>1) || x` are just the LHS).
+            .object_t, .object_keyword, .array_t, .readonly_array_t, .tuple_t, .function_t => true,
             else => false,
         };
     }
