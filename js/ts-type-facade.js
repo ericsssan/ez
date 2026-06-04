@@ -131,6 +131,30 @@ function memberValueDecls() {
   return _memberDecls;
 }
 
+// await-thenable's for-await check calls tsutils.getWellKnownSymbolPropertyOfType
+// (type, 'asyncIterator'): it scans getProperties() for a `__@asyncIterator…`
+// property whose valueDeclaration is a computed-name `[Symbol.asyncIterator]`,
+// and — when the `Symbol` global doesn't resolve to a unique-symbol type — matches
+// `escapedName === "__@asyncIterator"`. Synthesize exactly that shape so async
+// iterables/generators read as async-iterable. The owning types are matched by name.
+const ASYNC_ITERABLE_TYPE_NAMES = new Set(["AsyncIterable", "AsyncGenerator", "AsyncIterableIterator", "AsyncIterator"]);
+let _asyncIterProp;
+function asyncIteratorProp() {
+  if (_asyncIterProp !== undefined) return _asyncIterProp;
+  const ts = tsMod();
+  const nameExpr = { kind: ts ? ts.SyntaxKind.Identifier : 80, escapedText: "Symbol" };
+  const computedName = { kind: ts ? ts.SyntaxKind.ComputedPropertyName : 168, expression: nameExpr };
+  const decl = { kind: ts ? ts.SyntaxKind.PropertySignature : 171, name: computedName };
+  computedName.parent = decl;
+  nameExpr.parent = computedName;
+  _asyncIterProp = {
+    name: "__@asyncIterator", escapedName: "__@asyncIterator",
+    getName: () => "__@asyncIterator", getEscapedName: () => "__@asyncIterator",
+    getFlags: () => 0, getDeclarations: () => [decl], valueDeclaration: decl,
+  };
+  return _asyncIterProp;
+}
+
 // ts.Type predicate methods (rules call type.isUnion() / isLiteral() / …).
 // Pure flag tests over the ts.TypeFlags bitmask.
 function defineTypePredicates(ty, flags) {
@@ -403,6 +427,12 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
           const nm = h.propNameAt(typeId, i);
           if (!nm) continue;
           out.push(makeSymbol(nm, h.propTypeAt(typeId, i), h.propFlags(typeId, nm)));
+        }
+        // Async-iterable types (AsyncGenerator/AsyncIterable/…) expose a synthetic
+        // [Symbol.asyncIterator] member for await-thenable's for-await check.
+        if (typeId != null && h.kind(typeId) === 24 /*type_ref*/ &&
+            ASYNC_ITERABLE_TYPE_NAMES.has(h.refName(typeId))) {
+          out.push(asyncIteratorProp());
         }
         return out;
       },

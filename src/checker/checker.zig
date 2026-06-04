@@ -1688,12 +1688,18 @@ pub const Checker = struct {
     fn functionTypeFromFnDecl(self: *Checker, fn_node: NodeIndex) TypeId {
         const data = self.ast_ref.nodeData(fn_node);
         const fd = self.ast_ref.extraData(ast.FnData, @intFromEnum(data.lhs));
-        const is_async = switch (self.ast_ref.nodeTag(fn_node)) {
+        const fn_tag = self.ast_ref.nodeTag(fn_node);
+        const is_async = switch (fn_tag) {
             .async_fn_decl, .async_fn_expr, .async_generator_fn_decl,
             .async_generator_fn_expr => true,
             else => false,
         };
-        return self.buildFunctionType(fd.params, fd.params_end, fd.return_type, fd.body, is_async);
+        const is_generator = switch (fn_tag) {
+            .generator_fn_decl, .generator_fn_expr,
+            .async_generator_fn_decl, .async_generator_fn_expr => true,
+            else => false,
+        };
+        return self.buildFunctionType(fd.params, fd.params_end, fd.return_type, fd.body, is_async, is_generator);
     }
 
     /// Build a function_t from an arrow_fn / async_arrow_fn node.
@@ -1701,7 +1707,7 @@ pub const Checker = struct {
         const data = self.ast_ref.nodeData(arrow_node);
         const ad = self.ast_ref.extraData(ast.ArrowData, @intFromEnum(data.lhs));
         const is_async = self.ast_ref.nodeTag(arrow_node) == .async_arrow_fn;
-        return self.buildFunctionType(ad.params_start, ad.params_end, ad.return_type, ad.body, is_async);
+        return self.buildFunctionType(ad.params_start, ad.params_end, ad.return_type, ad.body, is_async, false);
     }
 
     fn buildFunctionType(
@@ -1711,8 +1717,9 @@ pub const Checker = struct {
         return_type_node: NodeIndex,
         body_for_inference: NodeIndex,
         is_async: bool,
+        is_generator: bool,
     ) TypeId {
-        const sig = self.buildSignatureRaw(params_start, params_end, return_type_node, body_for_inference, is_async) orelse return tymod.ID_UNKNOWN;
+        const sig = self.buildSignatureRaw(params_start, params_end, return_type_node, body_for_inference, is_async, is_generator) orelse return tymod.ID_UNKNOWN;
         return self.store.functionType(sig) catch tymod.ID_UNKNOWN;
     }
 
@@ -1726,6 +1733,7 @@ pub const Checker = struct {
         return_type_node: NodeIndex,
         body_for_inference: NodeIndex,
         is_async: bool,
+        is_generator: bool,
     ) ?tymod.Signature {
         // Resolve each param's type from its annotation.
         var param_buf: [16]tymod.TypeId = undefined;
@@ -1755,9 +1763,9 @@ pub const Checker = struct {
         var predicate_param_idx: u16 = 0xFFFF;
         var predicate_target: TypeId = TypeId.none;
         var is_assertion: bool = false;
-        if (return_type_node != .none and
-            self.ast_ref.nodeTag(return_type_node) == .ts_type_annotation)
-        {
+        const was_annotated = return_type_node != .none and
+            self.ast_ref.nodeTag(return_type_node) == .ts_type_annotation;
+        if (was_annotated) {
             const ty_inner = self.ast_ref.nodeData(return_type_node).lhs;
             // `name is X` type-predicate return — record the predicate
             // info AND treat the actual return type as boolean.
@@ -1803,10 +1811,22 @@ pub const Checker = struct {
                 ret_ty = self.inferBlockReturn(body_for_inference);
             }
         }
-        // Async functions return Promise<T> at the call site, even if
-        // the body's return type is `T`.  Wrap unless the user already
+        // A generator function returns Generator<…> (async: AsyncGenerator<…>)
+        // at the call site — what backs await-thenable's for-await `Symbol.
+        // asyncIterator` check. An explicit return annotation (e.g.
+        // `: AsyncIterableIterator<T>`) is trusted as-is; only body-inferred
+        // generators are wrapped. Generators are NOT additionally Promise-wrapped.
+        if (is_generator) {
+            if (!was_annotated) {
+                const gen_name: []const u8 = if (is_async) "AsyncGenerator" else "Generator";
+                const arg: TypeId = if (ret_ty.eq(tymod.ID_UNKNOWN)) tymod.ID_UNKNOWN else ret_ty;
+                ret_ty = self.store.typeRef(gen_name, &.{arg}) catch ret_ty;
+            }
+        }
+        // Async (non-generator) functions return Promise<T> at the call site,
+        // even if the body's return type is `T`.  Wrap unless the user already
         // annotated `: Promise<T>` (avoid double-wrapping).
-        if (is_async and !is_assertion and !ret_ty.eq(tymod.ID_UNKNOWN)) {
+        else if (is_async and !is_assertion and !ret_ty.eq(tymod.ID_UNKNOWN)) {
             const rt = self.store.get(ret_ty);
             const already_promise = rt.kind == .type_ref and std.mem.eql(u8, rt.name, "Promise");
             if (!already_promise) {
@@ -1856,7 +1876,11 @@ pub const Checker = struct {
                         .async_fn_decl, .async_generator_fn_decl => true,
                         else => false,
                     };
-                    const sig = self.buildSignatureRaw(fd.params, fd.params_end, fd.return_type, .none, is_async) orelse continue;
+                    const is_generator = switch (t) {
+                        .generator_fn_decl, .async_generator_fn_decl => true,
+                        else => false,
+                    };
+                    const sig = self.buildSignatureRaw(fd.params, fd.params_end, fd.return_type, .none, is_async, is_generator) orelse continue;
                     sig_buf[sig_count] = sig;
                     sig_count += 1;
                 },
@@ -2211,6 +2235,7 @@ pub const Checker = struct {
                     sig_data.params_end,
                     sig_data.return_type,
                     .none,
+                    false,
                     false,
                 );
                 props_buf[prop_count] = .{ .name = name, .type_id = fn_ty };
@@ -4970,7 +4995,7 @@ pub const Checker = struct {
                     const mdata = self.ast_ref.nodeData(member);
                     if (mdata.lhs == .none) continue;
                     const sd = self.ast_ref.extraData(ast.InterfaceSigData, @intFromEnum(mdata.lhs));
-                    if (self.buildSignatureRaw(sd.params_start, sd.params_end, sd.return_type, .none, false)) |raw_sig| {
+                    if (self.buildSignatureRaw(sd.params_start, sd.params_end, sd.return_type, .none, false, false)) |raw_sig| {
                         if (sig_n < sig_buf.len) {
                             var sig = raw_sig;
                             sig.is_construct = (mtag == .ts_construct_signature);
@@ -5003,7 +5028,7 @@ pub const Checker = struct {
                         const mdata = self.ast_ref.nodeData(member);
                         if (mdata.lhs == .none) continue;
                         const sd = self.ast_ref.extraData(ast.InterfaceSigData, @intFromEnum(mdata.lhs));
-                        if (self.buildSignatureRaw(sd.params_start, sd.params_end, sd.return_type, .none, false)) |raw_sig| {
+                        if (self.buildSignatureRaw(sd.params_start, sd.params_end, sd.return_type, .none, false, false)) |raw_sig| {
                             if (extra_sig_n < extra_sig_buf.len) {
                                 var sig = raw_sig;
                                 sig.is_construct = (mtag == .ts_construct_signature);
@@ -5177,6 +5202,7 @@ pub const Checker = struct {
                     sig_data.return_type,
                     .none,
                     false,
+                    false,
                 );
                 return .{ .name = name, .type_id = fn_ty };
             },
@@ -5305,12 +5331,14 @@ pub const Checker = struct {
                 const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.lhs));
                 const md = self.ast_ref.extraData(ast.MethodData, @intFromEnum(data.rhs));
                 const is_async = (md.modifiers & ast.ModifierBit.@"async") != 0;
+                const is_generator = (md.modifiers & ast.ModifierBit.generator) != 0;
                 const fn_ty = self.buildFunctionType(
                     md.params_start,
                     md.params_end,
                     md.return_type,
                     .none,
                     is_async,
+                    is_generator,
                 );
                 return .{
                     .name = name,
@@ -6467,12 +6495,14 @@ pub const Checker = struct {
                     const key_name = self.staticPropertyKey(pd.lhs) orelse continue;
                     const md = self.ast_ref.extraData(ast.MethodData, @intFromEnum(pd.rhs));
                     const is_async = (md.modifiers & ast.ModifierBit.@"async") != 0;
+                    const is_generator = (md.modifiers & ast.ModifierBit.generator) != 0;
                     const fn_ty = self.buildFunctionType(
                         md.params_start,
                         md.params_end,
                         md.return_type,
                         .none,
                         is_async,
+                        is_generator,
                     );
                     // `m(this: void, …)` is explicitly not a this-bound
                     // method — unbound-method should ignore it.
