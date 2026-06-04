@@ -6988,6 +6988,11 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
     }
 
     function _tryCompile(sh, isExit) {
+      // ChainExpression is JS-synthesized and has no Zig tag, so the FFI matcher
+      // can't see it as a selector target OR parent — keep these on the JS path
+      // (the chain synth dispatches them). _specTouchesSynthetic is tag-based and
+      // can't catch a tagless type, so gate on the selector string.
+      if (sh.selector && sh.selector.indexOf('ChainExpression') !== -1) return false;
       try {
         const spec = ffiSel.compiler.compileSelectorSpec(
           sh.parsedSelector, tagNameToIds, tagNames, sh.selector || "<unknown>"
@@ -7949,6 +7954,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       _shNode = savedShNode; _shNodeIdx = savedShNodeIdx; _shAncestors = savedShAncestors; _shSynthParentIdx = savedShSynthParentIdx;
     }
   }
+  // Dispatch universal selectors against a synthetic ChainExpression so
+  // `… > ChainExpression` selectors match. The chain node borrows the host
+  // (outermost-chain) buffer index; its ancestors are the host's (the synthetic
+  // ChainExpression isn't in the buffer, so its parent == the host's parent).
+  function fireChainSelectors(chainNode, hostIdx, isExit) {
+    const universal = isExit ? _universalExit : _universalEnter;
+    if (!universal || universal.length === 0) return;
+    const savedShNode = _shNode, savedShNodeIdx = _shNodeIdx, savedShAncestors = _shAncestors, savedShSynthParentIdx = _shSynthParentIdx;
+    // The synthetic ChainExpression's parent is the host's parent (the host is the
+    // chain's child), so use -1 → the matcher resolves pd[hostIdx]; ancestors are
+    // the host's (the chain isn't in the buffer between host and host.parent).
+    _shNode = chainNode; _shNodeIdx = hostIdx; _shSynthParentIdx = -1;
+    _shAncestors = getAncestorsFor(hostIdx);
+    _runSelectorList(universal);
+    _shNode = savedShNode; _shNodeIdx = savedShNodeIdx; _shAncestors = savedShAncestors; _shSynthParentIdx = savedShSynthParentIdx;
+  }
   function invokeTypeParamSynthHandlers(idx, isExit) {
     const tag = nodeTags[idx];
     let node = null;
@@ -8271,7 +8292,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // no-restricted-syntax can ban "ChainExpression" via a plain visitor key.
   const chainEnterH = visitorMap.get('ChainExpression') || null;
   const chainExitH  = visitorMap.get('ChainExpression:exit') || null;
-  const hasChainSynth = chainEnterH !== null || chainExitH !== null;
+  // Selectors targeting the synthetic ChainExpression (e.g.
+  // `TSNonNullExpression > ChainExpression`) live in the universal bucket (no
+  // tag). Detect them so the chain synth dispatches selectors too, not just
+  // direct ChainExpression visitors (no-non-null-asserted-optional-chain).
+  const _chainSelMatch = (sh) => sh && sh.selector && sh.selector.indexOf('ChainExpression') !== -1;
+  const _chainSelEnter = _universalEnter ? _universalEnter.some(_chainSelMatch) : false;
+  const _chainSelExit  = _universalExit  ? _universalExit.some(_chainSelMatch)  : false;
+  const hasChainSynth = chainEnterH !== null || chainExitH !== null || _chainSelEnter || _chainSelExit;
   if (hasChainSynth) {
     // Mark optional chain tags relevant so they're not pruned. Chain "middle" tags
     // (regular member/call) can also be the outermost ChainExpression when they wrap
@@ -8753,11 +8781,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // chain (e.g. `a?.b.c` — outer is a regular member_expr; the chain extends through it).
       // getChainExprIfOutermost returns null for non-chain nodes, so the regular tags pay
       // only an O(1) `_astHasOptionalChain` check on files without optional chains.
-      if (hasChainSynth && chainEnterH && (
+      if (hasChainSynth && (chainEnterH || _chainSelEnter) && (
           tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr ||
           tag === T.member_expr || tag === T.computed_member_expr || tag === T.call_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
-        if (_chainNode) _invokeFused(chainEnterH, _chainNode, idx, context);
+        if (_chainNode) {
+          if (chainEnterH) _invokeFused(chainEnterH, _chainNode, idx, context);
+          if (_chainSelEnter) fireChainSelectors(_chainNode, idx, false);
+        }
       }
       // Synthesize JSXOpeningElement enter on jsx_self_closing — pass the synth view
       // (type='JSXOpeningElement', selfClosing=true) so rules see the right type.
@@ -8979,11 +9010,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       // Synthesize ChainExpression:exit for outermost chain nodes (regular member/call
       // wrapping an optional chain qualifies — see enter-side comment for rationale).
-      if (hasChainSynth && chainExitH && (
+      if (hasChainSynth && (chainExitH || _chainSelExit) && (
           tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr ||
           tag === T.member_expr || tag === T.computed_member_expr || tag === T.call_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
-        if (_chainNode) _invokeFused(chainExitH, _chainNode, idx, context);
+        if (_chainNode) {
+          if (chainExitH) _invokeFused(chainExitH, _chainNode, idx, context);
+          if (_chainSelExit) fireChainSelectors(_chainNode, idx, true);
+        }
       }
       // Synthesize JSXOpeningElement:exit on jsx_self_closing — same synth view as enter.
       if (hasJsxSelfCloseSynth && jsxOpeningElemExH && tag === T.jsx_self_closing) {

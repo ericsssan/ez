@@ -4471,6 +4471,11 @@ function _isChainChild(ast, idx) {
   }
   if (parentIdx === NONE) return false;
   const pt = ast._nodeTags[parentIdx];
+  // A non-null assertion (`foo?.bar!`) is transparent to the optional chain — TS
+  // extends the chain through it. `foo?.bar` is a chain child (not the outermost)
+  // only when the `!` itself continues into more chain (`foo?.bar!.baz`); a
+  // terminal `!` (`foo?.bar!`) leaves `foo?.bar` as the outermost optional node.
+  if (pt === T.ts_non_null_expr) return _isChainChild(ast, parentIdx);
   if (!(_isOptionalTag(pt) || _isChainMiddleTag(pt))) return false;
   // Must be the LHS (object/callee), not the RHS (property/argument)
   return ast.nodeLhs(parentIdx) === idx;
@@ -4511,12 +4516,14 @@ function _isChainNode(ast, idx) {
   while (cur !== NONE) {
     const tag = ast._nodeTags[cur];
     if (_isOptionalTag(tag)) return true;
+    // The optional chain extends through a non-null assertion (`a?.b!.c`).
+    if (tag === T.ts_non_null_expr) { cur = ast.nodeLhs(cur); continue; }
     if (!_isChainMiddleTag(tag)) return false;
-    // Walk the lhs, unwrapping grouping_expr
-    let lhsIdx = ast.nodeLhs(cur);
-    while (lhsIdx !== NONE && ast._nodeTags[lhsIdx] === T.grouping_expr) {
-      lhsIdx = ast.nodeLhs(lhsIdx);
-    }
+    const lhsIdx = ast.nodeLhs(cur);
+    // A parenthesized operand CLOSES the optional chain: in `(a?.b).c`, `.c` is a
+    // regular member on the chain result, not a continuation — so it (and any `!`
+    // on it) is outside the ChainExpression.
+    if (lhsIdx !== NONE && ast._nodeTags[lhsIdx] === T.grouping_expr) return false;
     cur = lhsIdx;
   }
   return false;
