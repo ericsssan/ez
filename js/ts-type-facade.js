@@ -158,6 +158,35 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
 
   const typeCache = new Map(); // typeId → Type object
   const synthCache = new Map(); // flags → synthetic Type object (identity-stable)
+  // Identity-stable base enum type per enum name. no-unsafe-enum-comparison
+  // compares the base enum types of both sides by object identity (Set.has) to
+  // allow same-enum comparisons (`Fruit.Apple === Fruit.Banana`), so every
+  // member of `Fruit` must map to the SAME base object.
+  const baseEnumCache = new Map(); // enum name → base enum Type object
+  const enumBaseNodeCache = new Map(); // enum name → synthetic parent node
+  function enumBaseNode(name) {
+    let n = enumBaseNodeCache.get(name);
+    if (!n) { n = { __ez_enumBase: name }; enumBaseNodeCache.set(name, n); }
+    return n;
+  }
+  function baseEnumType(name) {
+    let t = baseEnumCache.get(name);
+    if (!t) {
+      // Minimal ts.Type-shaped object: only its identity matters to the rule,
+      // but give it the Enum flag + a named symbol for completeness.
+      t = {
+        flags: 65536 /*ts.TypeFlags.Enum*/, getFlags() { return 65536; },
+        __ez_baseEnumName: name, types: undefined, symbol: undefined,
+        getSymbol() { return { name, escapedName: name, getName: () => name, getFlags: () => 384 /*RegularEnum*/, getDeclarations: () => undefined }; },
+        getProperty() { return undefined; }, getProperties() { return []; },
+        getCallSignatures() { return []; }, getConstructSignatures() { return []; },
+        getBaseTypes() { return undefined; }, getApparentType() { return t; },
+      };
+      defineTypePredicates(t, 65536);
+      baseEnumCache.set(name, t);
+    }
+    return t;
+  }
 
   // A base type is stored as a `type_ref` (just a name). Resolve it to the
   // base's declared object_t (which carries ITS own bases) so a multi-level
@@ -175,7 +204,12 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     if (typeId == null) return undefined;
     const cached = typeCache.get(typeId);
     if (cached !== undefined) return cached;
-    const flags = h.flags(typeId);
+    const baseFlags = h.flags(typeId);
+    // An enum member literal (`Fruit.Apple`) OR-s in ts.TypeFlags.EnumLiteral
+    // (32768) on top of its NumberLiteral/StringLiteral flag — what
+    // getEnumLiterals / getEnumValueType (no-unsafe-enum-comparison) test.
+    const enumNm = h.enumName(typeId);
+    const flags = enumNm ? (baseFlags | 32768) : baseFlags;
     const ty = {
       // ts.Type shape — `flags` is the field, `getFlags()` the method; rules
       // use both, and `isTypeFlagSet` reads `flags` directly.
@@ -210,6 +244,18 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       },
       getSymbol() {
         if (typeId == null) return undefined;
+        // An enum member literal: its symbol carries SymbolFlags.EnumMember (8)
+        // and a valueDeclaration whose `.parent` resolves (via getTypeAtLocation)
+        // to the identity-stable base enum type — getBaseEnumType's path.
+        if (enumNm) {
+          const ts = tsMod();
+          const parentNode = enumBaseNode(enumNm);
+          const decl = { kind: ts ? ts.SyntaxKind.EnumMember : 307, parent: parentNode };
+          return {
+            name: "", escapedName: "", getName: () => "", getEscapedName: () => "",
+            flags: 8, getFlags: () => 8, getDeclarations: () => [decl], valueDeclaration: decl,
+          };
+        }
         const k = h.kind(typeId);
         if (k === 24 /*type_ref*/) {
           const nm = h.refName(typeId);
@@ -409,6 +455,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // checker.getTypeAtLocation(esTreeNodeToTSNodeMap.get(estNode)).
   function typeAt(node) {
     if (!node) return makeType(undefined);
+    // Synthetic enum-member parent node (getBaseEnumType's
+    // getTypeAtLocation(symbol.valueDeclaration.parent)) → the identity-stable
+    // base enum type for that enum name.
+    if (node.__ez_enumBase != null) return baseEnumType(node.__ez_enumBase);
     // Synthetic constraint node from a type parameter's synthesized declaration
     // (getSymbol().getDeclarations()[0].constraint) — resolves straight to the
     // stored constraint type for getTypeName/getConstraintInfo's AST path.

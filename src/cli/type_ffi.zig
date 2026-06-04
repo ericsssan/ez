@@ -597,6 +597,18 @@ pub export fn ez_type_ref_name(h: usize, type_id: u32, out: [*]u8, out_len: u32)
     return @intCast(n);
 }
 
+/// The enum name this literal is a member of (`Fruit.Apple` → "Fruit"), or
+/// length 0 when the type is not an enum member. Backs the facade's
+/// EnumLiteral flag + EnumMember symbol synthesis (no-unsafe-enum-comparison).
+pub export fn ez_type_enum_name(h: usize, type_id: u32, out: [*]u8, out_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    if (type_id >= ctx.checker.store.types.items.len) return 0;
+    const name = ctx.checker.store.types.items[type_id].enum_name;
+    const n = @min(name.len, out_len);
+    @memcpy(out[0..n], name[0..n]);
+    return @intCast(n);
+}
+
 // Resolve a declared type NAME (user interface/class/alias/enum) to its TypeId,
 // or 0xFFFFFFFF if not declared in-file. Lets the facade replace a base
 // `type_ref` with the base's structural object_t (with ITS bases) so

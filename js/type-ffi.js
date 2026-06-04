@@ -84,6 +84,7 @@ function binding() {
       ez_type_name_eq:        { args: [H, U, FFIType.ptr, U], returns: FFIType.u8 },
       ez_type_ref_name:       { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_alias_name:     { args: [H, U, FFIType.ptr, U], returns: U },
+      ez_type_enum_name:      { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_resolve_declared: { args: [H, FFIType.ptr, U], returns: U },
       ez_type_tag_last:    { args: [U], returns: FFIType.void },
       ez_type_open_reuse:  { args: [U], returns: H },
@@ -239,6 +240,12 @@ function _handleObj(b, h) {
     aliasName(typeId) {
       const buf = Buffer.allocUnsafe(64);
       const n = b.sym.ez_type_alias_name(h, typeId >>> 0, b.ptr(buf), buf.length);
+      return n > 0 ? buf.toString("utf8", 0, n) : "";
+    },
+    // The enum name a literal is a member of (`Fruit.Apple` → "Fruit"), or "".
+    enumName(typeId) {
+      const buf = Buffer.allocUnsafe(64);
+      const n = b.sym.ez_type_enum_name(h, typeId >>> 0, b.ptr(buf), buf.length);
       return n > 0 ? buf.toString("utf8", 0, n) : "";
     },
     // Resolve a declared type name → its TypeId (user interface/class/alias), or

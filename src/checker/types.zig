@@ -150,6 +150,12 @@ pub const Type = struct {
     /// ts.Type.aliasSymbol. Part of interning identity (see hash/eql) so an
     /// alias-tagged type stays distinct from its bare structural form.
     alias_name: []const u8 = "",
+    /// When non-empty, this literal is an enum *member* of the named enum
+    /// (`Fruit.Apple` → enum_name = "Fruit"). Surfaced to the facade so it
+    /// can OR-in ts.TypeFlags.EnumLiteral and synthesize an EnumMember symbol
+    /// for no-unsafe-enum-comparison. Part of interning identity so an enum
+    /// member's `0` stays distinct from a plain literal `0`.
+    enum_name: []const u8 = "",
 };
 
 pub const LiteralValue = union(enum) {
@@ -273,6 +279,7 @@ pub const InternContext = struct {
         }
         h.update(t.name);
         h.update(t.alias_name);
+        h.update(t.enum_name);
         for (self.store.idsOf(t.list_data)) |c| {
             const v = c.toInt();
             h.update(std.mem.asBytes(&v));
@@ -313,6 +320,7 @@ pub const InternContext = struct {
         if (!literalEql(ta.literal_value, tb.literal_value)) return false;
         if (!std.mem.eql(u8, ta.name, tb.name)) return false;
         if (!std.mem.eql(u8, ta.alias_name, tb.alias_name)) return false;
+        if (!std.mem.eql(u8, ta.enum_name, tb.enum_name)) return false;
         const la = self.store.idsOf(ta.list_data);
         const lb = self.store.idsOf(tb.list_data);
         if (la.len != lb.len) return false;
@@ -507,6 +515,16 @@ pub const TypeStore = struct {
             .kind = .number_literal,
             .literal_value = .{ .number = value },
         });
+    }
+
+    /// Re-add `lit` (a string/number literal) tagged as a member of enum
+    /// `enum_name`, so the facade can surface ts.TypeFlags.EnumLiteral and an
+    /// EnumMember symbol. The enum tag is part of interning identity, so the
+    /// enum member stays distinct from the bare literal of the same value.
+    pub fn enumMemberLiteral(self: *TypeStore, lit: TypeId, enum_name: []const u8) !TypeId {
+        var t = self.get(lit).*;
+        t.enum_name = enum_name;
+        return try self.add(t);
     }
 
     pub fn bigintLiteral(self: *TypeStore, value: []const u8) !TypeId {

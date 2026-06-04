@@ -490,7 +490,15 @@ pub const Checker = struct {
                 auto_idx += 1;
                 break :blk lit;
             };
-            props_buf[n] = .{ .name = member_name, .type_id = value_ty };
+            // Tag string/number-literal members as enum members so the facade
+            // surfaces ts.TypeFlags.EnumLiteral + an EnumMember symbol
+            // (no-unsafe-enum-comparison). Broad number/string members (no
+            // statically-known value) stay untagged.
+            const member_ty: TypeId = switch (self.store.get(value_ty).kind) {
+                .number_literal, .string_literal => self.store.enumMemberLiteral(value_ty, enum_name) catch value_ty,
+                else => value_ty,
+            };
+            props_buf[n] = .{ .name = member_name, .type_id = member_ty };
             n += 1;
         }
         const list = self.store.appendObjectProps(props_buf[0..n]) catch return null;
