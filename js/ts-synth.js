@@ -296,7 +296,7 @@ const _tsNodeProto = {
     const t = e.type;
     if (t === "CallExpression" || t === "NewExpression") return this._wrap(e.callee);
     if (t === "MemberExpression") return this._wrap(e.object);
-    if (t === "AwaitExpression") return this._wrap(e.argument);
+    if (t === "AwaitExpression" || t === "SpreadElement") return this._wrap(e.argument);
     return this._wrap(e.expression);
   },
   get left() {
