@@ -350,6 +350,18 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       // Named property → a synthetic ts.Symbol carrying the property type, or
       // undefined if absent. getProperty('length')/'toString'/the accessed member.
       getProperty(name) {
+        // An intersection (`A & B`) has a property if ANY constituent does —
+        // e.g. `Promise<number> & number` is thenable via its Promise part, so
+        // getProperty('then') must find it. Delegate to the members.
+        if (typeId != null && h.kind(typeId) === 18 /*intersection_t*/) {
+          for (const id of h.members(typeId)) {
+            if (id === typeId) continue;
+            const sub = makeType(id);
+            const s = sub && sub.getProperty ? sub.getProperty(name) : undefined;
+            if (s !== undefined) return s;
+          }
+          return undefined;
+        }
         const pid = h.propType(typeId, name);
         // An object type's toString/toLocaleString/valueOf: inherited from
         // interface Object when not declared (=> base-to-string reportable), or
@@ -842,10 +854,22 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   // The `Promise<X>` base of an interface object_t (`interface A extends
   // Promise<any>`), or null. Such an interface is thenable with awaited type X —
   // discriminateAnyType uses this to flag returning it from an async function.
-  function promiseBase(tid) {
+  function promiseBase(tid, depth) {
+    if (tid == null) return null;
+    // A named base (`type_ref` Foo) → its declared object_t, so we can read its
+    // own bases (`class Bar extends Foo` where `Foo extends Promise`).
+    if (h.kind(tid) === 24 /*type_ref*/) tid = resolveBaseId(tid);
     if (tid == null || h.kind(tid) !== 19 /*object_t*/) return null;
+    if ((depth || 0) > 8) return null;
     const n = h.baseCount(tid);
-    for (let i = 0; i < n; i++) { const b = h.baseAt(tid, i); if (b != null && h.nameEq(b, "Promise")) return b; }
+    for (let i = 0; i < n; i++) {
+      const b = h.baseAt(tid, i);
+      if (b == null) continue;
+      if (h.nameEq(b, "Promise")) return b;
+      // Walk transitively through the base chain.
+      const deeper = promiseBase(b, (depth || 0) + 1);
+      if (deeper != null) return deeper;
+    }
     return null;
   }
   // ts.TypeFlags: literal → its base primitive.
