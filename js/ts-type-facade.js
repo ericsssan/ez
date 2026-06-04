@@ -13,10 +13,16 @@
 
 const tf = require("./type-ffi");
 
+// The one source file we model — `program.getSourceFile(filename)` returns this
+// sentinel, and every locally-declared symbol's valueDeclaration.getSourceFile()
+// returns the same object, so unbound-method's isNotImported (currentSourceFile
+// !== valueDeclaration.getSourceFile()) reads local declarations as same-file.
+const CURRENT_SOURCE_FILE = Object.freeze({ __ez_current: true, fileName: "" });
+
 // Minimal synthetic ts.Declaration for param symbols (ts-api-utils reads
 // valueDeclaration.dotDotDotToken unguarded; kind 0 = Unknown so ts.isParameter
 // is false, dotDotDotToken undefined = not a rest parameter).
-const EMPTY_DECL = Object.freeze({ kind: 0, dotDotDotToken: undefined });
+const EMPTY_DECL = Object.freeze({ kind: 0, dotDotDotToken: undefined, getSourceFile() { return CURRENT_SOURCE_FILE; } });
 
 // ESTree TS *type* nodes (type position, not value): when getTypeAtLocation is
 // called on one (e.g. the asserted type in `x as T`) it must resolve as a TYPE
@@ -99,6 +105,30 @@ function objMethodDecls() {
   });
   _objMethodDecls = { onObject: mk("Object"), userDefined: mk("__ez_user__") };
   return _objMethodDecls;
+}
+
+// unbound-method reads getSymbolAtLocation(memberExpr).valueDeclaration.kind to
+// classify the accessed member: a MethodDeclaration/MethodSignature is unbound-
+// dangerous (unless it declares `this: void`), while a PropertyDeclaration (a
+// field — even one holding an arrow function) is safe. The checker tags every
+// object property with is_method (propFlags bit 4); synthesize the minimal
+// declaration shape checkIfMethod/checkMethod read: kind + empty `parameters`
+// (no first `this` param) + no modifiers (not static) + no initializer.
+let _memberDecls;
+function memberValueDecls() {
+  if (_memberDecls !== undefined) return _memberDecls;
+  const ts = tsMod();
+  const methodKind = ts ? ts.SyntaxKind.MethodDeclaration : 174;
+  const propKind = ts ? ts.SyntaxKind.PropertyDeclaration : 172;
+  const mk = (kind) => Object.freeze({
+    kind,
+    parameters: Object.freeze([]),
+    modifiers: undefined,
+    initializer: undefined,
+    getSourceFile() { return CURRENT_SOURCE_FILE; },
+  });
+  _memberDecls = { method: mk(methodKind), property: mk(propKind) };
+  return _memberDecls;
 }
 
 // ts.Type predicate methods (rules call type.isUnion() / isLiteral() / …).
@@ -297,7 +327,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
           if (name === "then" && typeId != null && (h.nameEq(typeId, "Promise") || promiseBase(typeId) != null)) return SYNTH_THEN_SYM;
           return undefined;
         }
-        return makeSymbol(name, pid, h.propFlags(typeId, name));
+        // Carry method-vs-field in the symbol's valueDeclaration so unbound-method
+        // classifies destructured/queried members (`const { m } = obj`) too.
+        return makeMemberSymbol(name, pid, h.propFlags(typeId, name), typeId);
       },
       // Enumerate all properties (name + type) — no-unsafe-assignment's
       // object-destructure walk builds a name→type map from getProperties().
@@ -526,6 +558,24 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       __ez_predParam: h.sigPredicateParam(typeId, sigIdx),
       __ez_predTarget: h.sigPredicateTarget(typeId, sigIdx),
       __ez_asserts: (h.sigFlags(typeId, sigIdx) & 8) !== 0,
+    };
+  }
+
+  // ts.Symbol for an accessed object member, carrying a valueDeclaration whose
+  // kind reflects method-vs-field (unbound-method's checkIfMethod). `objTypeId`
+  // is the owning object type — a natively-bound builtin (Math/JSON/console)
+  // demotes its methods to fields so extracting them isn't flagged.
+  function makeMemberSymbol(name, pid, pflags, objTypeId) {
+    const decls = memberValueDecls();
+    const isMethod = (pflags & 4) !== 0 && !(objTypeId != null && h.isNativelyBoundType(objTypeId));
+    const decl = isMethod ? decls.method : decls.property;
+    return {
+      name, escapedName: name,
+      getName() { return name; }, getEscapedName() { return name; },
+      getDeclarations() { return [decl]; }, getFlags() { return 0; },
+      valueDeclaration: decl,
+      __ez_type: pid != null ? pid : null,
+      __ez_propFlags: pflags & 15,
     };
   }
 
@@ -1072,6 +1122,19 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
           valueDeclaration: decl, getDeclarations() { return [decl]; } };
       }
       if (est._i == null) return undefined;
+      // A member access `obj.prop` → a symbol whose valueDeclaration.kind tells
+      // unbound-method whether `prop` is a method (dangerous) or a field (safe).
+      // The object type carries per-property is_method (propFlags bit 4).
+      if (est.type === "MemberExpression" && !est.computed && est.property && est.property.name) {
+        const ot = typeAt(est.object);
+        if (ot && ot.__ez_typeId != null) {
+          const pf = h.propFlags(ot.__ez_typeId, est.property.name);
+          if (pf != null && pf >= 0) {
+            const pid = h.propType(ot.__ez_typeId, est.property.name);
+            return makeMemberSymbol(est.property.name, pid, pf, ot.__ez_typeId);
+          }
+        }
+      }
       const t = typeAt(est);
       if (!t || t.__ez_typeId == null) return undefined;
       const name = est.name || (est.id && est.id.name) || "";
@@ -1086,6 +1149,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // lets those rules proceed; absent flags default falsy, matching "not set".
     getCompilerOptions() { return {}; },
     getSourceFiles() { return []; },
+    // unbound-method calls program.getSourceFile(context.filename) in create();
+    // we model a single current file (see CURRENT_SOURCE_FILE) so its
+    // isNotImported check has a stable same-file reference.
+    getSourceFile() { return CURRENT_SOURCE_FILE; },
     // no-floating-promises reads program.getCurrentDirectory() to build a
     // module resolution host; we don't model the filesystem — empty cwd is inert.
     getCurrentDirectory() { return ""; },

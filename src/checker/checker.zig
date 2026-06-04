@@ -3483,6 +3483,7 @@ pub const Checker = struct {
         }
         const console_ty = try h.objType(&console_props);
         try self.global_value_types.put(self.gpa, "console", console_ty);
+        try self.natively_bound_type_ids.put(self.gpa, console_ty, {});
 
         // Math — selection of common methods returning number.
         const num_fn = try h.fnType(tymod.ID_NUMBER);
@@ -3573,9 +3574,12 @@ pub const Checker = struct {
         // hallucinate types we haven't modelled.
         try self.global_value_types.put(self.gpa, "process", tymod.ID_ANY);
         try self.global_value_types.put(self.gpa, "globalThis", tymod.ID_ANY);
-        // Window — minimal shape with the methods unbound-method cares
-        // about (alert / prompt / confirm).  Methods bind `this` to the
-        // Window object, so destructuring them off `window` is unsafe.
+        // Window — minimal shape with alert / prompt / confirm.  On the global
+        // `window`, these resolve to the ambient bound functions (lib.dom's
+        // `declare function alert`), so extracting them off `window` is *not*
+        // unbound-unsafe — typescript-eslint's unbound-method treats
+        // `const { alert } = window` / `window.blur` as valid.  Hence window is
+        // registered natively-bound (its members demote to safe fields).
         const window_alert_fn = try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_VOID);
         const window_props = [_]tymod.ObjectProp{
             .{ .name = "alert", .type_id = window_alert_fn, .is_method = true },
@@ -3584,6 +3588,7 @@ pub const Checker = struct {
         };
         const window_ty = try h.objType(&window_props);
         try self.global_value_types.put(self.gpa, "window", window_ty);
+        try self.natively_bound_type_ids.put(self.gpa, window_ty, {});
         try self.global_value_types.put(self.gpa, "document", tymod.ID_ANY);
         try self.global_value_types.put(self.gpa, "self", tymod.ID_ANY);
     }

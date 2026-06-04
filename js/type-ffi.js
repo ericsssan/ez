@@ -77,6 +77,7 @@ function binding() {
       ez_type_prop_flags_by_name: { args: [H, U, FFIType.ptr, U], returns: U },
       ez_type_prop_name_at:       { args: [H, U, U, FFIType.ptr, U], returns: U },
       ez_type_prop_type_at:       { args: [H, U, U], returns: U },
+      ez_type_is_natively_bound:  { args: [H, U], returns: U },
       // Type arguments + name (type refs like Promise<T>).
       ez_type_type_arg_count: { args: [H, U], returns: U },
       ez_type_type_arg:       { args: [H, U, U], returns: U },
@@ -210,6 +211,11 @@ function _handleObj(b, h) {
     propTypeAt(typeId, idx) {
       const r = b.sym.ez_type_prop_type_at(h, typeId >>> 0, idx >>> 0);
       return r === NO_TYPE ? null : r;
+    },
+    // True when typeId is a natively-bound builtin global (Math/JSON/console)
+    // whose methods are safe to extract unbound (unbound-method exemption).
+    isNativelyBoundType(typeId) {
+      return b.sym.ez_type_is_natively_bound(h, typeId >>> 0) === 1;
     },
     // Type arguments (type refs like Promise<T>, arrays, tuples).
     typeArgCount(typeId) { return b.sym.ez_type_type_arg_count(h, typeId >>> 0); },

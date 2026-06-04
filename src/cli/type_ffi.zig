@@ -443,6 +443,14 @@ pub export fn ez_type_prop_flags_by_name(h: usize, type_id: u32, name_ptr: [*]co
     return f;
 }
 
+/// 1 when `type_id` is a natively-bound builtin global object (Math, JSON,
+/// console) whose methods are safe to extract unbound — backs unbound-method's
+/// isNativelyBound type-level check. 0 otherwise.
+pub export fn ez_type_is_natively_bound(h: usize, type_id: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return 0;
+    return if (ctx.checker.natively_bound_type_ids.contains(tymod.TypeId.fromInt(type_id))) 1 else 0;
+}
+
 /// Name of the `idx`-th property copied into `out` (truncated to out_len),
 /// returning its byte length. Backs the facade's getProperties() enumeration
 /// (no-unsafe-assignment's object-destructure walk reads every property name).
