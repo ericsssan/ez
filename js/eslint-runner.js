@@ -752,8 +752,21 @@ for (const t of [T.while_stmt, T.do_while_stmt, T.for_stmt, T.for_in_stmt, T.for
  */
 function _findDefNode(declNode, defType) {
   if (!declNode) return null;
-  // For TypeDefinition (TS type alias/interface/enum), the declaration IS the def node.
-  if (defType === 'Type' || defType === 'TSEnumName' || defType === 'TypeParameter') return declNode;
+  // For TypeDefinition (TS type alias/interface/enum), the declaration IS the def
+  // node (not the name Identifier) — matching @typescript-eslint/scope-manager.
+  // consistent-indexed-object-style's circular check (isDeeplyReferencingType)
+  // walks the interface/alias body from def.node, so it must be the declaration.
+  if (defType === 'Type') {
+    if (declNode.type === 'Identifier') {
+      let c = declNode.parent;
+      while (c) {
+        if (c.type === 'TSInterfaceDeclaration' || c.type === 'TSTypeAliasDeclaration') return c;
+        c = c.parent;
+      }
+    }
+    return declNode;
+  }
+  if (defType === 'TSEnumName' || defType === 'TypeParameter') return declNode;
   if (defType === 'TSModuleName') {
     let c = declNode.parent;
     while (c) {
