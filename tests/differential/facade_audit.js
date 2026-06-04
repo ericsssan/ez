@@ -82,7 +82,10 @@ function runCase(ruleName, c) {
   try {
     ast = parseSource(c.code, { filename: c.filename || `t${c.ext || ".ts"}`, lang, sourceType: c.sourceType || "module" });
   } catch (e) { return { crash: true, reason: "parse:" + (e.message || e) }; }
-  const p = { meta: { name: fullName, messages: rule.meta && rule.meta.messages, schema: rule.meta && rule.meta.schema }, create: rule.create };
+  // Preserve defaultOptions so extendsBaseRule rules (whose inner ESLint-core
+  // rule reads context.options directly and relies on ESLint v9 applying
+  // meta.defaultOptions) get the same options the production path supplies.
+  const p = { meta: { name: fullName, messages: rule.meta && rule.meta.messages, schema: rule.meta && rule.meta.schema, defaultOptions: rule.meta && rule.meta.defaultOptions }, create: rule.create };
   let reports;
   try {
     reports = runPlugins(ast, [p], {
