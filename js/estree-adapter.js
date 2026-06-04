@@ -3438,6 +3438,18 @@ const NodeProto = {
   },
 
   /**
+   * node.definite — true when a VariableDeclarator has a definite assignment
+   * assertion (`let x!: string`). Detected by checking if the token immediately
+   * after the declarator's main token (the binding identifier) is `!` (bang, tag 97).
+   */
+  get definite() {
+    if (this._tag !== T.declarator) return undefined;
+    const ast = this._ast;
+    const mt = ast._mainTokens[this._i];
+    return mt + 1 < ast.tokenCount && ast._tokTags[mt + 1] === 97 /* bang */;
+  },
+
+  /**
    * node.update — update expression in ForStatement.
    */
   get update() {
