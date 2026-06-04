@@ -231,7 +231,19 @@ function _makeLightParserServices(sourceCode) {
   const base = {
     __ez_light__: true,
     esTreeNodeToTSNodeMap: map || new WeakMap(),
-    tsNodeToESTreeNodeMap: new WeakMap(),
+    // Synth TS nodes all carry ._estree pointing back to the originating ESTree
+    // node. Rules that reverse-lookup a synth TS node (e.g. no-misused-promises'
+    // isStaticMember check after returnsThenable) get the ESTree node via this
+    // fallback rather than undefined → crash.
+    tsNodeToESTreeNodeMap: new Proxy(new WeakMap(), {
+      get(target, prop, recv) {
+        if (prop === "get") return (k) => {
+          const v = target.get(k);
+          return v !== undefined ? v : (k && k._estree);
+        };
+        return Reflect.get(target, prop, recv);
+      },
+    }),
     emitDecoratorMetadata: false,
     experimentalDecorators: false,
     // Services-level type access used by rules / getConstrainedTypeAtLocation.

@@ -348,6 +348,18 @@ pub const Checker = struct {
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
                 => self.functionTypeFromFnDecl(node),
             .arrow_fn, .async_arrow_fn => self.functionTypeFromArrow(node),
+            // Object-literal method shorthands (`{ async f() {} }`).
+            // The facade calls typeOf(method_def) when the synthetic FunctionExpression
+            // has no _i; this gives returnsThenable the correct function_t.
+            .method_def, .computed_method_def => blk: {
+                const d = self.ast_ref.nodeData(node);
+                const md = self.ast_ref.extraData(ast.MethodData, @intFromEnum(d.rhs));
+                const is_async = (md.modifiers & ast.ModifierBit.@"async") != 0;
+                const is_generator = (md.modifiers & ast.ModifierBit.generator) != 0;
+                break :blk self.buildFunctionType(
+                    md.params_start, md.params_end, md.return_type, .none, is_async, is_generator,
+                );
+            },
             .class_expr => tymod.ID_UNKNOWN,
             else => tymod.ID_UNKNOWN,
         };

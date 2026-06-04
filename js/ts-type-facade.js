@@ -574,6 +574,13 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         const rt = h.resolveTypeNode(rta._i);
         if (rt != null && h.kind(rt) !== 1) return makeType(rt);
       }
+      // Synthetic FunctionExpression for an object-literal method shorthand.
+      // The real Zig node is the parent Property/MethodDefinition (method_def).
+      // inferExpr now handles method_def, so fall through to the parent's type.
+      if (est.parent && est.parent._i != null) {
+        const pt = h.typeOfNode(est.parent._i);
+        if (pt != null && h.kind(pt) !== 1 /*unknown*/) return makeType(pt);
+      }
       return makeType(undefined);
     }
     // A template-literal type (`\`${string}\``) isn't modelled by the checker.
