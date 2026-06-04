@@ -1182,6 +1182,17 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
           if (sym && sym.__ez_type != null) return makeType(sym.__ez_type);
         }
       }
+      // Return value inside a function with a declared return type → that return type.
+      // Mirrors contextualOfObject's ReturnStatement path for non-object return values
+      // (e.g. `function f(): () => void { return async () => 0; }`).
+      if (p && p.type === "ReturnStatement") {
+        let fn = p.parent, guard = 0;
+        while (fn && guard++ < 20 &&
+               !(fn.type === "FunctionDeclaration" || fn.type === "FunctionExpression" || fn.type === "ArrowFunctionExpression")) {
+          fn = fn.parent;
+        }
+        if (fn && fn.returnType) return typeAt(fn.returnType.typeAnnotation || fn.returnType);
+      }
       const prop = p && p.type === "Property" ? p
         : est.type === "Property" ? est : null;
       if (!prop || !prop.parent || prop.parent.type !== "ObjectExpression") return undefined;
