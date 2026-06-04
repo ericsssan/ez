@@ -3626,6 +3626,9 @@ pub const Checker = struct {
         try self.global_value_types.put(self.gpa, "String", try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_STRING));
         // Boolean — global constructor returning boolean.
         try self.global_value_types.put(self.gpa, "Boolean", try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_BOOLEAN));
+        // BigInt — global function returning bigint (`BigInt(1) + 1n` is bigint+
+        // bigint, valid for restrict-plus-operands).
+        try self.global_value_types.put(self.gpa, "BigInt", try h.fnTypeWithParams(&.{tymod.ID_ANY}, tymod.ID_BIGINT));
         // parseInt / parseFloat / isNaN / isFinite — global functions.
         try self.global_value_types.put(self.gpa, "parseInt", try h.fnTypeWithParams(&.{tymod.ID_STRING}, tymod.ID_NUMBER));
         try self.global_value_types.put(self.gpa, "parseFloat", try h.fnTypeWithParams(&.{tymod.ID_STRING}, tymod.ID_NUMBER));
