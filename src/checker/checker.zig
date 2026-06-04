@@ -4676,6 +4676,13 @@ pub const Checker = struct {
         const result = switch (self.ast_ref.nodeTag(decl)) {
             .ts_interface_decl => self.buildInterfaceType(decl),
             .class_decl => self.buildClassInstanceType(decl, name),
+            // NOTE: the enum *type-side* (a `: Fruit`-annotated value as the union
+            // of its members) is intentionally NOT modelled here. Doing so makes
+            // no-unsafe-enum-comparison's getEnumLiterals/getBaseEnumType path
+            // require faithful TS enum-union representation (atomic-vs-expanded),
+            // negative-literal folding for its overlap check, and the `| string`
+            // exemption — a multi-layer change with FP/crash risk. The value-side
+            // (`Fruit.X` access) is modelled and FP-safe; type-side is a follow-up.
             .ts_namespace_decl, .ts_module_decl => self.buildNamespaceType(decl),
             .ts_type_alias_decl => blk: {
                 // `type Foo = ...` — resolve the alias body. The sentinel

@@ -205,11 +205,16 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     const cached = typeCache.get(typeId);
     if (cached !== undefined) return cached;
     const baseFlags = h.flags(typeId);
-    // An enum member literal (`Fruit.Apple`) OR-s in ts.TypeFlags.EnumLiteral
+    // An enum member *literal* (`Fruit.Apple`) OR-s in ts.TypeFlags.EnumLiteral
     // (32768) on top of its NumberLiteral/StringLiteral flag — what
-    // getEnumLiterals / getEnumValueType (no-unsafe-enum-comparison) test.
+    // getEnumLiterals / getEnumValueType (no-unsafe-enum-comparison) test. The
+    // enum *type* (a `: Fruit`-annotated value) is a union_t also tagged with
+    // enum_name, but it must stay a plain Union constituent (NOT EnumLiteral) so
+    // that nested in a larger union (`Fruit | string`) it's filtered out of
+    // getEnumLiterals — only its members expand. So gate the flag to literal kinds.
     const enumNm = h.enumName(typeId);
-    const flags = enumNm ? (baseFlags | 32768) : baseFlags;
+    const isEnumMemberLit = enumNm !== "" && (h.kind(typeId) === 13 /*string_literal*/ || h.kind(typeId) === 14 /*number_literal*/);
+    const flags = isEnumMemberLit ? (baseFlags | 32768) : baseFlags;
     const ty = {
       // ts.Type shape — `flags` is the field, `getFlags()` the method; rules
       // use both, and `isTypeFlagSet` reads `flags` directly.
@@ -247,7 +252,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         // An enum member literal: its symbol carries SymbolFlags.EnumMember (8)
         // and a valueDeclaration whose `.parent` resolves (via getTypeAtLocation)
         // to the identity-stable base enum type — getBaseEnumType's path.
-        if (enumNm) {
+        if (isEnumMemberLit) {
           const ts = tsMod();
           const parentNode = enumBaseNode(enumNm);
           const decl = { kind: ts ? ts.SyntaxKind.EnumMember : 307, parent: parentNode };
