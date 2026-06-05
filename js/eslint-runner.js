@@ -8850,7 +8850,15 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // pseudo-class selectors are evaluated before direct-type dispatches for the same node.
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, false);
       if (handlers) {
-        _invokeFused(handlers, nodeView(ast, idx), idx, context);
+        const _node = nodeView(ast, idx);
+        // TSImportEqualsDeclaration: cache importKind as own-enumerable property so
+        // rules that spread the node (e.g. no-restricted-imports' synthesizedImport)
+        // preserve the 'type'/'value' value — prototype getters vanish on spread.
+        if (_hasTsImportEqualsRemap && tag === _importDeclTagNum &&
+            ast.nodeLhs(idx) === NONE && !Object.hasOwn(_node, 'importKind')) {
+          Object.defineProperty(_node, 'importKind', { value: _node.importKind, enumerable: true, configurable: true });
+        }
+        _invokeFused(handlers, _node, idx, context);
       }
       // Phase 3 (after_enter): fires after enter handler, before visiting children.
       // Used for SwitchCase segment starts so rules can set state in SwitchCase handler first.
