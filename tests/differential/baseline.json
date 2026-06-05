@@ -22628,9 +22628,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 11374,
-    "runnerCasesPerSec": 7933,
-    "nativeCasesPerSec": 65890,
+    "totalElapsedMs": 11677,
+    "runnerCasesPerSec": 7686,
+    "nativeCasesPerSec": 64556,
     "totalCases": 70585
   }
 }

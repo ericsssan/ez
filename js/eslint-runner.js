@@ -78,6 +78,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/explicit-member-accessibility",         // 32/32, 100% (decorator order + argEnd fix)
   "@typescript-eslint/no-use-before-define",                  // 60/62, 97% (PARTIAL: 2 FN on complex scope gaps)
   "@typescript-eslint/no-shadow",                             // 43/48, 90% (PARTIAL: FEN/class scope upper fix)
+  "@typescript-eslint/no-implied-eval",                       // 22/22, 100% (import binding scope check prevents conservative FP)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
@@ -264,7 +265,46 @@ function _makeLightParserServices(sourceCode) {
     // open the facade unconditionally.
     getTypeAtLocation(node) {
       const f = openFacade();
-      return f ? f.getTypeAtLocation(node) : undefined;
+      const t = f ? f.getTypeAtLocation(node) : undefined;
+      // If the type has no symbol and the node is an Identifier, rules that
+      // conservatively report when symbol===null (e.g. no-implied-eval) may FP
+      // on imported bindings that shadow global names (import { Function } …).
+      // Check the scope: if this name is bound to an ImportBinding in the current
+      // scope chain, return a "user-defined" type with a non-null non-builtin symbol
+      // so isBuiltinSymbolLike returns false and the conservative else branch skips.
+      if (t && node && node.type === 'Identifier' && !t.getSymbol?.()) {
+        const sm = sourceCode.scopeManager;
+        if (sm) {
+          let scope = sm.globalScope;
+          // Find the innermost scope and look up the variable
+          // Use scope chain from the scopes array; find scope containing the node
+          const nodeStart = node.range && node.range[0];
+          if (nodeStart != null) {
+            for (let si = sm.scopes.length - 1; si >= 0; si--) {
+              const s = sm.scopes[si];
+              const b = s.block && s.block.range;
+              if (b && b[0] <= nodeStart && nodeStart < b[1]) { scope = s; break; }
+            }
+          }
+          // Walk up scope chain looking for a non-global binding of this name
+          let s = scope;
+          while (s) {
+            const v = s.set && s.set.get(node.name);
+            if (v) {
+              const d = v.defs.at(0);
+              if (d && d.type === 'ImportBinding') {
+                // Imported binding — return a user-defined (non-builtin) placeholder
+                // so `type.getSymbol()` is non-null and isBuiltinSymbolLike = false.
+                return { flags: 0, getFlags: () => 0, getSymbol: () => ({ name: node.name, escapedName: node.name, flags: 0, getFlags: () => 0, getDeclarations: () => [{ getSourceFile: () => ({ __ez_lib: false, fileName: '' }) }], getName: () => node.name, getEscapedName: () => node.name }), getBaseTypes: () => undefined, getProperty: () => undefined, getProperties: () => [], isUnion: () => false, isIntersection: () => false, isTypeParameter: () => false, types: undefined };
+              }
+              break; // found a non-global binding (var/let/param/etc.) — not an import, stop
+            }
+            if (s.type === 'global') break;
+            s = s.upper;
+          }
+        }
+      }
+      return t;
     },
     // Type of a TS type-annotation node, e.g. a function's return-type
     // annotation (no-confusing-void-expression).
