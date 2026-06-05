@@ -76,6 +76,8 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/await-thenable",                        // 16/42, 0 FP (PARTIAL: FN on thenable resolution gaps)
   "@typescript-eslint/no-namespace",                          // 32/32, 100% (declare global synthetic TSModuleDeclaration parent)
   "@typescript-eslint/explicit-member-accessibility",         // 32/32, 100% (decorator order + argEnd fix)
+  "@typescript-eslint/no-use-before-define",                  // 60/62, 97% (PARTIAL: 2 FN on complex scope gaps)
+  "@typescript-eslint/no-shadow",                             // 43/48, 90% (PARTIAL: FEN/class scope upper fix)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
@@ -2729,6 +2731,16 @@ class SourceCode {
     // Cache BEFORE wiring the FEN wrapper — breaks parent↔child cycle.
     this._scopeCache[scopeId] = scope;
 
+    // Class-expression scope: if upper is a function-body block (Zig emits a block scope
+    // for function bodies), skip it so isOnInitializer sees the function scope directly.
+    // Same root cause as the FEN fix below — `var A = class A {}` inside an IIFE.
+    if (kind === 4 && scope.upper && scope.upper.type === 'block' && scope.upper.block) {
+      const _cbp = scope.upper.block.parent;
+      if (_cbp && (_cbp.type === 'FunctionExpression' || _cbp.type === 'FunctionDeclaration' || _cbp.type === 'ArrowFunctionExpression')) {
+        scope.upper = scope.upper.upper || scope.upper;
+      }
+    }
+
     // Named FunctionExpression: create a virtual function-expression-name scope
     // that sits between this function body scope and its outer scope. eslint-scope
     // puts the function-expression name in this intermediate scope so no-shadow can
@@ -2739,7 +2751,20 @@ class SourceCode {
       fenScope.functionExpressionScope = true;
       fenScope.isStrict = isStrict;
       fenScope.block = block;
-      fenScope.upper = upper; // original upper of the body scope
+      // FEN.upper must point to the scope containing the outer variable binding so
+      // that isOnInitializer (in @typescript-eslint/no-shadow) can detect that
+      // `var x = function x() {}` does not shadow itself. When Zig emits a block
+      // scope for the function body (e.g. IIFE body), `upper` is that block scope
+      // rather than the enclosing function scope. Skip it: function-body blocks
+      // have upper.block.parent.type === FunctionExpression/FunctionDeclaration.
+      let _fenUpper = upper;
+      if (_fenUpper && _fenUpper.type === 'block' && _fenUpper.block) {
+        const _bp = _fenUpper.block.parent;
+        if (_bp && (_bp.type === 'FunctionExpression' || _bp.type === 'FunctionDeclaration' || _bp.type === 'ArrowFunctionExpression')) {
+          _fenUpper = _fenUpper.upper;
+        }
+      }
+      fenScope.upper = _fenUpper || upper;
       fenScope.implicit = { variables: [], left: [], leftToBeResolved: [] };
       fenScope.variableScope = upper ? (upper.variableScope || upper) : scope;
       fenScope._sc = this;

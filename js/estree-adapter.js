@@ -1650,7 +1650,6 @@ const NodeProto = {
       v = this.rhsNode();
     } else if (t === T.property || t === T.computed_property || t === T.shorthand_property) {
       // Property (key: value) — rhs is the value expression.
-      // For shorthand properties ({ a }), value === key (same Identifier node).
       const rhs = ast.nodeRhs(this._i);
       if (rhs !== NONE) {
         v = nodeView(ast, rhs);
