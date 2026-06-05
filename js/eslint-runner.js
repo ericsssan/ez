@@ -7653,6 +7653,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (_methodDefTagSet[ptag] && prevP !== ast.nodeLhs(p)) {
         _ancestorsBuf[k++] = pNode.value; // synthetic FunctionExpression
       }
+      // TSInterfaceDeclaration: inject a synthetic TSInterfaceBody so selectors
+      // like `TSInterfaceBody > TSConstructSignatureDeclaration` match correctly.
+      // TSInterfaceBody is synthetic (no real Zig node), so it's invisible in pd.
+      if (_tsInterfaceDeclTagNum >= 0 && ptag === _tsInterfaceDeclTagNum) {
+        const _ifBody = pNode.body;
+        if (_ifBody) {
+          if (!_ifBody.parent) _ifBody.parent = pNode;
+          _ancestorsBuf[k++] = _ifBody;
+        }
+      }
       _ancestorsBuf[k++] = pNode;
       prevP = p;
       p = _resolvedPD[p];
