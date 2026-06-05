@@ -8612,6 +8612,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const _tsImportEqualsEnterH = _importDeclTagNum >= 0 ? (visitorMap.get('TSImportEqualsDeclaration') || null) : null;
   const _tsImportEqualsExitH  = _importDeclTagNum >= 0 ? (visitorMap.get('TSImportEqualsDeclaration:exit') || null) : null;
   const _hasTsImportEqualsRemap = _importDeclTagNum >= 0 && (_tsImportEqualsEnterH || _tsImportEqualsExitH);
+  // TSExternalModuleReference: synthetic child of TSImportEqualsDeclaration (moduleReference getter).
+  // The require() call_expr rhs is not a real Zig child, so the DFS never visits it.
+  // Synthesize enter/exit around the TSImportEqualsDeclaration visit.
+  const _tsExtModRefEnterH = _importDeclTagNum >= 0 ? (visitorMap.get('TSExternalModuleReference') || null) : null;
+  const _tsExtModRefExitH  = _importDeclTagNum >= 0 ? (visitorMap.get('TSExternalModuleReference:exit') || null) : null;
+  const _hasTsExtModRefSynth = _importDeclTagNum >= 0 && (_tsExtModRefEnterH || _tsExtModRefExitH);
 
   // TS keyword type remap: TSTypeReference may resolve to TSAnyKeyword etc. at runtime.
   // Build maps from keyword type name → handlers so _resolveHandlers can dispatch correctly.
@@ -8642,7 +8648,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (_methodDefTagBits[_t]) _remapNeededArr[_t] = 1;
     }
   }
-  if (_hasTsImportEqualsRemap && _importDeclTagNum >= 0) _remapNeededArr[_importDeclTagNum] = 1;
+  if ((_hasTsImportEqualsRemap || _hasTsExtModRefSynth) && _importDeclTagNum >= 0) _remapNeededArr[_importDeclTagNum] = 1;
   if (_hasTsKwRemap && _tsTypeRefTagNum >= 0) _remapNeededArr[_tsTypeRefTagNum] = 1;
 
   // TSLiteralType → synthetic Literal child events.
@@ -8881,6 +8887,23 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           _invokeFused(_tsInterfaceBodyEnterH, _ifaceBody, idx, context);
         }
       }
+      // Synthesize TSExternalModuleReference enter for TSImportEqualsDeclaration nodes.
+      // `import X = require('...')` rhs is a synthetic node (moduleReference getter),
+      // never visited by DFS; fire it immediately after TSImportEqualsDeclaration enter.
+      if (_hasTsExtModRefSynth && _importDeclTagNum >= 0 && tag === _importDeclTagNum &&
+          ast.nodeLhs(idx) === NONE) {
+        const _rhsIdx = ast.nodeRhs(idx);
+        // Only `import X = require(...)` uses TSExternalModuleReference; qualified-name
+        // imports (`import X = A.B`) use a plain Identifier/TSQualifiedName.
+        if (_rhsIdx !== NONE && nodeTags[_rhsIdx] === T.call_expr && _tsExtModRefEnterH) {
+          const _ieqNode = nodeView(ast, idx);
+          const _extRef = _ieqNode.moduleReference;
+          if (_extRef) {
+            if (!_extRef.parent) _extRef.parent = _ieqNode;
+            _invokeFused(_tsExtModRefEnterH, _extRef, idx, context);
+          }
+        }
+      }
       // Synthesize TSModuleBlock enter for block_stmt nodes whose parent is a module/namespace decl.
       // ESLint ASTs expose declare module bodies as TSModuleBlock, not BlockStatement.
       if (_hasTsModuleBlockSynth && tag === T.block_stmt && pd && _tsModuleBlockEnterH) {
@@ -9096,6 +9119,19 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           if (!_closeFrag.parent) _closeFrag.parent = _fragNode2;
           if (jsxClosingFragH)  _invokeFused(jsxClosingFragH,  _closeFrag, idx, context);
           if (jsxClosingFragExH) _invokeFused(jsxClosingFragExH, _closeFrag, idx, context);
+        }
+      }
+      // Synthesize TSExternalModuleReference:exit for TSImportEqualsDeclaration nodes.
+      if (_hasTsExtModRefSynth && _importDeclTagNum >= 0 && tag === _importDeclTagNum &&
+          ast.nodeLhs(idx) === NONE) {
+        const _rhsIdx2 = ast.nodeRhs(idx);
+        if (_rhsIdx2 !== NONE && nodeTags[_rhsIdx2] === T.call_expr && _tsExtModRefExitH) {
+          const _ieqNode2 = nodeView(ast, idx);
+          const _extRef2 = _ieqNode2.moduleReference;
+          if (_extRef2) {
+            if (!_extRef2.parent) _extRef2.parent = _ieqNode2;
+            _invokeFused(_tsExtModRefExitH, _extRef2, idx, context);
+          }
         }
       }
       // Synthesize TSInterfaceBody exit for TSInterfaceDeclaration nodes.
