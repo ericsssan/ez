@@ -2350,11 +2350,16 @@ const NodeProto = {
     const _synthBundle = _getSynth(this);
     if (_synthBundle.dec !== undefined) return _synthBundle.dec;
     const t = this._tag;
-    // TS param/pattern nodes can have decorators (TSParameterProperty), return [] when none
+    // TS param/pattern nodes can have decorators (TSParameterProperty), return [] when none.
+    // Also allow identifier/binding-pattern parameters: the scan stops at '(' so false
+    // positives are prevented. This handles `constructor(@Foo foo: string)` where foo is
+    // a plain identifier (not a TSParameterProperty) but still carries a decorator.
     if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
         t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
         t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def &&
-        t !== T.class_decl && t !== T.class_expr && t !== T.ts_parameter_property) {
+        t !== T.class_decl && t !== T.class_expr && t !== T.ts_parameter_property &&
+        t !== T.identifier && t !== T.binding_ident && t !== T.object_pattern &&
+        t !== T.array_pattern) {
       _synthBundle.dec = [];
       return [];
     }
