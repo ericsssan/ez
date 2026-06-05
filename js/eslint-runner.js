@@ -68,6 +68,7 @@ const _TYPE_FACADE_RULES = new Set([
   "n/no-sync",                                                // eslint-plugin-n: calls getParserServices() unconditionally in its visitor; the facade program lets it run (vs throwing "requires type information") — syntactic for string ignores, type-aware for the `ignores` non-string option
   "@typescript-eslint/no-unnecessary-template-expression",    // 98/99, 0 FP (PARTIAL: 1 FN on complex template literal type)
   "@typescript-eslint/explicit-function-return-type",         // 58/59, 0 FP (PARTIAL: 1 FN on callback return-type inference)
+  "@typescript-eslint/typedef",                               // 32/34, 0 FP (PARTIAL: 2 FN on contextual inference gaps)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
