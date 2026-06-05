@@ -75,6 +75,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/no-unnecessary-type-arguments",         // 18/21, 0 FP (PARTIAL: FN on constrained generic resolution)
   "@typescript-eslint/await-thenable",                        // 16/42, 0 FP (PARTIAL: FN on thenable resolution gaps)
   "@typescript-eslint/no-namespace",                          // 32/32, 100% (declare global synthetic TSModuleDeclaration parent)
+  "@typescript-eslint/explicit-member-accessibility",         // 32/32, 100% (decorator order + argEnd fix)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading

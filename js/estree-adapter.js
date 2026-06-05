@@ -2367,11 +2367,15 @@ const NodeProto = {
     const mt = this.mainToken;
     // Scan backward for @ tokens
     const decorators = [];
+    let _pendingArgEnd = -1; // end position of ')' for @dec(args) — captured on ')' branch
     for (let i = mt - 1; i >= 0; i--) {
       const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
       if (val === '@') {
-        // @ followed by decorator name — use end of the expression (next meaningful token)
-        const decEnd = (i + 1 < ast.tokenCount) ? ast._tokEnds[i + 1] : ast._tokEnds[i];
+        // @ followed by decorator name. For @dec(args), use the closing ')' end captured
+        // when we scanned past the argument list; otherwise use end of the identifier.
+        const decEnd = _pendingArgEnd >= 0 ? _pendingArgEnd
+          : (i + 1 < ast.tokenCount) ? ast._tokEnds[i + 1] : ast._tokEnds[i];
+        _pendingArgEnd = -1;
         const decStart = ast._tokStarts[i];
         const _ls = this._ast._lineStarts();
         const _sL = this._ast._findLineIdx(decStart);
@@ -2380,6 +2384,7 @@ const NodeProto = {
           loc: { start: { line: _sL + 1, column: decStart - _ls[_sL] }, end: { line: _eL + 1, column: decEnd - _ls[_eL] } } });
       } else if (val === ')') {
         // Skip decorator arguments: @dec(args) — walk back to matching '('
+        const _argEnd = ast._tokEnds[i]; // end of closing ')'
         let depth = 1;
         i--;
         while (i >= 0 && depth > 0) {
@@ -2392,7 +2397,7 @@ const NodeProto = {
         if (i >= 0) {
           const nameVal = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
           // Decorator name or member expression: skip so loop continues to find '@'
-          if (nameVal !== '@') continue;
+          if (nameVal !== '@') { _pendingArgEnd = _argEnd; continue; }
           // It's '@' directly before '(' — parameterless decorator with parens? Re-process.
           i++; // undo so the loop will see '@' next iteration
         }
@@ -2420,6 +2425,7 @@ const NodeProto = {
         break; // not a decorator or modifier
       }
     }
+    if (decorators.length > 1) decorators.reverse(); // backward scan → reverse to source order
     const result = decorators.length > 0 ? decorators : [];
     _synthBundle.dec = result;
     return result;
