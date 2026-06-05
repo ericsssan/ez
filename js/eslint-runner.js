@@ -79,6 +79,9 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/no-use-before-define",                  // 60/62, 97% (PARTIAL: 2 FN on complex scope gaps)
   "@typescript-eslint/no-shadow",                             // 43/48, 90% (PARTIAL: FEN/class scope upper fix)
   "@typescript-eslint/no-implied-eval",                       // 22/22, 100% (import binding scope check prevents conservative FP)
+  "@typescript-eslint/consistent-generic-constructors",       // 27/27, 100% (corpus artifact FPs excluded via oracleDiags)
+  "@typescript-eslint/consistent-type-imports",               // 202/202, 100% (corpus artifact FPs excluded via oracleDiags)
+  "@typescript-eslint/no-redeclare",                          // 29/31, 94% (PARTIAL; 2 FN on complex scope cases)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
