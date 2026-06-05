@@ -449,6 +449,12 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
           // Promise<T> — and any interface that extends one — is thenable; hand
           // isThenableType the synthetic `then` (Promise methods aren't modelled).
           if (name === "then" && typeId != null && (h.nameEq(typeId, "Promise") || promiseBase(typeId) != null)) return SYNTH_THEN_SYM;
+          // String primitive has .includes() — prefer-includes' regex-test check
+          // calls `type.getProperty('includes')?.getDeclarations() != null`.
+          if (name === "includes" && typeId != null && h.flags(typeId) === 32 /*String*/) {
+            return { name, escapedName: name, getName() { return name; }, getFlags() { return 0; },
+                     getDeclarations() { return []; }, valueDeclaration: undefined };
+          }
           return undefined;
         }
         // Carry method-vs-field in the symbol's valueDeclaration so unbound-method
@@ -574,7 +580,7 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         const rt = h.resolveTypeNode(rta._i);
         if (rt != null && h.kind(rt) !== 1) return makeType(rt);
       }
-      // Synthetic FunctionExpression for an object-literal method shorthand.
+      // Synthetic FunctionExpression for an object-literal or class method shorthand.
       // The real Zig node is the parent Property/MethodDefinition (method_def).
       // inferExpr now handles method_def, so fall through to the parent's type.
       if (est.parent && est.parent._i != null) {
@@ -587,6 +593,13 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // Surface it as TemplateLiteral (4194304) so no-redundant-type-constituents
     // can map it to String and flag `\`…\` | string` as redundant.
     if (est.type === "TSTemplateLiteralType") return syntheticType(4194304 /*TemplateLiteral*/);
+    // A synthetic FunctionExpression for a constructor borrows the MethodDefinition's
+    // _i (invokeMethodFnHandlers sets fnExpr._i = methodNodeIdx), so h.typeOfNode
+    // would return the method's function_t. Constructors can't be async; return
+    // Unknown so promise-function-async's getCallSignatures()=0 guard skips them.
+    if (est.type === "FunctionExpression" && est.parent && est.parent.kind === "constructor") {
+      return syntheticType(2 /*Unknown*/);
+    }
     let tid = h.typeOfNode(est._i);
     // A value whose binding is annotated with a bare in-scope type parameter
     // (`a: T`) is the parameter `T` itself, not its constraint — so `a as T`
