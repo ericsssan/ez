@@ -6919,6 +6919,24 @@ pub const Checker = struct {
                 }
             }
         }
+        // Computed key whose *type* is a string-literal (e.g.
+        // `const k = 'fn'; obj[k]`).  Resolve the key node's value type and,
+        // when it's a single string-literal, look the property up by name.
+        if (obj.kind == .object_t and self.ast_ref.nodeTag(key_node) != .string_literal) {
+            const key_ty = self.typeOf(key_node);
+            const kt = self.store.get(key_ty);
+            if (kt.kind == .string_literal) {
+                const name: []const u8 = switch (kt.literal_value) {
+                    .string => |s| s,
+                    else => "",
+                };
+                if (name.len > 0) {
+                    for (self.store.propsOf(obj.object_props)) |p| {
+                        if (std.mem.eql(u8, p.name, name)) return p.type_id;
+                    }
+                }
+            }
+        }
         // Index signature `{[k: T]: V}` — match ANY key against the "[]"
         // sentinel prop stashed by `resolveTypeLiteral`.
         if (obj.kind == .object_t) {
