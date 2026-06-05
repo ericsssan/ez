@@ -446,9 +446,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
           }
         }
         if (pid == null) {
-          // Promise<T> — and any interface that extends one — is thenable; hand
-          // isThenableType the synthetic `then` (Promise methods aren't modelled).
-          if (name === "then" && typeId != null && (h.nameEq(typeId, "Promise") || promiseBase(typeId) != null)) return SYNTH_THEN_SYM;
+          // Promise<T>/PromiseLike<T> — and any class that extends one — is thenable;
+          // hand isThenableType the synthetic `then` (methods aren't modelled).
+          if (name === "then" && typeId != null && (h.nameEq(typeId, "Promise") || h.nameEq(typeId, "PromiseLike") || promiseBase(typeId) != null)) return SYNTH_THEN_SYM;
           // String primitive has .includes() — prefer-includes' regex-test check
           // calls `type.getProperty('includes')?.getDeclarations() != null`.
           if (name === "includes" && typeId != null && h.flags(typeId) === 32 /*String*/) {
@@ -942,7 +942,12 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     return { name, escapedName: name, getName() { return name; }, valueDeclaration: EMPTY_DECL,
       getDeclarations() { return undefined; }, getFlags() { return 0; }, __ez_synthType: type };
   }
-  const SYNTH_THEN_SYM = synthParam("then", synthFn([synthParam("onfulfilled", synthFn([], 0))], 1));
+  // Two parameters so no-floating-promises' checkThenables path passes the
+  // `signature.parameters.length >= 2` guard (onfulfilled + onrejected).
+  const SYNTH_THEN_SYM = synthParam("then", synthFn([
+    synthParam("onfulfilled", synthFn([], 0)),
+    synthParam("onrejected",  synthFn([], 0)),
+  ], 1));
 
   // ts.SourceFile sentinels: isSymbolFromDefaultLibrary checks whether a
   // symbol's declaration lives in a lib.d.ts file. We don't model real
