@@ -74,6 +74,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/prefer-includes",                       // 26/29, 0 FP (PARTIAL: FN on computed member / generic string)
   "@typescript-eslint/no-unnecessary-type-arguments",         // 18/21, 0 FP (PARTIAL: FN on constrained generic resolution)
   "@typescript-eslint/await-thenable",                        // 16/42, 0 FP (PARTIAL: FN on thenable resolution gaps)
+  "@typescript-eslint/no-namespace",                          // 32/32, 100% (declare global synthetic TSModuleDeclaration parent)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
@@ -7605,6 +7606,29 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const hasSelectors = selectorHandlers.length > 0;
   const esq = hasSelectors ? esquery() : null;
   const pd = ast._parentData;
+
+  // `declare global {}` emits a bare block_stmt directly under Program in the Zig AST
+  // (no ts_module_decl wrapper). Rules like no-namespace use parent-chain walking to
+  // detect ambient context (isDeclaration checks ancestor.declare). Synthesize a
+  // TSModuleDeclaration { declare: true, global: true } as the _parent of each such
+  // block so the walk finds it. Program is always node index 0.
+  if (pd && T.block_stmt >= 0) {
+    const _src = ast.source;
+    const _programNode = nodeView(ast, 0);
+    for (let _bi = 1; _bi < ast.nodeCount; _bi++) {
+      if (nodeTags[_bi] !== T.block_stmt) continue;
+      if (pd[_bi] !== 0) continue;
+      const _blkNode = nodeView(ast, _bi);
+      const _range = _blkNode.range;
+      if (!_range) continue;
+      const _pre = _src.slice(Math.max(0, _range[0] - 30), _range[0]);
+      if (!/\bdeclare\s+global\s*$/.test(_pre.trimEnd())) continue;
+      _blkNode._parent = {
+        type: 'TSModuleDeclaration', kind: 'global', declare: true, global: true,
+        id: null, body: _blkNode, parent: _programNode,
+      };
+    }
+  }
 
   // Reusable ancestors buffer — pre-sized per node, never reallocated.
   // Safe: esquery only reads the array; both _runSelectorList calls per node are synchronous.
