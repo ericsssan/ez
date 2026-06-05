@@ -415,6 +415,34 @@ pub const Checker = struct {
                 const name2 = self.ast_ref.tokenText(tok2);
                 if (self.global_value_types.get(name2)) |t| return t;
             }
+            // `ClassName.staticMember` — the class *value* is its static side.
+            // Restricted to the object position of a member access so heritage
+            // (`extends ClassName`), type, and `new` positions still resolve to
+            // the instance type (which shares this same symbol).  decl_node is
+            // the class *name* binding; walk up to the enclosing class_decl.
+            if (decl_node != .none and self.identifierIsMemberObject(node)) {
+                const class_decl = blk: {
+                    if (self.ast_ref.nodeTag(decl_node) == .class_decl) break :blk decl_node;
+                    const parents = self.ast_ref.parents;
+                    if (decl_node.toInt() < parents.len) {
+                        const pidx = parents[decl_node.toInt()];
+                        if (pidx != @intFromEnum(NodeIndex.none)) {
+                            const p: NodeIndex = @enumFromInt(pidx);
+                            if (self.ast_ref.nodeTag(p) == .class_decl) break :blk p;
+                        }
+                    }
+                    break :blk NodeIndex.none;
+                };
+                if (class_decl != .none) {
+                    const cdata = self.ast_ref.nodeData(class_decl);
+                    if (cdata.lhs != .none) {
+                        const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(cdata.lhs));
+                        const cname = if (cd.name != .none) self.ast_ref.tokenText(self.ast_ref.nodeMainToken(cd.name)) else "";
+                        const st = self.buildClassStaticType(class_decl, cname);
+                        if (!st.eq(tymod.ID_UNKNOWN)) return st;
+                    }
+                }
+            }
             return self.narrowAtUse(node, sym, base);
         }
         // Fallback: semantic didn't resolve the reference (common for
@@ -444,6 +472,22 @@ pub const Checker = struct {
         // value (no-unsafe-member-access excludes heritage member expressions).
         if (self.identifierInTypePosition(node)) return tymod.ID_UNKNOWN;
         return tymod.ID_ERROR;
+    }
+
+    /// True when `node` is the object (receiver) of a member access —
+    /// `node.prop` / `node[expr]` — i.e. `node` is `member.data.lhs`.
+    fn identifierIsMemberObject(self: *Checker, node: NodeIndex) bool {
+        const parents = self.ast_ref.parents;
+        if (node.toInt() >= parents.len) return false;
+        const pidx = parents[node.toInt()];
+        if (pidx == @intFromEnum(NodeIndex.none)) return false;
+        const parent: NodeIndex = @enumFromInt(pidx);
+        switch (self.ast_ref.nodeTag(parent)) {
+            .member_expr, .optional_member_expr,
+            .computed_member_expr, .optional_computed_member_expr => {},
+            else => return false,
+        }
+        return self.ast_ref.nodeData(parent).lhs == node;
     }
 
     /// True when `node` (an identifier) sits in a type position — a qualified
@@ -1307,6 +1351,10 @@ pub const Checker = struct {
                 }
                 return self.functionTypeFromFnDecl(parent);
             },
+            // The class binding's *declared* type stays unknown here; the
+            // static side is resolved position-sensitively in inferIdentifier
+            // (value references only — heritage/type positions want the
+            // instance type, which shares this same cached symbol type).
             .class_decl => return tymod.ID_UNKNOWN,
             // Function/method/getter/setter parameter, class field, etc.
             // We don't resolve these structurally yet — return unknown
@@ -5487,7 +5535,7 @@ pub const Checker = struct {
         };
         for (slice) |raw| {
             const member: NodeIndex = @enumFromInt(raw);
-            if (self.classMemberToProp(member)) |p| {
+            if (self.classMemberToProp(member, false)) |p| {
                 // Inherited prop with the same name is overridden by the
                 // subclass definition — remove the prior entry.
                 var k: usize = 0;
@@ -5504,9 +5552,78 @@ pub const Checker = struct {
         return self.store.add(.{ .kind = .object_t, .object_props = list, .name = name, .list_data = base_list }) catch tymod.ID_UNKNOWN;
     }
 
-    fn classMemberToProp(self: *Checker, member: NodeIndex) ?tymod.ObjectProp {
+    /// True when a class member (property/method/getter/setter) carries the
+    /// `static` modifier.  PropertyData carries no modifier bits, so detect it
+    /// by scanning the leading modifier tokens before the member's main token
+    /// (mirrors the estree adapter's `_methodFlags`).
+    fn classMemberIsStatic(self: *Checker, member: NodeIndex) bool {
+        const token_tags = self.ast_ref.tokens.items(.tag);
+        const main_tok = self.ast_ref.nodeMainToken(member);
+        var i: usize = @intCast(main_tok);
+        if (i >= token_tags.len) return false;
+        if (token_tags[i] == .kw_static) return true;
+        var steps: u8 = 0;
+        while (i > 0 and steps < 8) : (steps += 1) {
+            i -= 1;
+            switch (token_tags[i]) {
+                .kw_static => return true,
+                // Other leading member modifiers — keep scanning past them.
+                .kw_async, .asterisk, .kw_readonly, .kw_override, .kw_abstract,
+                .kw_declare, .kw_get, .kw_set => continue,
+                // TS accessibility / accessor modifiers tokenize as identifiers.
+                .identifier => {
+                    const txt = self.ast_ref.tokenText(@intCast(i));
+                    if (std.mem.eql(u8, txt, "public") or std.mem.eql(u8, txt, "private") or
+                        std.mem.eql(u8, txt, "protected") or std.mem.eql(u8, txt, "accessor"))
+                        continue;
+                    return false;
+                },
+                else => return false,
+            }
+        }
+        return false;
+    }
+
+    /// Build the *static side* of a class — an object type holding the
+    /// `static` fields/methods/getters keyed by name.  This is the type of the
+    /// class *value* (`Foo` referenced directly, e.g. `setTimeout(Foo.fn)`),
+    /// distinct from the instance type produced by `new Foo()`.  Construction
+    /// itself flows through `newExprInstanceType`, so omitting a construct
+    /// signature here is fine.
+    fn buildClassStaticType(self: *Checker, decl: NodeIndex, name: []const u8) TypeId {
+        const data = self.ast_ref.nodeData(decl);
+        const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
+        if (cd.body == .none) return tymod.ID_UNKNOWN;
+        const body_data = self.ast_ref.nodeData(cd.body);
+        const slice = self.directRange(body_data.lhs, body_data.rhs) orelse return tymod.ID_UNKNOWN;
+        var props: std.ArrayList(tymod.ObjectProp) = .empty;
+        defer props.deinit(self.gpa);
+        for (slice) |raw| {
+            const member: NodeIndex = @enumFromInt(raw);
+            if (self.classMemberToProp(member, true)) |p| {
+                var sp = p;
+                sp.is_static = true;
+                var k: usize = 0;
+                while (k < props.items.len) : (k += 1) {
+                    if (std.mem.eql(u8, props.items[k].name, sp.name)) {
+                        _ = props.orderedRemove(k);
+                        break;
+                    }
+                }
+                props.append(self.gpa, sp) catch {};
+            }
+        }
+        if (props.items.len == 0) return tymod.ID_UNKNOWN;
+        const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
+        return self.store.add(.{ .kind = .object_t, .object_props = list, .name = name }) catch tymod.ID_UNKNOWN;
+    }
+
+    fn classMemberToProp(self: *Checker, member: NodeIndex, want_static: bool) ?tymod.ObjectProp {
         const tag = self.ast_ref.nodeTag(member);
         const data = self.ast_ref.nodeData(member);
+        // Static members live on the constructor (static side); instance
+        // members on the prototype.  Route each to the matching object type.
+        if (self.classMemberIsStatic(member) != want_static) return null;
         switch (tag) {
             .property_def => {
                 // lhs = key, rhs = extra index to PropertyData
@@ -5515,7 +5632,6 @@ pub const Checker = struct {
                     self.ast_ref.nodeTag(data.lhs) != .property_ident) return null;
                 const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(data.lhs));
                 const pd = self.ast_ref.extraData(ast.PropertyData, @intFromEnum(data.rhs));
-                // Skip static members — they live on the constructor, not the instance.
                 var ty: TypeId = tymod.ID_UNKNOWN;
                 if (pd.type_annotation != .none and
                     self.ast_ref.nodeTag(pd.type_annotation) == .ts_type_annotation)

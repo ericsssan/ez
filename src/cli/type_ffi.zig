@@ -430,8 +430,8 @@ pub export fn ez_type_prop_type_by_name(h: usize, type_id: u32, name_ptr: [*]con
 }
 
 /// Property flag bits for `name`: 1 = optional, 2 = readonly, 4 = is_method,
-/// 8 = is_fn_property.  Returns 0xFFFFFFFF when the property is absent (so the
-/// caller distinguishes "absent" from "present with no flags").
+/// 8 = is_fn_property, 16 = is_static.  Returns 0xFFFFFFFF when the property is
+/// absent (so the caller distinguishes "absent" from "present with no flags").
 pub export fn ez_type_prop_flags_by_name(h: usize, type_id: u32, name_ptr: [*]const u8, name_len: u32) callconv(.c) u32 {
     const ctx = ctxFrom(h) orelse return NO_TYPE;
     const p = findProp(ctx, type_id, name_ptr[0..name_len]) orelse return NO_TYPE;
@@ -440,6 +440,7 @@ pub export fn ez_type_prop_flags_by_name(h: usize, type_id: u32, name_ptr: [*]co
     if (p.readonly) f |= 2;
     if (p.is_method) f |= 4;
     if (p.is_fn_property) f |= 8;
+    if (p.is_static) f |= 16;
     return f;
 }
 

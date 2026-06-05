@@ -103,6 +103,10 @@ pub const ObjectProp = struct {
     /// `@typescript-eslint/unbound-method`: fn-property → "unbound",
     /// method_def → "unboundWithoutThisAnnotation".
     is_fn_property: bool = false,
+    /// True when the member carries the `static` modifier (lives on the class
+    /// constructor / static side).  Lets `unbound-method`'s `ignoreStatic`
+    /// option see the modifier via the facade's synthesized declaration.
+    is_static: bool = false,
 };
 
 pub const Signature = struct {
@@ -291,6 +295,7 @@ pub const InternContext = struct {
             const flags = [_]u8{
                 @intFromBool(p.optional), @intFromBool(p.readonly),
                 @intFromBool(p.is_method), @intFromBool(p.is_fn_property),
+                @intFromBool(p.is_static),
             };
             h.update(&flags);
         }
@@ -332,7 +337,8 @@ pub const InternContext = struct {
             if (!std.mem.eql(u8, x.name, y.name)) return false;
             if (!x.type_id.eq(y.type_id)) return false;
             if (x.optional != y.optional or x.readonly != y.readonly or
-                x.is_method != y.is_method or x.is_fn_property != y.is_fn_property) return false;
+                x.is_method != y.is_method or x.is_fn_property != y.is_fn_property or
+                x.is_static != y.is_static) return false;
         }
         const sa = self.store.signaturesOf(ta.signatures);
         const sb = self.store.signaturesOf(tb.signatures);

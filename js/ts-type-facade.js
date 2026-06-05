@@ -120,14 +120,28 @@ function memberValueDecls() {
   const ts = tsMod();
   const methodKind = ts ? ts.SyntaxKind.MethodDeclaration : 174;
   const propKind = ts ? ts.SyntaxKind.PropertyDeclaration : 172;
-  const mk = (kind) => Object.freeze({
+  const staticKw = ts ? ts.SyntaxKind.StaticKeyword : 126;
+  // Do NOT freeze these objects: TypeScript's getModifierFlagsWorker writes a
+  // `modifierFlagsCache` property on first access. A frozen object silently
+  // discards that write, leaving the cache undefined → hasSyntacticModifier
+  // returns false → getModifiers returns undefined → ignoreStatic can't see
+  // the StaticKeyword modifier.  Leave them mutable so TS can cache freely.
+  const mk = (kind, modifiers) => ({
     kind,
-    parameters: Object.freeze([]),
-    modifiers: undefined,
+    parameters: [],
+    modifiers,
     initializer: undefined,
     getSourceFile() { return CURRENT_SOURCE_FILE; },
   });
-  _memberDecls = { method: mk(methodKind), property: mk(propKind) };
+  // `static` members carry a StaticKeyword modifier so unbound-method's
+  // `ignoreStatic` option (via tsutils.includesModifier) sees the modifier.
+  const staticMods = [{ kind: staticKw }];
+  _memberDecls = {
+    method: mk(methodKind, undefined),
+    property: mk(propKind, undefined),
+    staticMethod: mk(methodKind, staticMods),
+    staticProperty: mk(propKind, staticMods),
+  };
   return _memberDecls;
 }
 
@@ -783,14 +797,17 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
   function makeMemberSymbol(name, pid, pflags, objTypeId) {
     const decls = memberValueDecls();
     const isMethod = (pflags & 4) !== 0 && !(objTypeId != null && h.isNativelyBoundType(objTypeId));
-    const decl = isMethod ? decls.method : decls.property;
+    const isStatic = (pflags & 16) !== 0;
+    const decl = isMethod
+      ? (isStatic ? decls.staticMethod : decls.method)
+      : (isStatic ? decls.staticProperty : decls.property);
     return {
       name, escapedName: name,
       getName() { return name; }, getEscapedName() { return name; },
       getDeclarations() { return [decl]; }, getFlags() { return 0; },
       valueDeclaration: decl,
       __ez_type: pid != null ? pid : null,
-      __ez_propFlags: pflags & 15,
+      __ez_propFlags: pflags & 31,
     };
   }
 

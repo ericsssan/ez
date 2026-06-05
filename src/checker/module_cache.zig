@@ -330,6 +330,7 @@ pub fn cloneType(
                     .readonly = p.readonly,
                     .is_method = p.is_method,
                     .is_fn_property = p.is_fn_property,
+                    .is_static = p.is_static,
                 });
             }
             const prop_list = try dst_store.appendObjectProps(cloned_props.items);
