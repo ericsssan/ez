@@ -4900,7 +4900,19 @@ pub const LintContext = struct {
         const data = self.nodeData(node);
         if (data.lhs != .none and self.nodeTag(data.lhs) == .ts_instantiation_expr) return true;
         const parent = self.parentOf(node);
-        if (parent != .none and self.nodeTag(parent) == .ts_instantiation_expr) return true;
+        if (parent == .none) return false;
+        if (self.nodeTag(parent) == .ts_instantiation_expr) return true;
+        // For `new Foo<T>(args)` the AST is call_expr(ts_instantiation_expr(new_expr(Foo)), args).
+        // The parents array may record call_expr as the direct parent of inner new_expr (skipping
+        // ts_instantiation_expr).  Check that the parent's callee is a ts_instantiation_expr
+        // that wraps this node.
+        const parent_tag = self.nodeTag(parent);
+        if (parent_tag == .call_expr or parent_tag == .new_expr or parent_tag == .optional_call_expr) {
+            const parent_data = self.nodeData(parent);
+            if (parent_data.lhs != .none and self.nodeTag(parent_data.lhs) == .ts_instantiation_expr) {
+                if (self.nodeData(parent_data.lhs).lhs == node) return true;
+            }
+        }
         return false;
     }
 

@@ -8661,6 +8661,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // call_expr (which always needs the `import = require(...)` suppression check).
   const _remapNeededArr = new Uint8Array(tagNames.length);
   if (T.call_expr < _remapNeededArr.length) _remapNeededArr[T.call_expr] = 1;
+  if (T.new_expr  < _remapNeededArr.length) _remapNeededArr[T.new_expr]  = 1;
   if (_hasMdRemap) {
     for (let _t = 0; _t < _methodDefTagBits.length; _t++) {
       if (_methodDefTagBits[_t]) _remapNeededArr[_t] = 1;
@@ -8706,6 +8707,20 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (parentIdx !== undefined && parentIdx !== NONE && nodeTags[parentIdx] === _importDeclTagNum &&
           ast.nodeLhs(parentIdx) === NONE) {
         return null;
+      }
+    }
+    // `new Foo<T>(args)` pattern: call_expr(ts_instantiation_expr(new_expr(callee,NONE),typeArgs),args).
+    // The outer call_expr gets type_override=21 (NewExpression) — it is the real ESTree NewExpression.
+    // The inner new_expr is a parser artifact with no args and no typeArguments; suppress its dispatch
+    // so NewExpression rule handlers don't double-fire (with wrong shape) on this phantom node.
+    if (tag === T.new_expr && pd && ast.nodeRhs(idx) === NONE) {
+      const parentIdx = pd[idx];
+      if (parentIdx !== undefined && parentIdx !== NONE && nodeTags[parentIdx] === T.ts_instantiation_expr) {
+        const gpIdx = pd[parentIdx];
+        if (gpIdx !== undefined && gpIdx !== NONE) {
+          const gpTag = nodeTags[gpIdx];
+          if (gpTag === T.call_expr || gpTag === T.optional_call_expr) return null;
+        }
       }
     }
     if (_hasTsKwRemap && tag === _tsTypeRefTagNum && ast.nodeRhs(idx) === NONE) {
