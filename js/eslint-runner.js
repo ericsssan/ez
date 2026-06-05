@@ -69,6 +69,11 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/no-unnecessary-template-expression",    // 98/99, 0 FP (PARTIAL: 1 FN on complex template literal type)
   "@typescript-eslint/explicit-function-return-type",         // 58/59, 0 FP (PARTIAL: 1 FN on callback return-type inference)
   "@typescript-eslint/typedef",                               // 32/34, 0 FP (PARTIAL: 2 FN on contextual inference gaps)
+  "@typescript-eslint/unbound-method",                        // 29/61, 0 FP (PARTIAL: static-side type + method symbol modeling)
+  "@typescript-eslint/sort-type-constituents",                // 26/30, 0 FP (PARTIAL: FN on complex intersection/union ordering)
+  "@typescript-eslint/prefer-includes",                       // 26/29, 0 FP (PARTIAL: FN on computed member / generic string)
+  "@typescript-eslint/no-unnecessary-type-arguments",         // 18/21, 0 FP (PARTIAL: FN on constrained generic resolution)
+  "@typescript-eslint/await-thenable",                        // 16/42, 0 FP (PARTIAL: FN on thenable resolution gaps)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
