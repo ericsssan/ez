@@ -423,7 +423,7 @@ pub const Checker = struct {
             if (decl_node != .none and self.identifierIsMemberObject(node)) {
                 const class_decl = blk: {
                     if (self.ast_ref.nodeTag(decl_node) == .class_decl) break :blk decl_node;
-                    const parents = self.ast_ref.parents;
+                    const parents = self.semantic.parent_indices;
                     if (decl_node.toInt() < parents.len) {
                         const pidx = parents[decl_node.toInt()];
                         if (pidx != @intFromEnum(NodeIndex.none)) {
@@ -477,7 +477,7 @@ pub const Checker = struct {
     /// True when `node` is the object (receiver) of a member access —
     /// `node.prop` / `node[expr]` — i.e. `node` is `member.data.lhs`.
     fn identifierIsMemberObject(self: *Checker, node: NodeIndex) bool {
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (node.toInt() >= parents.len) return false;
         const pidx = parents[node.toInt()];
         if (pidx == @intFromEnum(NodeIndex.none)) return false;
@@ -494,7 +494,7 @@ pub const Checker = struct {
     /// name inside a `ts_type_reference` / `ts_type_query` / type annotation —
     /// rather than a value position.
     fn identifierInTypePosition(self: *Checker, node: NodeIndex) bool {
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return false;
         const NONE: u32 = @intFromEnum(NodeIndex.none);
         var p = parents[node.toInt()];
@@ -673,11 +673,11 @@ pub const Checker = struct {
     ///   - `if (x === null) { ...use... }` → narrowed to null.
     ///   - Negated forms via `!`.
     fn narrowAtUse(self: *Checker, node: NodeIndex, sym: symbol_mod.SymbolId, base: TypeId) TypeId {
-        if (self.ast_ref.parents.len == 0) return base;
+        if (self.semantic.parent_indices.len == 0) return base;
         var ty = base;
         const NONE: u32 = @intFromEnum(NodeIndex.none);
         var prev = node.toInt();
-        var p = self.ast_ref.parents[prev];
+        var p = self.semantic.parent_indices[prev];
         while (p != NONE) {
             const pn: NodeIndex = @enumFromInt(p);
             const tag = self.ast_ref.nodeTag(pn);
@@ -737,7 +737,7 @@ pub const Checker = struct {
                 else => {},
             }
             prev = p;
-            p = self.ast_ref.parents[p];
+            p = self.semantic.parent_indices[p];
         }
         return ty;
     }
@@ -821,11 +821,11 @@ pub const Checker = struct {
     fn descendsFrom(self: *Checker, node: NodeIndex, ancestor: NodeIndex) bool {
         if (ancestor == .none) return false;
         if (node == ancestor) return true;
-        if (self.ast_ref.parents.len == 0) return false;
+        if (self.semantic.parent_indices.len == 0) return false;
         const NONE: u32 = @intFromEnum(NodeIndex.none);
-        var p = self.ast_ref.parents[node.toInt()];
+        var p = self.semantic.parent_indices[node.toInt()];
         const target = @intFromEnum(ancestor);
-        while (p != NONE) : (p = self.ast_ref.parents[p]) {
+        while (p != NONE) : (p = self.semantic.parent_indices[p]) {
             if (p == target) return true;
         }
         return false;
@@ -1306,7 +1306,7 @@ pub const Checker = struct {
                 return ty;
             }
         }
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return tymod.ID_ANY;
         const pidx = parents[binding.toInt()];
         if (pidx == @intFromEnum(NodeIndex.none)) return tymod.ID_ANY;
@@ -1409,7 +1409,7 @@ pub const Checker = struct {
     /// by a Promise-typed receiver so non-Promise `.then`/`.catch` methods keep
     /// their declared param types.
     fn contextualPromiseRejectionParamType(self: *Checker, binding: NodeIndex) ?TypeId {
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return null;
         const NONE: u32 = @intFromEnum(NodeIndex.none);
         // binding → arrow/fn-expr (the callback).
@@ -1479,7 +1479,7 @@ pub const Checker = struct {
     /// predicate method (`.some`/`.every`/`.filter`/`.find`/...), return
     /// the array's element type.  Otherwise null.
     fn contextualArrayPredicateParamType(self: *Checker, binding: NodeIndex) ?TypeId {
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return null;
         const NONE: u32 = @intFromEnum(NodeIndex.none);
         // Walk up: identifier → arrow_fn/fn_expr (the callback).
@@ -1564,7 +1564,7 @@ pub const Checker = struct {
     /// `bar(x => ...)` where `bar(cb: (arg: Foo) => void)`: the arrow's
     /// `x` should get type `Foo` from the callee's signature.
     fn contextualCallbackParamType(self: *Checker, binding: NodeIndex) ?TypeId {
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return null;
         const NONE: u32 = @intFromEnum(NodeIndex.none);
         // Walk up: binding → arrow_fn / fn_expr.
@@ -2085,7 +2085,7 @@ pub const Checker = struct {
     /// `undefined`.  We approximate the "nearest enclosing function"
     /// check via parent walk.
     fn inferBlockReturn(self: *Checker, body: NodeIndex) TypeId {
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return tymod.ID_UNKNOWN;
         const body_idx = @intFromEnum(body);
         // The body's direct parent is the function node — anything
@@ -4314,7 +4314,7 @@ pub const Checker = struct {
         // parent chain reaches the same scope (using main-token
         // position for "before ty_node" comparison).
         const tree = self.ast_ref;
-        const parents = tree.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return null;
         const NONE: u32 = @intFromEnum(NodeIndex.none);
         // Collect ancestors in a buffer for cheap containment checks.
@@ -4748,7 +4748,7 @@ pub const Checker = struct {
         // Walk every ts_type_reference and check whether its parent
         // chain reaches `ty_node` — needed because `nodeSpan` only
         // covers the main token, not the subtree.
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return false;
         const target_idx = @intFromEnum(ty_node);
         const NONE: u32 = @intFromEnum(NodeIndex.none);
@@ -6078,7 +6078,7 @@ pub const Checker = struct {
             // Resolve through the parent so `new Set<any>()` keeps its <any>.
             var inst_callee = callee;
             if (self.ast_ref.nodeTag(node) == .new_expr) {
-                const parents = self.ast_ref.parents;
+                const parents = self.semantic.parent_indices;
                 if (node.toInt() < parents.len) {
                     const par: NodeIndex = @enumFromInt(parents[node.toInt()]);
                     if (par != .none and self.ast_ref.nodeTag(par) == .ts_instantiation_expr)
@@ -6686,7 +6686,7 @@ pub const Checker = struct {
     /// expressions' allowArray (any element), while `return []` stays safe for
     /// no-unsafe-return (never[] is not an any-array).
     fn emptyArrayElem(self: *Checker, node: NodeIndex) TypeId {
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (node.toInt() >= parents.len) return tymod.ID_NEVER;
         const p = parents[node.toInt()];
         if (p == @intFromEnum(NodeIndex.none)) return tymod.ID_NEVER;
@@ -7245,7 +7245,7 @@ pub const Checker = struct {
     /// declared in an enclosing scope of `ref_node`.
     fn findTypeParameterDecl(self: *Checker, ref_node: NodeIndex, name: []const u8) ?NodeIndex {
         const tree = self.ast_ref;
-        const parents = tree.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return null;
         const NONE: u32 = @intFromEnum(NodeIndex.none);
         var anc_buf: [16]u32 = undefined;
@@ -7646,7 +7646,7 @@ pub const Checker = struct {
     /// the nearest method-or-class declaration.  A stand-alone function's
     /// `this` is its `this: T` annotation, else implicit `any` (strict).
     fn inferThis(self: *Checker, node: NodeIndex) TypeId {
-        const parents = self.ast_ref.parents;
+        const parents = self.semantic.parent_indices;
         if (parents.len == 0) return tymod.ID_UNKNOWN;
         var p = parents[node.toInt()];
         const NONE: u32 = @intFromEnum(NodeIndex.none);

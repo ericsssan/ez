@@ -417,7 +417,7 @@ fn paramsFromRange(start: u32, end: u32, ctx: *const LintContext) ?ParamDecl {
 /// fn_expr / arrow_fn (if the binding was initialized by one).
 fn paramsForDecl(decl: NodeIndex, ctx: *const LintContext) ?ParamDecl {
     if (decl == .none) return null;
-    const parents = ctx.ast.parents;
+    const parents = ctx.semantic.parent_indices;
     if (parents.len == 0) return null;
     const pidx = parents[decl.toInt()];
     if (pidx == std.math.maxInt(u32)) return null;

@@ -406,15 +406,18 @@ pub fn buildTraversalParallel(
 
     // Pre-allocate parents so aux can read it without extra sync.
     const parents = try alloc.alloc(u32, n);
-    if (tree.parents.len == n) {
-        @memcpy(parents, tree.parents[0..n]);
-    } else {
-        @memset(parents, NONE);
+    @memset(parents, NONE);
+    {
         const tags  = tree.nodes.items(.tag);
         const data  = tree.nodes.items(.data);
         const extra = tree.extra_data;
         for (0..n) |i| {
             setChildParents(parents, extra, tags[i], data[i], @intCast(i));
+        }
+        var fi: usize = 0;
+        while (fi + 1 < tree.parent_fixups.len) : (fi += 2) {
+            const child = tree.parent_fixups[fi];
+            if (child < n) parents[child] = tree.parent_fixups[fi + 1];
         }
     }
 
@@ -581,17 +584,18 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
     post_order[n - 1] = 0;
 
     // ── Step 1: Parents ────────────────────────────────────────────────────────
-    // Fast path: parser pre-captured parents at addNode time via setChildParents.
-    // Fallback: forward scan over the already-built tree (cold but correct).
-    if (tree.parents.len == n) {
-        @memcpy(parents, tree.parents[0..n]);
-    } else {
-        @memset(parents, NONE);
+    @memset(parents, NONE);
+    {
         const tags  = tree.nodes.items(.tag);
         const data  = tree.nodes.items(.data);
         const extra = tree.extra_data;
         for (0..n) |i| {
             setChildParents(parents, extra, tags[i], data[i], @intCast(i));
+        }
+        var fi: usize = 0;
+        while (fi + 1 < tree.parent_fixups.len) : (fi += 2) {
+            const child = tree.parent_fixups[fi];
+            if (child < n) parents[child] = tree.parent_fixups[fi + 1];
         }
     }
 

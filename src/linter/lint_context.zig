@@ -5884,11 +5884,6 @@ pub const LintContext = struct {
             const p = sp[i];
             if (p != std.math.maxInt(u32)) return @enumFromInt(p);
         }
-        const ap = self.ast.parents;
-        if (i < ap.len) {
-            const p = ap[i];
-            if (p != @intFromEnum(NodeIndex.none)) return @enumFromInt(p);
-        }
         return .none;
     }
 

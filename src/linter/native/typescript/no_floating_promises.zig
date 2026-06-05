@@ -1228,7 +1228,7 @@ fn calleeDeclaredReturnIsPromise(call: NodeIndex, ctx: *const LintContext) bool 
     const sym = symbolForIdent(callee, ctx) orelse return false;
     const decl = ctx.semantic.symbols.getDeclNode(sym);
     if (decl == .none) return false;
-    const parents = ctx.ast.parents;
+    const parents = ctx.semantic.parent_indices;
     if (parents.len == 0) return false;
     const pidx = parents[decl.toInt()];
     if (pidx == std.math.maxInt(u32)) return false;

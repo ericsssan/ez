@@ -315,7 +315,7 @@ fn contextualReturnFromCall(call: NodeIndex, fn_node: NodeIndex, ctx: *const Lin
     const sym = symbolForIdent(callee, ctx) orelse return null;
     const decl = ctx.semantic.symbols.getDeclNode(sym);
     if (decl == .none) return null;
-    const parents = ctx.ast.parents;
+    const parents = ctx.semantic.parent_indices;
     if (parents.len == 0) return null;
     const pidx = parents[decl.toInt()];
     if (pidx == std.math.maxInt(u32)) return null;

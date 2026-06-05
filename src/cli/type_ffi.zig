@@ -17,7 +17,6 @@ const Ast = parser.ast.Ast;
 const Lexer = parser.Lexer;
 const Parser = parser.Parser;
 const semantic = parser.semantic;
-const parent_builder = parser.parent_builder;
 const Language = parser.token.Language;
 const checker_mod = @import("../checker/root.zig");
 const tymod = checker_mod.types;
@@ -130,9 +129,6 @@ fn openImpl(source_ptr: [*]const u8, source_len: u32, lang_val: u8, is_module: u
     ctx.ast = try Parser.parseWithOptions(a, src, lex.tokens.slice(), .{
         .language = lang, .is_module = mod, .emit_events = true,
     });
-    // The checker reads `ast.parents`; the lint pipeline populates it the same
-    // way.  Set it before semantic so analyze just dups it.
-    ctx.ast.parents = try parent_builder.buildParentsOnly(&ctx.ast, a);
     ctx.sem = try semantic.SemanticAnalyzer.analyzeWithOptions(a, &ctx.ast, .{
         .is_module = mod, .globals = &.{}, .build_parents = true,
     });

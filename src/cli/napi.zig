@@ -680,7 +680,9 @@ fn parseImpl(
                             semantic_data_offset = off;
                         } else |_| {}
                         if (stash_for_types) {
-                            tree.parents = traversal.parents; // for facade parse-reuse (see sequential path)
+                            if (sem.parent_indices.len == 0) {
+                                sem.parent_indices = parent_builder.buildParentsOnly(&tree, sem_arena_ptr.allocator()) catch &.{};
+                            }
                             type_ffi.stashLastParse(&tree, &sem);
                         }
                     } else |_| {}
@@ -706,11 +708,12 @@ fn parseImpl(
             if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
                 semantic_data_offset = off;
             } else |_| {}
-            // Stash for facade parse-reuse. The checker reads `ast.parents`;
-            // set it (parseImpl otherwise leaves it empty). Valid until the
-            // next parse on this thread (sem arena + buffer).
+            // Stash for facade parse-reuse. The checker reads semantic.parent_indices;
+            // build them here (valid until the next parse reuses the sem arena).
             if (stash_for_types) {
-                tree.parents = traversal.parents;
+                if (sem.parent_indices.len == 0) {
+                    sem.parent_indices = parent_builder.buildParentsOnly(&tree, sem_arena_ptr.allocator()) catch &.{};
+                }
                 type_ffi.stashLastParse(&tree, &sem);
             }
         } else |_| {}
@@ -1127,8 +1130,9 @@ fn parseImpl(
             // Stash the streamed parse for facade reuse (kills the double-parse
             // for >=100KB files too). Worker used `stream_parents_for_worker`.
             if (stash_for_types and stream_sem_ctx.sem_value != null) {
-                tree.parents = stream_parents_for_worker;
-                type_ffi.stashLastParse(&tree, &stream_sem_ctx.sem_value.?);
+                var sv = stream_sem_ctx.sem_value.?;
+                if (sv.parent_indices.len == 0) sv.parent_indices = stream_parents_for_worker;
+                type_ffi.stashLastParse(&tree, &sv);
             }
             const main_end = backing.bytesUsed();
             const worker_end = worker_backing.endOffset();

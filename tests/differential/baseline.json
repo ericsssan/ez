@@ -2095,7 +2095,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 42,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -3067,7 +3067,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 31,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -8624,12 +8624,12 @@
     },
     "array-callback-return": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 139,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11258,7 +11258,7 @@
       },
       "native": {
         "fn": 0,
-        "fp": 0,
+        "fp": 15,
         "crash": 0,
         "skip": 0
       },
@@ -12872,7 +12872,7 @@
     },
     "require-atomic-updates": {
       "runner": {
-        "fn": 3,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
@@ -13489,7 +13489,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 31,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20108,7 +20108,7 @@
     },
     "unicorn/no-immediate-mutation": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -22628,9 +22628,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 11690,
-    "runnerCasesPerSec": 7866,
-    "nativeCasesPerSec": 65190,
+    "totalElapsedMs": 11443,
+    "runnerCasesPerSec": 7946,
+    "nativeCasesPerSec": 63782,
     "totalCases": 70585
   }
 }
