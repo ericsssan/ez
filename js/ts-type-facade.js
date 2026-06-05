@@ -562,6 +562,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // Prefer the node's own Ez index; else the mapped ESTree node; else the node
     // itself (a synthetic ESTree node with neither — e.g. a getter's body-less
     // value in a `declare class`).
+    // Synthetic type-parameter default node from synthGenericDecl: carries the
+    // default type id directly so checker.getTypeAtLocation(param.default) works
+    // for no-unnecessary-type-arguments' equality check.
+    if (node != null && node.__ez_defaultTypeId != null) return makeType(node.__ez_defaultTypeId);
     const est = node._i != null ? node : (node._estree || node);
     if (!est) return makeType(undefined);
     // A node is "unresolved" when our checker gave it Unknown OR the error type.
@@ -1328,7 +1332,15 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
             est.arguments.some(a => { const at = a && typeAt(a); return at != null && (at.getFlags() & 1) !== 0; })) {
           sigIdx = nsig - 1;
         }
-        return makeSignature(ct.__ez_typeId, sigIdx, est && est._i != null ? est._i : null);
+        const sig = makeSignature(ct.__ez_typeId, sigIdx, est && est._i != null ? est._i : null);
+        // Patch getDeclaration() so no-unnecessary-type-arguments can read type
+        // parameter defaults from synthGenericDecl even when the callee has a
+        // known function_t (h.sigCount>0 path, not the fallback path).
+        if (callee && callee.type === "Identifier" && !insideModuleBlock(callee)) {
+          const gdecl = synthGenericDeclIfGeneric(callee.name);
+          if (gdecl) { sig.getDeclaration = () => gdecl; sig.declaration = gdecl; }
+        }
+        return sig;
       }
       const sigs = ct && ct.getCallSignatures ? ct.getCallSignatures() : [];
       if (sigs.length) return sigs[0];
