@@ -3409,7 +3409,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 75,
+        "fn": 77,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -3517,7 +3517,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 127,
+        "fn": 129,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4302,6 +4302,24 @@
         "crash": 0
       }
     },
+    "jsdoc/no-restricted-syntax": {
+      "runner": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
     "jsdoc/require-property-name": {
       "runner": {
         "fn": 0,
@@ -4363,7 +4381,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 136,
+        "fn": 139,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5605,7 +5623,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 36,
+        "fn": 40,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20761,7 +20779,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 9,
+        "fn": 13,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20779,7 +20797,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 72,
+        "fn": 108,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20792,12 +20810,12 @@
     },
     "react/sort-comp": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 32,
+        "fn": 51,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20815,7 +20833,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 54,
+        "fn": 81,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20833,7 +20851,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 81,
+        "fn": 116,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20851,7 +20869,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 14,
+        "fn": 20,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20869,7 +20887,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 16,
+        "fn": 24,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20887,7 +20905,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 4,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20905,7 +20923,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 44,
+        "fn": 64,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20918,12 +20936,12 @@
     },
     "react/destructuring-assignment": {
       "runner": {
-        "fn": 21,
+        "fn": 32,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 64,
+        "fn": 99,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20941,7 +20959,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 12,
+        "fn": 18,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20977,7 +20995,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 14,
+        "fn": 20,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -20990,12 +21008,12 @@
     },
     "react/no-unused-prop-types": {
       "runner": {
-        "fn": 1,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 221,
+        "fn": 358,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21013,7 +21031,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 42,
+        "fn": 63,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21031,7 +21049,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 24,
+        "fn": 36,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21049,7 +21067,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 8,
+        "fn": 12,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21067,7 +21085,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 14,
+        "fn": 17,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21080,12 +21098,12 @@
     },
     "react/prefer-read-only-props": {
       "runner": {
-        "fn": 3,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 4,
+        "fn": 8,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21103,7 +21121,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 78,
+        "fn": 117,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21121,7 +21139,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 260,
+        "fn": 390,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21139,7 +21157,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 118,
+        "fn": 177,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21157,7 +21175,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 82,
+        "fn": 123,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21175,7 +21193,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 9,
+        "fn": 17,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21193,7 +21211,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 37,
+        "fn": 60,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21211,7 +21229,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 15,
+        "fn": 24,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21229,7 +21247,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 28,
+        "fn": 42,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21247,7 +21265,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 28,
+        "fn": 42,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21265,7 +21283,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 40,
+        "fn": 60,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21283,7 +21301,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 46,
+        "fn": 69,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21301,7 +21319,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 34,
+        "fn": 51,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21315,11 +21333,11 @@
     "react/jsx-props-no-multi-spaces": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 2,
         "crash": 0
       },
       "native": {
-        "fn": 34,
+        "fn": 51,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21337,7 +21355,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 6,
+        "fn": 9,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21350,12 +21368,12 @@
     },
     "react/no-redundant-should-component-update": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 12,
+        "fn": 18,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21373,7 +21391,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 52,
+        "fn": 78,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21391,7 +21409,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 190,
+        "fn": 287,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21409,7 +21427,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 26,
+        "fn": 39,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21427,7 +21445,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 16,
+        "fn": 24,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21445,7 +21463,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 29,
+        "fn": 46,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21463,7 +21481,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 22,
+        "fn": 33,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21481,7 +21499,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 6,
+        "fn": 9,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21494,12 +21512,12 @@
     },
     "react/no-deprecated": {
       "runner": {
-        "fn": 6,
+        "fn": 9,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 126,
+        "fn": 189,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21517,7 +21535,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 126,
+        "fn": 190,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21535,7 +21553,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 96,
+        "fn": 144,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21553,7 +21571,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 4,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21566,12 +21584,12 @@
     },
     "react/require-default-props": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 90,
+        "fn": 139,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21589,7 +21607,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 114,
+        "fn": 174,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21602,12 +21620,12 @@
     },
     "react/jsx-no-constructed-context-values": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 46,
+        "fn": 69,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21625,7 +21643,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 49,
+        "fn": 71,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21643,7 +21661,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 46,
+        "fn": 55,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21661,7 +21679,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 86,
+        "fn": 130,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21679,7 +21697,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 36,
+        "fn": 54,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21697,7 +21715,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 92,
+        "fn": 137,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21715,7 +21733,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 8,
+        "fn": 12,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21733,7 +21751,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 28,
+        "fn": 42,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21751,7 +21769,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 44,
+        "fn": 66,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21769,7 +21787,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 40,
+        "fn": 62,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21787,7 +21805,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 28,
+        "fn": 42,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21823,7 +21841,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 24,
+        "fn": 36,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21841,7 +21859,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 69,
+        "fn": 121,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21859,7 +21877,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 49,
+        "fn": 75,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21895,7 +21913,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 4,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21913,7 +21931,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 30,
+        "fn": 45,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21931,7 +21949,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 44,
+        "fn": 64,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21949,7 +21967,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 42,
+        "fn": 64,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21967,7 +21985,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 67,
+        "fn": 113,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -21980,12 +21998,12 @@
     },
     "react/no-unused-state": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 60,
+        "fn": 100,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22003,7 +22021,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 20,
+        "fn": 30,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22021,7 +22039,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 172,
+        "fn": 258,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22039,7 +22057,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 38,
+        "fn": 57,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22057,7 +22075,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 12,
+        "fn": 18,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22070,12 +22088,12 @@
     },
     "react/prop-types": {
       "runner": {
-        "fn": 6,
+        "fn": 9,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 308,
+        "fn": 483,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22093,7 +22111,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 12,
+        "fn": 16,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22111,7 +22129,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 24,
+        "fn": 36,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22129,7 +22147,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 26,
+        "fn": 39,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22147,7 +22165,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 10,
+        "fn": 15,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22160,12 +22178,12 @@
     },
     "react/require-render-return": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 7,
+        "fn": 11,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22179,11 +22197,11 @@
     "react/jsx-indent": {
       "runner": {
         "fn": 0,
-        "fp": 14,
+        "fp": 21,
         "crash": 0
       },
       "native": {
-        "fn": 150,
+        "fn": 212,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22201,7 +22219,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 40,
+        "fn": 60,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22219,7 +22237,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 44,
+        "fn": 66,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22232,12 +22250,12 @@
     },
     "react/require-optimization": {
       "runner": {
-        "fn": 2,
-        "fp": 5,
+        "fn": 4,
+        "fp": 10,
         "crash": 0
       },
       "native": {
-        "fn": 13,
+        "fn": 21,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22255,7 +22273,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 17,
+        "fn": 26,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22273,7 +22291,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 174,
+        "fn": 261,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22322,12 +22340,12 @@
     },
     "react/default-props-match-prop-types": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 56,
+        "fn": 89,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22345,7 +22363,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 30,
+        "fn": 45,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22363,7 +22381,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 29,
+        "fn": 46,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22381,7 +22399,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 6,
+        "fn": 12,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22399,7 +22417,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 14,
+        "fn": 21,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22417,7 +22435,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 12,
+        "fn": 18,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22435,7 +22453,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 81,
+        "fn": 122,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22453,7 +22471,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 6,
+        "fn": 9,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22471,7 +22489,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 16,
+        "fn": 24,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22489,7 +22507,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 16,
+        "fn": 24,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22507,7 +22525,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 86,
+        "fn": 129,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22525,7 +22543,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 106,
+        "fn": 162,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22543,7 +22561,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 52,
+        "fn": 79,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22561,7 +22579,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 54,
+        "fn": 81,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22597,7 +22615,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 212,
+        "fn": 318,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22615,7 +22633,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 241,
+        "fn": 362,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -22628,9 +22646,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 11443,
-    "runnerCasesPerSec": 7946,
-    "nativeCasesPerSec": 63782,
-    "totalCases": 70585
+    "totalElapsedMs": 12481,
+    "runnerCasesPerSec": 7707,
+    "nativeCasesPerSec": 66202,
+    "totalCases": 76192
   }
 }

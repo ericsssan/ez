@@ -103,7 +103,7 @@ export default { RuleTester, Linter: _eslint.Linter, ESLint: _eslint.ESLint, Sou
     // ── Parser stubs ──────────────────────────────────────────
     // Prevent loading heavy real parsers. Stub parser cases are detected as
     // custom-parser and skipped in comparison.
-    const parserContents = `const parser = { parse() { return { type: "Program", body: [], range: [0, 0] }; } }; export default parser; export const parse = parser.parse;`;
+    const parserContents = `const parser = { parse() { return { type: "Program", body: [], range: [0, 0] }; }, parseForESLint() { return { ast: { type: "Program", body: [], range: [0, 0] }, services: {}, scopeManager: null, visitorKeys: {} }; } }; export default parser; export const parse = parser.parse; export const parseForESLint = parser.parseForESLint;`;
     for (const pkg of PARSER_PACKAGES) {
       build.module(pkg, () => ({ loader: "js", contents: parserContents }));
       build.module(`${pkg}/package.json`, () => ({ loader: "js", contents: `export const version = "${PARSER_VERSION}"; export default { version: "${PARSER_VERSION}" };` }));
