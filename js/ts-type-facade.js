@@ -648,6 +648,14 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const idTid = h.typeOfNode(est.id._i);
       if (idTid != null && h.kind(idTid) !== 1) tid = idTid;
     }
+    // Resolve identifier value type via `typeof name` semantics — e.g.
+    // `const a = Symbol('a')` → string_literal("a") sentinel so case-test
+    // identifiers match discriminant union constituents by object identity
+    // in switch-exhaustiveness-check's caseTypes.has() call.
+    if (unresolved(tid) && est.type === "Identifier" && est.name && h.typeofByName) {
+      const tv = h.typeofByName(est.name);
+      if (tv != null) tid = tv;
+    }
     // getTypeAtLocation(classDeclaration/classExpression) → the class instance
     // type (named object_t carrying the class symbol name). prefer-readonly uses
     // classType only for typeIsOrHasBaseType comparison by symbol name, so the
@@ -680,21 +688,23 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const rt = h.resolveTypeNodeParam(est._i);
       if (rt != null && h.kind(rt) !== 1) tid = rt;
     }
-    // An annotated binding (param / var id) → its declared annotation type; a
-    // getter accessor / get-method → its return-type annotation (the property
-    // type). Needed by related-getter-setter-pairs (setter param + getter type).
-    if (unresolved(tid)) {
+    // Annotated binding (param / var id): declared annotation type always takes
+    // precedence over the inferred value type. Matches TypeScript's semantics —
+    // `const x: unknown = y as any` → x is `unknown`, not `any`.
+    // Accept unknown (kind=1) from annotations; only reject error (kind=12).
+    {
       let ann = null;
       if (est.type === "Identifier" && est.typeAnnotation) ann = est.typeAnnotation.typeAnnotation;
       else if (est.returnType && (est.kind === "get" || (est.parent && est.parent.kind === "get"))) ann = est.returnType.typeAnnotation;
       if (ann && ann._i != null) {
         const rt = h.resolveTypeNode(ann._i);
-        if (rt != null && h.kind(rt) !== 1) tid = rt;
+        if (rt != null && h.kind(rt) !== 12 /*error*/) tid = rt;
       }
     }
     // Variable declared with an `as` cast (const x = {} as T): resolve T so rules
     // that call getTypeAtLocation(x) get the cast type instead of Unknown.
-    if (unresolved(tid) && est.type === "Identifier") {
+    // Skip if the binding has an explicit annotation — the annotation wins.
+    if (unresolved(tid) && est.type === "Identifier" && !est.typeAnnotation) {
       const vd = est.parent;
       if (vd && vd.type === "VariableDeclarator" && vd.id === est && vd.init &&
           vd.init.type === "TSAsExpression" && vd.init.typeAnnotation) {

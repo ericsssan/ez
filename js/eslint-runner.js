@@ -149,6 +149,8 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/triple-slash-reference",
   "@typescript-eslint/unified-signatures",
   "@typescript-eslint/prefer-readonly",              // 59/83, 71% (PARTIAL: FN on complex as-cast intersection/union; 0 FP)
+  "@typescript-eslint/no-unsafe-assignment",         // 56/56, 100% (CLEAN: annotation binding type takes priority over inferred value)
+  "@typescript-eslint/switch-exhaustiveness-check",  // 43/49, 88% (PARTIAL: Symbol constant case matching via typeofByName FFI)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading

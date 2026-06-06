@@ -609,7 +609,7 @@ pub const Checker = struct {
     /// Walk the AST looking for a top-level declarator/fn_decl/class_decl
     /// with the given name.  Returns the declared/inferred type, or null
     /// if not found.
-    fn typeOfNameByAstSearch(self: *Checker, name: []const u8) ?TypeId {
+    pub fn typeOfNameByAstSearch(self: *Checker, name: []const u8) ?TypeId {
         // Overload handling: when both signature declarations (no body) AND an
         // implementation exist, TS exposes the OVERLOAD SET, not the impl's
         // inferred type — so `function a(): Promise<void>; function a(x): void;
@@ -1833,7 +1833,7 @@ pub const Checker = struct {
     }
 
     /// Returns the class_decl AST node for the class named `name`, or null.
-    fn classAstNodeByName(self: *Checker, name: []const u8) ?NodeIndex {
+    pub fn classAstNodeByName(self: *Checker, name: []const u8) ?NodeIndex {
         const ni = self.type_decl_nodes.get(name) orelse return null;
         if (self.ast_ref.nodeTag(ni) == .class_decl) return ni;
         return null;
@@ -1842,7 +1842,7 @@ pub const Checker = struct {
     /// Returns true when `const <name> = Symbol(...)` exists in the AST —
     /// i.e., a declarator whose lhs is the identifier `name` and whose rhs
     /// is a call_expr whose callee is the global `Symbol` identifier.
-    fn constInitIsSymbolCall(self: *Checker, name: []const u8) bool {
+    pub fn constInitIsSymbolCall(self: *Checker, name: []const u8) bool {
         const list = self.value_decl_by_name.get(name) orelse return false;
         for (list.items) |ni| {
             if (self.ast_ref.nodeTag(ni) != .declarator) continue;
@@ -5626,7 +5626,7 @@ pub const Checker = struct {
     /// distinct from the instance type produced by `new Foo()`.  Construction
     /// itself flows through `newExprInstanceType`, so omitting a construct
     /// signature here is fine.
-    fn buildClassStaticType(self: *Checker, decl: NodeIndex, name: []const u8) TypeId {
+    pub fn buildClassStaticType(self: *Checker, decl: NodeIndex, name: []const u8) TypeId {
         const data = self.ast_ref.nodeData(decl);
         const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(data.lhs));
         if (cd.body == .none) return tymod.ID_UNKNOWN;

@@ -626,6 +626,29 @@ pub export fn ez_type_param_default_at(h: usize, name_ptr: [*]const u8, name_len
     return t.toInt();
 }
 
+// Resolve `typeof name` for a VALUE binding — e.g. `const a = Symbol('a')`
+// returns the string_literal sentinel "a" so switch-exhaustiveness-check can
+// match `case a:` against `typeof a | 2` by identity. Returns NO_TYPE when
+// the name isn't a known constant or resolves to unknown.
+pub export fn ez_type_typeof_by_name(h: usize, name_ptr: [*]const u8, name_len: u32) callconv(.c) u32 {
+    const ctx = ctxFrom(h) orelse return NO_TYPE;
+    // Use the same path as `resolveTypeofType` so Symbol() constants return
+    // their string_literal sentinel and class names return their static type.
+    const name = name_ptr[0..name_len];
+    if (ctx.checker.classAstNodeByName(name)) |class_node| {
+        const t = ctx.checker.buildClassStaticType(class_node, name);
+        if (!t.eq(tymod.ID_UNKNOWN)) return t.toInt();
+    }
+    if (ctx.checker.typeOfNameByAstSearch(name)) |t| {
+        if (t.eq(tymod.ID_UNKNOWN) and ctx.checker.constInitIsSymbolCall(name)) {
+            const s = ctx.checker.store.stringLiteral(name) catch return NO_TYPE;
+            return s.toInt();
+        }
+        if (!t.eq(tymod.ID_UNKNOWN)) return t.toInt();
+    }
+    return NO_TYPE;
+}
+
 // The type-alias name a type was resolved from (`type Foo = …` → "Foo"),
 // independent of the structural name — facade ts.Type.aliasSymbol.
 pub export fn ez_type_alias_name(h: usize, type_id: u32, out: [*]u8, out_len: u32) callconv(.c) u32 {
