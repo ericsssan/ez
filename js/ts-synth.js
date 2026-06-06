@@ -58,7 +58,9 @@ const ESTREE_TO_TS_NAME = Object.freeze({
   Literal: "StringLiteral", // refined dynamically below
   TemplateLiteral: "TemplateExpression",
   ArrayExpression: "ArrayLiteralExpression",
+  ArrayPattern: "ArrayLiteralExpression",    // destructuring LHS
   ObjectExpression: "ObjectLiteralExpression",
+  ObjectPattern: "ObjectLiteralExpression",  // destructuring LHS
   Property: "PropertyAssignment",
   FunctionExpression: "FunctionExpression",
   ArrowFunctionExpression: "ArrowFunction",
@@ -238,8 +240,26 @@ function _refineKind(ts, estNode) {
   if (t === "UpdateExpression") {
     return estNode.prefix ? ts.SyntaxKind.PrefixUnaryExpression : ts.SyntaxKind.PostfixUnaryExpression;
   }
+  if (t === "UnaryExpression") {
+    const op = estNode.operator;
+    if (op === "delete") return ts.SyntaxKind.DeleteExpression;
+    if (op === "void")   return ts.SyntaxKind.VoidExpression;
+    if (op === "typeof") return ts.SyntaxKind.TypeOfExpression;
+    return ts.SyntaxKind.PrefixUnaryExpression;
+  }
   if (t === "SwitchCase") {
     return estNode.test ? ts.SyntaxKind.CaseClause : ts.SyntaxKind.DefaultClause;
+  }
+  // RestElement inside ObjectPattern → SpreadAssignment (for isDestructuringAssignment).
+  // RestElement inside ArrayPattern → SpreadElement.
+  if (t === "RestElement" && estNode.parent) {
+    return estNode.parent.type === "ObjectPattern"
+      ? ts.SyntaxKind.SpreadAssignment
+      : ts.SyntaxKind.SpreadElement;
+  }
+  // SpreadElement inside ObjectExpression → SpreadAssignment.
+  if (t === "SpreadElement" && estNode.parent && estNode.parent.type === "ObjectExpression") {
+    return ts.SyntaxKind.SpreadAssignment;
   }
   if (t === "MethodDefinition") {
     if (estNode.kind === "constructor") return ts.SyntaxKind.Constructor;
@@ -296,7 +316,7 @@ const _tsNodeProto = {
     const t = e.type;
     if (t === "CallExpression" || t === "NewExpression") return this._wrap(e.callee);
     if (t === "MemberExpression") return this._wrap(e.object);
-    if (t === "AwaitExpression" || t === "SpreadElement" || t === "ReturnStatement") return this._wrap(e.argument);
+    if (t === "AwaitExpression" || t === "SpreadElement" || t === "RestElement" || t === "ReturnStatement") return this._wrap(e.argument);
     return this._wrap(e.expression);
   },
   get left() {
@@ -309,6 +329,18 @@ const _tsNodeProto = {
     const e = this._estree;
     // PropertyAccessExpression.name = the right-hand property identifier.
     if (e.type === "MemberExpression") return this._wrap(e.property);
+    // TSParameterProperty.name = the wrapped parameter identifier/binding.
+    if (e.type === "TSParameterProperty") return this._wrap(e.parameter);
+    // Computed PropertyDefinition/MethodDefinition: wrap key in a ComputedPropertyName so
+    // getMemberName (prefer-readonly) correctly returns null for non-numeric computed keys.
+    if (e.computed && e.key != null &&
+        (e.type === "PropertyDefinition" || e.type === "MethodDefinition" ||
+         e.type === "TSAbstractPropertyDefinition" || e.type === "TSAbstractMethodDefinition")) {
+      const ts = this._ts;
+      const wrappedKey = this._wrap(e.key);
+      // _estree = e.key so tsNodeToESTreeNodeMap.get(this) returns the key ESTree node.
+      return { kind: ts.SyntaxKind.ComputedPropertyName, expression: wrappedKey, _estree: e.key };
+    }
     // FunctionDeclaration/ClassDeclaration use .id; PropertyDefinition/MethodDefinition use .key.
     return this._wrap(e.id ?? e.key ?? e.name);
   },
@@ -422,6 +454,22 @@ const _tsNodeProto = {
       : this._ts.SyntaxKind.Unknown;
     return { kind };
   },
+  // PostfixUnaryExpression/PrefixUnaryExpression .operator is a SyntaxKind number.
+  // prefer-readonly checks this to detect ++ / -- modifications.
+  get operator() {
+    const e = this._estree;
+    if (e.type !== "UpdateExpression") return undefined;
+    return e.operator === "++" ? this._ts.SyntaxKind.PlusPlusToken
+         : e.operator === "--" ? this._ts.SyntaxKind.MinusMinusToken
+         : undefined;
+  },
+  // PostfixUnaryExpression/PrefixUnaryExpression .operand → the modified expression.
+  // ESTree uses `argument`; prefer-readonly calls addVariableModification(node.operand).
+  get operand() {
+    const e = this._estree;
+    if (e.type !== "UpdateExpression") return undefined;
+    return this._wrap(e.argument);
+  },
   // TS modifiers array — converts ESTree accessibility/readonly/static/etc. to
   // { kind } objects so getCombinedModifierFlags can compute modifier flags.
   get modifiers() {
@@ -435,6 +483,8 @@ const _tsNodeProto = {
     else if (acc === "protected") mods.push({ kind: ts.SyntaxKind.ProtectedKeyword });
     else if (acc === "public")    mods.push({ kind: ts.SyntaxKind.PublicKeyword });
     if (e.readonly)   mods.push({ kind: ts.SyntaxKind.ReadonlyKeyword });
+    // AccessorProperty (auto-accessor with `accessor` keyword) → Accessor modifier flag.
+    if (e.type === "AccessorProperty" || e.accessor) mods.push({ kind: ts.SyntaxKind.AccessorKeyword });
     if (e.static)     mods.push({ kind: ts.SyntaxKind.StaticKeyword });
     if (e.abstract)   mods.push({ kind: ts.SyntaxKind.AbstractKeyword });
     if (e.override)   mods.push({ kind: ts.SyntaxKind.OverrideKeyword });
@@ -448,12 +498,12 @@ const _tsNodeProto = {
     }
     return mods.length > 0 ? mods : undefined;
   },
-  // TS Identifier/PrivateIdentifier.text — the identifier string.
-  // Used by rules that call node.name.text on class members.
+  // TS Identifier/PrivateIdentifier/NumericLiteral.text — the text string.
+  // NumericLiteral.text must be a string (not number) for getMemberName to work.
   get text() {
     const e = this._estree;
     if (typeof e.name === "string") return e.name;
-    if (typeof e.value === "string") return e.value;
+    if (e.value != null) return String(e.value);
     return "";
   },
   get arguments() {

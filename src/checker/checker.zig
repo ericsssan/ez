@@ -1810,6 +1810,12 @@ pub const Checker = struct {
         if (inner_tag != .identifier and inner_tag != .ts_type_reference) return tymod.ID_UNKNOWN;
         const name = self.ast_ref.tokenText(self.ast_ref.nodeMainToken(inner));
         if (name.len == 0) return tymod.ID_UNKNOWN;
+        // `typeof ClassName` → the static (constructor) type so prefer-readonly's
+        // getTypeToClassRelation returns Class (objectFlags.Anonymous) rather than
+        // Instance (Interface) for modifications via `that = {} as typeof Foo & …`.
+        if (self.classAstNodeByName(name)) |class_node| {
+            return self.buildClassStaticType(class_node, name);
+        }
         // Find a declarator binding the same name and use its inferred type.
         if (self.typeOfNameByAstSearch(name)) |t| {
             // `const x = Symbol(...)` — TypeScript treats `typeof x` as a unique
@@ -1824,6 +1830,13 @@ pub const Checker = struct {
         }
         if (self.global_value_types.get(name)) |t| return t;
         return tymod.ID_UNKNOWN;
+    }
+
+    /// Returns the class_decl AST node for the class named `name`, or null.
+    fn classAstNodeByName(self: *Checker, name: []const u8) ?NodeIndex {
+        const ni = self.type_decl_nodes.get(name) orelse return null;
+        if (self.ast_ref.nodeTag(ni) == .class_decl) return ni;
+        return null;
     }
 
     /// Returns true when `const <name> = Symbol(...)` exists in the AST —
@@ -4139,6 +4152,29 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name, "void")) return tymod.ID_VOID;
         if (std.mem.eql(u8, name, "undefined")) return tymod.ID_UNDEFINED;
         if (std.mem.eql(u8, name, "null")) return tymod.ID_NULL;
+        // `this` in a type position → the instance type of the nearest enclosing
+        // class. This lets prefer-readonly resolve `{} as this & { … }` to an
+        // intersection that includes the class's instance type.
+        if (std.mem.eql(u8, name, "this")) {
+            const parents = self.semantic.parent_indices;
+            const NONE: u32 = @intFromEnum(NodeIndex.none);
+            var p = if (ty_node.toInt() < parents.len) parents[ty_node.toInt()] else NONE;
+            var guard: u8 = 0;
+            while (p != NONE and guard < 32) : (guard += 1) {
+                const pn: NodeIndex = @enumFromInt(p);
+                if (self.ast_ref.nodeTag(pn) == .class_decl) {
+                    const pd = self.ast_ref.nodeData(pn);
+                    if (pd.lhs != .none) {
+                        const cd = self.ast_ref.extraData(ast.ClassData, @intFromEnum(pd.lhs));
+                        const cname = if (cd.name != .none) self.ast_ref.tokenText(self.ast_ref.nodeMainToken(cd.name)) else "";
+                        return self.buildClassInstanceType(pn, cname);
+                    }
+                    return tymod.ID_UNKNOWN;
+                }
+                p = if (@intFromEnum(pn) < parents.len) parents[@intFromEnum(pn)] else NONE;
+            }
+            return tymod.ID_UNKNOWN;
+        }
         // Unknown name (not built-in, not declared anywhere in the file
         // or a known lib type) → error type, unless it matches a
         // type parameter in scope — in which case resolve to its
@@ -5615,7 +5651,10 @@ pub const Checker = struct {
         }
         if (props.items.len == 0) return tymod.ID_UNKNOWN;
         const list = self.store.appendObjectProps(props.items) catch return tymod.ID_UNKNOWN;
-        return self.store.add(.{ .kind = .object_t, .object_props = list, .name = name }) catch tymod.ID_UNKNOWN;
+        // alias_name="__static__" marks this as a class static (constructor) type so
+        // the JS facade can surface objectFlags.Anonymous (16) instead of Interface (2),
+        // allowing prefer-readonly's getTypeToClassRelation to return Class (not Instance).
+        return self.store.add(.{ .kind = .object_t, .object_props = list, .name = name, .alias_name = "__static__" }) catch tymod.ID_UNKNOWN;
     }
 
     fn classMemberToProp(self: *Checker, member: NodeIndex, want_static: bool) ?tymod.ObjectProp {

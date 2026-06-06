@@ -233,6 +233,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
 
   const typeCache = new Map(); // typeId → Type object
   const synthCache = new Map(); // flags → synthetic Type object (identity-stable)
+  // Singleton anonymous-class type: prefer-readonly compares classType.getSymbol().name
+  // with modifierType.getSymbol().name. Anonymous classes (no id) → name="" on both
+  // sides → "" === "" → typeIsOrHasBaseType returns true → modification recorded.
+  let _anonClassType = null;
   // Identity-stable base enum type per enum name. no-unsafe-enum-comparison
   // compares the base enum types of both sides by object identity (Set.has) to
   // allow same-enum comparisons (`Fruit.Apple === Fruit.Banana`), so every
@@ -347,7 +351,9 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         }
         // A named object_t is an interface — carry SymbolFlags.Interface + the
         // declared type so isBuiltinSymbolLike can walk its base types.
-        if (k === 19 /*object_t*/) { const nm = h.refName(typeId); return nm ? makeTypeSymbol(nm, SYMBOL_FLAGS_INTERFACE, typeId) : undefined; }
+        // Anonymous class instances have name="" — still return a symbol so
+        // typeIsOrHasBaseType("" === "") works for anonymous class bodies.
+        if (k === 19 /*object_t*/) { const nm = h.refName(typeId); return makeTypeSymbol(nm, SYMBOL_FLAGS_INTERFACE, typeId); }
         // A type parameter's symbol must carry its declaration so getTypeName /
         // getConstraintInfo can read the constraint via the AST path
         // (symbol.getDeclarations()[0] is a TypeParameterDeclaration whose
@@ -533,7 +539,13 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         // A named object_t is a class/interface instance — flag it Interface so
         // base-type walkers (matchesTypeOrBaseType's getBaseTypesForType) descend
         // into getBaseTypes (restrict-template-expressions' `allow` over a base).
-        if (k === 19 && h.refName(typeId)) return 2 /*ObjectFlags.Interface*/;
+        // Exception: object_t with alias_name="__static__" is a class static (constructor)
+        // type — flag it Anonymous (16) so prefer-readonly's getTypeToClassRelation
+        // returns Class instead of Instance for static member modifications.
+        if (k === 19) {
+          if (h.aliasName(typeId) === "__static__") return 16 /*ObjectFlags.Anonymous*/;
+          if (h.refName(typeId)) return 2 /*ObjectFlags.Interface*/;
+        }
         return 0;
       },
       // ts.TypeReference.typeArguments (the field isUnsafeAssignment reads).
@@ -636,6 +648,24 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const idTid = h.typeOfNode(est.id._i);
       if (idTid != null && h.kind(idTid) !== 1) tid = idTid;
     }
+    // getTypeAtLocation(classDeclaration/classExpression) → the class instance
+    // type (named object_t carrying the class symbol name). prefer-readonly uses
+    // classType only for typeIsOrHasBaseType comparison by symbol name, so the
+    // instance type (same symbol name as `this`) is the correct return value.
+    if (unresolved(tid) && (est.type === "ClassDeclaration" || est.type === "ClassExpression")) {
+      const nm = est.id && est.id.name;
+      if (nm) { const d = h.resolveDeclared(nm); if (d != null) tid = d; }
+      else {
+        // Anonymous class: return a singleton with empty-name symbol so
+        // typeIsOrHasBaseType("" === "") matches the anonymous `this` type
+        // (which is also an object_t with name="" → getSymbol().name="").
+        if (!_anonClassType) {
+          const sym = { name: "", escapedName: "", flags: 0, getName: () => "", getEscapedName: () => "", getDeclarations: () => [], getFlags: () => 0, valueDeclaration: undefined };
+          _anonClassType = { flags: 0, getFlags() { return 0; }, symbol: sym, getSymbol() { return sym; }, types: undefined, isUnion() { return false; }, isIntersection() { return false; }, getBaseTypes() { return undefined; }, getProperties() { return []; }, getProperty() { return undefined; }, getCallSignatures() { return []; }, getConstructSignatures() { return []; } };
+        }
+        return _anonClassType;
+      }
+    }
     // A TS type-annotation node (e.g. the asserted type in `x as T`) resolves
     // as a TYPE, not a value — getTypeAtLocation is called on it directly.
     // Exception: `as const` is a const assertion, not a real type (it makes the
@@ -660,6 +690,19 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       if (ann && ann._i != null) {
         const rt = h.resolveTypeNode(ann._i);
         if (rt != null && h.kind(rt) !== 1) tid = rt;
+      }
+    }
+    // Variable declared with an `as` cast (const x = {} as T): resolve T so rules
+    // that call getTypeAtLocation(x) get the cast type instead of Unknown.
+    if (unresolved(tid) && est.type === "Identifier") {
+      const vd = est.parent;
+      if (vd && vd.type === "VariableDeclarator" && vd.id === est && vd.init &&
+          vd.init.type === "TSAsExpression" && vd.init.typeAnnotation) {
+        const castAnn = vd.init.typeAnnotation.typeAnnotation || vd.init.typeAnnotation;
+        if (castAnn && castAnn._i != null) {
+          const rt = h.resolveTypeNode(castAnn._i);
+          if (rt != null && h.kind(rt) !== 1) tid = rt;
+        }
       }
     }
     // An un-annotated assignment *receiver* (destructuring pattern, default-param

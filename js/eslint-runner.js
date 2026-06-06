@@ -148,6 +148,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/restrict-plus-operands",
   "@typescript-eslint/triple-slash-reference",
   "@typescript-eslint/unified-signatures",
+  "@typescript-eslint/prefer-readonly",              // 59/83, 71% (PARTIAL: FN on complex as-cast intersection/union; 0 FP)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
