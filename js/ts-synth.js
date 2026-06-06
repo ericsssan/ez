@@ -306,8 +306,10 @@ const _tsNodeProto = {
     return this._wrap(this._estree.right);
   },
   get name() {
-    // ESTree id (FunctionDeclaration, ClassDeclaration, etc.) maps to TS .name.
     const e = this._estree;
+    // PropertyAccessExpression.name = the right-hand property identifier.
+    if (e.type === "MemberExpression") return this._wrap(e.property);
+    // FunctionDeclaration/ClassDeclaration use .id; PropertyDefinition/MethodDefinition use .key.
     return this._wrap(e.id ?? e.key ?? e.name);
   },
   get type() {
@@ -326,7 +328,39 @@ const _tsNodeProto = {
     return this._wrap(this._estree.typeName);
   },
   get typeParameters() {
-    return this._wrap(this._estree.typeParameters);
+    const tp = this._estree.typeParameters;
+    if (!tp) return undefined;
+    // ESTree wraps type params in a TSTypeParameterDeclaration container;
+    // TS exposes them as NodeArray<TypeParameterDeclaration> directly on the parent.
+    if (tp.type === "TSTypeParameterDeclaration" && Array.isArray(tp.params)) {
+      return tp.params.map(this._wrap);
+    }
+    return this._wrap(tp);
+  },
+  get parameters() {
+    const e = this._estree;
+    // MethodDefinition/TSMethodSignature wraps the function in .value; others have .params
+    const params = (e.value && e.value.params) || e.params;
+    if (!Array.isArray(params)) return undefined;
+    const ts = this._ts;
+    return params.map(p => {
+      const wrapped = this._wrap(p);
+      if (!wrapped) return wrapped;
+      // Expose modifiers so getCombinedModifierFlags can compute Private/Readonly flags.
+      // ESTree TSParameterProperty carries accessibility/readonly instead of a modifiers array.
+      if (!wrapped.modifiers) {
+        const src = (p.type === "TSParameterProperty") ? p : null;
+        if (src) {
+          const mods = [];
+          if (src.accessibility === "private")   mods.push({ kind: ts.SyntaxKind.PrivateKeyword });
+          if (src.accessibility === "protected") mods.push({ kind: ts.SyntaxKind.ProtectedKeyword });
+          if (src.accessibility === "public")    mods.push({ kind: ts.SyntaxKind.PublicKeyword });
+          if (src.readonly)                      mods.push({ kind: ts.SyntaxKind.ReadonlyKeyword });
+          if (mods.length) wrapped._modifiers = mods;
+        }
+      }
+      return wrapped;
+    });
   },
   get initializer() {
     // VariableDeclarator.init / EnumMember.initializer / PropertyDefinition.value
@@ -387,6 +421,40 @@ const _tsNodeProto = {
       ? this._ts.SyntaxKind[name]
       : this._ts.SyntaxKind.Unknown;
     return { kind };
+  },
+  // TS modifiers array — converts ESTree accessibility/readonly/static/etc. to
+  // { kind } objects so getCombinedModifierFlags can compute modifier flags.
+  get modifiers() {
+    const e = this._estree;
+    const ts = this._ts;
+    // Already-set modifiers (e.g. patched by the parameters getter) take priority.
+    if (this._modifiers !== undefined) return this._modifiers;
+    const mods = [];
+    const acc = e.accessibility;
+    if (acc === "private")   mods.push({ kind: ts.SyntaxKind.PrivateKeyword });
+    else if (acc === "protected") mods.push({ kind: ts.SyntaxKind.ProtectedKeyword });
+    else if (acc === "public")    mods.push({ kind: ts.SyntaxKind.PublicKeyword });
+    if (e.readonly)   mods.push({ kind: ts.SyntaxKind.ReadonlyKeyword });
+    if (e.static)     mods.push({ kind: ts.SyntaxKind.StaticKeyword });
+    if (e.abstract)   mods.push({ kind: ts.SyntaxKind.AbstractKeyword });
+    if (e.override)   mods.push({ kind: ts.SyntaxKind.OverrideKeyword });
+    if (e.declare)    mods.push({ kind: ts.SyntaxKind.DeclareKeyword });
+    if (e.async)      mods.push({ kind: ts.SyntaxKind.AsyncKeyword });
+    if (e.export)     mods.push({ kind: ts.SyntaxKind.ExportKeyword });
+    // MethodDefinition kind → modifier
+    if (e.type === "MethodDefinition" || e.type === "TSAbstractMethodDefinition") {
+      if (e.kind === "get")  mods.push({ kind: ts.SyntaxKind.GetKeyword });
+      if (e.kind === "set")  mods.push({ kind: ts.SyntaxKind.SetKeyword });
+    }
+    return mods.length > 0 ? mods : undefined;
+  },
+  // TS Identifier/PrivateIdentifier.text — the identifier string.
+  // Used by rules that call node.name.text on class members.
+  get text() {
+    const e = this._estree;
+    if (typeof e.name === "string") return e.name;
+    if (typeof e.value === "string") return e.value;
+    return "";
   },
   get arguments() {
     const args = this._estree.arguments;
