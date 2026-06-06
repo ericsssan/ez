@@ -4134,8 +4134,11 @@ pub const Checker = struct {
             return self.store.add(.{ .kind = .boolean_literal, .literal_value = .{ .boolean = false } }) catch tymod.ID_BOOLEAN;
         }
         // Map common built-ins to canonical types so containsAny on
-        // `Array<any>` flags correctly without resolving the lib.
-        if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+        // `Array<any>` flags correctly without resolving the lib. A user that
+        // shadows the name (`interface Array {…}` / `namespace N { interface
+        // Array {…} }`) lands in type_decl_nodes (lib seeds never do), so skip
+        // the builtin shortcut and fall through to resolveDeclaredType for it.
+        if ((std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) and !self.type_decl_nodes.contains(name)) {
             const elem = self.firstTypeArg(ty_node);
             const inner = if (elem == .none) tymod.ID_ANY else self.resolveTypeNode(elem);
             return self.store.arrayOf(inner) catch tymod.ID_ANY;

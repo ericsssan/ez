@@ -152,6 +152,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/no-unsafe-assignment",         // 56/56, 100% (CLEAN: annotation binding type takes priority over inferred value)
   "@typescript-eslint/switch-exhaustiveness-check",  // 43/49, 88% (PARTIAL: Symbol constant case matching via typeofByName FFI)
   "@typescript-eslint/no-floating-promises",         // 91/101, 90% (PARTIAL: 0 FP; FNs on complex Promise-union wrapping)
+  "@typescript-eslint/require-array-sort-compare",    // 8/16, 50% (PARTIAL: 0 FP; checker user-shadowed-Array guard fixed 2 FP)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
