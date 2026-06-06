@@ -1459,6 +1459,10 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     },
     // Direct maps onto the signature/property surface.
     getReturnTypeOfSignature(sig) { return sig && sig.getReturnType ? sig.getReturnType() : undefined; },
+    // Returns a call/construct signature for a declaration node. Used by
+    // no-unnecessary-type-parameters to count type parameter usages through
+    // the type system. We return null so visitSignature short-circuits safely.
+    getSignatureFromDeclaration() { return null; },
     getPropertyOfType(type, name) { return type && type.getProperty ? type.getProperty(name) : undefined; },
     getTypeOfPropertyOfType(type, name) {
       const s = type && type.getProperty ? type.getProperty(name) : undefined;

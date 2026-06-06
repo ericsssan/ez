@@ -1140,8 +1140,8 @@ function _memberToQualifiedName(ast, idx) {
     ? _memberToQualifiedName(ast, lhs)
     : nodeView(ast, lhs); // Identifier
   const rightNode = nodeView(ast, rhs); // property_ident → Identifier
-  const start = leftNode.start;
-  const end = rightNode.end;
+  const start = leftNode ? leftNode.start : 0;
+  const end = rightNode ? rightNode.end : (leftNode ? leftNode.end : 0);
   return _syntheticNode('TSQualifiedName', start, end, { left: leftNode, right: rightNode }, ast);
 }
 
