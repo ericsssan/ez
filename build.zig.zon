@@ -6,7 +6,7 @@
             .path = "../es-parser",
         },
     },
-    .minimum_zig_version = "0.17.0-dev.305+bdfbf432d",
+    .minimum_zig_version = "0.17.0-dev.607+456b2ec07",
     .fingerprint = 0xe983153fc28c38f3,
     .paths = .{
         "build.zig",
