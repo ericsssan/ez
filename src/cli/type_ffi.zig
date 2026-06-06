@@ -626,25 +626,23 @@ pub export fn ez_type_param_default_at(h: usize, name_ptr: [*]const u8, name_len
     return t.toInt();
 }
 
-// Resolve `typeof name` for a VALUE binding — e.g. `const a = Symbol('a')`
+// Resolve `typeof name` for a Symbol-constant binding — e.g. `const a = Symbol('a')`
 // returns the string_literal sentinel "a" so switch-exhaustiveness-check can
-// match `case a:` against `typeof a | 2` by identity. Returns NO_TYPE when
-// the name isn't a known constant or resolves to unknown.
+// match `case a:` against `typeof a | 2` by identity. Returns NO_TYPE for
+// non-Symbol bindings (class names, plain values) to avoid polluting heritage-clause
+// type resolution (class Foo in `extends Foo` must not resolve via this path).
 pub export fn ez_type_typeof_by_name(h: usize, name_ptr: [*]const u8, name_len: u32) callconv(.c) u32 {
     const ctx = ctxFrom(h) orelse return NO_TYPE;
-    // Use the same path as `resolveTypeofType` so Symbol() constants return
-    // their string_literal sentinel and class names return their static type.
     const name = name_ptr[0..name_len];
-    if (ctx.checker.classAstNodeByName(name)) |class_node| {
-        const t = ctx.checker.buildClassStaticType(class_node, name);
-        if (!t.eq(tymod.ID_UNKNOWN)) return t.toInt();
-    }
+    // Only return the string_literal sentinel for Symbol() constants.
+    // Class static types and other value types are resolved through other paths
+    // (classDeclaration/classExpression branch in typeAt, typeOfNode, etc.)
+    // so they must NOT appear here or they corrupt heritage-clause resolution.
     if (ctx.checker.typeOfNameByAstSearch(name)) |t| {
         if (t.eq(tymod.ID_UNKNOWN) and ctx.checker.constInitIsSymbolCall(name)) {
             const s = ctx.checker.store.stringLiteral(name) catch return NO_TYPE;
             return s.toInt();
         }
-        if (!t.eq(tymod.ID_UNKNOWN)) return t.toInt();
     }
     return NO_TYPE;
 }

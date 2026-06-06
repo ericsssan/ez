@@ -395,11 +395,27 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
         }
         return undefined;
       },
-      // ts.IntrinsicType.intrinsicName — 'true'/'false' for boolean literals,
-      // 'error' for the error type (isIntrinsicErrorType / isTypeAnyType read it).
+      // ts.IntrinsicType.intrinsicName — scalar primitives + 'true'/'false' for
+      // boolean literals, 'error' for the error type.  Rules and type-utils use
+      // this for specifierNameMatches (allow-option matching) and isTypeAnyType.
       get intrinsicName() {
         if (flags & 8192) { const v = h.litBool(typeId); return v === 1 ? "true" : v === 0 ? "false" : undefined; }
-        if (typeId != null && h.kind(typeId) === 12 /*error_t*/) return "error";
+        if (typeId == null) return undefined;
+        switch (h.kind(typeId)) {
+          case 0: return "any";
+          case 1: return "unknown";
+          case 2: return "never";
+          case 3: return "null";
+          case 4: return "undefined";
+          case 5: return "void";
+          case 6: return "number";
+          case 7: return "string";
+          case 8: return "boolean";
+          case 9: return "bigint";
+          case 10: return "symbol";
+          case 11: return "object";
+          case 12: return "error";
+        }
         return undefined;
       },
       // Call signatures (params + return type) — the checker fills these for

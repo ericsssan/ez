@@ -57,7 +57,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/prefer-optional-chain",                 // 586/587 (CRASH-batch: literal .value FFIs + `||` nullish strip)
   "@typescript-eslint/no-confusing-void-expression",          // 55/55 (CRASH-batch: getTypeFromTypeNode/getContextualType + arrow/call-arg contextual)
   "@typescript-eslint/promise-function-async",                // 18/27, 0 FP (CRASH-batch: type.getBaseTypes + target.getSymbol/getBaseTypes)
-  "@typescript-eslint/no-misused-promises",                   // 25/88, 0 FP (CRASH-batch: never-undefined getTypeAtLocation + full synthetic-type surface)
+  "@typescript-eslint/no-misused-promises",                   // 51/88, 58% (PARTIAL: 0 FP; recall gated by absent void-return contextual type)
   "@typescript-eslint/return-await",                          // 38/44, 0 FP (CRASH-batch: synth getChildAt + TryStatement tryBlock/catchClause/finallyBlock)
   "@typescript-eslint/no-redundant-type-constituents",        // 46/49, 0 FP (CRASH-batch: adapter .literal negative-bigint + template-literal-type → String)
   "@typescript-eslint/no-floating-promises",                  // 69/101, 0 FP (alias-name preservation + getCurrentDirectory/fileName + CFA logical short-circuit)
@@ -365,9 +365,17 @@ function _makeLightParserServices(sourceCode) {
             if (v) {
               const d = v.defs.at(0);
               if (d && d.type === 'ImportBinding') {
-                // Imported binding — return a user-defined (non-builtin) placeholder
-                // so `type.getSymbol()` is non-null and isBuiltinSymbolLike = false.
-                return { flags: 0, getFlags: () => 0, getSymbol: () => ({ name: node.name, escapedName: node.name, flags: 0, getFlags: () => 0, getDeclarations: () => [{ getSourceFile: () => ({ __ez_lib: false, fileName: '' }) }], getName: () => node.name, getEscapedName: () => node.name }), getBaseTypes: () => undefined, getProperty: () => undefined, getProperties: () => [], isUnion: () => false, isIntersection: () => false, isTypeParameter: () => false, types: undefined };
+                // Imported binding — overlay a non-null non-builtin symbol on the
+                // actual type so isBuiltinSymbolLike returns false.  Preserve the
+                // real `flags` from `t` so rules that check TypeFlags.Unknown /
+                // TypeFlags.Any (e.g. only-throw-error) still classify correctly.
+                const _importSym = { name: node.name, escapedName: node.name, flags: 0, getFlags: () => 0, getDeclarations: () => [{ getSourceFile: () => ({ __ez_lib: false, fileName: '' }) }], getName: () => node.name, getEscapedName: () => node.name };
+                const _tf = t.flags ?? 0;
+                const _tOverride = Object.create(t);
+                _tOverride.flags = _tf;
+                _tOverride.getFlags = () => _tf;
+                _tOverride.getSymbol = () => _importSym;
+                return _tOverride;
               }
               break; // found a non-global binding (var/let/param/etc.) — not an import, stop
             }
