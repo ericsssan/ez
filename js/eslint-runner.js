@@ -151,6 +151,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/prefer-readonly",              // 59/83, 71% (PARTIAL: FN on complex as-cast intersection/union; 0 FP)
   "@typescript-eslint/no-unsafe-assignment",         // 56/56, 100% (CLEAN: annotation binding type takes priority over inferred value)
   "@typescript-eslint/switch-exhaustiveness-check",  // 43/49, 88% (PARTIAL: Symbol constant case matching via typeofByName FFI)
+  "@typescript-eslint/no-floating-promises",         // 91/101, 90% (PARTIAL: 0 FP; FNs on complex Promise-union wrapping)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
@@ -369,7 +370,11 @@ function _makeLightParserServices(sourceCode) {
                 // actual type so isBuiltinSymbolLike returns false.  Preserve the
                 // real `flags` from `t` so rules that check TypeFlags.Unknown /
                 // TypeFlags.Any (e.g. only-throw-error) still classify correctly.
-                const _importSym = { name: node.name, escapedName: node.name, flags: 0, getFlags: () => 0, getDeclarations: () => [{ getSourceFile: () => ({ __ez_lib: false, fileName: '' }) }], getName: () => node.name, getEscapedName: () => node.name };
+                // The synthetic declaration needs `.kind` = SourceFile (308) so
+                // typeDeclaredInPackageDeclarationFile's findParentModuleDeclaration
+                // terminates rather than walking `.parent` into undefined and crashing.
+                const _importDecl = { kind: 308 /*SourceFile*/, parent: undefined, getSourceFile: () => ({ __ez_lib: false, fileName: '', path: '' }) };
+                const _importSym = { name: node.name, escapedName: node.name, flags: 0, getFlags: () => 0, getDeclarations: () => [_importDecl], getName: () => node.name, getEscapedName: () => node.name };
                 const _tf = t.flags ?? 0;
                 const _tOverride = Object.create(t);
                 _tOverride.flags = _tf;

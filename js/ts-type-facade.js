@@ -1547,6 +1547,11 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     // True for our LIB sentinel source file (builtin types) — backs
     // isSymbolFromDefaultLibrary in isBuiltinSymbolLike.
     isSourceFileDefaultLibrary(sf) { return !!(sf && sf.__ez_lib); },
+    // typeDeclaredInPackageDeclarationFile uses this to map source file paths to
+    // their npm package name; we don't resolve external packages, so always empty.
+    sourceFileToPackageName: new Map(),
+    // All our source files are in-project (none from external libraries).
+    isSourceFileFromExternalLibrary() { return false; },
   };
 
   return {
