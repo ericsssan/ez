@@ -1388,7 +1388,7 @@
     },
     "@typescript-eslint/typedef": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -22646,9 +22646,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 12481,
-    "runnerCasesPerSec": 7707,
-    "nativeCasesPerSec": 66202,
+    "totalElapsedMs": 12755,
+    "runnerCasesPerSec": 7696,
+    "nativeCasesPerSec": 65844,
     "totalCases": 76192
   }
 }

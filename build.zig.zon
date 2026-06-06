@@ -3,8 +3,8 @@
     .version = "0.0.1",
     .dependencies = .{
         .es_parser = .{
-            .url = "https://github.com/ericsssan/es-parser/archive/refs/tags/v0.2.2.tar.gz",
-            .hash = "es_parser-0.2.1-C15LK3WvFwAdo75v0S3KALGd9AMvDlvNwBbvwg-PnzX9",
+            .url = "https://github.com/ericsssan/es-parser/archive/refs/tags/v0.2.3.tar.gz",
+            .hash = "es_parser-0.2.3-C15LK1W6FwAUo_FK1_GRt-uaBXcf97NgUdAWz7XEiNs7",
         },
     },
     .minimum_zig_version = "0.17.0-dev.305+bdfbf432d",
