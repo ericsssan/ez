@@ -210,6 +210,12 @@ pub const LintContext = struct {
     /// Null when cross-file resolution is disabled or not yet created.
     module_cache: ?*@import("../checker/module_cache.zig").ModuleCache = null,
 
+    /// Optional parent-indices override: when set, parentOf() uses this
+    /// instead of semantic.parent_indices.  Set by the linter when the
+    /// semantic result was built without build_parents=true (no-semantic-needed
+    /// rules still call parentOf, e.g. no-explicit-any, no-namespace).
+    parent_indices_override: ?[]const u32 = null,
+
     /// Per-node minimum/maximum main_token index over the node's full subtree.
     /// Used by `nodeSpan` so a node's diagnostic span covers from the first
     /// child token (`node_min_toks[i]`) to the last child token+len
@@ -5879,7 +5885,8 @@ pub const LintContext = struct {
     /// `parents_buf` when semantic didn't compute its own array.
     pub fn parentOf(self: *const LintContext, index: NodeIndex) NodeIndex {
         const i = @intFromEnum(index);
-        const sp = self.semantic.parent_indices;
+        // Prefer the override (set when semantic was built without build_parents).
+        const sp = self.parent_indices_override orelse self.semantic.parent_indices;
         if (i < sp.len) {
             const p = sp[i];
             if (p != std.math.maxInt(u32)) return @enumFromInt(p);

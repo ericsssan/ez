@@ -258,18 +258,19 @@ pub fn lintWithPath(
     const node_max_toks: []u32 = try allocator.alloc(u32, n);
     defer allocator.free(node_max_toks);
     @memcpy(node_max_toks, tree.nodes.items(.main_token));
+    // Built lazily when semantic.parent_indices is empty; freed at function exit.
+    var parent_override: ?[]u32 = null;
+    defer if (parent_override) |p| allocator.free(p);
     {
         // Prefer semantic.parent_indices when available; otherwise build a
-        // throwaway parents array so node-walk-only rules (which don't trigger
-        // needsSemantic) still get correct nodeSpan starts.
+        // parents array so node-walk-only rules (which don't trigger
+        // needsSemantic) still get correct nodeSpan starts AND parentOf() works.
         const NONE = std.math.maxInt(u32);
-        var owned_parents: ?[]u32 = null;
-        defer if (owned_parents) |p| allocator.free(p);
         const parents: []const u32 = if (semantic.parent_indices.len == n)
             semantic.parent_indices
         else blk: {
             const p = try @import("es_parser").parent_builder.buildParentsOnly(tree, allocator);
-            owned_parents = p;
+            parent_override = p;
             break :blk p;
         };
         if (parents.len == n) {
@@ -307,6 +308,7 @@ pub fn lintWithPath(
         .checker_storage = &checker_storage,
         .file_path = file_path,
         .module_cache = if (mc_storage) |*mc| mc else null,
+        .parent_indices_override = if (parent_override) |p| p else null,
     };
 
     // ── Phase 1: AST node walk (CSR dispatch) ─────────────────
@@ -453,18 +455,18 @@ pub fn lintRulesByName(
     const node_max_toks: []u32 = try allocator.alloc(u32, n);
     defer allocator.free(node_max_toks);
     @memcpy(node_max_toks, tree.nodes.items(.main_token));
+    var parent_override2: ?[]u32 = null;
+    defer if (parent_override2) |p| allocator.free(p);
     {
         // Prefer semantic.parent_indices when available; otherwise build a
-        // throwaway parents array so node-walk-only rules (which don't trigger
-        // needsSemantic) still get correct nodeSpan starts.
+        // parents array so node-walk-only rules (which don't trigger
+        // needsSemantic) still get correct nodeSpan starts AND parentOf() works.
         const NONE = std.math.maxInt(u32);
-        var owned_parents: ?[]u32 = null;
-        defer if (owned_parents) |p| allocator.free(p);
         const parents: []const u32 = if (semantic.parent_indices.len == n)
             semantic.parent_indices
         else blk: {
             const p = try @import("es_parser").parent_builder.buildParentsOnly(tree, allocator);
-            owned_parents = p;
+            parent_override2 = p;
             break :blk p;
         };
         if (parents.len == n) {
@@ -492,6 +494,7 @@ pub fn lintRulesByName(
         .node_max_toks = node_max_toks,
         .node_min_toks = node_min_toks,
         .checker_storage = &checker_storage,
+        .parent_indices_override = if (parent_override2) |p| p else null,
     };
 
     // Phase 1: node walk via CSR dispatch.
