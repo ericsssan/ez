@@ -9088,6 +9088,27 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Phase 3 (after_enter): fires after enter handler, before visiting children.
       // Used for SwitchCase segment starts so rules can set state in SwitchCase handler first.
       if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 3);
+      // ESLint fires onCodePathSegmentLoop with node=body-BlockStatement BEFORE visiting
+      // the for-in/of body (via makeForInOfBody() called at body enter). Our Zig CFG stores
+      // the seg_loop event at EXIT of the loop node. Pre-fire it here at AFTER_ENTER
+      // (before children) with the body block so rules like sonarjs/no-parameter-reassignment
+      // can set up their "foreach" context before identifiers inside the body are visited.
+      if (_segLoopH && _cfgHasPhaseCsr && (tag === T.for_in_stmt || tag === T.for_of_stmt || tag === T.for_await_of_stmt)) {
+        const _loopNode = nodeView(ast, idx);
+        const _bodyBlock = _loopNode.body;
+        if (_bodyBlock && _bodyBlock.type === 'BlockStatement') {
+          const _exitStart = _cfgExitStarts ? _cfgExitStarts[idx] : 0;
+          const _exitEnd = _cfgExitStarts ? _cfgExitStarts[idx + 1] : 0;
+          for (let _ek = _exitStart; _ek < _exitEnd; _ek++) {
+            const _eBase = _ek * 3;
+            if (_cfgExitData[_eBase] === 6) {
+              const _fromSeg = _cfgGraph.segment(_cfgExitData[_eBase + 1]);
+              const _toSeg   = _cfgGraph.segment(_cfgExitData[_eBase + 2]);
+              if (_fromSeg && _toSeg && _fromSeg.reachable) _dispatchSegLoop(_fromSeg, _toSeg, _bodyBlock);
+            }
+          }
+        }
+      }
       // Synthesize ChainExpression enter for outermost chain nodes. The outermost can be
       // either an optional tag (e.g. `a?.b`) OR a regular member/call wrapping an optional
       // chain (e.g. `a?.b.c` — outer is a regular member_expr; the chain extends through it).
