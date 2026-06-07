@@ -531,8 +531,20 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // unicorn/prefer-module which checks that __dirname is an unresolved global reference.
     const tcGlobals = tcLanguageOptions.globals || null;
     const _p0 = Date.now();
-    const ast = parse(src, { filename, lang: parseLang, globals, sourceType,
+    let ast = parse(src, { filename, lang: parseLang, globals, sourceType,
       parserOptions: tcLanguageOptions.parserOptions });
+    // If JS parse produced ErrorNodes, retry as TS — the source may be valid TypeScript
+    // (custom TS parser in ESLint test) but was incorrectly marked isTypeScript:false.
+    // Only upgrade when TS parse is completely clean (no ErrorNodes), to avoid masking
+    // genuine syntax errors that the oracle also saw via espree.
+    if (parseLang === "js" && ast._nodeTags && ast._nodeTags.includes(193 /* T.error_node */)) {
+      const _tsFilename = filename.replace(/\.js$/, ".ts") || filename;
+      try {
+        const _tsAst = parse(src, { filename: _tsFilename, lang: "ts", globals, sourceType,
+          parserOptions: tcLanguageOptions.parserOptions });
+        if (!_tsAst._nodeTags.includes(193)) ast = _tsAst;
+      } catch { /* keep JS ast */ }
+    }
     _runnerParseMs += Date.now() - _p0;
     // Re-use the caller-provided plugin identity (same object → buildVisitorMap fast path),
     // or create a fresh one (cold path, for backward compatibility if called standalone).
