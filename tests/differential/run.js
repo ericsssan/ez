@@ -579,6 +579,19 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
       });
       _testRuleCfg["test/use-a"] = ["warn"];
     }
+    // custom/use-every-a: ESLint's no-unused-vars test uses this plugin to mark
+    // variable "a" as used on every VariableDeclaration and ReturnStatement.
+    if (/\/\*\s*eslint\s+custom\/use-every-a\b/.test(src)) {
+      _testPlugins.push({
+        meta: { name: "custom/use-every-a" },
+        create(context) {
+          const sc = context.sourceCode;
+          function useA(node) { sc.markVariableAsUsed("a", node); }
+          return { VariableDeclaration: useA, ReturnStatement: useA };
+        },
+      });
+      _testRuleCfg["custom/use-every-a"] = ["warn"];
+    }
     if (/\/\*\s*eslint\s+test\/unknown-ref\b/.test(src)) {
       _testPlugins.push({
         meta: { name: "test/unknown-ref" },

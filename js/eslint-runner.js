@@ -4835,6 +4835,28 @@ class SourceCode {
   }
 
   /**
+   * ESLint 9: sourceCode.markVariableAsUsed(name, refNode?) — marks a variable
+   * as used so no-unused-vars (and similar rules) skip it. Mirrors ESLint v9's
+   * SourceCode method. Rules like custom/use-every-a call this.
+   */
+  markVariableAsUsed(name, refNode = this._ast) {
+    const currentScope = this.getScope(refNode || this._ast);
+    let initialScope = currentScope;
+    if (currentScope.type === 'global' && currentScope.childScopes.length > 0 &&
+        currentScope.childScopes[0].block === this._ast) {
+      initialScope = currentScope.childScopes[0];
+    }
+    for (let scope = initialScope; scope; scope = scope.upper) {
+      const variable = scope.variables.find(v => v.name === name);
+      if (variable) {
+        variable.eslintUsed = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
+   /**
    * ESLint 9: getDisableDirectives() — inline disable directive info.
    * Parses eslint-disable comments from the AST's comment list.
    */
