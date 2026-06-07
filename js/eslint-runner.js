@@ -8496,7 +8496,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             cp.currentSegments = [cp.initialSegment];
             if (_cpStartH) {
               const nt = node.type;
-              const cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
+              let cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
+              // When globalReturn=true, Zig emits a synthetic function code path on the
+              // Program node (the top-level globalReturn wrapper). ESLint does not emit this.
+              // Rules like no-invalid-this call isDefaultThisBinding(cpNode, ...) which accesses
+              // cpNode.parent.type — throws for null parent (root node). Wrap the node so parent
+              // returns a safe synthetic ancestor (Program-level expression statement) so
+              // isDefaultThisBinding falls through to `default: return true` without crashing.
+              if (nodeIdx === 0 && cp.origin === 'function' && context.sourceCode._globalReturn) {
+                const _synthParent = { type: 'ExpressionStatement', parent: null };
+                cpNode = Object.create(cpNode);
+                Object.defineProperty(cpNode, 'parent', { value: _synthParent, configurable: true });
+              }
               const hn = _cpStartH.length;
               let h = 0;
               try {
