@@ -4817,10 +4817,45 @@ function _NodeView_LNT(ast, idx, tag, type) {  // ['left','name','typeAnnotation
   this._cachedName = undefined;
   // synth caches externalized — see _NodeView comment.
 }
+// Regex/bigint literals need `regex`/`bigint` as own data properties so that
+// `Object.hasOwn(n, 'regex')` returns true (ESLint rules check) and `n.regex`
+// hits a fast own-property IC load.  Baking them in the constructor (same as
+// `_cachedName` in _NodeView_LR) moves the hidden-class transition from the
+// post-construction site in _nodeViewRaw into the constructor body, where V8
+// can track it as part of the constructor's stable allocation profile.
+// Must use Object.defineProperty (not assignment) because NodeProto defines
+// getter-only `get regex()` / `get bigint()` — a plain assignment walks the
+// prototype chain, hits the getter with no setter, and throws in strict mode.
+function _NodeView_Regex(ast, idx, tag, type) {
+  this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
+  this.type = type; this._loc = null;
+  this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
+  this._cachedName = undefined;
+  const src = ast._rawTokenText(ast._mainTokens[idx]);
+  const lastSlash = src.lastIndexOf('/');
+  Object.defineProperty(this, 'regex', {
+    value: lastSlash > 0 ? { pattern: src.slice(1, lastSlash), flags: src.slice(lastSlash + 1) } : undefined,
+    writable: true, enumerable: true, configurable: true,
+  });
+}
+function _NodeView_Bigint(ast, idx, tag, type) {
+  this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
+  this.type = type; this._loc = null;
+  this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
+  this._cachedName = undefined;
+  const src = ast._rawTokenText(ast._mainTokens[idx]);
+  Object.defineProperty(this, 'bigint', {
+    value: src.endsWith('n') ? src.slice(0, -1) : src,
+    writable: true, enumerable: true, configurable: true,
+  });
+}
+
 _NodeView_LRN.prototype = _getTypeProto(T.rest_element);
 _NodeView_LR.prototype  = _getTypeProto(T.identifier);
 _NodeView_N.prototype   = _getTypeProto(T.assignment_pattern);
 _NodeView_LNT.prototype = _getTypeProto(T.ts_parameter_property);
+_NodeView_Regex.prototype = NodeProto;
+_NodeView_Bigint.prototype = NodeProto;
 
 // Tag → constructor table. Default cell = `_NodeView` (NodeProto). Special
 // tags route to their override-set ctor. Lookup is a single array read.
@@ -4831,6 +4866,8 @@ for (const t of [T.rest_element, T.object_pattern, T.array_pattern,
 for (const t of [T.identifier, T.property_ident]) _NODE_CTOR[t] = _NodeView_LR;
 _NODE_CTOR[T.assignment_pattern] = _NodeView_N;
 _NODE_CTOR[T.ts_parameter_property] = _NodeView_LNT;
+_NODE_CTOR[T.regex_literal]  = _NodeView_Regex;
+_NODE_CTOR[T.bigint_literal] = _NodeView_Bigint;
 
 /** Raw nodeView — returns per-type proto node, no ChainExpression wrapping. */
 function _nodeViewRaw(ast, index) {
@@ -4846,26 +4883,8 @@ function _nodeViewRaw(ast, index) {
   // prototype; no setPrototypeDirect on any path.
   const Ctor = _NODE_CTOR[tag];
   const n = new Ctor(ast, index, tag, _computeNodeType(ast, index, tag));
-  // Eager-fill regex/bigint as own DATA properties so `Object.hasOwn(n,
-  // 'regex')` returns true (ESLint rules check) AND `n.regex` reads
-  // through a fast IC load instead of dispatching the prototype getter
-  // every access.
-  if (tag === T.regex_literal) {
-    const src = ast._rawTokenText(ast._mainTokens[index]);
-    const lastSlash = src.lastIndexOf('/');
-    Object.defineProperty(n, 'regex', {
-      value: lastSlash > 0
-        ? { pattern: src.slice(1, lastSlash), flags: src.slice(lastSlash + 1) }
-        : undefined,
-      writable: true, enumerable: true, configurable: true,
-    });
-  } else if (tag === T.bigint_literal) {
-    const src = ast._rawTokenText(ast._mainTokens[index]);
-    Object.defineProperty(n, 'bigint', {
-      value: src.endsWith('n') ? src.slice(0, -1) : src,
-      writable: true, enumerable: true, configurable: true,
-    });
-  }
+  // regex/bigint own properties are now baked in at construction time by
+  // _NodeView_Regex/_NodeView_Bigint — no post-construction defineProperty needed.
   cache[index] = n;
   return n;
 }
