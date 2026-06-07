@@ -958,6 +958,16 @@ pub const LintContext = struct {
         return c.store.get(id).enum_name;
     }
 
+    /// For a `type_param` TypeId, return its constraint TypeId (null = unconstrained).
+    pub fn typeParamConstraint(self: *const LintContext, id: tymod.TypeId) ?tymod.TypeId {
+        const c = self.ensureChecker() orelse return null;
+        const t = c.store.get(id);
+        if (t.kind != .type_param) return null;
+        const ids = c.store.idsOf(t.list_data);
+        if (ids.len == 0) return null;
+        return ids[0];
+    }
+
     /// Array element TypeId — for `T[]`, `readonly T[]`, `Array<T>`, and
     /// `ReadonlyArray<T>`.  Returns null when not an array-like type.
     pub fn typeIdArrayElement(self: *const LintContext, id: tymod.TypeId) ?tymod.TypeId {
@@ -2010,6 +2020,9 @@ pub const LintContext = struct {
         if (t.kind == .union_t or t.kind == .intersection_t) {
             for (c.store.idsOf(t.list_data)) |m| {
                 if (self.typeIdIsThenable(m)) return true;
+                // error_t in a union means one arm was unresolved — could be a
+                // Promise at runtime, so treat the union as potentially thenable.
+                if (c.store.get(m).kind == .error_t) return true;
             }
             return false;
         }

@@ -386,7 +386,8 @@ fn isFixableForOperator(op: NullishOperator, has_null: bool, has_undef: bool, va
         .strict_eq, .strict_neq => {
             if (has_null and has_undef) return true;
             // TSe: only bail for any/unknown in the unbalanced strict case.
-            if (ctx.typeIdIsAny(ty) or ctx.typeIdIsUnknown(ty)) return false;
+            // error_t (unresolved reference) behaves like any — can't determine nullability.
+            if (ctx.typeIdIsAny(ty) or ctx.typeIdIsUnknown(ty) or ctx.typeIdIsError(ty)) return false;
             if (has_undef and !has_null) {
                 return !ctx.typeIdContainsNull(ty);
             }

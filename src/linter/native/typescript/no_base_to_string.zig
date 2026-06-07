@@ -247,8 +247,18 @@ fn toStringCertainty(id: TypeId, opts: Options, ctx: *const LintContext, depth: 
     if (ctx.typeIdIsExactlyBoolean(id)) return .always;
     if (id.eq(tymod.ID_NULL) or id.eq(tymod.ID_UNDEFINED) or id.eq(tymod.ID_VOID) or id.eq(tymod.ID_SYMBOL)) return .always;
     if (ctx.typeIdIsAny(id)) return .always;
+    // error_t means an unresolved/undeclared reference — treat conservatively
+    // as "always safe" (same as any) so we don't FP on out-of-scope names.
+    if (ctx.typeIdIsError(id)) return .always;
     if (ctx.typeIdIsUnknown(id)) return if (opts.check_unknown) .sometimes else .always;
     if (id.eq(tymod.ID_NEVER)) return .always;
+    // Unconstrained/constrained type parameters: follow constraint if present,
+    // else treat like unknown (safe by default; checkUnknown enables the report).
+    if (ctx.typeIdKind(id)) |kind| if (kind == .type_param) {
+        const constraint = ctx.typeParamConstraint(id);
+        if (constraint) |c| return toStringCertainty(c, opts, ctx, depth + 1);
+        return if (opts.check_unknown) .sometimes else .always;
+    };
     // Function values inherit Function.prototype.toString — meaningful
     // source-code stringification.
     if (ctx.typeIdIsFunction(id)) return .always;

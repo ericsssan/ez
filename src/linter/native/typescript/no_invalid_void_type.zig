@@ -134,17 +134,19 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     }
 
     // 7. ts_instantiation_expr: new Foo<void>() vs foo<void>()
-    // new_expr inner → NewExpression (valid); other inner → CallExpression (invalid)
+    // The ts_instantiation_expr's LHS is the callee (identifier/member);
+    // whether it's used in a `new` context is revealed by its grandparent.
     if (parent_tag == .ts_instantiation_expr) {
-        const ie_data = ctx.nodeData(parent);
-        if (ie_data.lhs != .none and ctx.nodeTag(ie_data.lhs) == .new_expr) {
+        const ie_grandparent = ctx.parentOf(parent);
+        const in_new_expr = ie_grandparent != .none and ctx.nodeTag(ie_grandparent) == .new_expr;
+        if (in_new_expr) {
             switch (generic_allow) {
                 .all => return,
                 .none => reportGeneral(node, generic_allow, allow_this_param, ctx),
                 .list => {
-                    const new_callee = ctx.nodeData(ie_data.lhs).lhs;
-                    if (new_callee != .none) {
-                        const name = ctx.tokenText(ctx.nodeMainToken(new_callee));
+                    const ie_data = ctx.nodeData(parent);
+                    if (ie_data.lhs != .none) {
+                        const name = ctx.tokenText(ctx.nodeMainToken(ie_data.lhs));
                         if (isNameAllowed(name, ctx)) return;
                     }
                     ctx.reportSpanWithMessageId(ctx.nodeSpan(node), "invalidVoidForGeneric");

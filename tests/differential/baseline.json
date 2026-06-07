@@ -1700,13 +1700,13 @@
       },
       "native": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2906,13 +2906,13 @@
       },
       "native": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2996,13 +2996,13 @@
       },
       "native": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -3032,13 +3032,13 @@
       },
       "native": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -22646,9 +22646,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10851,
-    "runnerCasesPerSec": 7437,
-    "nativeCasesPerSec": 65692,
+    "totalElapsedMs": 10927,
+    "runnerCasesPerSec": 7402,
+    "nativeCasesPerSec": 62197,
     "totalCases": 61440
   }
 }
