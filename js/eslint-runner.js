@@ -4872,6 +4872,11 @@ class SourceCode {
     const src = ast.source || '';
     const BLOCK_RE = /^\s*eslint-(disable-next-line|disable-line|disable|enable)((?:[^*]|\*(?!\/))*)/;
     const LINE_RE = /^\s*eslint-(disable-next-line|disable-line)(.*)/;
+    // Build a start→comment map from getAllComments() so directive.node is the SAME
+    // object as comment nodes returned by getAllComments(). Rules like
+    // unicorn/expiring-todo-comments check `directive.node === comment` (identity).
+    const allComments = this.getAllComments();
+    const commentByStart = new Map(allComments.map(c => [c.range ? c.range[0] : c.start, c]));
 
     for (let i = 0; i < cc; i++) {
       const start = cs[i], end = ce[i], kind = ck[i];
@@ -4890,14 +4895,11 @@ class SourceCode {
       if (!m) continue;
       const type = m[1]; // 'disable', 'disable-next-line', 'disable-line', 'enable'
       const rulesPart = (m[2] || '').replace(/\s*--.*$/, '').trim(); // strip description after --
-      // Build token-like node with loc
-      const startLoc = this.getLocFromIndex(start);
-      const endLoc = this.getLocFromIndex(end);
-      const node = {
-        type: isBlock ? 'Block' : 'Line',
-        value: content,
-        range: [start, end],
-        loc: startLoc && endLoc ? { start: startLoc, end: endLoc } : null,
+      // Use the same comment object from getAllComments() so identity check
+      // `directive.node === comment` (used by unicorn/expiring-todo-comments) works.
+      const node = commentByStart.get(start) || {
+        type: isBlock ? 'Block' : 'Line', value: content,
+        range: [start, end], loc: null,
       };
       // Split rules: "rule1, rule2" → ['rule1', 'rule2'], or '' → [null] for disable-all
       const ruleNames = rulesPart ? rulesPart.split(',').map(r => r.trim()).filter(Boolean) : [];
