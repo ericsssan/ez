@@ -153,6 +153,8 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/switch-exhaustiveness-check",  // 43/49, 88% (PARTIAL: Symbol constant case matching via typeofByName FFI)
   "@typescript-eslint/no-floating-promises",         // 91/101, 90% (PARTIAL: 0 FP; FNs on complex Promise-union wrapping)
   "@typescript-eslint/require-array-sort-compare",    // 8/16, 50% (PARTIAL: 0 FP; checker user-shadowed-Array guard fixed 2 FP)
+  "@typescript-eslint/no-unnecessary-type-constraint", // fn/class/interface 0 FP (arrow/method type-param cases FN — need Zig-side type_param materialization, not estree-adapter source-scan)
+  "@typescript-eslint/no-unnecessary-qualifier",      // 5/9, 56% (PARTIAL: 0 FP; ESTree scope-manager namespace resolution; FN on dotted-ns/enum-member/import-alias)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the
 // light parserServices consults this: only an allowlisted rule reading
@@ -310,7 +312,13 @@ function _makeLightParserServices(sourceCode) {
     const isModule = sourceCode._sourceType !== "script" && sourceCode._sourceType !== "commonjs";
     // Reuse the runner's parse (tagged at parse time) instead of re-parsing.
     const parseGen = (sourceCode._ast && sourceCode._ast._parseGen) || 0;
-    try { _facade = mod.makeFacade(sourceCode.text, lang, isModule, parseGen) || null; }
+    // Hand the facade the ESTree scope-manager + the SAME synthetic
+    // esTreeNodeToTSNodeMap the rules see, so scope/symbol-table enumeration
+    // (getSymbolsInScope / namespace-qualifier getSymbolAtLocation — used by
+    // no-unnecessary-qualifier) can resolve names lexically and return decl
+    // identities that match what the rule pushes onto `namespacesInScope`.
+    const facadeCtx = { sourceCode, esTreeNodeToTSNodeMap: map };
+    try { _facade = mod.makeFacade(sourceCode.text, lang, isModule, parseGen, facadeCtx) || null; }
     catch { _facade = null; }
     return _facade;
   }
@@ -835,10 +843,18 @@ const _CLASS_TAG_SET = new Set([T.class_decl, T.class_expr]);
 const _TPD_HOST_TAGS = new Set([
   T.fn_decl, T.async_fn_decl, T.generator_fn_decl, T.async_generator_fn_decl,
   T.fn_expr, T.async_fn_expr, T.generator_fn_expr, T.async_generator_fn_expr,
+  T.arrow_fn, T.async_arrow_fn,
   T.class_decl, T.class_expr, T.ts_interface_decl, T.ts_type_alias_decl,
   T.ts_function_type, T.ts_constructor_type, T.ts_declare_function,
   T.ts_call_signature, T.ts_construct_signature, T.ts_method_signature,
+  T.method_def, T.computed_method_def,
+  T.getter_def, T.setter_def, T.computed_getter_def, T.computed_setter_def,
+  T.constructor_def,
 ]);
+// ts_type_parameter tag — used by getAncestorsFor to detect when it is
+// ascending from a TSTypeParameter child (so it can inject the synthetic
+// TSTypeParameterDeclaration that sits between the param and its generic host).
+const _TP_TAG = T.ts_type_parameter;
 const _TPI_HOST_TAGS = new Set([
   T.call_expr, T.optional_call_expr, T.new_expr, T.ts_type_reference, T.ts_instantiation_expr,
 ]);
@@ -1288,8 +1304,12 @@ const _varProto = {
       // Filter type_read refs inside type alias bodies where this variable's name
       // is shadowed by a type parameter (e.g. `type T<Foo> = Foo` — the import
       // `Foo` should have 0 references, since `Foo` in `= Foo` refers to the type param).
+      // Skip when this variable IS that type parameter: `type T<Foo> = Foo` binds
+      // `Foo` to the param, so the `= Foo` ref genuinely belongs to it (without this,
+      // the param would be reported as unused, e.g. naming-convention's `unused` modifier).
       const taParamNames = sc._typeAliasParamNames;
-      if (taParamNames && taParamNames.size > 0 && refs.length > 0) {
+      const _isTypeParamVar = ast._symKinds && ast._symKinds[this._symId] === 17 /* TypeParameter */;
+      if (taParamNames && taParamNames.size > 0 && refs.length > 0 && !_isTypeParamVar) {
         const varName = this.name;
         const nodeTags = ast._nodeTags;
         const parentData = ast._parentData;
@@ -7830,8 +7850,27 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     while (p !== NONE && p < _astNodeCount) {
       const ptag = _astNodeTags[p];
       const pNode = _cache[p] !== undefined ? _cache[p] : _nodeViewRaw(ast, p);
+      // Whether the child we ascended from is a TSTypeParameter. A type parameter
+      // sits between its declaring host and a synthetic TSTypeParameterDeclaration,
+      // so it bypasses the body/method-value wrappers injected below.
+      const _fromTypeParam = _astNodeTags[prevP] === _TP_TAG;
+      // TSTypeParameter → generic host: inject the synthetic
+      // TSTypeParameterDeclaration (`<…>`) that ESTree places between the param
+      // and its declaring host (function/class/interface/type-alias/method/arrow).
+      // It is not a real buffer node, so pd jumps straight from the param to the
+      // host; without this, child-combinator selectors like
+      // `TSTypeParameterDeclaration > TSTypeParameter[constraint]` never match.
+      // Injected first so it is the param's immediate ESTree ancestor (the method
+      // FunctionExpression / interface body wrappers below sit above it, not between).
+      if (_fromTypeParam && _TPD_HOST_TAGS.has(ptag)) {
+        const _tpd = pNode.typeParameters;
+        if (_tpd && _tpd.type === 'TSTypeParameterDeclaration') {
+          if (!_tpd.parent) _tpd.parent = pNode;
+          _ancestorsBuf[k++] = _tpd;
+        }
+      }
       // ESTree inserts a synthetic FunctionExpression between a method
-      // definition and its non-key children (body, params). Insert it
+      // definition and its non-key children (body, params, type params). Insert it
       // into the ancestors array so selectors like
       // `:function[async=false] > BlockStatement` work on method bodies.
       if (_methodDefTagSet[ptag] && prevP !== ast.nodeLhs(p)) {
@@ -7840,7 +7879,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // TSInterfaceDeclaration: inject a synthetic TSInterfaceBody so selectors
       // like `TSInterfaceBody > TSConstructSignatureDeclaration` match correctly.
       // TSInterfaceBody is synthetic (no real Zig node), so it's invisible in pd.
-      if (_tsInterfaceDeclTagNum >= 0 && ptag === _tsInterfaceDeclTagNum) {
+      // Skipped when ascending from a type parameter: type params live on the
+      // declaration, not inside the body, so the body must not appear between them.
+      if (!_fromTypeParam && _tsInterfaceDeclTagNum >= 0 && ptag === _tsInterfaceDeclTagNum) {
         const _ifBody = pNode.body;
         if (_ifBody) {
           if (!_ifBody.parent) _ifBody.parent = pNode;

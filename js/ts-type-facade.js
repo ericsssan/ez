@@ -223,7 +223,7 @@ function defineTypePredicates(ty, flags) {
   return ty;
 }
 
-function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
+function makeFacade(source, lang = "ts", isModule = true, parseGen = 0, ctx = null) {
   // Prefer reusing the runner's just-completed parse (no second parse). Falls
   // back to a fresh parse when the tagged parse isn't available (streaming/big
   // files, stale generation, or Node without the stash).
@@ -233,6 +233,177 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
 
   const typeCache = new Map(); // typeId → Type object
   const synthCache = new Map(); // flags → synthetic Type object (identity-stable)
+
+  // ── Namespace-qualifier scope resolution (no-unnecessary-qualifier) ──────────
+  // The Zig checker can't enumerate a scope's symbol table, but the ESTree
+  // scope-manager Ez already builds can. We resolve entity names (a namespace /
+  // enum qualifier and the accessed member) to their *declaration node* via the
+  // scope chain, then back every distinct declaration node with ONE canonical
+  // symbol object. The rule's identity check `accessed === getExportSymbolOfSymbol
+  // (inScope)` (getExportSymbolOfSymbol = identity here) then holds exactly when
+  // the qualified member and the bare-name-in-scope resolve to the SAME decl —
+  // so a shadowing inner declaration (`namespace Y { type T … X.T }`) makes the
+  // identities differ and we DON'T report. FP-safety by construction; recall is
+  // best-effort (enum members have no block scope → those stay FN, never FP).
+  const _nsScopeManager = ctx && ctx.sourceCode ? ctx.sourceCode.scopeManager : null;
+  const _nsTsNodeMap = ctx && ctx.esTreeNodeToTSNodeMap ? ctx.esTreeNodeToTSNodeMap : null;
+  const _nsSymByDecl = new Map(); // ESTree decl node → canonical symbol object
+  const _nsBlockScopeCache = new Map(); // ESTree namespace decl → its block scope
+  const SymbolFlags_Namespace = 256 | 512; // ValueModule(512)|NamespaceModule(256)
+  // The TS SymbolFlags a `getSymbolsInScope` filter would carry; the rule passes
+  // `accessedSymbol.flags` straight through to getSymbolsInScope, but our
+  // getSymbolsInScope returns *all* in-scope names and the rule then `.find`s by
+  // name — so the flags only need to be non-Alias (handled below).
+  function _nsInnermostScope(pos) {
+    if (!_nsScopeManager || pos == null) return null;
+    let best = null;
+    const scopes = _nsScopeManager.scopes || [];
+    for (const s of scopes) {
+      const b = s.block && s.block.range;
+      if (b && b[0] <= pos && pos < b[1]) {
+        if (!best || (b[1] - b[0]) < (best.block.range[1] - best.block.range[0])) best = s;
+      }
+    }
+    return best;
+  }
+  function _nsLexicalDecl(scope, name) {
+    let s = scope;
+    while (s) {
+      const v = s.set && s.set.get(name);
+      if (v && v.defs && v.defs.length) return v.defs[0].node;
+      s = s.upper;
+    }
+    return null;
+  }
+  function _nsBlockScopeOf(declNode) {
+    if (!_nsScopeManager) return null;
+    let bs = _nsBlockScopeCache.get(declNode);
+    if (bs !== undefined) return bs;
+    bs = null;
+    for (const s of (_nsScopeManager.scopes || [])) {
+      if (s.block && s.block.parent === declNode) { bs = s; break; }
+    }
+    _nsBlockScopeCache.set(declNode, bs);
+    return bs;
+  }
+  function _nsMemberDecl(nsDecl, memberName) {
+    const bs = _nsBlockScopeOf(nsDecl);
+    if (!bs) return null;
+    const v = bs.set && bs.set.get(memberName);
+    return v && v.defs && v.defs.length ? v.defs[0].node : null;
+  }
+  // Resolve an entity-name ESTree expression (Identifier, or a non-computed
+  // MemberExpression / TSQualifiedName chain) to the namespace/enum decl node it
+  // names. Returns null for anything unresolved (→ rule bails out safely).
+  function _nsResolveEntity(node) {
+    if (!node) return null;
+    if (node.type === "Identifier") {
+      return _nsLexicalDecl(_nsInnermostScope(node.range && node.range[0]), node.name);
+    }
+    if (node.type === "MemberExpression" && !node.computed &&
+        node.property && node.property.type === "Identifier") {
+      const objDecl = _nsResolveEntity(node.object);
+      return objDecl ? _nsMemberDecl(objDecl, node.property.name) : null;
+    }
+    if (node.type === "TSQualifiedName" && node.right && node.right.type === "Identifier") {
+      const objDecl = _nsResolveEntity(node.left);
+      return objDecl ? _nsMemberDecl(objDecl, node.right.name) : null;
+    }
+    return null;
+  }
+  const NS_DECL_TYPES = new Set(["TSModuleDeclaration", "TSEnumDeclaration"]);
+  // Canonical symbol for a resolved declaration node. `isNamespace` decides the
+  // declaration list: for a namespace/enum qualifier we hand back the SAME synth
+  // TS node the rule pushed onto `namespacesInScope` (esTreeNodeToTSNodeMap.get),
+  // so `symbolIsNamespaceInScope`'s `ns === decl` identity check matches. Flags
+  // never include SymbolFlags.Alias, so the rule skips its getAliasedSymbol path.
+  function _nsCanonicalSymbol(declNode, isNamespace, name) {
+    let sym = _nsSymByDecl.get(declNode);
+    if (sym) return sym;
+    const declList = (isNamespace && _nsTsNodeMap)
+      ? [_nsTsNodeMap.get(declNode)].filter(Boolean)
+      : [declNode];
+    const flags = isNamespace ? SymbolFlags_Namespace : 0;
+    const nm = name != null ? name
+      : (declNode && declNode.id && declNode.id.name ? declNode.id.name : "");
+    sym = {
+      name: nm, escapedName: nm, flags,
+      getFlags() { return flags; },
+      getName() { return nm; },
+      getDeclarations() { return declList; },
+      valueDeclaration: declList[0],
+    };
+    _nsSymByDecl.set(declNode, sym);
+    return sym;
+  }
+  // getSymbolAtLocation for a namespace/enum qualifier (Identifier or member
+  // chain) or the accessed member name. Returns null when the facade has no
+  // scope-manager context or the node isn't a qualifier access — callers fall
+  // through to the generic getSymbolAtLocation body.
+  function _nsSymbolAtLocation(est) {
+    if (!_nsScopeManager || !est) return undefined;
+    const p = est.parent;
+    // The accessed member name `B` in `A.B` / `A.B` (TSQualifiedName.right or a
+    // non-computed MemberExpression.property). Resolve it as a member of the
+    // qualifier's namespace so a shadowed bare name gets a DIFFERENT identity.
+    if (est.type === "Identifier" && p) {
+      if (p.type === "TSQualifiedName" && p.right === est) {
+        const ns = _nsResolveEntity(p.left);
+        if (ns && NS_DECL_TYPES.has(ns.type)) {
+          const md = _nsMemberDecl(ns, est.name);
+          if (md) return _nsCanonicalSymbol(md, false, est.name);
+        }
+        return undefined;
+      }
+      if (p.type === "MemberExpression" && !p.computed && p.property === est) {
+        const ns = _nsResolveEntity(p.object);
+        if (ns && NS_DECL_TYPES.has(ns.type)) {
+          const md = _nsMemberDecl(ns, est.name);
+          if (md) return _nsCanonicalSymbol(md, false, est.name);
+        }
+        return undefined;
+      }
+    }
+    // The qualifier itself (`A` / `A.B`): the object of a member access or the
+    // left of a TSQualifiedName. Return a namespace symbol whose declarations
+    // match what `enterDeclaration` pushed.
+    let isQualifier = false;
+    if (p) {
+      if (p.type === "TSQualifiedName" && p.left === est) isQualifier = true;
+      else if (p.type === "MemberExpression" && !p.computed && p.object === est) isQualifier = true;
+    }
+    if (isQualifier) {
+      const ns = _nsResolveEntity(est);
+      if (ns && NS_DECL_TYPES.has(ns.type)) return _nsCanonicalSymbol(ns, true);
+    }
+    return undefined;
+  }
+  // The in-scope symbol set the rule's getSymbolInScope queries: the canonical
+  // decl-backed symbol for every name visible from `node`'s position, walked up
+  // the lexical scope chain so the innermost binding wins on shadowing. The rule
+  // only `.find`s by name; since identity is the canonical decl symbol, a
+  // shadowed bare name resolves to a DIFFERENT symbol than the qualified member,
+  // keeping the comparison exact and FP-safe.
+  function _nsSymbolsInScope(tsNode) {
+    const est = tsNode && (tsNode._i != null ? tsNode : tsNode._estree);
+    if (!_nsScopeManager || !est) return [];
+    const scope = _nsInnermostScope(est.range && est.range[0]);
+    if (!scope) return [];
+    const out = [];
+    const seen = new Set();
+    let s = scope;
+    while (s) {
+      if (s.set) {
+        for (const [nm, v] of s.set) {
+          if (seen.has(nm)) continue;
+          seen.add(nm);
+          if (v && v.defs && v.defs.length) out.push(_nsCanonicalSymbol(v.defs[0].node, false, nm));
+        }
+      }
+      s = s.upper;
+    }
+    return out;
+  }
   // Singleton anonymous-class type: prefer-readonly compares classType.getSymbol().name
   // with modifierType.getSymbol().name. Anonymous classes (no id) → name="" on both
   // sides → "" === "" → typeIsOrHasBaseType returns true → modification recorded.
@@ -1479,6 +1650,13 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
     getSymbolAtLocation(node) {
       const est = node && (node._i != null ? node : node._estree);
       if (!est) return undefined;
+      // A namespace/enum qualifier (`A` in `A.B`) or the accessed member name
+      // (`B`): resolve through the ESTree scope manager to a decl-backed symbol
+      // so no-unnecessary-qualifier's identity comparison is shadow-aware (and
+      // FP-safe). Only fires for member-access / TSQualifiedName positions; any
+      // other node falls through to the generic resolution below.
+      const nsSym = _nsSymbolAtLocation(est);
+      if (nsSym !== undefined) return nsSym;
       // A type-reference name (`C` in `C<number>` / `extends C<number>`) whose
       // declaration is generic-with-default → a symbol exposing that decl's type
       // parameters, for no-unnecessary-type-arguments' getTypeParametersFromType.
@@ -1532,6 +1710,21 @@ function makeFacade(source, lang = "ts", isModule = true, parseGen = 0) {
       const name = est.name || (est.id && est.id.name) || "";
       return makeSymbol(name, t.__ez_typeId, 0);
     },
+    // The visible-symbol table at a node, backed by the ESTree scope chain (the
+    // Zig checker can't enumerate a scope). no-unnecessary-qualifier `.find`s
+    // this by name to see whether the qualified member is reachable unqualified.
+    // Each entry is the canonical decl-backed symbol, so the rule's identity
+    // comparison is shadow-aware. Empty when no scope-manager context is wired.
+    getSymbolsInScope(node /*, meaning */) { return _nsSymbolsInScope(node); },
+    // Our scope symbols already ARE the export symbol (we don't model the
+    // local/export-symbol split), so identity is the right answer here —
+    // `accessed === getExportSymbolOfSymbol(inScope)` then reduces to a plain
+    // canonical-symbol identity check.
+    getExportSymbolOfSymbol(sym) { return sym; },
+    // We never set SymbolFlags.Alias on a facade symbol (no import-alias modelling
+    // in this path), so the rule never reaches getAliasedSymbol; return null to
+    // keep the surface complete and inert.
+    getAliasedSymbol() { return null; },
   };
 
   const program = {
