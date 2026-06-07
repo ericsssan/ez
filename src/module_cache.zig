@@ -59,22 +59,19 @@ pub const ModuleCache = struct {
 
     /// Return a ModuleResolver vtable that delegates to this cache.
     pub fn asModuleResolver(self: *ModuleCache) ModuleResolver {
-        return .{
-            .ctx = @ptrCast(self),
-            .resolve_fn = &struct {
-                fn resolve(
-                    ctx: *anyopaque,
-                    from_dir: []const u8,
-                    module_spec: []const u8,
-                    export_name: []const u8,
-                    local_store: *TypeStore,
-                    gpa: std.mem.Allocator,
-                ) ?TypeId {
-                    const mc: *ModuleCache = @ptrCast(@alignCast(ctx));
-                    return mc.resolveExportedType(from_dir, module_spec, export_name, local_store, gpa);
-                }
-            }.resolve,
-        };
+        return .{ .ctx = @ptrCast(self), .resolve_fn = &resolveVtable };
+    }
+
+    fn resolveVtable(
+        ctx: *anyopaque,
+        from_dir: []const u8,
+        module_spec: []const u8,
+        export_name: []const u8,
+        local_store: *TypeStore,
+        gpa: std.mem.Allocator,
+    ) ?TypeId {
+        const mc: *ModuleCache = @ptrCast(@alignCast(ctx));
+        return mc.resolveExportedType(from_dir, module_spec, export_name, local_store, gpa);
     }
 
     /// Load, parse, and type-check a file at `abs_path`.
@@ -255,7 +252,7 @@ pub const ModuleCache = struct {
         gpa: std.mem.Allocator,
     ) ?TypeId {
         const abs_path = self.resolveModulePath(from_dir, module_spec) orelse return null;
-        defer gpa.free(abs_path);
+        defer self.gpa.free(abs_path);
 
         const mod = self.loadModule(abs_path) orelse return null;
         const foreign_id = mod.checker.resolveDeclaredTypePub(export_name) orelse return null;
