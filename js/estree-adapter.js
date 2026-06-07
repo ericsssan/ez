@@ -1119,6 +1119,40 @@ function _syntheticNode(type, start, end, props, ast) {
   }, props);
 }
 
+// Arrow functions and class methods don't carry a `type_params` SubRange in
+// es-parser's extra-data (unlike fn/class/interface), so their `<…>` type
+// parameters can't be read from extra-data. The host association is materialized
+// in Zig instead: traversal_builder sets each ts_type_parameter's resolved
+// parent to its generic host (collapsing es-parser's sibling-chaining). Here we
+// just invert that Zig-provided parentage into host → [type-param node indices],
+// built once per AST and cached — no source-text scanning, no semantic work.
+function _typeParamsByHost(ast, hostIdx) {
+  let map = ast._tpByHost;
+  if (map === undefined) {
+    map = null;
+    const rp = ast._resolvedParentData, nt = ast._nodeTags;
+    if (rp) {
+      map = new Map();
+      const TP = T.ts_type_parameter;
+      const n = ast.nodeCount;
+      for (let i = 0; i < n; i++) {
+        if (nt[i] !== TP) continue;
+        const host = rp[i];
+        let arr = map.get(host);
+        if (!arr) { arr = []; map.set(host, arr); }
+        arr.push(i);
+      }
+    }
+    ast._tpByHost = map;
+  }
+  if (!map) return null;
+  const idxs = map.get(hostIdx);
+  if (!idxs || idxs.length === 0) return null;
+  const pvs = idxs.map(i => nodeView(ast, i));
+  pvs.sort((a, b) => a.start - b.start);
+  return pvs;
+}
+
 /** Create a synthetic Identifier node from a token index. */
 function _tokenIdentifier(ast, tokIdx) {
   const name = ast._identAt(tokIdx);
@@ -2898,7 +2932,7 @@ const NodeProto = {
     const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
-    let tp_start, tp_end;
+    let tp_start, tp_end, preParams = null;
     if (t === T.ts_type_alias_decl) {
       const d = ast.extraTypeAliasData(lhs);
       tp_start = d.type_params; tp_end = d.type_params_end;
@@ -2923,18 +2957,36 @@ const NodeProto = {
       if (lhs === NONE) return null;
       const d = ast.extraInterfaceSigData(lhs);
       tp_start = d.type_params; tp_end = d.type_params_end;
+    } else if (t === T.arrow_fn || t === T.async_arrow_fn ||
+               t === T.method_def || t === T.computed_method_def ||
+               t === T.getter_def || t === T.setter_def ||
+               t === T.computed_getter_def || t === T.computed_setter_def ||
+               t === T.constructor_def) {
+      // Arrow/method type params aren't in extra-data — collect them via the
+      // Zig-materialized host parentage (see _typeParamsByHost).
+      preParams = _typeParamsByHost(ast, this._i);
+      if (preParams === null) { _synthBundle.tp = null; return null; }
     } else {
       return null;
     }
-    if (tp_start === undefined || tp_start >= tp_end) { _synthBundle.tp = null; return null; }
-    const params = [];
-    let rangeStart = Infinity, rangeEnd = 0;
-    for (let i = tp_start; i < tp_end; i++) {
-      const paramIdx = ast._extraData[i];
-      const pv = nodeView(ast, paramIdx);
-      if (pv.start < rangeStart) rangeStart = pv.start;
-      if (pv.end > rangeEnd) rangeEnd = pv.end;
-      params.push(pv);
+    let params, rangeStart = Infinity, rangeEnd = 0;
+    if (preParams) {
+      params = preParams;
+      for (let k = 0; k < params.length; k++) {
+        const pv = params[k];
+        if (pv.start < rangeStart) rangeStart = pv.start;
+        if (pv.end > rangeEnd) rangeEnd = pv.end;
+      }
+    } else {
+      if (tp_start === undefined || tp_start >= tp_end) { _synthBundle.tp = null; return null; }
+      params = [];
+      for (let i = tp_start; i < tp_end; i++) {
+        const paramIdx = ast._extraData[i];
+        const pv = nodeView(ast, paramIdx);
+        if (pv.start < rangeStart) rangeStart = pv.start;
+        if (pv.end > rangeEnd) rangeEnd = pv.end;
+        params.push(pv);
+      }
     }
     // Include the angle brackets in the declaration's range — ESTree's
     // TSTypeParameterDeclaration spans `<…>`, not just the inner params.

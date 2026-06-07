@@ -153,7 +153,7 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/switch-exhaustiveness-check",  // 43/49, 88% (PARTIAL: Symbol constant case matching via typeofByName FFI)
   "@typescript-eslint/no-floating-promises",         // 91/101, 90% (PARTIAL: 0 FP; FNs on complex Promise-union wrapping)
   "@typescript-eslint/require-array-sort-compare",    // 8/16, 50% (PARTIAL: 0 FP; checker user-shadowed-Array guard fixed 2 FP)
-  "@typescript-eslint/no-unnecessary-type-constraint", // fn/class/interface 0 FP (arrow/method type-param cases FN — need Zig-side type_param materialization, not estree-adapter source-scan)
+  "@typescript-eslint/no-unnecessary-type-constraint", // 18/18, 100% (CLEAN: TSTypeParameterDeclaration via getAncestorsFor; arrow/method type_params materialized in Zig resolved_parents)
   "@typescript-eslint/no-unnecessary-qualifier",      // 5/9, 56% (PARTIAL: 0 FP; ESTree scope-manager namespace resolution; FN on dotted-ns/enum-member/import-alias)
 ]);
 // Rule id whose create() is currently executing. The `program` getter on the

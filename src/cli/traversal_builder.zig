@@ -152,7 +152,12 @@ pub fn buildTraversalAux(
     for (0..n) |i| {
         var p = parents[i];
         var guard: u32 = 0;
-        while (p != NONE and (tags[p] == .grouping_expr or tags[p] == .ts_parenthesized_type)) {
+        // A `ts_type_parameter` whose parent chains through a sibling type_param
+        // (es-parser links `<T, U>`'s `U` to `T`, not to the host) must resolve
+        // past the siblings to the real generic host (arrow/method/fn/class/…).
+        while (p != NONE and (tags[p] == .grouping_expr or tags[p] == .ts_parenthesized_type or
+            (tags[i] == .ts_type_parameter and tags[p] == .ts_type_parameter)))
+        {
             p = parents[p];
             guard += 1;
             if (guard > 64) { p = NONE; break; }
@@ -342,7 +347,10 @@ pub fn buildTraversalAux(
             switch (pt) {
                 .method_def, .getter_def, .setter_def, .constructor_def,
                 .computed_method_def, .computed_getter_def, .computed_setter_def => {
-                    if (data[rp].lhs.toInt() != @as(u32, @intCast(i))) {
+                    // A method's type parameters are non-key children too, but
+                    // they must become a TSTypeParameterDeclaration (kind 7
+                    // below), NOT the method's value FunctionExpression.
+                    if (this_tag != .ts_type_parameter and data[rp].lhs.toInt() != @as(u32, @intCast(i))) {
                         parent_kinds[i] = @intFromEnum(ParentKind.method_value);
                         continue;
                     }
@@ -542,7 +550,9 @@ pub fn buildTraversalParallel(
         for (adopted[0..adopted_len]) |orphan| {
             var p = parents[orphan];
             var guard: u32 = 0;
-            while (p != NONE and (tags[p] == .grouping_expr or tags[p] == .ts_parenthesized_type)) {
+            while (p != NONE and (tags[p] == .grouping_expr or tags[p] == .ts_parenthesized_type or
+                (tags[orphan] == .ts_type_parameter and tags[p] == .ts_type_parameter)))
+            {
                 p = parents[p];
                 guard += 1;
                 if (guard > 64) { p = NONE; break; }
@@ -685,7 +695,9 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
         for (0..n) |i| {
             var p = parents[i];
             var guard: u32 = 0;
-            while (p != NONE and (tags[p] == .grouping_expr or tags[p] == .ts_parenthesized_type)) {
+            while (p != NONE and (tags[p] == .grouping_expr or tags[p] == .ts_parenthesized_type or
+                (tags[i] == .ts_type_parameter and tags[p] == .ts_type_parameter)))
+            {
                 p = parents[p];
                 guard += 1;
                 if (guard > 64) { p = NONE; break; }
@@ -869,7 +881,10 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
             switch (pt) {
                 .method_def, .getter_def, .setter_def, .constructor_def,
                 .computed_method_def, .computed_getter_def, .computed_setter_def => {
-                    if (data[rp].lhs.toInt() != @as(u32, @intCast(i))) {
+                    // A method's type parameters are non-key children too, but
+                    // they must become a TSTypeParameterDeclaration (kind 7
+                    // below), NOT the method's value FunctionExpression.
+                    if (this_tag != .ts_type_parameter and data[rp].lhs.toInt() != @as(u32, @intCast(i))) {
                         parent_kinds[i] = @intFromEnum(ParentKind.method_value);
                         continue;
                     }
