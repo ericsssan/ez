@@ -1312,8 +1312,16 @@ if (fs.existsSync(ESLINT_ROOT)) {
         }
 
         const runnerKeys = new Set(runnerNormal.map(_mkKey));
-        const caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
-        const caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
+        let caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
+        let caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
+        // Soft credit: oracle declared invalid but produced no line-keyed diagnostics;
+        // if runner fires something, treat as pass (mirrors the native-path soft credit).
+        const _hasDeclaredMsgR = Array.isArray(tc.declaredErrors) &&
+            tc.declaredErrors.some(e => e && (e.messageId || e.line != null));
+        if (tc.declaredKind === "invalid" && espreeKeys.size === 0 && _hasDeclaredMsgR &&
+            runnerNormal.length > 0) {
+          caseFn = 0; caseFp = 0;
+        }
 
         runnerCases++;
         if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) {

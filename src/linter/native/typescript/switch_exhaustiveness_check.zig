@@ -432,10 +432,17 @@ fn caseMatchesValue(case_expr: NodeIndex, exp: *const ExpectedValue, ctx: *const
                 const txt = ctx.tokenText(ctx.nodeMainToken(e));
                 return std.mem.eql(u8, txt, exp.str_val);
             }
+            // Enum-tagged string literals stored by value: `case MyEnum.Foo:`
+            // where `MyEnum { Foo = 'bar' }` — compare the string initializer.
+            if (tag == .member_expr) return memberExprMatchesStr(e, exp.str_val, ctx);
             return false;
         },
         .num => {
-            return numericCaseEquals(e, exp.num_val, ctx);
+            if (numericCaseEquals(e, exp.num_val, ctx)) return true;
+            // Enum-tagged numeric literals stored by value: `case MyEnum.Foo:`
+            // where `MyEnum { Foo }` (value 0) — compute the member's numeric value.
+            if (tag == .member_expr) return memberExprMatchesNum(e, exp.num_val, ctx);
+            return false;
         },
         .big => {
             if (tag != .bigint_literal) return false;
@@ -479,6 +486,86 @@ fn caseMatchesValue(case_expr: NodeIndex, exp: *const ExpectedValue, ctx: *const
             return false;
         },
     }
+}
+
+/// Resolve a `member_expr` case like `MyEnum.Foo` to its numeric enum value
+/// and compare with `expected`.  Handles auto-increment and explicit number
+/// or unary-minus initializers.  Returns false for complex initialisers.
+fn memberExprMatchesNum(e: NodeIndex, expected: f64, ctx: *const LintContext) bool {
+    const md = ctx.nodeData(e);
+    if (md.rhs == .none) return false;
+    var obj = md.lhs;
+    while (ctx.nodeTag(obj) == .grouping_expr) obj = ctx.nodeData(obj).lhs;
+    if (ctx.nodeTag(obj) != .identifier) return false;
+    const enum_nm = ctx.tokenText(ctx.nodeMainToken(obj));
+    const member_nm = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    const decl = ctx.typeAliasBodyNode(enum_nm);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .ts_enum_decl) return false;
+    const d = ctx.nodeData(decl);
+    if (d.lhs == .none) return false;
+    const ed = ctx.extraData(ast.EnumData, @intFromEnum(d.lhs));
+    var auto_val: f64 = 0;
+    var i = ed.members_start;
+    while (i < ed.members_end) : (i += 1) {
+        const m: NodeIndex = @enumFromInt(ctx.ast.extra_data[i]);
+        if (ctx.nodeTag(m) != .ts_enum_member) continue;
+        const mdata = ctx.nodeData(m);
+        if (mdata.lhs == .none) continue;
+        const mname = ctx.tokenText(ctx.nodeMainToken(mdata.lhs));
+        var this_val: f64 = auto_val;
+        if (mdata.rhs != .none) {
+            var init = mdata.rhs;
+            var neg = false;
+            if (ctx.nodeTag(init) == .unary_minus) {
+                neg = true;
+                init = ctx.nodeData(init).lhs;
+            }
+            if (ctx.nodeTag(init) == .number_literal) {
+                const txt = ctx.tokenText(ctx.nodeMainToken(init));
+                this_val = std.fmt.parseFloat(f64, txt) catch auto_val;
+                if (neg) this_val = -this_val;
+            }
+        }
+        auto_val = this_val + 1;
+        if (std.mem.eql(u8, mname, member_nm)) return this_val == expected;
+    }
+    return false;
+}
+
+/// Resolve a `member_expr` case like `MyEnum.Foo` to its string initializer
+/// and compare with `expected`.
+fn memberExprMatchesStr(e: NodeIndex, expected: []const u8, ctx: *const LintContext) bool {
+    const md = ctx.nodeData(e);
+    if (md.rhs == .none) return false;
+    var obj = md.lhs;
+    while (ctx.nodeTag(obj) == .grouping_expr) obj = ctx.nodeData(obj).lhs;
+    if (ctx.nodeTag(obj) != .identifier) return false;
+    const enum_nm = ctx.tokenText(ctx.nodeMainToken(obj));
+    const member_nm = ctx.tokenText(ctx.nodeMainToken(md.rhs));
+    const decl = ctx.typeAliasBodyNode(enum_nm);
+    if (decl == .none) return false;
+    if (ctx.nodeTag(decl) != .ts_enum_decl) return false;
+    const d = ctx.nodeData(decl);
+    if (d.lhs == .none) return false;
+    const ed = ctx.extraData(ast.EnumData, @intFromEnum(d.lhs));
+    var i = ed.members_start;
+    while (i < ed.members_end) : (i += 1) {
+        const m: NodeIndex = @enumFromInt(ctx.ast.extra_data[i]);
+        if (ctx.nodeTag(m) != .ts_enum_member) continue;
+        const mdata = ctx.nodeData(m);
+        if (mdata.lhs == .none) continue;
+        const mname = ctx.tokenText(ctx.nodeMainToken(mdata.lhs));
+        if (!std.mem.eql(u8, mname, member_nm)) continue;
+        if (mdata.rhs == .none) return false;
+        if (ctx.nodeTag(mdata.rhs) == .string_literal) {
+            const raw = ctx.tokenText(ctx.nodeMainToken(mdata.rhs));
+            if (raw.len < 2) return false;
+            return std.mem.eql(u8, raw[1 .. raw.len - 1], expected);
+        }
+        return false;
+    }
+    return false;
 }
 
 fn numericCaseEquals(e: NodeIndex, expected: f64, ctx: *const LintContext) bool {

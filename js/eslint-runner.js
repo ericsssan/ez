@@ -3904,6 +3904,20 @@ class SourceCode {
       }
     }
 
+    // Ensure parent is an own (not prototype-inherited) property on writeExpr so
+    // plugins that check `node.hasOwnProperty('parent')` (e.g. sonarjs S4165's
+    // isCompoundAssignment) work correctly.  Our `parent` getter lives on the
+    // prototype — calling it and re-assigning shadows it with an own data property.
+    if (writeExpr && !Object.prototype.hasOwnProperty.call(writeExpr, 'parent')) {
+      const _wp = writeExpr.parent;
+      Object.defineProperty(writeExpr, 'parent', { value: _wp, writable: true, configurable: true });
+    }
+    // Same for the reference identifier itself (e.g. sonarjs S2259 checks
+    // `ref.identifier.hasOwnProperty('parent')`).
+    if (refNode && !Object.prototype.hasOwnProperty.call(refNode, 'parent')) {
+      const _rp = refNode.parent;
+      Object.defineProperty(refNode, 'parent', { value: _rp, writable: true, configurable: true });
+    }
     const ref = new _Reference(refNode, from, resolved, kind, writeExpr, isTypeRef);
     this._refCache[refIdx] = ref;
     return ref;
@@ -4483,7 +4497,16 @@ class SourceCode {
         // spaced-comment iterate over this list.
         if (sc._allComments !== undefined) return sc._allComments;
         const ast = sc._ast;
-        sc._allComments = ast.commentsInRange ? ast.commentsInRange(0, ast.sourceLen) : [];
+        const cmnts = ast.commentsInRange ? ast.commentsInRange(0, ast.sourceLen) : [];
+        // Synthesize shebang comment if source starts with #! (mirrors getAllComments()).
+        if (sc.text && sc.text.startsWith('#!')) {
+          const end = sc.text.indexOf('\n');
+          const shebangEnd = end >= 0 ? end : sc.text.length;
+          cmnts.unshift({ type: 'Shebang', value: sc.text.slice(2, shebangEnd),
+            start: 0, end: shebangEnd, range: [0, shebangEnd],
+            loc: { start: { line: 1, column: 0 }, end: { line: 1, column: shebangEnd } } });
+        }
+        sc._allComments = cmnts;
         return sc._allComments;
       },
       configurable: true, enumerable: true,

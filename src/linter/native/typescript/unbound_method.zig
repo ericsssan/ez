@@ -56,6 +56,13 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // type-based check so that e.g. `[].map(Math.floor)` doesn't fire.
     if (isNativelyBoundStaticAccess(d.lhs, prop, ctx)) return;
 
+    // ignoreStatic early-exit: check static method access BEFORE the type-based
+    // check.  The type system may surface static methods on the constructor type
+    // as method properties (firing line 66 below), bypassing the staticMethodAccess
+    // guard at line 72.  Short-circuit here when ignoreStatic is set so that
+    // `ContainsMethods.unboundStatic` with ignoreStatic:true is not reported.
+    if (ignore_static and staticMethodAccess(d.lhs, prop, ctx)) return;
+
     // Instance-method case: receiver's type has a method-defined prop.
     const recv_ty = ctx.typeOfNode(d.lhs);
     if (ctx.typeIdObjectPropertyIsMethod(recv_ty, prop)) {
