@@ -7365,7 +7365,9 @@ pub const LintContext = struct {
         }
         if (count <= max) return;
         const count_str = std.fmt.allocPrint(self.allocator, "{d}", .{count}) catch return;
+        defer self.allocator.free(count_str);
         const max_str = std.fmt.allocPrint(self.allocator, "{d}", .{max}) catch return;
+        defer self.allocator.free(max_str);
         self.reportWithMessageIdAndData(node, "maximumExceeded", &[_]MessageDataEntry{
             .{ .key = "classCount", .val = count_str },
             .{ .key = "max", .val = max_str },

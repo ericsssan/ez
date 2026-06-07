@@ -7822,7 +7822,9 @@ test "Checker: number literal type" {
     defer checker.deinit();
 
     const expr = firstNodeOfTag(&ast_result, .number_literal) orelse return error.NoLiteral;
-    try std.testing.expect(checker.typeOf(expr).eq(tymod.ID_NUMBER));
+    // A bare number literal `42` gives a number_literal type (not the widened
+    // number type), since the checker preserves literal types for inference.
+    try std.testing.expect(checker.store.get(checker.typeOf(expr)).kind == .number_literal);
     try std.testing.expect(!checker.typeIsAny(expr));
 }
 

@@ -37,7 +37,9 @@ fn lintWithInlineDisables(source: []const u8) ![]const LintDiagnostic {
     // only the returned slice via freeDiagnostics.
     var disables = InlineDisables.parse(allocator, source) catch InlineDisables.empty();
     defer disables.deinit();
-    return linter.filterByInlineDisables(allocator, raw, &disables, _lr.line_starts, source);
+    const line_starts = try ez.span.computeLineStarts(allocator, source);
+    defer allocator.free(line_starts);
+    return linter.filterByInlineDisables(allocator, raw, &disables, line_starts, source);
 }
 
 fn hasRule(diags: []const LintDiagnostic, rule: []const u8) bool {
