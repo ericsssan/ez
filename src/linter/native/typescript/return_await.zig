@@ -247,7 +247,7 @@ fn isDefinitelyNotPromise(id: tymod.TypeId, ctx: *const LintContext) bool {
     };
 }
 
-const tymod = @import("../../../checker/types.zig");
+const tymod = @import("ez_checker").types;
 
 fn looksLikePromise(node: NodeIndex, ctx: *const LintContext) bool {
     var n = node;

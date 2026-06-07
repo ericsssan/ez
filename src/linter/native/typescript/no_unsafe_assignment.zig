@@ -39,7 +39,7 @@ pub const relevant_tags = [_]Node.Tag{ .declarator, .assign, .assignment_pattern
 
 pub const needs_semantic = true;
 
-const tymod = @import("../../../checker/types.zig");
+const tymod = @import("ez_checker").types;
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!ctx.hasTypeChecker()) return;

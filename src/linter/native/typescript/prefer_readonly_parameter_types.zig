@@ -13,7 +13,7 @@ const Node = ast.Node;
 const token_mod = @import("es_parser").token;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const tymod = @import("../../../checker/types.zig");
+const tymod = @import("ez_checker").types;
 const TypeId = tymod.TypeId;
 
 pub const meta = RuleMeta{

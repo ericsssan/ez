@@ -18,7 +18,7 @@ const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 const Span = @import("es_parser").span.Span;
-const tymod = @import("../../../checker/types.zig");
+const tymod = @import("ez_checker").types;
 
 pub const meta = RuleMeta{
     .name = "no-unnecessary-template-expression",

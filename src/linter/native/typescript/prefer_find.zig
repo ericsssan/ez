@@ -157,8 +157,8 @@ fn isFilterCallOnArray(node: NodeIndex, ctx: *const LintContext) bool {
 /// and undefined branches are OK (optional-chain narrowing handles them).
 /// `typeIdIsArrayLike` uses any-member semantics for unions, so we
 /// can't just delegate after `typeIdNonNullable`.
-fn typeIsArrayish(id: @import("../../../checker/types.zig").TypeId, ctx: *const LintContext) bool {
-    const tymod = @import("../../../checker/types.zig");
+fn typeIsArrayish(id: @import("ez_checker").types.TypeId, ctx: *const LintContext) bool {
+    const tymod = @import("ez_checker").types;
     if (ctx.typeIdIsAny(id)) return false;
     if (ctx.typeIdIsUnion(id)) {
         const members = ctx.typeIdUnionMembers(id);

@@ -285,12 +285,12 @@ pub fn lintWithPath(
 
     // Lazily-initialized TS type checker.  Only allocated when a
     // type-aware rule (no-unsafe-*, etc.) actually queries types.
-    var checker_storage: ?@import("../checker/root.zig").Checker = null;
+    var checker_storage: ?@import("ez_checker").Checker = null;
     defer if (checker_storage) |*c| c.deinit();
 
     // Per-lint-call module cache for cross-file type resolution.
     // Only created when a file_path is provided.
-    const ModuleCache = @import("../checker/module_cache.zig").ModuleCache;
+    const ModuleCache = @import("../module_cache.zig").ModuleCache;
     var mc_storage: ?ModuleCache = if (file_path.len > 0) ModuleCache.init(allocator) else null;
     defer if (mc_storage) |*mc| mc.deinit();
 
@@ -307,7 +307,7 @@ pub fn lintWithPath(
         .node_min_toks = node_min_toks,
         .checker_storage = &checker_storage,
         .file_path = file_path,
-        .module_cache = if (mc_storage) |*mc| mc else null,
+        .module_resolver = if (mc_storage) |*mc| mc.asModuleResolver() else null,
         .parent_indices_override = if (parent_override) |p| p else null,
     };
 
@@ -479,7 +479,7 @@ pub fn lintRulesByName(
         }
     }
 
-    var checker_storage: ?@import("../checker/root.zig").Checker = null;
+    var checker_storage: ?@import("ez_checker").Checker = null;
     defer if (checker_storage) |*c| c.deinit();
 
     var ctx = LintContext{

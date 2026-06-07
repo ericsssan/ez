@@ -229,7 +229,7 @@ fn numberLiteralIsInteger(n: NodeIndex, ctx: *const LintContext) bool {
         std.mem.indexOf(u8, txt, "E") == null;
 }
 
-fn typeIsInteger(_: @import("../../../checker/types.zig").TypeId, _: *const LintContext) bool {
+fn typeIsInteger(_: @import("ez_checker").types.TypeId, _: *const LintContext) bool {
     return false;
 }
 
@@ -334,16 +334,16 @@ fn symbolForIdent(ident: NodeIndex, ctx: *const LintContext) ?parser.symbol.Symb
     return null;
 }
 
-fn typeIsNumberish(id: @import("../../../checker/types.zig").TypeId, ctx: *const LintContext) bool {
+fn typeIsNumberish(id: @import("ez_checker").types.TypeId, ctx: *const LintContext) bool {
     return ctx.typeIdIsNumberLike(id);
 }
 
-fn typeIsBooleanish(id: @import("../../../checker/types.zig").TypeId, ctx: *const LintContext) bool {
+fn typeIsBooleanish(id: @import("ez_checker").types.TypeId, ctx: *const LintContext) bool {
     return ctx.typeIdIsExactlyBoolean(id);
 }
 
-fn typeIsBigIntish(id: @import("../../../checker/types.zig").TypeId, ctx: *const LintContext) bool {
-    const tymod = @import("../../../checker/types.zig");
+fn typeIsBigIntish(id: @import("ez_checker").types.TypeId, ctx: *const LintContext) bool {
+    const tymod = @import("ez_checker").types;
     if (id.eq(tymod.ID_BIGINT)) return true;
     const k = ctx.typeIdKind(id) orelse return false;
     return k == .bigint or k == .bigint_literal;

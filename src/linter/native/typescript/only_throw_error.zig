@@ -23,7 +23,7 @@ const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
-const tymod = @import("../../../checker/types.zig");
+const tymod = @import("ez_checker").types;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 

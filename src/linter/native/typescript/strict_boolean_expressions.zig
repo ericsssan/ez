@@ -8,7 +8,7 @@ const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const tymod = @import("../../../checker/types.zig");
+const tymod = @import("ez_checker").types;
 const TypeId = tymod.TypeId;
 
 pub const meta = RuleMeta{
@@ -459,8 +459,8 @@ fn checkBoolLeaf(expr: NodeIndex, opts: Options, ctx: *const LintContext) void {
     // TS treats un-annotated function-param identifiers as implicit
     // `any` (not `unknown`).  Our checker stores them as UNKNOWN to
     // keep no-unsafe-* quiet; bridge the gap here so allowAny works.
-    if (ty.eq(@import("../../../checker/types.zig").ID_UNKNOWN) and isUnannotatedParamRef(n, ctx)) {
-        ty = @import("../../../checker/types.zig").ID_ANY;
+    if (ty.eq(@import("ez_checker").types.ID_UNKNOWN) and isUnannotatedParamRef(n, ctx)) {
+        ty = @import("ez_checker").types.ID_ANY;
     }
     var classification = classify(ty, opts, ctx);
     // Promote nullable_(string|number) to nullable_enum when the source
