@@ -951,6 +951,13 @@ pub const LintContext = struct {
         };
     }
 
+    /// Non-empty when the literal type is a tagged enum member
+    /// (e.g. `ExampleEnum.This = 0` has enum_name="ExampleEnum").
+    pub fn typeIdEnumName(self: *const LintContext, id: tymod.TypeId) []const u8 {
+        const c = self.ensureChecker() orelse return "";
+        return c.store.get(id).enum_name;
+    }
+
     /// Array element TypeId — for `T[]`, `readonly T[]`, `Array<T>`, and
     /// `ReadonlyArray<T>`.  Returns null when not an array-like type.
     pub fn typeIdArrayElement(self: *const LintContext, id: tymod.TypeId) ?tymod.TypeId {

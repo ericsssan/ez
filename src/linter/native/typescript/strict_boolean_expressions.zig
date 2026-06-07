@@ -740,6 +740,14 @@ fn walkType(id: TypeId, fam: *Family, ctx: *const LintContext, depth: u32) void 
             fam.string_possibly_falsy = true; // broad string includes ''
         },
         .string_literal => {
+            // An enum member literal (enum_name != "") is classified as
+            // enum, not string, matching TS-eslint's inspectVariantTypes
+            // which adds both 'string' and 'enum' flags but routes via
+            // is('nullish','string','enum') → conditionErrorNullableEnum.
+            if (ctx.typeIdEnumName(id).len > 0) {
+                fam.has_enum = true;
+                return;
+            }
             fam.has_string = true;
             // Empty string literal type is the only falsy string literal.
             if (ctx.typeIdLiteralValue(id)) |lv| switch (lv) {
@@ -754,6 +762,12 @@ fn walkType(id: TypeId, fam: *Family, ctx: *const LintContext, depth: u32) void 
             fam.number_possibly_falsy = true;
         },
         .number_literal => {
+            // An enum member literal (enum_name != "") is classified as
+            // enum, not number, matching TS-eslint's EnumLike detection.
+            if (ctx.typeIdEnumName(id).len > 0) {
+                fam.has_enum = true;
+                return;
+            }
             fam.has_number = true;
             if (ctx.typeIdLiteralValue(id)) |lv| switch (lv) {
                 .number => |n| if (n == 0 or std.math.isNan(n)) {
