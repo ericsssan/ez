@@ -5,6 +5,9 @@
         .es_parser = .{
             .path = "../es-parser",
         },
+        .ez_checker = .{
+            .path = "../ez-checker",
+        },
     },
     .minimum_zig_version = "0.17.0-dev.607+456b2ec07",
     .fingerprint = 0xe983153fc28c38f3,

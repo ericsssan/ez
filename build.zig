@@ -16,6 +16,13 @@ pub fn build(b: *std.Build) void {
     });
     const es_parser_mod = es_parser_dep.module("es-parser");
 
+    // ── ez-checker dependency (extracted type checker) ──
+    const ez_checker_dep = b.dependency("ez_checker", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const ez_checker_mod = ez_checker_dep.module("ez-checker");
+
     // ── Main executable ──────────────────────────────────────
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -23,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe_mod.addImport("es_parser", es_parser_mod);
+    exe_mod.addImport("ez_checker", ez_checker_mod);
     const exe = b.addExecutable(.{
         .name = "ez",
         .root_module = exe_mod,
@@ -42,6 +50,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_mod.addImport("es_parser", es_parser_mod);
+    test_mod.addImport("ez_checker", ez_checker_mod);
     const unit_tests = b.addTest(.{
         .root_module = test_mod,
     });
@@ -102,6 +111,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
     napi_mod.addImport("es_parser", es_parser_mod);
+    napi_mod.addImport("ez_checker", ez_checker_mod);
     const napi_lib = b.addLibrary(.{
         .name = "ez",
         .root_module = napi_mod,
@@ -245,6 +255,7 @@ pub fn build(b: *std.Build) void {
         .strip = false,
     });
     bench_par_ez_mod.addImport("es_parser", es_parser_mod);
+    bench_par_ez_mod.addImport("ez_checker", ez_checker_mod);
     const bench_par_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_parallel.zig"),
         .target = target,

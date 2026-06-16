@@ -33,6 +33,14 @@ isolate-*.log
 ez.node
 sanz.node
 
+# Profiling summaries / markdown captures (regenerable; never commit)
+prof-*.md
+CPU.*.md
+*.cpuprofile.md
+
+# Per-run native rule cache
+.sanz-cache/
+
 # Scratch / ad-hoc output
 tmp/
 

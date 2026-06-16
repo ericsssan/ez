@@ -3904,6 +3904,20 @@ class SourceCode {
       }
     }
 
+    // Ensure parent is an own (not prototype-inherited) property on writeExpr so
+    // plugins that check `node.hasOwnProperty('parent')` (e.g. sonarjs S4165's
+    // isCompoundAssignment) work correctly.  Our `parent` getter lives on the
+    // prototype — calling it and re-assigning shadows it with an own data property.
+    if (writeExpr && !Object.prototype.hasOwnProperty.call(writeExpr, 'parent')) {
+      const _wp = writeExpr.parent;
+      Object.defineProperty(writeExpr, 'parent', { value: _wp, writable: true, configurable: true });
+    }
+    // Same for the reference identifier itself (e.g. sonarjs S2259 checks
+    // `ref.identifier.hasOwnProperty('parent')`).
+    if (refNode && !Object.prototype.hasOwnProperty.call(refNode, 'parent')) {
+      const _rp = refNode.parent;
+      Object.defineProperty(refNode, 'parent', { value: _rp, writable: true, configurable: true });
+    }
     const ref = new _Reference(refNode, from, resolved, kind, writeExpr, isTypeRef);
     this._refCache[refIdx] = ref;
     return ref;
@@ -4483,7 +4497,16 @@ class SourceCode {
         // spaced-comment iterate over this list.
         if (sc._allComments !== undefined) return sc._allComments;
         const ast = sc._ast;
-        sc._allComments = ast.commentsInRange ? ast.commentsInRange(0, ast.sourceLen) : [];
+        const cmnts = ast.commentsInRange ? ast.commentsInRange(0, ast.sourceLen) : [];
+        // Synthesize shebang comment if source starts with #! (mirrors getAllComments()).
+        if (sc.text && sc.text.startsWith('#!')) {
+          const end = sc.text.indexOf('\n');
+          const shebangEnd = end >= 0 ? end : sc.text.length;
+          cmnts.unshift({ type: 'Shebang', value: sc.text.slice(2, shebangEnd),
+            start: 0, end: shebangEnd, range: [0, shebangEnd],
+            loc: { start: { line: 1, column: 0 }, end: { line: 1, column: shebangEnd } } });
+        }
+        sc._allComments = cmnts;
         return sc._allComments;
       },
       configurable: true, enumerable: true,
@@ -4835,6 +4858,28 @@ class SourceCode {
   }
 
   /**
+   * ESLint 9: sourceCode.markVariableAsUsed(name, refNode?) — marks a variable
+   * as used so no-unused-vars (and similar rules) skip it. Mirrors ESLint v9's
+   * SourceCode method. Rules like custom/use-every-a call this.
+   */
+  markVariableAsUsed(name, refNode = this._ast) {
+    const currentScope = this.getScope(refNode || this._ast);
+    let initialScope = currentScope;
+    if (currentScope.type === 'global' && currentScope.childScopes.length > 0 &&
+        currentScope.childScopes[0].block === this._ast) {
+      initialScope = currentScope.childScopes[0];
+    }
+    for (let scope = initialScope; scope; scope = scope.upper) {
+      const variable = scope.variables.find(v => v.name === name);
+      if (variable) {
+        variable.eslintUsed = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
+   /**
    * ESLint 9: getDisableDirectives() — inline disable directive info.
    * Parses eslint-disable comments from the AST's comment list.
    */
@@ -4850,6 +4895,11 @@ class SourceCode {
     const src = ast.source || '';
     const BLOCK_RE = /^\s*eslint-(disable-next-line|disable-line|disable|enable)((?:[^*]|\*(?!\/))*)/;
     const LINE_RE = /^\s*eslint-(disable-next-line|disable-line)(.*)/;
+    // Build a start→comment map from getAllComments() so directive.node is the SAME
+    // object as comment nodes returned by getAllComments(). Rules like
+    // unicorn/expiring-todo-comments check `directive.node === comment` (identity).
+    const allComments = this.getAllComments();
+    const commentByStart = new Map(allComments.map(c => [c.range ? c.range[0] : c.start, c]));
 
     for (let i = 0; i < cc; i++) {
       const start = cs[i], end = ce[i], kind = ck[i];
@@ -4868,14 +4918,11 @@ class SourceCode {
       if (!m) continue;
       const type = m[1]; // 'disable', 'disable-next-line', 'disable-line', 'enable'
       const rulesPart = (m[2] || '').replace(/\s*--.*$/, '').trim(); // strip description after --
-      // Build token-like node with loc
-      const startLoc = this.getLocFromIndex(start);
-      const endLoc = this.getLocFromIndex(end);
-      const node = {
-        type: isBlock ? 'Block' : 'Line',
-        value: content,
-        range: [start, end],
-        loc: startLoc && endLoc ? { start: startLoc, end: endLoc } : null,
+      // Use the same comment object from getAllComments() so identity check
+      // `directive.node === comment` (used by unicorn/expiring-todo-comments) works.
+      const node = commentByStart.get(start) || {
+        type: isBlock ? 'Block' : 'Line', value: content,
+        range: [start, end], loc: null,
       };
       // Split rules: "rule1, rule2" → ['rule1', 'rule2'], or '' → [null] for disable-all
       const ruleNames = rulesPart ? rulesPart.split(',').map(r => r.trim()).filter(Boolean) : [];
@@ -8496,7 +8543,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             cp.currentSegments = [cp.initialSegment];
             if (_cpStartH) {
               const nt = node.type;
-              const cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
+              let cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
+              // When globalReturn=true, Zig emits a synthetic function code path on the
+              // Program node (the top-level globalReturn wrapper). ESLint does not emit this.
+              // Rules like no-invalid-this call isDefaultThisBinding(cpNode, ...) which accesses
+              // cpNode.parent.type — throws for null parent (root node). Wrap the node so parent
+              // returns a safe synthetic ancestor (Program-level expression statement) so
+              // isDefaultThisBinding falls through to `default: return true` without crashing.
+              if (nodeIdx === 0 && cp.origin === 'function' && context.sourceCode._globalReturn) {
+                const _synthParent = { type: 'ExpressionStatement', parent: null };
+                cpNode = Object.create(cpNode);
+                Object.defineProperty(cpNode, 'parent', { value: _synthParent, configurable: true });
+              }
               const hn = _cpStartH.length;
               let h = 0;
               try {
@@ -9088,6 +9146,27 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Phase 3 (after_enter): fires after enter handler, before visiting children.
       // Used for SwitchCase segment starts so rules can set state in SwitchCase handler first.
       if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 3);
+      // ESLint fires onCodePathSegmentLoop with node=body-BlockStatement BEFORE visiting
+      // the for-in/of body (via makeForInOfBody() called at body enter). Our Zig CFG stores
+      // the seg_loop event at EXIT of the loop node. Pre-fire it here at AFTER_ENTER
+      // (before children) with the body block so rules like sonarjs/no-parameter-reassignment
+      // can set up their "foreach" context before identifiers inside the body are visited.
+      if (_segLoopH && _cfgHasPhaseCsr && (tag === T.for_in_stmt || tag === T.for_of_stmt || tag === T.for_await_of_stmt)) {
+        const _loopNode = nodeView(ast, idx);
+        const _bodyBlock = _loopNode.body;
+        if (_bodyBlock && _bodyBlock.type === 'BlockStatement') {
+          const _exitStart = _cfgExitStarts ? _cfgExitStarts[idx] : 0;
+          const _exitEnd = _cfgExitStarts ? _cfgExitStarts[idx + 1] : 0;
+          for (let _ek = _exitStart; _ek < _exitEnd; _ek++) {
+            const _eBase = _ek * 3;
+            if (_cfgExitData[_eBase] === 6) {
+              const _fromSeg = _cfgGraph.segment(_cfgExitData[_eBase + 1]);
+              const _toSeg   = _cfgGraph.segment(_cfgExitData[_eBase + 2]);
+              if (_fromSeg && _toSeg && _fromSeg.reachable) _dispatchSegLoop(_fromSeg, _toSeg, _bodyBlock);
+            }
+          }
+        }
+      }
       // Synthesize ChainExpression enter for outermost chain nodes. The outermost can be
       // either an optional tag (e.g. `a?.b`) OR a regular member/call wrapping an optional
       // chain (e.g. `a?.b.c` — outer is a regular member_expr; the chain extends through it).

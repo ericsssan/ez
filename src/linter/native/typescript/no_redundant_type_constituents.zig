@@ -11,7 +11,7 @@ const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const tymod = @import("../../../checker/types.zig");
+const tymod = @import("ez_checker").types;
 
 pub const meta = RuleMeta{
     .name = "no-redundant-type-constituents",

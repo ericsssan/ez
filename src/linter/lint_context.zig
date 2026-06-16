@@ -9,8 +9,9 @@ const ExtraIndex = ast_mod.ExtraIndex;
 const SubRange = ast_mod.SubRange;
 const regex_parser = @import("regex_parser.zig");
 const unicode_marks = @import("unicode_marks.zig");
-const checker_mod = @import("../checker/root.zig");
+const checker_mod = @import("ez_checker");
 const Checker = checker_mod.Checker;
+const ModuleResolver = checker_mod.ModuleResolver;
 const tymod = checker_mod.types;
 const Span = parser.span.Span;
 const Location = parser.span.Location;
@@ -208,7 +209,7 @@ pub const LintContext = struct {
 
     /// Per-lint-call module cache for cross-file type resolution.
     /// Null when cross-file resolution is disabled or not yet created.
-    module_cache: ?*@import("../checker/module_cache.zig").ModuleCache = null,
+    module_resolver: ?ModuleResolver = null,
 
     /// Optional parent-indices override: when set, parentOf() uses this
     /// instead of semantic.parent_indices.  Set by the linter when the
@@ -392,7 +393,7 @@ pub const LintContext = struct {
         if (storage.* == null) {
             var c = Checker.init(self.allocator, self.ast, self.semantic) catch return null;
             c.file_path = self.file_path;
-            c.module_cache = self.module_cache;
+            c.module_resolver = self.module_resolver;
             storage.* = c;
         }
         return &(storage.*.?);
@@ -418,7 +419,7 @@ pub const LintContext = struct {
     /// Return whether a named enum is a string-enum or number-enum.
     /// Returns null when no enum with this name is in scope.  Used by
     /// no-mixed-enums and no-unsafe-enum-comparison.
-    pub fn enumKindOf(self: *const LintContext, name: []const u8) ?@import("../checker/checker.zig").EnumKind {
+    pub fn enumKindOf(self: *const LintContext, name: []const u8) ?@import("ez_checker").EnumKind {
         const c = self.ensureChecker() orelse return null;
         return c.enumKindOf(name);
     }

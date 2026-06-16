@@ -118,7 +118,7 @@ fn exprIsStringArray(node: NodeIndex, ctx: *const LintContext) bool {
             const etag = ctx.nodeTag(el);
             if (etag == .string_literal or etag == .template_literal) continue;
             const el_ty = ctx.typeOfNode(el);
-            const tymod = @import("../../../checker/types.zig");
+            const tymod = @import("ez_checker").types;
             if (el_ty.eq(tymod.ID_STRING)) continue;
             const ek = ctx.typeIdKind(el_ty) orelse tymod.TypeKind.unknown;
             if (ek == .string or ek == .string_literal) continue;

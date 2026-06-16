@@ -21,7 +21,8 @@ pub const scope_events = @import("es_parser").scope_events;
 pub const event_resolver = @import("es_parser").event_resolver;
 
 // ── Checker module ────────────────────────────────────────
-pub const checker = @import("checker/root.zig");
+pub const checker = @import("ez_checker");
+pub const module_cache = @import("module_cache.zig");
 
 // ── Linter module ─────────────────────────────────────────
 pub const lint_context = @import("linter/root.zig").lint_context;
@@ -47,7 +48,8 @@ pub const type_ffi = @import("cli/type_ffi.zig");
 
 test {
     _ = @import("es_parser");
-    _ = @import("checker/root.zig");
+    _ = @import("ez_checker");
+    _ = @import("module_cache.zig");
     _ = @import("linter/root.zig");
     _ = @import("cli/file_discovery.zig");
     _ = @import("cli/parallel.zig");

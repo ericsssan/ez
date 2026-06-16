@@ -8,7 +8,7 @@ const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const tymod = @import("../../../checker/types.zig");
+const tymod = @import("ez_checker").types;
 const TypeId = tymod.TypeId;
 
 pub const meta = RuleMeta{
@@ -55,6 +55,13 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // depend on `this` and are always safe to extract.  Skip before the
     // type-based check so that e.g. `[].map(Math.floor)` doesn't fire.
     if (isNativelyBoundStaticAccess(d.lhs, prop, ctx)) return;
+
+    // ignoreStatic early-exit: check static method access BEFORE the type-based
+    // check.  The type system may surface static methods on the constructor type
+    // as method properties (firing line 66 below), bypassing the staticMethodAccess
+    // guard at line 72.  Short-circuit here when ignoreStatic is set so that
+    // `ContainsMethods.unboundStatic` with ignoreStatic:true is not reported.
+    if (ignore_static and staticMethodAccess(d.lhs, prop, ctx)) return;
 
     // Instance-method case: receiver's type has a method-defined prop.
     const recv_ty = ctx.typeOfNode(d.lhs);

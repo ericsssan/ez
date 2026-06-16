@@ -18,7 +18,7 @@ const Lexer = parser.Lexer;
 const Parser = parser.Parser;
 const semantic = parser.semantic;
 const Language = parser.token.Language;
-const checker_mod = @import("../checker/root.zig");
+const checker_mod = @import("ez_checker");
 const tymod = checker_mod.types;
 const Checker = checker_mod.Checker;
 
