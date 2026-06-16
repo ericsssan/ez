@@ -1,0 +1,26 @@
+# Ez is a Zig project. The JavaScript in this repo is a Node bridge,
+# code-generation tooling, the test/benchmark harness, and vendored
+# third-party benchmark fixtures — not the core implementation. These
+# linguist overrides keep GitHub's language statistics honest.
+#
+# NOTE: tests/ and bench/ also contain real .zig sources, so those dirs are
+# scoped to JS extensions only (never whole-dir) to avoid hiding Zig code.
+
+# Node bridge + ESLint rule-runner (calls into the Zig native module).
+js/** linguist-vendored
+
+# Code-generation / rule-analysis tooling.
+tools/** linguist-vendored
+
+# Third-party libraries used only as parser/lint benchmark inputs.
+bench/fixtures/** linguist-vendored
+
+# JS glue in mixed-language directories (scoped to JS, leaving .zig detectable).
+bench/**/*.js  linguist-vendored
+bench/**/*.mjs linguist-vendored
+bench/**/*.cjs linguist-vendored
+tests/**/*.js  linguist-vendored
+tests/**/*.mjs linguist-vendored
+tests/**/*.cjs linguist-vendored
+scripts/**/*.js linguist-vendored
+src/bun/*.js    linguist-vendored
