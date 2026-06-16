@@ -84,6 +84,9 @@ pub const ParentKind = enum(u8) {
     /// type_params SubRange. JS synthesizes a TSTypeParameterDeclaration
     /// wrapper around the SubRange and returns it as the parent.
     ts_type_parameter_declaration = 7,
+    /// This block_stmt is from `declare global {}` (parent is root, no ts_module_decl wrapper).
+    /// JS synthesizes TSModuleDeclaration{global:true} as the parent of this TSModuleBlock.
+    ts_global_module_declaration = 8,
 };
 
 /// ESTree-shape type override IDs. Must stay in sync with `_OVERRIDE_TYPES`
@@ -179,6 +182,33 @@ pub fn buildTraversalAux(
                 if (start < source.len and source[start] == '#') {
                     type_overrides[i] = @intFromEnum(TypeOverride.private_identifier);
                 }
+                // `typeof Foo.Bar`: remap identifier's parent to the enclosing
+                // ts_type_reference so `identifier.parent.type === "TSTypeReference"`.
+                // @typescript-eslint/scope-manager excludes typeof-type refs from value
+                // scope; this replicates the effect for ignoreTypeReferences: true.
+                {
+                    const rp = resolved_parents[i];
+                    if (rp != NONE and (tags[rp] == .member_expr or tags[rp] == .computed_member_expr)) {
+                        var cur = rp;
+                        var g: u32 = 0;
+                        while (g < 16) : (g += 1) {
+                            const cp = parents[cur];
+                            if (cp == NONE) break;
+                            const cptag = tags[cp];
+                            if (cptag == .member_expr or cptag == .computed_member_expr) {
+                                cur = cp;
+                                continue;
+                            }
+                            if (cptag == .ts_type_reference) {
+                                const gp = parents[cp];
+                                if (gp != NONE and (tags[gp] == .ts_typeof_type or tags[gp] == .ts_type_query)) {
+                                    resolved_parents[i] = cp;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
             },
             .method_def, .getter_def, .setter_def,
             .computed_method_def, .computed_getter_def, .computed_setter_def,
@@ -202,12 +232,49 @@ pub fn buildTraversalAux(
                     type_overrides[i] = @intFromEnum(TypeOverride.ts_import_equals_declaration);
                 }
             },
+            .member_expr => {
+                var cur_p = parents[i];
+                while (cur_p != NONE) {
+                    const cur_tag = tags[cur_p];
+                    if (cur_tag == .ts_type_reference) {
+                        // `typeof X.Y` encodes as ts_type_reference{member_expr} where
+                        // ts_type_reference.parent = ts_typeof_type or ts_type_query.
+                        // These expressions are NOT type names; don't remap to TSQualifiedName.
+                        const gran_p = parents[cur_p];
+                        const gran_is_typeof = gran_p != NONE and
+                            (tags[gran_p] == .ts_typeof_type or tags[gran_p] == .ts_type_query);
+                        if (!gran_is_typeof) {
+                            type_overrides[i] = @intFromEnum(TypeOverride.ts_qualified_name);
+                        }
+                        break;
+                    }
+                    if (cur_tag != .member_expr) break;
+                    cur_p = parents[cur_p];
+                }
+            },
             .block_stmt => {
                 const p = parents[i];
                 if (p != NONE) {
                     const ptag = tags[p];
                     if (ptag == .ts_namespace_decl or ptag == .ts_module_decl) {
                         type_overrides[i] = @intFromEnum(TypeOverride.ts_module_block);
+                    } else if (ptag == .root) {
+                        // `declare global {}` — es-parser emits block_stmt directly under root
+                        // with no ts_module_decl wrapper. Detect by tokens before the `{`.
+                        const tok = node_main_tokens[i];
+                        if (tok >= 2) {
+                            const gs = tok_starts[tok - 1];
+                            const gl = tok_lens[tok - 1];
+                            const ds = tok_starts[tok - 2];
+                            const dl = tok_lens[tok - 2];
+                            if (gs + gl <= source.len and ds + dl <= source.len and
+                                std.mem.eql(u8, source[gs .. gs + gl], "global") and
+                                std.mem.eql(u8, source[ds .. ds + dl], "declare"))
+                            {
+                                type_overrides[i] = @intFromEnum(TypeOverride.ts_module_block);
+                                parent_kinds[i] = @intFromEnum(ParentKind.ts_global_module_declaration);
+                            }
+                        }
                     }
                 }
             },
@@ -298,9 +365,10 @@ pub fn buildTraversalAux(
             if (!is_optional_self and (this_tag == .member_expr or
                 this_tag == .computed_member_expr or this_tag == .call_expr))
             {
-                // Walk down the lhs chain (skipping grouping_expr) looking for
-                // an optional_* node. If we find one, this regular node may be
-                // the chain wrapper.
+                // Walk down the lhs chain looking for an optional_* node.
+                // Do NOT walk through grouping_expr: parentheses break the chain.
+                // `(a?.b).c` is NOT an optional chain — the outer member_expr
+                // should not be wrapped in ChainExpression.
                 var c = data[i].lhs;
                 var cguard: u32 = 0;
                 while (c != .none and cguard < 128) : (cguard += 1) {
@@ -308,7 +376,7 @@ pub fn buildTraversalAux(
                     const ct = tags[ci];
                     if (ct == .optional_member_expr or ct == .optional_computed_member_expr or
                         ct == .optional_call_expr) { chain_contains_optional = true; break; }
-                    if (ct == .grouping_expr or ct == .member_expr or
+                    if (ct == .member_expr or
                         ct == .computed_member_expr or ct == .call_expr)
                     { c = data[ci].lhs; continue; }
                     break;
@@ -727,6 +795,31 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
                     if (start < source.len and source[start] == '#') {
                         type_overrides[i] = @intFromEnum(TypeOverride.private_identifier);
                     }
+                    // `typeof Foo.Bar`: remap identifier's parent to the enclosing
+                    // ts_type_reference so `identifier.parent.type === "TSTypeReference"`.
+                    {
+                        const rp = resolved_parents[i];
+                        if (rp != NONE and (tags[rp] == .member_expr or tags[rp] == .computed_member_expr)) {
+                            var cur = rp;
+                            var g: u32 = 0;
+                            while (g < 16) : (g += 1) {
+                                const cp = parents[cur];
+                                if (cp == NONE) break;
+                                const cptag = tags[cp];
+                                if (cptag == .member_expr or cptag == .computed_member_expr) {
+                                    cur = cp;
+                                    continue;
+                                }
+                                if (cptag == .ts_type_reference) {
+                                    const gp = parents[cp];
+                                    if (gp != NONE and (tags[gp] == .ts_typeof_type or tags[gp] == .ts_type_query)) {
+                                        resolved_parents[i] = cp;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
                 },
                 .method_def, .getter_def, .setter_def,
                 .computed_method_def, .computed_getter_def, .computed_setter_def,
@@ -746,12 +839,48 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
                         type_overrides[i] = @intFromEnum(TypeOverride.ts_import_equals_declaration);
                     }
                 },
+                .member_expr => {
+                    // A member_expr chain inside ts_type_reference is a TSQualifiedName
+                    // (e.g. `NS.Foo` in `let x: NS.Foo`). Walk up through member_expr
+                    // ancestors to check if the chain is rooted in a ts_type_reference.
+                    var cur_p = parents[i];
+                    while (cur_p != NONE) {
+                        const cur_tag = tags[cur_p];
+                        if (cur_tag == .ts_type_reference) {
+                            // `typeof X.Y` encodes as ts_type_reference{member_expr} where
+                            // ts_type_reference.parent = ts_typeof_type or ts_type_query.
+                            const gran_p = parents[cur_p];
+                            const gran_is_typeof2 = gran_p != NONE and
+                                (tags[gran_p] == .ts_typeof_type or tags[gran_p] == .ts_type_query);
+                            if (!gran_is_typeof2) {
+                                type_overrides[i] = @intFromEnum(TypeOverride.ts_qualified_name);
+                            }
+                            break;
+                        }
+                        if (cur_tag != .member_expr) break;
+                        cur_p = parents[cur_p];
+                    }
+                },
                 .block_stmt => {
                     const p = parents[i];
                     if (p != NONE) {
                         const ptag = tags[p];
                         if (ptag == .ts_namespace_decl or ptag == .ts_module_decl) {
                             type_overrides[i] = @intFromEnum(TypeOverride.ts_module_block);
+                        } else if (ptag == .root) {
+                            const tok = node_main_tokens[i];
+                            if (tok >= 2) {
+                                const gs = tok_starts[tok - 1];
+                                const gl = tok_lens[tok - 1];
+                                const ds = tok_starts[tok - 2];
+                                const dl = tok_lens[tok - 2];
+                                if (gs + gl <= source.len and ds + dl <= source.len and
+                                    std.mem.eql(u8, source[gs .. gs + gl], "global") and
+                                    std.mem.eql(u8, source[ds .. ds + dl], "declare"))
+                                {
+                                    type_overrides[i] = @intFromEnum(TypeOverride.ts_module_block);
+                                }
+                            }
                         }
                     }
                 },
@@ -844,7 +973,8 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
                     const ct2 = tags[ci2];
                     if (ct2 == .optional_member_expr or ct2 == .optional_computed_member_expr or
                         ct2 == .optional_call_expr) { chain_contains_optional_p = true; break; }
-                    if (ct2 == .grouping_expr or ct2 == .member_expr or
+                    // Do NOT walk through grouping_expr: parentheses break the chain.
+                    if (ct2 == .member_expr or
                         ct2 == .computed_member_expr or ct2 == .call_expr)
                     { c2 = data[ci2].lhs; continue; }
                     break;
@@ -923,6 +1053,15 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
 
             if (this_tag == .ts_type_parameter) {
                 parent_kinds[i] = @intFromEnum(ParentKind.ts_type_parameter_declaration);
+                continue;
+            }
+            // Kind 8: declare global {} — block_stmt under root tagged as TSModuleBlock,
+            // synthesize TSModuleDeclaration{global:true} as its parent.
+            if (this_tag == .block_stmt and
+                type_overrides[i] == @intFromEnum(TypeOverride.ts_module_block) and
+                tags[rp] == .root)
+            {
+                parent_kinds[i] = @intFromEnum(ParentKind.ts_global_module_declaration);
                 continue;
             }
         }

@@ -5,6 +5,8 @@
 // Fires on the module-name string of:
 //   - import / export-from declarations and dynamic `import(...)`
 //   - `require(...)` and `process.getBuiltinModule(...)` calls
+//   - `import("mod")` in type position (ts_import_type, string at mainToken+2)
+//   - `typeof import("mod")` in type position (ts_typeof_type, string at mainToken+3)
 // Mirrors: tests/conformance/eslint-plugin-unicorn/rules/prefer-node-protocol.js
 
 const std = @import("std");
@@ -12,6 +14,7 @@ const parser = @import("es_parser");
 const ast = parser.ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
+const Span = parser.span.Span;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 const MessageDataEntry = @import("../../lint_context.zig").MessageDataEntry;
@@ -23,13 +26,11 @@ pub const meta = RuleMeta{
     .description = "Prefer using the `node:` protocol when importing Node.js builtin modules.",
 };
 
-pub const relevant_tags = [_]Node.Tag{.string_literal};
+pub const relevant_tags = [_]Node.Tag{ .string_literal, .ts_import_type, .ts_typeof_type };
 
 pub const needs_semantic = true;
 
 /// Unprefixed Node.js builtin module names that also have a `node:` form.
-/// Derived from `builtin-modules` (only entries present in BOTH plain and
-/// `node:`-prefixed forms, which is exactly the non-`node:` entries).
 const BUILTIN_MODULES = [_][]const u8{
     "assert",          "assert/strict",     "async_hooks",   "buffer",
     "child_process",   "cluster",           "console",       "constants",
@@ -53,10 +54,7 @@ fn isBuiltinModule(name: []const u8) bool {
     return false;
 }
 
-/// Decode a string-literal's raw inner text into its cooked value (mirrors
-/// `node.value`).  Module names are short ASCII; we handle `\xHH`, `\uHHHH`,
-/// `\u{H+}` and simple `\c` escapes.  Returns the cooked slice in `buf`, or
-/// null if it doesn't fit or an escape is malformed.
+/// Decode a string-literal's raw inner text into its cooked value.
 fn cookString(raw: []const u8, buf: []u8) ?[]const u8 {
     var out: usize = 0;
     var i: usize = 0;
@@ -68,7 +66,7 @@ fn cookString(raw: []const u8, buf: []u8) ?[]const u8 {
             i += 1;
             continue;
         }
-        i += 1; // consume backslash
+        i += 1;
         if (i >= raw.len) return null;
         const c = raw[i];
         var cp: ?u21 = null;
@@ -90,9 +88,6 @@ fn cookString(raw: []const u8, buf: []u8) ?[]const u8 {
                 }
             },
             else => {
-                // Simple escape: the character stands for itself (covers `\\`,
-                // `\"`, `\/`, etc.).  Control escapes like `\n` can't appear in a
-                // valid module name, so a literal copy is sufficient here.
                 if (out >= buf.len) return null;
                 buf[out] = c;
                 out += 1;
@@ -118,19 +113,10 @@ fn isModuleSource(ctx: *const LintContext, str: NodeIndex, parent: NodeIndex) bo
         .import_expr => {
             return ctx.nodeSkipGrouping(ctx.ast.nodeData(parent).lhs) == str;
         },
-        .ts_import_type => {
-            // `import("fs")` / `typeof import("fs")` in type position — the only
-            // string under the node is the module source.
-            return true;
-        },
         .export_all => {
-            // export * from 'source' — lhs is the source string token's node.
             return ctx.ast.nodeData(parent).lhs == str;
         },
         .call_expr => {
-            // Note: optional calls (`require?.(...)`) are intentionally excluded
-            // — the source rule requires optionalCall:false.
-            // require(str) or process.getBuiltinModule(str): str must be arg[0].
             const d = ctx.ast.nodeData(parent);
             if (d.rhs == .none) return false;
             const sr = ctx.ast.extraData(ast.SubRange, @intFromEnum(d.rhs));
@@ -156,19 +142,58 @@ fn isModuleSource(ctx: *const LintContext, str: NodeIndex, parent: NodeIndex) bo
     }
 }
 
+/// Report on a token-encoded module string (ts_import_type / ts_typeof_type).
+/// `str_tok` is the token index of the quoted module string.
+fn reportTokenModule(str_tok: u32, ctx: *const LintContext) void {
+    const tok_text = ctx.tokenText(str_tok);
+    if (tok_text.len < 2) return;
+    const q = tok_text[0];
+    if (q != '"' and q != '\'') return;
+    const inner = tok_text[1 .. tok_text.len - 1];
+    var buf: [256]u8 = undefined;
+    const value = cookString(inner, &buf) orelse return;
+    if (std.mem.startsWith(u8, value, "node:")) return;
+    if (!isBuiltinModule(value)) return;
+    const tok_start = ctx.tokenStart(str_tok);
+    const tok_end = ctx.tokenEnd(str_tok);
+    const diag_span = Span{ .start = tok_start, .end = tok_end };
+    // Fix: insert "node:" after the opening quote.
+    const fix_span = Span{ .start = tok_start + 1, .end = tok_start + 1 };
+    ctx.reportSpanWithFixAndMessageId(diag_span, fix_span, "node:", "prefer-node-protocol");
+}
+
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
+    const tag = ctx.ast.nodeTag(node);
+
+    // ts_import_type: `import("mod")` in type position.
+    // The module string token is at mainToken+2: `import` `(` `"mod"`.
+    if (tag == .ts_import_type) {
+        const mt = ctx.nodeMainToken(node);
+        reportTokenModule(mt + 2, ctx);
+        return;
+    }
+
+    // ts_typeof_type: `typeof import("mod")` in type position.
+    // Detect by checking token at mt+1 == `import`; string is at mt+3.
+    if (tag == .ts_typeof_type) {
+        const mt = ctx.nodeMainToken(node);
+        if (!std.mem.eql(u8, ctx.tokenText(mt + 1), "import")) return;
+        reportTokenModule(mt + 3, ctx);
+        return;
+    }
+
+    // string_literal: standard import/require paths.
     const parent = ctx.parentOf(node);
     if (parent == .none) return;
     if (!isModuleSource(ctx, node, parent)) return;
 
-    // Cooked string value (handles `\u{66}s` etc.).
     const raw = ctx.nodeStaticStringValue(node) orelse return;
     var buf: [256]u8 = undefined;
     const value = cookString(raw, &buf) orelse return;
     if (std.mem.startsWith(u8, value, "node:")) return;
     if (!isBuiltinModule(value)) return;
 
-    ctx.reportWithMessageIdAndData(node, "prefer-node-protocol", &[_]MessageDataEntry{
-        .{ .key = "moduleName", .val = value },
-    });
+    const sp = ctx.nodeSpan(node);
+    const fix_span = Span{ .start = sp.start + 1, .end = sp.start + 1 };
+    ctx.reportSpanWithFixAndMessageId(sp, fix_span, "node:", "prefer-node-protocol");
 }

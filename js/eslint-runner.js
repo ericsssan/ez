@@ -1649,6 +1649,7 @@ class SourceCode {
     _activeBuilder = this;
     this._tokenSkipList = null;
     this._jsxTextTokFlags = null;
+    this._jsxGapRanges = undefined;
     this._tokenObjCache = null;
     this._nodesByType = null;
     // Same light parserServices for the reset path — keep this in sync with
@@ -1704,7 +1705,7 @@ class SourceCode {
     const nodeTags = ast._nodeTags;
     const nodeCount = ast.nodeCount;
     const mainTokens = ast._mainTokens;
-    const jsxTextTag = T.jsx_text_node; // 190
+    const jsxTextTag = T.jsx_text_node; // 191
     for (let i = 0; i < nodeCount; i++) {
       if (nodeTags[i] === jsxTextTag) {
         // lhs = next token index after the text span (always set, not NONE).
@@ -1717,6 +1718,31 @@ class SourceCode {
     }
     this._jsxTextTokFlags = flags;
     return flags;
+  }
+
+  /**
+   * Build sorted arrays of [start, end] for all jsx_gap_node entries.
+   * Used by getTokenBefore to return a synthetic JSXText token when the
+   * space before a JSX opening element is covered by a whitespace-only gap.
+   * jsx_gap_node has no tokens, so the normal FFI path returns the prior
+   * sibling's closing token instead of a JSXText token.
+   */
+  _getJsxGapRanges() {
+    if (this._jsxGapRanges !== undefined) return this._jsxGapRanges;
+    const ast = this._ast;
+    const nodeTags = ast._nodeTags;
+    const startArr = ast._nodeStartPosArr;
+    const endArr = ast._nodeEndPosArr;
+    if (!nodeTags || !startArr || !endArr) return (this._jsxGapRanges = null);
+    const gapTag = 202; // jsx_gap_node
+    const nodeCount = ast.nodeCount;
+    const gStarts = [], gEnds = [];
+    for (let i = 0; i < nodeCount; i++) {
+      if (nodeTags[i] === gapTag) { gStarts.push(startArr[i]); gEnds.push(endArr[i]); }
+    }
+    if (gStarts.length === 0) return (this._jsxGapRanges = null);
+    // Gap nodes are in document order; no sort needed.
+    return (this._jsxGapRanges = { starts: new Int32Array(gStarts), ends: new Int32Array(gEnds) });
   }
 
   /**
@@ -1971,12 +1997,22 @@ class SourceCode {
     const ast = this._ast;
     if (!ast._minTokCache) _computeMinTok(ast);
     let startTok = ast._minTokCache[node._i];
-    // Adjust startTok if node.range starts before minTok (e.g. MethodDefinition
-    // with modifier keywords like * / get / set / static / async).
+    // Adjust startTok if node.range[0] doesn't match minTok.
+    // Case 1: minTok is after nodeStart (e.g. MethodDefinition with `static`/`*`/`async` modifier
+    //         before the key — the modifier tokens are earlier than minTok).
+    // Case 2: minTok is before nodeStart — synthetic FunctionExpression with _i borrowed from
+    //         the MethodDefinition (invokeMethodFnHandlers sets fnExpr._i = methodNodeIdx).
+    //         The method's minTok points to `[` of the computed key, but fnExpr.range starts
+    //         at `(` of the params; scanning from `[` finds `(` inside the key expression first.
     if (node.range) {
       const nodeStart = node.range[0];
-      if (ast._tokStarts[startTok] > nodeStart) {
+      const minStart = ast._tokStarts[startTok];
+      if (minStart > nodeStart) {
         let lo = 0, hi = startTok;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (ast._tokStarts[m] < nodeStart) lo = m + 1; else hi = m; }
+        startTok = lo;
+      } else if (minStart < nodeStart) {
+        let lo = startTok, hi = ast.tokenCount - 1;
         while (lo < hi) { const m = (lo + hi) >> 1; if (ast._tokStarts[m] < nodeStart) lo = m + 1; else hi = m; }
         startTok = lo;
       }
@@ -2163,6 +2199,30 @@ class SourceCode {
           }
         }
         if (anchorTok < 0) return null;
+        // Check if a jsx_gap_node (tokenless whitespace between JSX siblings) covers
+        // the space between the anchor token and the target node. If so, return a
+        // synthetic JSXText token — rules like react/jsx-indent rely on this to detect
+        // JSX sibling context and navigate to the parent element for indent calculation.
+        if (node.range) {
+          const nodeStart = node.range[0];
+          const anchorEnd = ast._tokEnds ? ast._tokEnds[anchorTok]
+            : (anchorTok + 1 < ast.tokenCount ? ast._tokStarts[anchorTok + 1] : this.text.length);
+          if (anchorEnd < nodeStart) {
+            const gr = this._getJsxGapRanges();
+            if (gr) {
+              const gss = gr.starts, ges = gr.ends, gn = gss.length;
+              // Binary search: last gap starting < nodeStart
+              let lo = 0, hi = gn - 1, best = -1;
+              while (lo <= hi) { const m = (lo + hi) >> 1; if (gss[m] < nodeStart) { best = m; lo = m + 1; } else hi = m - 1; }
+              if (best >= 0 && gss[best] >= anchorEnd && ges[best] <= nodeStart) {
+                const gs = gss[best], ge = ges[best], src = this.text, ls = ast._lineStarts();
+                return { type: 'JSXText', value: src.slice(gs, ge), range: [gs, ge],
+                  _loc: null, _ls: ls, _start: gs, _end: ge,
+                  get loc() { if (this._loc) return this._loc; const sl = _findLine(this._ls, this._start), el = _findLine(this._ls, this._end); return (this._loc = { start: { line: sl, column: this._start - this._ls[sl - 1] }, end: { line: el, column: this._end - this._ls[el - 1] } }); } };
+              }
+            }
+          }
+        }
         // Walk backward past shadowed tokens (existing semantics).
         for (let i = anchorTok; i >= 0; i--) {
           const tok = this._makeToken(i);
@@ -2603,6 +2663,27 @@ class SourceCode {
     if (nodeIdx >= 0 && node.type === 'TSEnumDeclaration') {
       return this._buildTsEnumScope(nodeIdx, node, built);
     }
+    // Zig emits a block scope for function bodies, but ESLint's eslint-scope does not —
+    // the function scope holds everything (parameters + locals). When a rule calls
+    // getScope(node) for a node inside a function body, return a thin wrapper that also
+    // exposes the parent function scope's variables. This lets rules like
+    // unicorn/prefer-math-min-max find parameter defs via scope.variables.find(name).
+    //
+    // The wrapper is NOT cached in _scopeCache and does NOT appear in childScopes —
+    // it is only returned by explicit getScope() calls. Rules that traverse the real
+    // scope tree (no-shadow, no-unused-vars) see the real block scope (unchanged),
+    // avoiding false positives.
+    if (built.type === 'block' && built.upper && (built.upper._kind === 2 || built.upper._kind === 11) && built.block) {
+      const bbt = built.block.type;
+      // After the body-block fix, scope.block is the containing fn node (ArrowFunctionExpression
+      // etc.) rather than the BlockStatement. Detect both cases.
+      const isFnBodyBlock =
+        bbt === 'FunctionDeclaration' || bbt === 'FunctionExpression' || bbt === 'ArrowFunctionExpression'
+        || (() => { const bp = built.block.parent; return bp && (bp.type === 'FunctionDeclaration' || bp.type === 'FunctionExpression' || bp.type === 'ArrowFunctionExpression'); })();
+      if (isFnBodyBlock) {
+        return this._wrapBlockWithFunctionParams(built);
+      }
+    }
     return built;
   }
 
@@ -2645,6 +2726,89 @@ class SourceCode {
     scope.variableScope = upper ? (upper.variableScope || upper) : scope;
     this._tsEnumScopeCache.set(nodeIdx, scope);
     return scope;
+  }
+
+  // Thin wrapper returned by getScope() for nodes inside function bodies.
+  // Zig emits a block scope for function bodies; ESLint's eslint-scope does not — all
+  // variables (params + locals) live in the function scope. Rules that call
+  // scope.variables.find(name) on the block scope miss parameters. This wrapper augments
+  // variables/set with the parent function scope's variables WITHOUT modifying the real
+  // block scope cached in _scopeCache (so childScopes traversals remain unaffected).
+  _wrapBlockWithFunctionParams(blockScope) {
+    if (blockScope._paramWrapper && blockScope._paramWrapperAst === this._ast) return blockScope._paramWrapper;
+    const fnScope = blockScope.upper;
+    const wrapper = Object.create(blockScope);
+    let _vars = null, _set = null;
+    Object.defineProperty(wrapper, 'variables', {
+      get() {
+        if (_vars) return _vars;
+        const bvars = blockScope.variables;
+        if (!fnScope) { _vars = bvars; return _vars; }
+        const fvars = fnScope.variables;
+        const bs = blockScope.set;
+        const extra = fvars.filter(uv => !bs.has(uv.name));
+        _vars = extra.length ? [...bvars, ...extra] : bvars;
+        return _vars;
+      },
+      configurable: true, enumerable: true,
+    });
+    Object.defineProperty(wrapper, 'set', {
+      get() {
+        if (_set) return _set;
+        const bs = blockScope.set;
+        if (!fnScope) { _set = bs; return _set; }
+        const fvars = fnScope.variables;
+        const hasExtra = fvars.some(uv => !bs.has(uv.name));
+        if (!hasExtra) { _set = bs; return _set; }
+        _set = new Map(bs);
+        for (const uv of fvars) { if (!_set.has(uv.name)) _set.set(uv.name, uv); }
+        return _set;
+      },
+      configurable: true, enumerable: true,
+    });
+    blockScope._paramWrapper = wrapper;
+    blockScope._paramWrapperAst = this._ast;
+    return wrapper;
+  }
+
+  // Wrapper returned by getScope(functionNode): merges function-scope params with
+  // body block-scope locals, so `scope.set.get('c')` finds const/let from the body.
+  // ESLint's eslint-scope puts everything (params + body locals) in one function scope;
+  // our model has a separate child block scope for body declarations. Consumers that
+  // call getScope(fnNode) and then look up body-local variables via set.get() would
+  // miss them without this merge. The wrapper preserves type='function' and upper.
+  _wrapFunctionWithBodyLocals(fnScope, bodyBlockScope) {
+    if (fnScope._bodyLocalsWrapper && fnScope._bodyLocalsWrapperAst === this._ast) return fnScope._bodyLocalsWrapper;
+    const wrapper = Object.create(fnScope);
+    let _vars = null, _set = null;
+    Object.defineProperty(wrapper, 'variables', {
+      get() {
+        if (_vars) return _vars;
+        const fvars = fnScope.variables;
+        const bvars = bodyBlockScope.variables;
+        const fs = fnScope.set;
+        const extra = bvars.filter(v => !fs.has(v.name));
+        _vars = extra.length ? [...fvars, ...extra] : fvars;
+        return _vars;
+      },
+      configurable: true, enumerable: true,
+    });
+    Object.defineProperty(wrapper, 'set', {
+      get() {
+        if (_set) return _set;
+        const fs = fnScope.set;
+        const bvars = bodyBlockScope.variables;
+        const hasExtra = bvars.some(v => !fs.has(v.name));
+        if (!hasExtra) { _set = fs; return _set; }
+        _set = new Map(fs);
+        for (const v of bvars) { if (!_set.has(v.name)) _set.set(v.name, v); }
+        return _set;
+      },
+      configurable: true, enumerable: true,
+    });
+    fnScope._bodyLocalsWrapper = wrapper;
+    fnScope._bodyLocalsWrapperAst = this._ast;
+    return wrapper;
   }
 
   // Wrap a module-scope so that ReferenceTracker can find global variables.
@@ -2814,6 +2978,19 @@ class SourceCode {
       }
     }
 
+    // Function-body block scope (kind=3 whose parent is a function scope): ESLint's
+    // eslint-scope creates no separate block scope for function bodies, so locals live
+    // in the function scope directly. Ez's Zig analyzer does create one. To make
+    // isSameScope(fn_scope, body_block_scope) work via the `s1.block === s2.block`
+    // branch (used in consistent-function-scoping etc.) and to make isInitPatternNode's
+    // `getOuterScope(inner_fn) === shadowedVar.scope` check work correctly for no-shadow,
+    // expose the containing function node as the block so that the body-block scope shares
+    // the same block identity as its parent function scope.
+    if (kind === 3 && upper !== null && (upper._kind === 2 || upper._kind === 11) &&
+        upper.block !== null && block !== null && upper.block.body === block) {
+      block = upper.block;
+    }
+
     // Detect `declare global { ... }` — Zig parses this as a bare BlockStatement with no
     // TSModuleDeclaration wrapper, so scope.block.kind is undefined. The no-shadow rule's
     // isGlobalAugmentation() checks scope.block.kind === "global"; synthesize it here.
@@ -2882,10 +3059,13 @@ class SourceCode {
     // Same root cause as the FEN fix below — `var A = class A {}` inside an IIFE.
     if (kind === 4 && scope.upper && scope.upper.type === 'block' && scope.upper.block) {
       const _cbp = scope.upper.block.parent;
-      if (_cbp && (_cbp.type === 'FunctionExpression' || _cbp.type === 'FunctionDeclaration' || _cbp.type === 'ArrowFunctionExpression')) {
+      const _cbbt = scope.upper.block.type;
+      if ((_cbp && (_cbp.type === 'FunctionExpression' || _cbp.type === 'FunctionDeclaration' || _cbp.type === 'ArrowFunctionExpression')) ||
+          (_cbbt === 'FunctionExpression' || _cbbt === 'FunctionDeclaration' || _cbbt === 'ArrowFunctionExpression')) {
         scope.upper = scope.upper.upper || scope.upper;
       }
     }
+
 
     // Named FunctionExpression: create a virtual function-expression-name scope
     // that sits between this function body scope and its outer scope. eslint-scope
@@ -2906,7 +3086,9 @@ class SourceCode {
       let _fenUpper = upper;
       if (_fenUpper && _fenUpper.type === 'block' && _fenUpper.block) {
         const _bp = _fenUpper.block.parent;
-        if (_bp && (_bp.type === 'FunctionExpression' || _bp.type === 'FunctionDeclaration' || _bp.type === 'ArrowFunctionExpression')) {
+        const _fbbt = _fenUpper.block.type;
+        if ((_bp && (_bp.type === 'FunctionExpression' || _bp.type === 'FunctionDeclaration' || _bp.type === 'ArrowFunctionExpression')) ||
+            (_fbbt === 'FunctionExpression' || _fbbt === 'FunctionDeclaration' || _fbbt === 'ArrowFunctionExpression')) {
           _fenUpper = _fenUpper.upper;
         }
       }
@@ -3053,11 +3235,53 @@ class SourceCode {
           canonical._sibMerged.add(sibling._symId);
           Array.prototype.push.apply(canonical.identifiers, sibling.identifiers);
           Array.prototype.push.apply(canonical.defs, sibling.defs);
+          // If sibling has refs but canonical has none (es-parser dup-sym: destructuring
+          // params create two symbols where Zig routes refs to the higher-id copy),
+          // absorb the sibling's ref range so the canonical sees the read references.
+          if (canonical._refEnd === canonical._refStart && sibling._refEnd > sibling._refStart) {
+            canonical._refStart = sibling._refStart;
+            canonical._refEnd = sibling._refEnd;
+          }
         }
         continue;
       } else {
         set.set(v.name, v);
         variables.push(v);
+      }
+    }
+
+    // ES5 block-level function hoisting: ecmaVersion<=5 has no block scope for `{}`
+    // statements, so `{ function f() {} }` hoists f to the enclosing function/global
+    // scope. Zig always creates block scopes regardless of ecmaVersion, so synthesize
+    // the outer-scope variables here by promoting FunctionName symbols from direct child
+    // block scopes (kind=3) when we're building a hoisting scope (global=0, fn=2, arrow=11).
+    if (this._ecmaVersion <= 5 && (kind === 0 || kind === 2 || kind === 11)) {
+      const _scs  = ast._scopeChildStarts;
+      const _scc  = ast._scopeChildCounts;
+      const _scId = ast._scopeChildIds;
+      const _sk   = ast._scopeKinds;
+      const _sbs  = ast._scopeBindStart;
+      const _sbc  = ast._scopeBindCount;
+      const _ssi  = ast._scopeSymIds;
+      const _smk  = ast._symKinds;
+      if (_scs && _scc && _scId && _sk && _sbs && _sbc && _ssi && _smk) {
+        const cStart = _scs[scopeId];
+        const cCount = _scc[scopeId];
+        for (let ci = 0; ci < cCount; ci++) {
+          const childId = _scId[cStart + ci];
+          if (_sk[childId] !== 3) continue; // only block scopes
+          const bss = _sbs[childId];
+          const bsc = _sbc[childId];
+          for (let sj = 0; sj < bsc; sj++) {
+            const rawSymId = _ssi[bss + sj];
+            const bk = _smk[rawSymId];
+            if (bk !== 3 && bk !== 4) continue; // only FunctionName (fn_decl)
+            if (set.has(ast._symName(rawSymId))) continue;
+            const v = this._buildVariable(rawSymId);
+            set.set(v.name, v);
+            variables.push(v);
+          }
+        }
       }
     }
 
@@ -3136,8 +3360,11 @@ class SourceCode {
     }
 
     // CommonJS globals: require, module, exports, __dirname, __filename, global, process, Buffer
+    // Skip names explicitly disabled via configGlobals: { name: 'off' }
     if (kind === 0 && this._sourceType === 'commonjs') {
+      const cjsDisabled = this._configGlobals;
       for (const name of ['require', 'module', 'exports', '__dirname', '__filename', 'global', 'process', 'Buffer', 'clearImmediate', 'setImmediate']) {
+        if (cjsDisabled && cjsDisabled[name] === 'off') continue;
         if (!set.has(name)) {
           const g = _mkGlobalVar(name, globalScopeRef, false, 'readonly');
           set.set(name, g);
@@ -3342,16 +3569,16 @@ class SourceCode {
       if (!ref.identifier) continue;
       references.push(ref);
       // FEN (Function Expression Name) workaround: Zig binds the FEN symbol in
-      // the function's own scope (kinds 3 or 13), but eslint-scope puts it in a
-      // synthetic parent FEN scope — so rules expect these refs in `through`.
-      // Zig's through CSR (computed from target==ref.scope) won't classify these
-      // as through, so patch here.
+      // the function's own scope (kind 15=fn_expr_name, 16=class_expr_name), but
+      // eslint-scope puts it in a synthetic parent FEN scope — so rules expect
+      // these refs in `through`. Zig's through CSR (computed from target==ref.scope)
+      // won't classify these as through, so patch here.
       if (!hasZigThrough) continue;
       const refSymId = _refSymbolIds[refId];
       if (refSymId === NONE32) continue;
       if (_symScopeIds[refSymId] !== scopeId) continue;
       const symKind = ast._symKinds ? ast._symKinds[refSymId] : 0;
-      if ((symKind === 3 || symKind === 13) && ast._scopeNodeIds) {
+      if ((symKind === 15 || symKind === 16) && ast._scopeNodeIds) {
         const scopeNodeTag = ast._nodeTags[ast._scopeNodeIds[scopeId]];
         // FEN refs are resolved (to the FEN var) — go in the resolved bucket.
         if (scopeNodeTag >= 63 && scopeNodeTag <= 66) throughResolved.push(ref);
@@ -3411,10 +3638,42 @@ class SourceCode {
           const name = ref.identifier?.name;
           const variable = name ? set.get(name) : undefined;
           if (variable) {
-            if (ref.resolved === null) variable.references.push(ref);
+            if (ref.resolved === null) {
+              // ESLint-scope has no block scope for function bodies, so `arguments`
+              // refs have from===functionScope. Our model wraps the body in a block
+              // scope, giving from=<blockChild>. Store a proxy with from=scope so
+              // `isFunctionSelfUsedInside`'s `from===functionScope` check works.
+              const storedRef = (name === 'arguments' && ref.from !== scope)
+                ? Object.assign(Object.create(ref), { from: scope })
+                : ref;
+              variable.references.push(storedRef);
+            }
             ref.resolved = variable;
           } else if (ref.resolved === null) {
             throughUnresolved.push(ref);
+          }
+        }
+      }
+      // FEN patch: eslint-scope puts fn_expr_name/class_expr_name in a synthetic parent
+      // "function-name" scope, so refs to them appear in the function body scope's `through`.
+      // Zig binds FEN symbols in the fn_expr scope itself, but the refs live in a child
+      // block scope. Scan child throughResolved for FEN refs resolved here and add to our
+      // throughResolved so no-loop-func's `isFunctionReferenced` check works.
+      if (ast._symKinds && _symScopeIds && ast._scopeNodeIds && ast._nodeTags) {
+        const fenNodeTag = ast._nodeTags[ast._scopeNodeIds[scopeId]];
+        if (fenNodeTag >= 63 && fenNodeTag <= 66) {
+          for (const child of childScopes) {
+            child._ensureRefsThrough();
+            const childResolved = child._throughResolved;
+            if (!childResolved) continue;
+            for (let k = 0; k < childResolved.length; k++) {
+              const ref = childResolved[k];
+              const refSymId = ref.resolved?._symId;
+              if (refSymId == null || refSymId === NONE32) continue;
+              if (_symScopeIds[refSymId] !== scopeId) continue;
+              const symKind = ast._symKinds[refSymId];
+              if (symKind === 15 || symKind === 16) throughResolved.push(ref);
+            }
           }
         }
       }
@@ -3826,7 +4085,18 @@ class SourceCode {
     const NONE32 = 0xFFFFFFFF;
     const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
     if (symScopeId === undefined || symScopeId === NONE32) return this._stubScope();
-    const scope = this._buildScope(symScopeId);
+    let scope = this._buildScope(symScopeId);
+    // eslint-scope does not create body-block scopes: locals live in the function scope.
+    // When Zig puts a variable in a function body block scope, report its function scope
+    // so that isSameScope(fn_scope, variable.scope) holds in rules like consistent-function-scoping.
+    if (scope.type === 'block' && scope.block !== null && scope.block !== undefined) {
+      const _bp = scope.block.parent;
+      if (_bp !== null && _bp !== undefined &&
+          (_bp.type === 'FunctionDeclaration' || _bp.type === 'FunctionExpression' ||
+           _bp.type === 'ArrowFunctionExpression') && _bp.body === scope.block) {
+        scope = scope.upper || scope;
+      }
+    }
     // Implicit globals (kind=10) must report scope.type='global' even when
     // they live in a 'module' scope (single-scope module files). Wrapped via
     // Proxy so identity checks still work.
@@ -3861,8 +4131,29 @@ class SourceCode {
     const resolved = symId !== NONE32 ? this._buildVariable(symId) : null;
 
     const refScopeId = ast._refScopeIds ? ast._refScopeIds[refIdx] : NONE;
-    const from = (refScopeId !== undefined && refScopeId !== NONE32)
+    let from = (refScopeId !== undefined && refScopeId !== NONE32)
       ? this._buildScope(refScopeId) : this._stubScope();
+    // eslint-scope doesn't create function body block scopes; references inside them
+    // report from the function scope. Remap to match eslint-scope behavior.
+    if (from.type === 'block' && from.block !== null && from.block !== undefined) {
+      const _rfbp = from.block.parent;
+      if (_rfbp !== null && _rfbp !== undefined &&
+          (_rfbp.type === 'FunctionDeclaration' || _rfbp.type === 'FunctionExpression' ||
+           _rfbp.type === 'ArrowFunctionExpression') && _rfbp.body === from.block) {
+        from = from.upper || from;
+      }
+    }
+    // eslint-scope doesn't create a for-head scope for `for (var x in/of EXPR)` — it
+    // only creates scopes for `let`/`const` for-in/of. With `var`, the iterable refs
+    // live in the outer scope. Remap `from` so `variable.scope === reference.from`
+    // holds for isInInitializer checks in @typescript-eslint/no-use-before-define.
+    if (from.type === 'block' && from.block !== null && from.block !== undefined) {
+      const _fbt = from.block.type;
+      if ((_fbt === 'ForInStatement' || _fbt === 'ForOfStatement') &&
+          from.block.left?.kind === 'var') {
+        from = from.upper || from;
+      }
+    }
 
     // Pre-bake writeExpr (pre-computed in Zig for write/read_write/write_init)
     // before constructor call so the shape is locked at allocation. Read-only
@@ -3885,6 +4176,16 @@ class SourceCode {
             writeExpr = par.init || null;
           } else if (par.type === 'AssignmentPattern' && par.left === refNode) {
             writeExpr = par.right;
+          } else if (par.type === 'Property' && par.value === refNode) {
+            // Destructured binding: `const { Foo } = require('mod')` or `const { Foo: alias } = require('mod')`
+            // Walk up ObjectPattern → VariableDeclarator to find the init (RHS).
+            const objPat = par.parent;
+            if (objPat?.type === 'ObjectPattern') {
+              const varDecl = objPat.parent;
+              if (varDecl?.type === 'VariableDeclarator') {
+                writeExpr = varDecl.init || null;
+              }
+            }
           }
         }
       }
@@ -3950,7 +4251,35 @@ class SourceCode {
     const is_const = (flags16 & 0x04) !== 0;
     const is_var = (flags16 & 0x01) !== 0;
     const is_catch_param = (flags16 & 0x40) !== 0;
+    const is_param = (flags16 & 0x20) !== 0;
     let synthRefs = null;
+
+    // Parameters WITH default values: ESLint-scope creates a write ref for the
+    // default-value assignment (via referencingDefaultValue). Zig doesn't emit a
+    // write ref for default parameter bindings. Synthesize one at the front so
+    // that `variable.references.slice(1)` convention works correctly.
+    // ONLY for params with default values — plain parameters (no default) have
+    // only read refs in both ESLint-scope and our model, and rules like
+    // unicorn/prefer-array-index-of rely on `references.length === 1` for those.
+    if (is_param && !hasWriteInitRef && declNode && ast._parentData && declNodeIdx !== undefined && declNodeIdx !== NONE) {
+      const parentIdx = ast._parentData[declNodeIdx];
+      if (parentIdx !== undefined && parentIdx !== NONE && ast._nodeTags[parentIdx] === T.assignment_pattern) {
+        const paramWriteRef = {
+          identifier: declNode,
+          from: scope,
+          resolved: v,
+          writeExpr: nodeView(ast, ast.nodeRhs(parentIdx)),
+          init: true,
+          _kind: 1,
+          isWrite: () => true,
+          isRead: () => false,
+          isWriteOnly: () => true,
+          isReadOnly: () => false,
+          isReadWrite: () => false,
+        };
+        (synthRefs || (synthRefs = [])).push({ pos: -1, ref: paramWriteRef });
+      }
+    }
 
     // Catch-param destructure with default: `catch ({p = 1}) { ... }`
     if (is_catch_param && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
@@ -4582,7 +4911,8 @@ class SourceCode {
     const pd = this._ast._parentData;
     if (!pd || !node) return [];
     const ancestors = [];
-    const nodeTags = this._ast._nodeTags;
+    const ast = this._ast;
+    const nodeTags = ast._nodeTags;
     // Synthetic nodes (no _i): walk up via .parent until reaching a real node.
     let cur = node;
     while (cur._i === undefined && cur.parent) {
@@ -4596,21 +4926,42 @@ class SourceCode {
     // Detect this by checking if node.parent._i === node._i, and if so start the
     // pd walk from node._i (which adds the MethodDefinition) instead of pd[node._i].
     let parentIdx;
+    let prevP;
     if (cur !== node) {
       // Already walked up via .parent; cur is in ancestors[0]. Start from cur's parent.
       parentIdx = pd[cur._i];
+      prevP = cur._i;
     } else if (node.parent != null && node.parent._i !== undefined && node.parent._i === node._i) {
       // Synthetic FunctionExpression for class/object method: _i is borrowed from
       // the MethodDefinition/Property node. Start the walk from _i so it's included.
       parentIdx = node._i;
+      prevP = node._i;
     } else {
       parentIdx = pd[node._i];
+      prevP = node._i;
     }
     // Skip grouping_expr (ParenthesizedExpression) parents — nodeView unwraps them,
     // which would make the node appear as its own ancestor (cycle).
-    while (parentIdx !== NONE && parentIdx !== undefined && parentIdx < this._ast.nodeCount) {
-      if (nodeTags[parentIdx] === T.grouping_expr) { parentIdx = pd[parentIdx]; continue; }
-      ancestors.unshift(nodeView(this._ast, parentIdx));
+    while (parentIdx !== NONE && parentIdx !== undefined && parentIdx < ast.nodeCount) {
+      const tag = nodeTags[parentIdx];
+      if (tag === T.grouping_expr) { prevP = parentIdx; parentIdx = pd[parentIdx]; continue; }
+      const pNode = nodeView(ast, parentIdx);
+      // ESTree inserts a synthetic FunctionExpression between a MethodDefinition
+      // and its non-key children (body, params). Insert it here so that rules
+      // counting function-depth in the ancestor chain work correctly — e.g.
+      // react/require-render-return's `depth <= 1` check.
+      // Guard: prevP !== parentIdx prevents insertion when ascending from the
+      // method node itself (e.g. when computing ancestors for the synthetic
+      // FunctionExpression whose _i is borrowed from the method_def node).
+      if ((tag === T.method_def || tag === T.getter_def || tag === T.setter_def ||
+           tag === T.constructor_def || tag === T.computed_method_def ||
+           tag === T.computed_getter_def || tag === T.computed_setter_def) &&
+          prevP !== ast.nodeLhs(parentIdx) && prevP !== parentIdx) {
+        const synth = pNode.value;
+        if (synth) ancestors.unshift(synth);
+      }
+      ancestors.unshift(pNode);
+      prevP = parentIdx;
       parentIdx = pd[parentIdx];
     }
     return ancestors;
@@ -4805,6 +5156,23 @@ class SourceCode {
             return p;
           }
           return scope;
+        }
+        // After body-block fix: body_block_scope.block = fn_node (FunctionDeclaration/Expression/
+        // ArrowFunctionExpression). Rules like classScopeAnalyzer call findNearestScope() which
+        // walks up via acquire() until it finds a scope. acquire(BlockStatement of fn body) must
+        // return body_block_scope so findVariableInScope starts from the right scope.
+        // After body-block fix: body_block_scope.block = fn_node. acquire(BlockStatement of fn body)
+        // must return body_block_scope so rules like classScopeAnalyzer.findNearestScope() can find
+        // variables declared as const/let in the fn body. Match by scope identity instead of _i
+        // (fn nodes from getter/setter dispatch are synthetic and lack _i).
+        if (node.type === 'BlockStatement' && scope.type === 'block' &&
+            scope.upper && (scope.upper._kind === 2 || scope.upper._kind === 11)) {
+          const blockNode = scope.block;
+          if (blockNode && (blockNode.type === 'FunctionDeclaration' || blockNode.type === 'FunctionExpression' ||
+               blockNode.type === 'ArrowFunctionExpression') &&
+              (blockNode.body === node || blockNode.body?._i === node._i)) {
+            return scope;
+          }
         }
         // Special case: Zig attaches the for-loop block scope to the ForStatement, not
         // its body BlockStatement. Rules like unicorn/no-for-loop call acquire(node.body)
@@ -5311,6 +5679,9 @@ class RuleContext {
     if (lo.sourceType) this.languageOptions.sourceType = lo.sourceType;
     if (lo.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(lo.ecmaVersion);
     if (lo.parserOptions) this.languageOptions.parserOptions = { ...this.languageOptions.parserOptions, ...lo.parserOptions };
+    // Expose configured globals via context.languageOptions.globals so rules like
+    // unicorn/isolated-functions that build allowedGlobals from this field work correctly.
+    this.languageOptions.globals = lo.globals ?? null;
   }
 
   reset(ast, filename, sourceText, options = {}) {
@@ -6532,6 +6903,19 @@ function _extractRuleTagBitset(visitors, nameToTagIds, tagCount) {
           for (let i = 0; i < synthIds.length; i++) {
             const t = synthIds[i];
             bs[t >>> 5] |= (1 << (t & 31));
+          }
+        }
+      }
+      // TSImportType / TSTypeQuery synthesize a Literal from a token.
+      // A Literal handler must not be skipped on files that only have these nodes.
+      if (part === 'Literal') {
+        for (const synthName of ['TSImportType', 'TSTypeQuery']) {
+          const synthIds = nameToTagIds.get(synthName);
+          if (synthIds) {
+            for (let i = 0; i < synthIds.length; i++) {
+              const t = synthIds[i];
+              bs[t >>> 5] |= (1 << (t & 31));
+            }
           }
         }
       }
@@ -8030,12 +8414,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     }
     const byTag = isExit ? selectorsByTagExit : selectorsByTagEnter;
     const universal = isExit ? _universalExit : _universalEnter;
-    const handlers = byTag ? byTag[tag] : (universal ? null : selectorHandlers);
+    // grouping_expr/ts_parenthesized_type are transparent in ESTree — nodeView() unwraps them
+    // to the inner node, which fires its own DFS event. Skip the universal (*) selector here to
+    // prevent double-firing of * visitors; FFI events (compound selectors like
+    // `ForStatement > *.init:exit`) still fire since they are keyed by the wrapper's buffer index.
+    const effectiveUniversal = (tag === T.grouping_expr || tag === T.ts_parenthesized_type) ? null : universal;
+    const handlers = byTag ? byTag[tag] : (effectiveUniversal ? null : selectorHandlers);
     // Check FFI events for this node (only if a plan was set up).
     const ffiStart = _ffiEvStart ? _ffiEvStart[nodeIdx]     : 0;
     const ffiEnd   = _ffiEvStart ? _ffiEvStart[nodeIdx + 1] : 0;
     const hasFfi   = ffiEnd > ffiStart;
-    const hasHandlers = (handlers && handlers.length > 0) || (universal && universal.length > 0) || hasFfi;
+    const hasHandlers = (handlers && handlers.length > 0) || (effectiveUniversal && effectiveUniversal.length > 0) || hasFfi;
     if (!hasHandlers) return;
     _shNode = nodeView(ast, nodeIdx);
     _shNodeIdx = nodeIdx;
@@ -8073,8 +8462,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         catch (err) { context._reports.push({ ruleId: entry.sh.ruleId, message: `Plugin error: ${err.message}` }); }
       }
     }
+    if (effectiveUniversal && effectiveUniversal.length > 0) _runSelectorList(effectiveUniversal);
     if (handlers && handlers.length > 0) _runSelectorList(handlers);
-    if (universal && universal.length > 0) _runSelectorList(universal);
   }
 
   // ── FunctionExpression synthesis for class methods ───────────────
@@ -8951,6 +9340,21 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const _tsLitLiteralExitH  = (_tsTypeRefTagNum >= 0) ? (visitorMap.get('Literal:exit') || null) : null;
   const _hasTsLitLiteralSynth = _tsLitLiteralEnterH !== null || _tsLitLiteralExitH !== null;
 
+  // TSImportType → synthetic Literal source events.
+  // ts_import_type stores the module string as a token, not a child node.
+  // Synthesize Literal enter/exit so rules like unicorn/prefer-node-protocol
+  // that check `node.parent.type === 'TSImportType'` work.
+  const _tsImportTypeTagNum = T.ts_import_type >= 0 ? T.ts_import_type : -1;
+  const _tsImportLiteralEnterH = (visitorMap.get('Literal') || null);
+  const _tsImportLiteralExitH  = (visitorMap.get('Literal:exit') || null);
+  const _hasTsImportLiteralSynth = _tsImportLiteralEnterH !== null || _tsImportLiteralExitH !== null;
+
+  // TSTypeQuery → synthetic TSImportType + Literal events.
+  // `typeof import("mod")` emits ts_typeof_type (no child nodes); module string is at mt+3.
+  // Synthesize Literal enter/exit with a synthetic TSImportType parent so rules that check
+  // `node.parent.type === 'TSImportType'` (e.g. unicorn/prefer-node-protocol) work.
+  const _tsTypeQueryTagNum = T.ts_typeof_type >= 0 ? T.ts_typeof_type : -1;
+
   // Aliases for DFS loop (the early-setup vars have "E" suffix; use shorter names here)
   const _tsInterfaceDeclTagNum = _tsInterfaceDeclTagNumE;
   const _tsInterfaceBodyEnterH = _tsInterfaceBodyEnterHE;
@@ -9402,8 +9806,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       // TSLiteralType Literal:exit synthesis is handled in a post-DFS CSR pass (see below).
-      // CfgGraph: code path exit events BEFORE rule exit handlers
-      if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 1);
+      // CfgGraph: phase-1 (exit) event ordering depends on node type:
+      //
+      //  Choice-PARENT nodes (ConditionalExpression, LogicalExpression): the Zig CFG stores
+      //  the branch-MERGE event (popChoiceContext) at phase-1 of the PARENT. This must fire
+      //  BEFORE exit visitors so that rules like require-atomic-updates see the merged segment
+      //  when their `:expression:exit` fires — matching ESLint's NodeEventGenerator where
+      //  "after last child" CFG events precede the parent's exit visitors.
+      //
+      //  All other nodes: phase-1 stores branch-TRANSITION events (cond_alt, makeLogicalRight)
+      //  that must fire AFTER exit visitors so that rules like constructor-super see the correct
+      //  current segment when their CallExpression:exit fires — matching NodeEventGenerator
+      //  where segment transitions happen AFTER a node's own exit visitors.
+      const _cfgHasPhase1 = _cfgNodeBits !== null && _cfgNodeBits[idx];
+      const _isChoiceParent = tag === T.conditional || tag === T.logical_and ||
+                              tag === T.logical_or  || tag === T.nullish_coalesce;
+      if (_cfgHasPhase1 && _isChoiceParent) _fireCfgEvents(idx, 1);
       // ESLint fires CSS selector exit handlers (e.g. `:statement:exit`) BEFORE type-specific
       // exit handlers (e.g. `BlockStatement:exit`), matching NodeEventGenerator behavior.
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
@@ -9507,7 +9925,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       // (FE:exit synth fired earlier — see note above the regular exit-handler block.)
-      if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 2);
+      // Phase-1 for non-choice-parent nodes fires here, AFTER all exit visitors.
+      if (_cfgHasPhase1 && !_isChoiceParent) _fireCfgEvents(idx, 1);
+      if (_cfgHasPhase1) _fireCfgEvents(idx, 2);
     }
   }
 
@@ -9542,8 +9962,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           const _numValue = _numText.endsWith('n') ? BigInt(_numText.slice(0, -1)) : Number(_numText);
           if (typeof _numValue === 'bigint' || !isNaN(_numValue)) {
             const _tokEnd = ast._tokEnds ? ast._tokEnds[_tok] : _tokStart + 1;
-            const _innerLit = { type: 'Literal', value: _numValue, raw: _numText,
-              start: _numStart, end: _numEnd, range: [_numStart, _numEnd], parent: null };
+            const _numBigInt = _numText.endsWith('n') ? _numText.slice(0, -1) : undefined;
+            const _innerLit = Object.assign({ type: 'Literal', value: _numValue, raw: _numText,
+              start: _numStart, end: _numEnd, range: [_numStart, _numEnd], parent: null },
+              _numBigInt !== undefined ? { bigint: _numBigInt } : null);
             const _unaryExpr = { type: 'UnaryExpression', operator: '-', prefix: true,
               argument: _innerLit, start: _tokStart, end: _numEnd,
               range: [_tokStart, _numEnd], parent: _tsLitParent };
@@ -9563,6 +9985,73 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (_tsLitLiteralEnterH) _invokeFused(_tsLitLiteralEnterH, _litChild, nodeIdx, context);
         if (_tsLitLiteralExitH)  _invokeFused(_tsLitLiteralExitH,  _litChild, nodeIdx, context);
       }
+    }
+  }
+
+  // ── TSImportType → synthetic Literal source pass ─────────────
+  // ts_import_type stores the module string as a token (not a child node).
+  // Fire synthetic Literal enter/exit so rules like unicorn/prefer-node-protocol work.
+  if (_hasTsImportLiteralSynth && _tagNodeStarts && _tagNodeIds && _tsImportTypeTagNum >= 0 &&
+      _tsImportTypeTagNum < _tagNodeStarts.length - 1) {
+    const _tsImpStart = _tagNodeStarts[_tsImportTypeTagNum];
+    const _tsImpEnd   = _tagNodeStarts[_tsImportTypeTagNum + 1];
+    for (let j = _tsImpStart; j < _tsImpEnd; j++) {
+      const nodeIdx = _tagNodeIds[j];
+      const _tsImpNode = nodeView(ast, nodeIdx);
+      const _srcLit = _tsImpNode.source;
+      if (!_srcLit) continue;
+      context._currentNodeIdx = nodeIdx;
+      if (_tsImportLiteralEnterH) _invokeFused(_tsImportLiteralEnterH, _srcLit, nodeIdx, context);
+      if (_tsImportLiteralExitH)  _invokeFused(_tsImportLiteralExitH,  _srcLit, nodeIdx, context);
+    }
+  }
+
+  // ── TSTypeQuery → synthetic TSImportType + Literal pass ──────
+  // `typeof import("mod")` emits ts_typeof_type with the string at mainToken+3.
+  // ESTree: TSTypeQuery.exprName = TSImportType { source: Literal }.
+  // Synthesize Literal (parent = synthetic TSImportType) and fire Literal visitors.
+  if (_hasTsImportLiteralSynth && _tagNodeStarts && _tagNodeIds && _tsTypeQueryTagNum >= 0 &&
+      _tsTypeQueryTagNum < _tagNodeStarts.length - 1) {
+    const _tqStart = _tagNodeStarts[_tsTypeQueryTagNum];
+    const _tqEnd   = _tagNodeStarts[_tsTypeQueryTagNum + 1];
+    const _ls = ast._lineStarts ? ast._lineStarts() : null;
+    for (let j = _tqStart; j < _tqEnd; j++) {
+      const nodeIdx = _tagNodeIds[j];
+      const mt = ast._mainTokens ? ast._mainTokens[nodeIdx] : -1;
+      if (mt < 0) continue;
+      const strTok = mt + 3;
+      if (strTok >= ast.tokenCount) continue;
+      // Verify token at mt+1 is `import` to distinguish from plain typeof T.
+      const impTok = mt + 1;
+      if (impTok >= ast.tokenCount) continue;
+      const impStart = ast._tokStarts[impTok];
+      const impEnd = ast._tokEnds ? ast._tokEnds[impTok] : impStart + 6;
+      if (ast.source.slice(impStart, impEnd) !== 'import') continue;
+      // Extract string token at mt+3.
+      const ss = ast._tokStarts[strTok];
+      const se = ast._tokEnds ? ast._tokEnds[strTok] : ss + 1;
+      const raw = ast.source.slice(ss, se);
+      const q = raw.charCodeAt(0);
+      if (q !== 34 && q !== 39) continue;
+      const value = raw.slice(1, -1);
+      // Synthesize TSImportType parent and Literal child.
+      let sli = 0, eli = 0;
+      if (_ls) {
+        sli = ast._findLineIdx ? ast._findLineIdx(ss) : 0;
+        eli = ast._findLineIdx ? ast._findLineIdx(se > 0 ? se - 1 : 0) : 0;
+      }
+      const _tqLit = {
+        type: 'Literal', value, raw, start: ss, end: se,
+        range: [ss, se],
+        loc: { start: { line: sli + 1, column: ss - (_ls ? _ls[sli] : 0) },
+               end:   { line: eli + 1, column: se - (_ls ? _ls[eli] : 0) } },
+        parent: null,
+      };
+      const _tqImpType = { type: 'TSImportType', source: _tqLit, parent: nodeView(ast, nodeIdx) };
+      _tqLit.parent = _tqImpType;
+      context._currentNodeIdx = nodeIdx;
+      if (_tsImportLiteralEnterH) _invokeFused(_tsImportLiteralEnterH, _tqLit, nodeIdx, context);
+      if (_tsImportLiteralExitH)  _invokeFused(_tsImportLiteralExitH,  _tqLit, nodeIdx, context);
     }
   }
 

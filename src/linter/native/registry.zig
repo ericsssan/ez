@@ -21,7 +21,7 @@ const no_invalid_regexp = @import("correctness/no_invalid_regexp.zig");  // IR-g
 const no_import_assign = @import("correctness/no_import_assign.zig");  // IR-generated via for-each-write-ref-of-binding
 const no_self_assign = @import("correctness/no_self_assign.zig");  // IR-generated via no-self-assign-check handler
 const no_self_compare = @import("suspicious/no_self_compare.zig");
-// const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const no_unsafe_optional_chaining = @import("correctness/no_unsafe_optional_chaining.zig");
 const no_loss_of_precision = @import("correctness/no_loss_of_precision.zig");
 const no_const_assign = @import("correctness/no_const_assign.zig");
 const no_empty_pattern = @import("correctness/no_empty_pattern.zig");
@@ -47,7 +47,7 @@ const no_obj_calls = @import("correctness/no_obj_calls.zig");
 const no_prototype_builtins = @import("correctness/no_prototype_builtins.zig");  // IR-generated via node-prop-name-in-set op
 const no_setter_return = @import("correctness/no_setter_return.zig");  // IR-generated via no-setter-return-check
 const no_template_curly_in_string = @import("correctness/no_template_curly_in_string.zig");
-// const no_this_before_super = @import("correctness/no_this_before_super.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const no_this_before_super = @import("correctness/no_this_before_super.zig");
 const no_useless_catch = @import("correctness/no_useless_catch.zig");
 // v0.5 correctness rules
 const no_class_assign = @import("correctness/no_class_assign.zig");
@@ -63,7 +63,7 @@ const no_promise_executor_return = @import("correctness/no_promise_executor_retu
 const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");  // IR-generated via loop-has-iteration-back-edge op
 const no_empty_static_block = @import("correctness/no_empty_static_block.zig");
 // const no_constructor_new = @import("correctness/no_constructor_new.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
-// const accessor_pairs = @import("correctness/no_setter_without_getter.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const accessor_pairs = @import("correctness/accessor_pairs.zig");
 // v0.7 correctness rules
 // const no_constant_binary_expression = @import("correctness/no_constant_binary_expression.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
 const no_div_regex = @import("style/no_div_regex.zig");
@@ -86,12 +86,13 @@ const no_invalid_remove_event_listener = @import("correctness/no_invalid_remove_
 
 // Ã¢ÂÂÃ¢ÂÂ Suspicious rules (43) Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
 // (count unchanged)
-// const eqeqeq = @import("suspicious/eqeqeq.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
-// const no_cond_assign = @import("suspicious/no_cond_assign.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const eqeqeq = @import("suspicious/eqeqeq.zig");
+const no_alert = @import("suspicious/no_alert.zig");
+const no_cond_assign = @import("suspicious/no_cond_assign.zig");
 const no_control_regex = @import("suspicious/no_control_regex.zig");  // IR-generated via no-control-regex-check handler
 const no_delete_var = @import("suspicious/no_delete_var.zig");
 const no_empty_character_class = @import("suspicious/no_empty_character_class.zig");  // IR-generated via no-empty-char-class-check handler
-// const no_eval = @import("suspicious/no_eval.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const no_eval = @import("suspicious/no_eval.zig");
 const no_implied_eval = @import("suspicious/no_implied_eval.zig");
 const no_label_var = @import("correctness/no_label_var.zig");  // IR-generated via identifier-shadows-binding op
 const no_lone_blocks = @import("suspicious/no_lone_blocks.zig");  // IR-generated via no-lone-blocks-check (whole-rule recognizer)
@@ -102,7 +103,7 @@ const no_new_wrappers = @import("suspicious/no_new_wrappers.zig");
 const no_nonoctal_decimal_escape = @import("suspicious/no_nonoctal_decimal_escape.zig");  // IR-generated via no-nonoctal-decimal-escape-check
 const no_restricted_properties = @import("suspicious/no_restricted_properties.zig");  // IR-generated via no-restricted-properties-check (whole-rule)
 // const no_octal = @import("suspicious/no_octal.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
-// const no_redeclare = @import("suspicious/no_redeclare.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const no_redeclare = @import("suspicious/no_redeclare.zig");
 const no_regex_spaces = @import("suspicious/no_regex_spaces.zig");  // IR-generated via no-regex-spaces-check handler
 // const no_shadow_restricted_names = @import("suspicious/no_shadow_restricted_names.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
 const no_unsafe_finally = @import("correctness/no_unsafe_finally.zig");  // IR-generated via node-is-inside-finally-before-sentinel
@@ -136,11 +137,11 @@ const no_labels = @import("style/no_labels.zig");  // IR-generated via no-labels
 const no_extra_bind = @import("style/no_extra_bind.zig");  // IR-generated via no-extra-bind-check (whole-rule)
 const no_throw_literal = @import("suspicious/no_throw_literal.zig");  // IR-generated via could-be-error op
 // v0.5 suspicious rules
-// const no_console = @import("suspicious/no_console.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
-// const no_alert = @import("suspicious/no_alert.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
-// const no_duplicate_imports = @import("suspicious/no_duplicate_imports.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const no_console = @import("suspicious/no_console.zig");
+// no_alert already imported above
+const no_duplicate_imports = @import("correctness/no_duplicate_imports.zig");
 const default_case = @import("style/default_case.zig");  // IR-generated via default-case-check handler
-// const radix = @import("suspicious/radix.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const radix = @import("suspicious/radix.zig");
 const no_shadow = @import("suspicious/no_shadow.zig");
 // v0.6 suspicious rules
 const no_loop_func = @import("correctness/no_loop_func.zig");
@@ -171,6 +172,7 @@ const no_iterator = @import("style/no_iterator.zig");
 const no_lonely_if = @import("style/no_lonely_if.zig");  // IR-generated via no-lonely-if-check (areBracesNecessary dangling-else)
 const no_useless_call = @import("style/no_useless_call.zig");  // IR-generated via no-useless-call-check
 const operator_assignment = @import("style/operator_assignment.zig");  // IR-generated via operator-assignment-check
+const logical_assignment_operators = @import("style/logical_assignment_operators.zig");
 const no_negated_condition = @import("style/no_negated_condition.zig");
 const no_nested_ternary = @import("style/no_nested_ternary.zig");
 const no_new = @import("style/no_new.zig");
@@ -182,7 +184,7 @@ const no_undefined = @import("suspicious/no_undefined.zig");  // IR-generated vi
 const no_shadow_restricted_names = @import("correctness/no_shadow_restricted_names.zig");  // IR-generated via for-each-decl-by-name handler
 const no_undef_init = @import("style/no_undef_init.zig");  // IR-generated via no-undef-init-check handler
 const no_restricted_globals = @import("style/no_restricted_globals.zig");  // IR-generated via for-each-ref-by-option-name + checkGlobalObject
-// const no_param_reassign = @import("style/no_param_reassign.zig");  // hand-written Ã¢ÂÂ disabled per IR-only constraint
+const no_param_reassign = @import("suspicious/no_param_reassign.zig");
 const no_plusplus = @import("style/no_plusplus.zig");
 const no_proto = @import("style/no_proto.zig");
 const no_path_concat = @import("style/no_path_concat.zig");
@@ -429,7 +431,7 @@ pub const all_rules = .{
     no_import_assign,
     no_self_assign,
     // no_self_compare, // hand-written Ã¢ÂÂ disabled
-    // no_unsafe_optional_chaining, // runner >> native (runner 187, native 155, gap 32); fall back to JS runner
+    no_unsafe_optional_chaining,
     no_loss_of_precision,
     no_const_assign,
     no_empty_pattern,
@@ -472,7 +474,7 @@ pub const all_rules = .{
     no_prototype_builtins,
     no_setter_return,
     no_template_curly_in_string,
-    // no_this_before_super, // runner >> native (runner 58, native 44, 19 FN); fall back
+    no_this_before_super,
     // no_useless_catch, // hand-written Ã¢ÂÂ disabled
     // Correctness v0.5 (3)
     no_class_assign,
@@ -488,7 +490,7 @@ pub const all_rules = .{
     no_unreachable_loop,
     // no_empty_static_block, // hand-written Ã¢ÂÂ disabled
     // no_constructor_new, // hand-written Ã¢ÂÂ disabled
-    // accessor_pairs, // runner >> native (50%, 7 FP); fall back to JS runner
+    accessor_pairs,
     // Correctness v0.7 (5)
     // no_constant_binary_expression, // runner >> native (21% correct); fall back to JS runner
     // no_div_regex, // hand-written Ã¢ÂÂ disabled
@@ -503,12 +505,12 @@ pub const all_rules = .{
     no_invalid_remove_event_listener,
     // no_useless_assignment, // hand-written Ã¢ÂÂ disabled
     // Suspicious (28)
-    // eqeqeq, // hand-written, 45 FP vs ESLint; fall back to JS runner
-    // no_cond_assign, // runner >> native (runner 45, native 32, 13 FN); fall back
+    eqeqeq,
+    no_cond_assign,
     no_control_regex,
     no_delete_var,
     no_empty_character_class,
-    // no_eval, // runner >> native (runner 102, native 64, gap 38); fall back to JS runner
+    no_eval,
     // no_implied_eval, // runner >> native (runner 173, native 103, gap 70); fall back to JS runner
     no_label_var,
     no_lone_blocks,
@@ -519,7 +521,7 @@ pub const all_rules = .{
     no_nonoctal_decimal_escape,
     no_restricted_properties,
     // no_octal, // hand-written Ã¢ÂÂ disabled
-    // no_redeclare, // runner >> native (runner 67, native 28, gap 39); fall back to JS runner
+    no_redeclare,
     no_regex_spaces,
     // no_shadow_restricted_names, // hand-written Ã¢ÂÂ disabled
     no_unsafe_finally,
@@ -538,11 +540,11 @@ pub const all_rules = .{
     sort_vars,
     no_throw_literal,
     // Suspicious v0.5 (6)
-    // no_console, // hand-written Ã¢ÂÂ disabled
-    // no_alert, // runner >> native (runner 41, native 34, 8 FN); fall back
-    // no_duplicate_imports, // runner >> native (runner 85, native 59, gap 26, 1 FP); fall back to JS runner
+    no_console,
+    no_alert,
+    no_duplicate_imports,
     default_case,
-    // radix, // runner >> native (runner 54, native 31, 21 FN 2 FP); fall back
+    radix,
     no_shadow,
     // Suspicious v0.6 (6)
     no_loop_func,
@@ -585,7 +587,7 @@ pub const all_rules = .{
     no_shadow_restricted_names,
     no_undef_init,
     no_restricted_globals,
-    // no_param_reassign, // runner >> native (runner 76, native 57, gap 21); fall back to JS runner
+    no_param_reassign,
     no_plusplus,
     no_proto,
     no_path_concat,
@@ -606,6 +608,7 @@ pub const all_rules = .{
     prefer_spread,
     no_useless_call,
     operator_assignment,
+    logical_assignment_operators,
     // max_params, // runner >> native (runner 52, native 25, gap 28); fall back to JS runner
     // prefer_arrow_callback, // runner >> native (runner 105, native 63, gap 42, 14 FP); fall back to JS runner
     no_implicit_coercion,
@@ -805,7 +808,7 @@ pub const all_rules = .{
 };
 
 /// Total number of registered lint rules.
-pub const count: usize = @typeInfo(@TypeOf(all_rules)).@"struct".fields.len;
+pub const count: usize = all_rules.len;
 
 // Compile-time validation: ensure every rule implements the required interface.
 comptime {

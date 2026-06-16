@@ -132,7 +132,7 @@ fn openImpl(source_ptr: [*]const u8, source_len: u32, lang_val: u8, is_module: u
     ctx.sem = try semantic.SemanticAnalyzer.analyzeWithOptions(a, &ctx.ast, .{
         .is_module = mod, .globals = &.{}, .build_parents = true,
     });
-    ctx.checker = try Checker.init(a, &ctx.ast, &ctx.sem);
+    ctx.checker = try Checker.init(a, &ctx.ast, &ctx.sem, .{});
     return registerCtx(ctx);
 }
 
@@ -157,7 +157,7 @@ fn openReuseImpl(gen: u32) !usize {
     // arena (sem); the checker only allocates through ctx.arena.
     ctx.ast = tl_last_ast.?;
     ctx.sem = tl_last_sem.?;
-    ctx.checker = try Checker.init(ctx.arena.allocator(), &ctx.ast, &ctx.sem);
+    ctx.checker = try Checker.init(ctx.arena.allocator(), &ctx.ast, &ctx.sem, .{});
     return registerCtx(ctx);
 }
 
@@ -638,7 +638,9 @@ pub export fn ez_type_typeof_by_name(h: usize, name_ptr: [*]const u8, name_len: 
     // Class static types and other value types are resolved through other paths
     // (classDeclaration/classExpression branch in typeAt, typeOfNode, etc.)
     // so they must NOT appear here or they corrupt heritage-clause resolution.
-    if (ctx.checker.typeOfNameByAstSearch(name)) |t| {
+    // No use-site node here (pure name lookup from the JS bridge); `.none`
+    // keeps ez-checker's original source-order resolution.
+    if (ctx.checker.typeOfNameByAstSearch(name, .none)) |t| {
         if (t.eq(tymod.ID_UNKNOWN) and ctx.checker.constInitIsSymbolCall(name)) {
             const s = ctx.checker.store.stringLiteral(name) catch return NO_TYPE;
             return s.toInt();

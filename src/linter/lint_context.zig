@@ -391,7 +391,7 @@ pub const LintContext = struct {
     fn ensureChecker(self: *const LintContext) ?*Checker {
         const storage = self.checker_storage orelse return null;
         if (storage.* == null) {
-            var c = Checker.init(self.allocator, self.ast, self.semantic) catch return null;
+            var c = Checker.init(self.allocator, self.ast, self.semantic, .{}) catch return null;
             c.file_path = self.file_path;
             c.module_resolver = self.module_resolver;
             storage.* = c;
@@ -435,7 +435,7 @@ pub const LintContext = struct {
     /// True when `name` was declared as a TS enum in the source file.
     pub fn typeNameIsEnum(self: *const LintContext, name: []const u8) bool {
         const c = self.ensureChecker() orelse return false;
-        return c.enum_kinds.get(name) != null;
+        return c.enumKindOf(name) != null;
     }
 
     /// True when `name` is a built-in TS type keyword (`string`, `any`,
@@ -2194,12 +2194,12 @@ pub const LintContext = struct {
     /// isn't declared here.
     pub fn typeDeclNode(self: *const LintContext, name: []const u8) NodeIndex {
         const c = self.ensureChecker() orelse return .none;
-        return c.type_decl_nodes.get(name) orelse .none;
+        return c.decl_index.type_decl_nodes.get(name) orelse .none;
     }
 
     pub fn typeAliasBodyNode(self: *const LintContext, name: []const u8) NodeIndex {
         const c = self.ensureChecker() orelse return .none;
-        const decl = c.type_decl_nodes.get(name) orelse return .none;
+        const decl = c.decl_index.type_decl_nodes.get(name) orelse return .none;
         const dtag = c.ast_ref.nodeTag(decl);
         if (dtag == .ts_type_alias_decl) {
             const d = c.ast_ref.nodeData(decl);
@@ -6395,6 +6395,21 @@ pub const LintContext = struct {
         return self.semantic.symbols.isImplicitGlobal(sym_id);
     }
 
+    /// Like isGlobalReference but requires the symbol to be a KNOWN implicit
+    /// global (sym_id != .none).  Unresolved references (sym_id == .none)
+    /// return false — they may just be undeclared locals, not recognised globals.
+    /// Use for identifiers like `globalThis` where ecmaVersion controls
+    /// whether it is a recognised global.
+    pub fn isKnownImplicitGlobal(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        if (self.ast.nodeTag(n) != .identifier) return false;
+        const ref_id = self.nodeRefId(n);
+        if (ref_id == .none) return false;
+        const sym_id = self.semantic.references.getSymbol(ref_id);
+        if (sym_id == .none) return false;
+        return self.semantic.symbols.isImplicitGlobal(sym_id);
+    }
+
     /// True when an identifier node `n` shadows a binding with the SAME
     /// name as `n` itself — used by rules like no-label-var to detect
     /// `<label-name>:` colliding with a reachable variable.  Walks scope
@@ -9893,8 +9908,12 @@ pub const LintContext = struct {
         if (self.propertyKeysEqual(pa, pb)) return true;
         const sa = self.propertyEntryStaticName(pa);
         const sb = self.propertyEntryStaticName(pb);
-        if (sa == null and sb == null)
-            return self.nodeTokensEqual(self.propertyEntryKeyNode(pa), self.propertyEntryKeyNode(pb));
+        if (sa == null and sb == null) {
+            // Skip grouping parens so `[(a)]` matches `[a]` as ESLint does.
+            const ka = self.nodeSkipGrouping(self.propertyEntryKeyNode(pa));
+            const kb = self.nodeSkipGrouping(self.propertyEntryKeyNode(pb));
+            return self.nodeTokensEqual(ka, kb);
+        }
         return false;
     }
     fn gapKeyName(self: *const LintContext, key: NodeIndex) ?[]const u8 {
@@ -10003,6 +10022,540 @@ pub const LintContext = struct {
         // `/* globals Object:off */` removes it as a global → not a descriptor.
         if (self.globalIsOff(obj_name)) return false;
         return self.isGlobalReference(obj);
+    }
+
+    // ── accessor-pairs ──────────────────────────────────────────────────────────
+    // Enforce that getter/setter pairs appear together in object literals, classes,
+    // property descriptors, and (opt-in) TypeScript type members.
+    pub fn checkAccessorPairs(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        const check_set = self.getOptionBool("setWithoutGet", true);
+        const check_get = self.getOptionBool("getWithoutSet", false);
+        if (!check_set and !check_get) return;
+
+        if (tag == .object_literal) {
+            const d = self.ast.nodeData(node);
+            const members = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+            self.apScanList(members, 0, check_set, check_get, "missingGetterInObjectLiteral", "missingSetterInObjectLiteral");
+            if (self.isPropertyDescriptorObj(node))
+                self.apCheckDescriptor(node, members, check_set, check_get);
+        } else if (tag == .class_body) {
+            if (!self.getOptionBool("enforceForClassMembers", true)) return;
+            const d = self.ast.nodeData(node);
+            const members = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+            self.apScanList(members, 1, check_set, check_get, "missingGetterInClass", "missingSetterInClass"); // instance
+            self.apScanList(members, 2, check_set, check_get, "missingGetterInClass", "missingSetterInClass"); // static
+        } else if (tag == .ts_type_literal or tag == .ts_interface_decl) {
+            if (!self.getOptionBool("enforceForTSTypes", false)) return;
+            const d = self.ast.nodeData(node);
+            const members = if (tag == .ts_type_literal)
+                self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) })
+            else blk: {
+                const id = self.extraData(ast_mod.InterfaceData, @intFromEnum(d.lhs));
+                break :blk self.ast.extraSlice(.{ .start = id.body_start, .end = id.body_end });
+            };
+            self.apScanList(members, 0, check_set, check_get, "missingGetterInType", "missingSetterInType");
+        }
+    }
+    fn apMemberKind(self: *const LintContext, m: NodeIndex) PropertyKind {
+        if (self.ast.nodeTag(m) == .ts_method_signature) return self.gapSigKind(m);
+        return self.propertyEntryKind(m);
+    }
+    fn apScanList(
+        self: *const LintContext,
+        members: []const u32,
+        mode: u8, // 0=all, 1=instance-only, 2=static-only
+        check_set: bool,
+        check_get: bool,
+        msg_no_getter: []const u8,
+        msg_no_setter: []const u8,
+    ) void {
+        for (members, 0..) |raw_i, i| {
+            if (raw_i == 0) continue;
+            const mi: NodeIndex = @enumFromInt(raw_i);
+            const ki = self.apMemberKind(mi);
+            if (ki == .init) continue;
+            if (mode == 1 and self.classMemberIsStatic(mi)) continue;
+            if (mode == 2 and !self.classMemberIsStatic(mi)) continue;
+            // Process each key-group only at its first occurrence.
+            var seen_earlier = false;
+            for (members[0..i]) |raw_j| {
+                if (raw_j == 0) continue;
+                const mj: NodeIndex = @enumFromInt(raw_j);
+                if (self.apMemberKind(mj) == .init) continue;
+                if (mode == 1 and self.classMemberIsStatic(mj)) continue;
+                if (mode == 2 and !self.classMemberIsStatic(mj)) continue;
+                if (self.gapKeysEqual(mi, mj)) { seen_earlier = true; break; }
+            }
+            if (seen_earlier) continue;
+            // Count getters/setters with this key.
+            var g_count: u32 = 0;
+            var s_count: u32 = 0;
+            for (members) |raw_j| {
+                if (raw_j == 0) continue;
+                const mj: NodeIndex = @enumFromInt(raw_j);
+                const kj = self.apMemberKind(mj);
+                if (kj == .init) continue;
+                if (mode == 1 and self.classMemberIsStatic(mj)) continue;
+                if (mode == 2 and !self.classMemberIsStatic(mj)) continue;
+                if (!self.gapKeysEqual(mi, mj)) continue;
+                if (kj == .get) g_count += 1 else s_count += 1;
+            }
+            // Report setters without a getter.
+            if (check_set and s_count > 0 and g_count == 0) {
+                for (members) |raw_j| {
+                    if (raw_j == 0) continue;
+                    const mj: NodeIndex = @enumFromInt(raw_j);
+                    if (self.apMemberKind(mj) != .set) continue;
+                    if (mode == 1 and self.classMemberIsStatic(mj)) continue;
+                    if (mode == 2 and !self.classMemberIsStatic(mj)) continue;
+                    if (!self.gapKeysEqual(mi, mj)) continue;
+                    self.gapReport(mj, msg_no_getter);
+                }
+            }
+            // Report getters without a setter.
+            if (check_get and g_count > 0 and s_count == 0) {
+                for (members) |raw_j| {
+                    if (raw_j == 0) continue;
+                    const mj: NodeIndex = @enumFromInt(raw_j);
+                    if (self.apMemberKind(mj) != .get) continue;
+                    if (mode == 1 and self.classMemberIsStatic(mj)) continue;
+                    if (mode == 2 and !self.classMemberIsStatic(mj)) continue;
+                    if (!self.gapKeysEqual(mi, mj)) continue;
+                    self.gapReport(mj, msg_no_setter);
+                }
+            }
+        }
+    }
+    fn apCheckDescriptor(
+        self: *const LintContext,
+        obj: NodeIndex,
+        members: []const u32,
+        check_set: bool,
+        check_get: bool,
+    ) void {
+        var has_getter = false;
+        var has_setter = false;
+        for (members) |raw| {
+            if (raw == 0) continue;
+            const p: NodeIndex = @enumFromInt(raw);
+            if (self.ast.nodeTag(p) != .property) continue; // non-computed init-kind only
+            const name = self.propertyEntryStaticName(p) orelse continue;
+            if (std.mem.eql(u8, name, "get")) has_getter = true;
+            if (std.mem.eql(u8, name, "set")) has_setter = true;
+        }
+        if (check_set and has_setter and !has_getter)
+            self.reportSpanWithMessageId(self.nodeSpan(obj), "missingGetterInPropertyDescriptor");
+        if (check_get and has_getter and !has_setter)
+            self.reportSpanWithMessageId(self.nodeSpan(obj), "missingSetterInPropertyDescriptor");
+    }
+
+    // ── no-unsafe-optional-chaining ─────────────────────────────────────────────
+    // Check if `expr` can short-circuit to `undefined` via optional chaining
+    // and report it in the given unsafe context.
+    fn uocIsOptChainTag(tag: Node.Tag) bool {
+        return tag == .optional_member_expr or
+            tag == .optional_computed_member_expr or
+            tag == .optional_call_expr;
+    }
+
+    fn uocDescend(self: *const LintContext, node: NodeIndex, msg: []const u8, depth: u8) void {
+        if (depth > 12) return;
+        if (node == .none) return;
+        const n = self.nodeSkipGrouping(node);
+        if (n == .none) return;
+        const d = self.ast.nodeData(n);
+        switch (self.ast.nodeTag(n)) {
+            // These ARE the optional chain — report the span.
+            .optional_member_expr, .optional_computed_member_expr, .optional_call_expr =>
+                self.reportSpanWithMessageId(self.nodeSpan(n), msg),
+            // call_expr: if callee is directly optional-chain, the call is part of the same
+            // chain — report the full call span (not just the inner optional node).
+            .call_expr => {
+                if (uocIsOptChainTag(self.ast.nodeTag(d.lhs)))
+                    self.reportSpanWithMessageId(self.nodeSpan(n), msg);
+            },
+            // `||` / `??`: right side can short-circuit.
+            .logical_or, .nullish_coalesce =>
+                self.uocDescend(d.rhs, msg, depth + 1),
+            // `&&`: both sides can short-circuit.
+            .logical_and => {
+                self.uocDescend(d.lhs, msg, depth + 1);
+                self.uocDescend(d.rhs, msg, depth + 1);
+            },
+            // `a, b, c` → last element.
+            .sequence_expr => {
+                const sl = self.ast.extraSlice(.{ .start = @intFromEnum(d.lhs), .end = @intFromEnum(d.rhs) });
+                if (sl.len > 0) self.uocDescend(@enumFromInt(sl[sl.len - 1]), msg, depth + 1);
+            },
+            // `cond ? cons : alt` → both branches.
+            .conditional => {
+                if (d.rhs == .none) return;
+                const cd = self.extraData(ast_mod.Conditional, @intFromEnum(d.rhs));
+                self.uocDescend(cd.consequent, msg, depth + 1);
+                self.uocDescend(cd.alternate, msg, depth + 1);
+            },
+            // `await expr` → argument.
+            .await_expr => self.uocDescend(d.lhs, msg, depth + 1),
+            else => {},
+        }
+    }
+    pub fn checkNoUnsafeOptionalChaining(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        const d = self.ast.nodeData(node);
+        const disallow_arith = self.getOptionBool("disallowArithmeticOperators", false);
+        switch (tag) {
+            // Non-optional call: callee can't be undefined.
+            // Exception: if the callee IS directly an optional chain node, the `?.` propagates
+            // through the entire chain (e.g. `obj?.foo()` is safe — short-circuits to undefined).
+            // Only descend when there's a non-optional wrapper (e.g. `(obj?.foo)()` has grouping).
+            .call_expr => if (!uocIsOptChainTag(self.ast.nodeTag(d.lhs)))
+                self.uocDescend(d.lhs, "unsafeOptionalChain", 0),
+            // `new Expr()`: callee can't be undefined.
+            .new_expr => self.uocDescend(d.lhs, "unsafeOptionalChain", 0),
+            // Non-optional member access: object can't be undefined.
+            // Same exception: `obj?.foo.bar` is still one chain — skip when object is directly optional.
+            .member_expr, .computed_member_expr => if (!uocIsOptChainTag(self.ast.nodeTag(d.lhs)))
+                self.uocDescend(d.lhs, "unsafeOptionalChain", 0),
+            // Tagged template: tag can't be undefined.
+            .tagged_template => if (!uocIsOptChainTag(self.ast.nodeTag(d.lhs)))
+                self.uocDescend(d.lhs, "unsafeOptionalChain", 0),
+            // for-of / for-await-of: iterable can't be undefined.
+            .for_of_stmt, .for_await_of_stmt => {
+                const fio = self.extraData(ast_mod.ForInOfData, @intFromEnum(d.lhs));
+                self.uocDescend(fio.expr, "unsafeOptionalChain", 0);
+            },
+            // Spread: argument can't be undefined unless in object literal.
+            .spread_element => {
+                const parent = self.parentOf(node);
+                if (parent == .none or self.ast.nodeTag(parent) == .object_literal) return;
+                self.uocDescend(d.lhs, "unsafeOptionalChain", 0);
+            },
+            // `x in y`: right-hand side can't be undefined.
+            .in_expr => self.uocDescend(d.rhs, "unsafeOptionalChain", 0),
+            // `x instanceof y`: right-hand side can't be undefined.
+            .instanceof_expr => self.uocDescend(d.rhs, "unsafeOptionalChain", 0),
+            // Arithmetic binary (when `disallowArithmeticOperators`): both sides.
+            .add, .subtract, .multiply, .divide, .modulo, .exponentiate => {
+                if (!disallow_arith) return;
+                self.uocDescend(d.lhs, "unsafeArithmetic", 0);
+                self.uocDescend(d.rhs, "unsafeArithmetic", 0);
+            },
+            // Unary arithmetic (when `disallowArithmeticOperators`).
+            .unary_plus, .unary_minus => {
+                if (!disallow_arith) return;
+                self.uocDescend(d.lhs, "unsafeArithmetic", 0);
+            },
+            // AssignmentExpression with destructuring left: check the right (value).
+            .assign => {
+                const left_tag = self.ast.nodeTag(d.lhs);
+                if (left_tag == .object_pattern or left_tag == .array_pattern)
+                    self.uocDescend(d.rhs, "unsafeOptionalChain", 0);
+            },
+            // Arithmetic assignment (when `disallowArithmeticOperators`): check right.
+            .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign, .exp_assign => {
+                if (!disallow_arith) return;
+                self.uocDescend(d.rhs, "unsafeArithmetic", 0);
+            },
+            // AssignmentPattern in destructuring: `{ a = value }` — check value.
+            .assignment_pattern => {
+                const left_tag = self.ast.nodeTag(d.lhs);
+                if (left_tag == .object_pattern or left_tag == .array_pattern)
+                    self.uocDescend(d.rhs, "unsafeOptionalChain", 0);
+            },
+            // VariableDeclarator with destructuring id: check init.
+            .declarator => {
+                const left_tag = self.ast.nodeTag(d.lhs);
+                if (left_tag == .object_pattern or left_tag == .array_pattern)
+                    self.uocDescend(d.rhs, "unsafeOptionalChain", 0);
+            },
+            // class Foo extends Expr: Expr can't be undefined.
+            .class_decl, .class_expr => {
+                const cd = self.extraData(ast_mod.ClassData, @intFromEnum(d.lhs));
+                self.uocDescend(cd.super_class, "unsafeOptionalChain", 0);
+            },
+            // with(expr): expr can't be undefined.
+            .with_stmt => self.uocDescend(d.lhs, "unsafeOptionalChain", 0),
+            else => {},
+        }
+    }
+
+    // ── logical-assignment-operators ─────────────────────────────────────────
+
+    /// Returns the "truthy reference" from a condition expression:
+    /// - bare reference → itself
+    /// - Boolean(x) → x
+    /// - !!x → x
+    /// - (cond) → recurse
+    fn laTruthyRef(self: *const LintContext, cond: NodeIndex) NodeIndex {
+        const c = self.nodeSkipGrouping(cond);
+        if (c == .none) return .none;
+        const tag = self.ast.nodeTag(c);
+        switch (tag) {
+            .identifier, .member_expr, .computed_member_expr, .this_expr => return c,
+            .call_expr => {
+                const cd = self.ast.nodeData(c);
+                const callee = self.nodeSkipGrouping(cd.lhs);
+                if (self.ast.nodeTag(callee) == .identifier) {
+                    const name = self.ast.tokenText(self.ast.nodeMainToken(callee));
+                    if (std.mem.eql(u8, name, "Boolean") and cd.rhs != .none) {
+                        const sr = self.extraData(SubRange, @intFromEnum(cd.rhs));
+                        const args = self.extraSlice(sr);
+                        if (args.len == 1)
+                            return self.laTruthyRef(@enumFromInt(args[0]));
+                    }
+                }
+                return .none;
+            },
+            .logical_not => {
+                const inner = self.nodeSkipGrouping(self.ast.nodeData(c).lhs);
+                if (self.ast.nodeTag(inner) == .logical_not) {
+                    // !!x → truthy ref is x
+                    return self.laTruthyRef(self.ast.nodeData(inner).lhs);
+                }
+                return .none;
+            },
+            else => return .none,
+        }
+    }
+
+    /// Returns the "falsy reference" from a condition expression:
+    /// - !ref → ref
+    /// - !Boolean(ref) → ref
+    fn laFalsyRef(self: *const LintContext, cond: NodeIndex) NodeIndex {
+        const c = self.nodeSkipGrouping(cond);
+        if (c == .none) return .none;
+        if (self.ast.nodeTag(c) != .logical_not) return .none;
+        const inner = self.nodeSkipGrouping(self.ast.nodeData(c).lhs);
+        const inner_tag = self.ast.nodeTag(inner);
+        switch (inner_tag) {
+            .identifier, .member_expr, .computed_member_expr, .this_expr => return inner,
+            .call_expr => {
+                const cd = self.ast.nodeData(inner);
+                const callee = self.nodeSkipGrouping(cd.lhs);
+                if (self.ast.nodeTag(callee) == .identifier and cd.rhs != .none) {
+                    const name = self.ast.tokenText(self.ast.nodeMainToken(callee));
+                    if (std.mem.eql(u8, name, "Boolean")) {
+                        const sr = self.extraData(SubRange, @intFromEnum(cd.rhs));
+                        const args = self.extraSlice(sr);
+                        if (args.len == 1) return self.nodeSkipGrouping(@enumFromInt(args[0]));
+                    }
+                }
+                return .none;
+            },
+            else => return .none,
+        }
+    }
+
+    /// True when `node` is the `null` literal.
+    fn laIsNull(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        return self.ast.nodeTag(node) == .null_literal;
+    }
+
+    /// True when `node` is `undefined` identifier or `void 0` (strictly: void of numeric 0).
+    fn laIsUndefined(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        const tag = self.ast.nodeTag(node);
+        if (tag == .identifier) {
+            return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(node)), "undefined");
+        }
+        if (tag == .void_expr) {
+            const operand = self.ast.nodeData(node).lhs;
+            if (operand == .none) return false;
+            return self.ast.nodeTag(operand) == .number_literal and
+                std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(operand)), "0");
+        }
+        return false;
+    }
+
+    /// True when `node` is `null` or `undefined` (for loose equality: `a == null`).
+    fn laIsNullishLoose(self: *const LintContext, node: NodeIndex) bool {
+        return self.laIsNull(node) or (node != .none and self.ast.nodeTag(node) == .identifier and
+            std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(node)), "undefined"));
+    }
+
+    /// If `cond` is `(X === null)` or `(null === X)`, return X. Otherwise .none.
+    fn laStrictNullRef(self: *const LintContext, cond: NodeIndex) NodeIndex {
+        const c = self.nodeSkipGrouping(cond);
+        if (c == .none or self.ast.nodeTag(c) != .strict_equal) return .none;
+        const cd = self.ast.nodeData(c);
+        const lhs = self.nodeSkipGrouping(cd.lhs);
+        const rhs = self.nodeSkipGrouping(cd.rhs);
+        if (self.laIsNull(rhs) and !self.laIsNull(lhs) and !self.laIsUndefined(lhs)) return lhs;
+        if (self.laIsNull(lhs) and !self.laIsNull(rhs) and !self.laIsUndefined(rhs)) return rhs;
+        return .none;
+    }
+
+    /// If `cond` is `(X === undefined)` or `(X === void 0)` etc., return X. Otherwise .none.
+    fn laStrictUndefRef(self: *const LintContext, cond: NodeIndex) NodeIndex {
+        const c = self.nodeSkipGrouping(cond);
+        if (c == .none or self.ast.nodeTag(c) != .strict_equal) return .none;
+        const cd = self.ast.nodeData(c);
+        const lhs = self.nodeSkipGrouping(cd.lhs);
+        const rhs = self.nodeSkipGrouping(cd.rhs);
+        if (self.laIsUndefined(rhs) and !self.laIsNull(lhs)) return lhs;
+        if (self.laIsUndefined(lhs) and !self.laIsNull(rhs)) return rhs;
+        return .none;
+    }
+
+    /// Returns the reference being checked for null/undefined, or .none.
+    /// Supports: `a == null`, `null == a`, `a == undefined`,
+    ///           `a === null || a === undefined` (any ordering of null vs undefined).
+    fn laNullishRef(self: *const LintContext, cond: NodeIndex) NodeIndex {
+        const c = self.nodeSkipGrouping(cond);
+        if (c == .none) return .none;
+        const tag = self.ast.nodeTag(c);
+        const cd = self.ast.nodeData(c);
+
+        // Loose equality: `a == null` or `null == a` (covers null+undefined)
+        if (tag == .equal) {
+            const lhs = self.nodeSkipGrouping(cd.lhs);
+            const rhs = self.nodeSkipGrouping(cd.rhs);
+            if (self.laIsNullishLoose(rhs) and !self.laIsNullishLoose(lhs)) return lhs;
+            if (self.laIsNullishLoose(lhs) and !self.laIsNullishLoose(rhs)) return rhs;
+            return .none;
+        }
+
+        // `a === null || a === undefined` — must have ONE null check and ONE undefined check
+        if (tag == .logical_or) {
+            const lhs = self.nodeSkipGrouping(cd.lhs);
+            const rhs = self.nodeSkipGrouping(cd.rhs);
+            // lhs checks null, rhs checks undefined
+            const l_null = self.laStrictNullRef(lhs);
+            const r_undef = self.laStrictUndefRef(rhs);
+            if (l_null != .none and r_undef != .none and self.nodeTokensEqualStrict(l_null, r_undef))
+                return l_null;
+            // lhs checks undefined, rhs checks null
+            const l_undef = self.laStrictUndefRef(lhs);
+            const r_null = self.laStrictNullRef(rhs);
+            if (l_undef != .none and r_null != .none and self.nodeTokensEqualStrict(l_undef, r_null))
+                return l_undef;
+        }
+
+        return .none;
+    }
+
+    /// Get the single AssignmentExpression inside an if-stmt consequent, or .none.
+    fn laBodyAssign(self: *const LintContext, body: NodeIndex) NodeIndex {
+        if (body == .none) return .none;
+        const tag = self.ast.nodeTag(body);
+        if (tag == .expression_stmt) {
+            const expr = self.nodeSkipGrouping(self.ast.nodeData(body).lhs);
+            return if (self.ast.nodeTag(expr) == .assign) expr else .none;
+        }
+        if (tag == .block_stmt) {
+            const bd = self.ast.nodeData(body);
+            const s = @intFromEnum(bd.lhs);
+            const e = @intFromEnum(bd.rhs);
+            if (e - s != 1) return .none;
+            const stmt: NodeIndex = @enumFromInt(self.ast.extra_data[s]);
+            if (self.ast.nodeTag(stmt) == .expression_stmt) {
+                const expr = self.nodeSkipGrouping(self.ast.nodeData(stmt).lhs);
+                return if (self.ast.nodeTag(expr) == .assign) expr else .none;
+            }
+        }
+        return .none;
+    }
+
+    pub fn checkLogicalAssignmentOperators(self: *const LintContext, node: NodeIndex) void {
+        const tag = self.ast.nodeTag(node);
+        const d = self.ast.nodeData(node);
+        const is_never = self.optionEqualsString("never");
+
+        if (is_never) {
+            switch (tag) {
+                .logical_and_assign, .logical_or_assign, .nullish_assign =>
+                    self.reportWithMessageId(node, "unexpected"),
+                else => {},
+            }
+            return;
+        }
+
+        // "always" mode (default)
+        switch (tag) {
+            // Assignment pattern: `a = a || b` or `a = a || b || c` (left-chain walk)
+            .assign => {
+                const rhs = self.nodeSkipGrouping(d.rhs);
+                if (rhs == .none) return;
+                const root_op = self.ast.nodeTag(rhs);
+                if (root_op != .logical_or and root_op != .logical_and and root_op != .nullish_coalesce)
+                    return;
+                // Walk left chain of same operator to find the leftmost operand.
+                // Stop at explicitly-parenthesized sub-expressions (grouping_expr that
+                // wraps a logical), matching ESLint's behaviour where `(a || b) || c`
+                // is not the same pattern as `a || b || c`.
+                var cur = rhs;
+                var cur_d = self.ast.nodeData(cur);
+                while (true) {
+                    const left_raw = cur_d.lhs;
+                    // Parenthesized LHS is a boundary — don't walk into it.
+                    if (self.ast.nodeTag(left_raw) == .grouping_expr) break;
+                    const left = self.nodeSkipGrouping(left_raw);
+                    if (left == .none or self.ast.nodeTag(left) != root_op) break;
+                    cur = left;
+                    cur_d = self.ast.nodeData(cur);
+                }
+                const leftmost = self.nodeSkipGrouping(cur_d.lhs);
+                const assign_lhs = self.nodeSkipGrouping(d.lhs);
+                if (assign_lhs == .none or leftmost == .none) return;
+                if (self.nodeTokensEqualStrict(assign_lhs, leftmost))
+                    self.reportWithMessageId(node, "assignment");
+            },
+            // Logical pattern: `a || (a = b)`
+            .logical_or, .logical_and, .nullish_coalesce => {
+                const rhs = self.nodeSkipGrouping(d.rhs);
+                if (rhs == .none or self.ast.nodeTag(rhs) != .assign) return;
+                const rhs_d = self.ast.nodeData(rhs);
+                const assign_lhs = self.nodeSkipGrouping(rhs_d.lhs);
+                const lhs = self.nodeSkipGrouping(d.lhs);
+                if (assign_lhs == .none or lhs == .none) return;
+                if (self.nodeTokensEqualStrict(lhs, assign_lhs))
+                    self.reportWithMessageId(node, "logical");
+            },
+            // If-statement pattern (enforceForIfStatements)
+            .if_stmt => {
+                // Check option
+                const opts2 = self.getOptions2();
+                const enforce_if = if (opts2) |o|
+                    if (o.* == .object)
+                        if (o.object.get("enforceForIfStatements")) |v|
+                            if (v == .bool) v.bool else false
+                        else false
+                    else false
+                else false;
+                if (!enforce_if) return;
+
+                const condition = d.lhs;
+                const body = d.rhs; // direct consequent for if_stmt (no else)
+                const assign_node = self.laBodyAssign(body);
+                if (assign_node == .none) return;
+
+                const assign_d = self.ast.nodeData(assign_node);
+                const assign_lhs = self.nodeSkipGrouping(assign_d.lhs);
+                if (assign_lhs == .none) return;
+
+                // Truthy (&&=): condition IS the target
+                const truthy_ref = self.laTruthyRef(condition);
+                if (truthy_ref != .none and self.nodeTokensEqualStrict(truthy_ref, assign_lhs)) {
+                    self.reportWithMessageId(node, "if");
+                    return;
+                }
+                // Falsy (||=): condition is `!target`
+                const falsy_ref = self.laFalsyRef(condition);
+                if (falsy_ref != .none and self.nodeTokensEqualStrict(falsy_ref, assign_lhs)) {
+                    self.reportWithMessageId(node, "if");
+                    return;
+                }
+                // Nullish (??=): condition is null/undefined check on target
+                const nullish_ref = self.laNullishRef(condition);
+                if (nullish_ref != .none and self.nodeTokensEqualStrict(nullish_ref, assign_lhs)) {
+                    self.reportWithMessageId(node, "if");
+                    return;
+                }
+            },
+            else => {},
+        }
     }
 
     /// no-extend-native: extending a native builtin's prototype —

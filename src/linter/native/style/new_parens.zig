@@ -21,7 +21,6 @@ pub const relevant_tags = [_]Node.Tag{.new_expr};
 
 pub const needs_semantic = false;
 
-/// Number of arguments of a new_expr.
 fn argCount(ctx: *const LintContext, node: NodeIndex) usize {
     const d = ctx.ast.nodeData(node);
     if (d.rhs == .none) return 0;
@@ -30,8 +29,6 @@ fn argCount(ctx: *const LintContext, node: NodeIndex) usize {
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    // Only constructors with no arguments are subject to this rule; when there
-    // are arguments, parentheses are mandatory.
     if (argCount(ctx, node) != 0) return;
 
     // `hasParens` is true only when the new expression ends with its OWN `()`:

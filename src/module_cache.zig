@@ -59,7 +59,11 @@ pub const ModuleCache = struct {
 
     /// Return a ModuleResolver vtable that delegates to this cache.
     pub fn asModuleResolver(self: *ModuleCache) ModuleResolver {
-        return .{ .ctx = @ptrCast(self), .resolve_fn = &resolveVtable };
+        return .{
+            .ctx = @ptrCast(self),
+            .resolve_fn = &resolveVtable,
+            .module_source_fn = &moduleSourceVtable,
+        };
     }
 
     fn resolveVtable(
@@ -72,6 +76,19 @@ pub const ModuleCache = struct {
     ) ?TypeId {
         const mc: *ModuleCache = @ptrCast(@alignCast(ctx));
         return mc.resolveExportedType(from_dir, module_spec, export_name, local_store, gpa);
+    }
+
+    fn moduleSourceVtable(
+        ctx: *anyopaque,
+        from_dir: []const u8,
+        module_spec: []const u8,
+    ) ?[]const u8 {
+        const mc: *ModuleCache = @ptrCast(@alignCast(ctx));
+        const abs_path = mc.resolveModulePath(from_dir, module_spec) orelse return null;
+        defer mc.gpa.free(abs_path);
+        // Load and cache the module; return source slice owned by the cached entry.
+        const mod = mc.loadModule(abs_path) orelse return null;
+        return mod.source;
     }
 
     /// Load, parse, and type-check a file at `abs_path`.
@@ -120,7 +137,7 @@ pub const ModuleCache = struct {
             .semantic = sem,
             .checker = undefined,
         };
-        mod.checker = Checker.init(self.gpa, &mod.ast, &mod.semantic) catch {
+        mod.checker = Checker.init(self.gpa, &mod.ast, &mod.semantic, .{}) catch {
             mod.ast.deinit(self.gpa);
             mod.semantic.deinit(self.gpa);
             self.gpa.free(mod.source);
@@ -361,10 +378,12 @@ pub fn cloneType(
             defer cloned_sigs.deinit(gpa);
             for (sigs) |sig| {
                 const params = src_store.signatureParamsOf(sig);
+                const names = src_store.signatureParamNamesOf(sig);
+                const optionals = src_store.signatureParamOptionalsOf(sig);
                 var cloned_params: std.ArrayList(TypeId) = .empty;
                 defer cloned_params.deinit(gpa);
                 for (params) |p| try cloned_params.append(gpa, try cloneType(src_store, p, dst_store, gpa));
-                const pp = try dst_store.appendSignatureParams(cloned_params.items);
+                const pp = try dst_store.appendSignatureParamsFull(cloned_params.items, names, optionals);
                 const cloned_ret = try cloneType(src_store, sig.return_type, dst_store, gpa);
                 const cloned_pred = if (sig.predicate_param_index != 0xFFFF)
                     try cloneType(src_store, sig.predicate_target, dst_store, gpa)
@@ -376,9 +395,12 @@ pub fn cloneType(
                     .return_type = cloned_ret,
                     .is_async = sig.is_async,
                     .is_generator = sig.is_generator,
+                    .is_construct = sig.is_construct,
                     .predicate_param_index = sig.predicate_param_index,
                     .predicate_target = cloned_pred,
                     .is_assertion = sig.is_assertion,
+                    .rest_param_index = sig.rest_param_index,
+                    .type_param_fp = sig.type_param_fp,
                 });
             }
             const sig_list = try dst_store.appendSignatures(cloned_sigs.items);

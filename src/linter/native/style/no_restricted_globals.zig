@@ -44,6 +44,28 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (id_node == .none) continue;
         const name = ctx.tokenText(ctx.nodeMainToken(id_node));
         if (ctx.ruleOptionsIncludeName(name)) {
+            // Also skip identifiers in TS type annotation positions (e.g. `let x: NS.Foo`).
+            // isTypeRef() doesn't catch NS when it's the LHS of a MemberExpression inside
+            // a TSTypeReference; detect it by checking for a ts_type_annotation ancestor.
+            {
+                var anc = ctx.parentOf(id_node);
+                var in_type_ctx = false;
+                while (anc != .none) : (anc = ctx.parentOf(anc)) {
+                    const atag = ctx.ast.nodeTag(anc);
+                    if (atag == .ts_type_annotation or atag == .ts_type_reference or
+                        atag == .ts_union_type or atag == .ts_intersection_type or
+                        atag == .ts_tuple_type or atag == .ts_array_type or
+                        atag == .ts_function_type or atag == .ts_conditional_type)
+                    {
+                        in_type_ctx = true;
+                        break;
+                    }
+                    // Stop walking at statement boundaries.
+                    const atag_int = @intFromEnum(atag);
+                    if (atag_int <= 25) break; // stmt tags 0-25 are statements
+                }
+                if (in_type_ctx) continue;
+            }
             const sk_sym = refs.getSymbol(ref_id);
             if (sk_sym != .none and !ctx.symbols().isImplicitGlobal(sk_sym)) continue;
             if (ctx.ruleOptionsMessageForName(name)) |custom| {

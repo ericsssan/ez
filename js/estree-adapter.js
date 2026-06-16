@@ -28,7 +28,16 @@ function _cookTemplate(raw) {
   let i = 0;
   while (i < raw.length) {
     const ch = raw[i];
-    if (ch !== '\\') { result += ch; i++; continue; }
+    if (ch !== '\\') {
+      // ES spec: bare CR and CRLF in template cooked value normalize to LF.
+      if (ch === '\r') {
+        result += '\n'; i++;
+        if (i < raw.length && raw[i] === '\n') i++; // skip following LF in CRLF
+      } else {
+        result += ch; i++;
+      }
+      continue;
+    }
     i++; // consume backslash
     if (i >= raw.length) break;
     const next = raw[i];
@@ -947,14 +956,16 @@ class AstView {
         const s = this._symNameStarts[i], l = this._symNameLens[i];
         if (l === 0) { nameCache[i] = ''; continue; }
         const cs = s - srcOff;
-        nameCache[i] = cs >= 0 ? srcStr.slice(cs, cs + l) : _decoder.decode(new Uint8Array(this.buffer, s, l));
+        const raw = cs >= 0 ? srcStr.slice(cs, cs + l) : _decoder.decode(new Uint8Array(this.buffer, s, l));
+        nameCache[i] = raw.indexOf('\\') === -1 ? raw : _resolveUnicodeEscapes(raw);
       }
     } else {
       // Non-ASCII: per-symbol TextDecoder
       const bufLen = this.buffer.byteLength;
       for (let i = 0; i < symCount; i++) {
         const s = this._symNameStarts[i], l = this._symNameLens[i];
-        nameCache[i] = (l === 0 || s + l > bufLen) ? '' : _decoder.decode(new Uint8Array(this.buffer, s, l));
+        const raw = (l === 0 || s + l > bufLen) ? '' : _decoder.decode(new Uint8Array(this.buffer, s, l));
+        nameCache[i] = raw.indexOf('\\') === -1 ? raw : _resolveUnicodeEscapes(raw);
       }
     }
     this._symNameCache = nameCache;
@@ -1300,6 +1311,21 @@ const NodeProto = {
         }
       }
     }
+    // `declare class` / `abstract class`: ClassDeclaration range must include
+    // any leading `declare` and/or `abstract` modifier keywords.
+    if (t === T.class_decl || t === T.class_expr) {
+      const mt = ast._mainTokens[this._i];
+      if (mt > 0 && ast._tokStarts && ast._tokEnds) {
+        let prevTok = mt - 1;
+        while (prevTok >= 0) {
+          const ps = ast._tokStarts[prevTok], pe = ast._tokEnds[prevTok];
+          if (pe > ast.source.length) break;
+          const kw = ast.source.slice(ps, pe);
+          if (kw === 'declare' || kw === 'abstract') { prevTok--; } else { break; }
+        }
+        if (prevTok < mt - 1) return ast._tokStarts[prevTok + 1];
+      }
+    }
     // TSIndexSignature with `readonly`: main_token is `[` but range should
     // include the preceding `readonly` keyword (typescript-eslint behavior).
     if (t === T.ts_index_signature) {
@@ -1396,9 +1422,32 @@ const NodeProto = {
     if (parentTag === T.ts_type_reference || parentTag === T.ts_instantiation_expr) {
       _nodeViewRaw(ast, parentIdx).typeArguments; // side-effect: sets _parent on all type params
       if (this._parent !== _PARENT_UNSET) return this._parent;
+      // If this node is the callee (lhs) of ts_instantiation_expr which is itself the callee
+      // of a call/new/optional_call, skip the TSInstantiationExpression wrapper so that
+      // `node.parent` resolves to the CallExpression directly. This is required for ReferenceTracker
+      // identity checks: `parent.callee === node` where callee unwraps past TSInstantiationExpression.
+      if (parentTag === T.ts_instantiation_expr && ast.nodeLhs(parentIdx) === this._i) {
+        const gpIdx = ast._resolvedParentData[parentIdx];
+        if (gpIdx !== NONE) {
+          const gpTag = ast._nodeTags[gpIdx];
+          if (gpTag === T.call_expr || gpTag === T.new_expr || gpTag === T.optional_call_expr) {
+            const r = _nodeViewRaw(ast, gpIdx);
+            this._parent = r;
+            return r;
+          }
+        }
+      }
     } else if (parentTag === T.ts_function_type || parentTag === T.ts_constructor_type) {
       _nodeViewRaw(ast, parentIdx).returnType; // side-effect: sets _parent on the return type node
       if (this._parent !== _PARENT_UNSET) return this._parent;
+    } else if (parentTag === T.call_expr) {
+      // If the call is the rhs of a TSImportEqualsDeclaration, trigger moduleReference
+      // so args[0]._parent is set to the synthetic TSExternalModuleReference.
+      const gpIdx = ast._resolvedParentData[parentIdx];
+      if (gpIdx !== NONE && ast._typeOverrides?.[gpIdx] === 3) {
+        _nodeViewRaw(ast, gpIdx).moduleReference; // side-effect: sets args[0]._parent
+        if (this._parent !== _PARENT_UNSET) return this._parent;
+      }
     }
 
     // Pre-baked synthesis kind from Zig (see parent_builder.ParentKind).
@@ -1503,6 +1552,26 @@ const NodeProto = {
         }
         this._parent = result;
         return result;
+      }
+      case 8: {
+        // `declare global {}` — block_stmt is directly under root with no ts_module_decl.
+        // Synthesize TSModuleDeclaration{global:true} so no-var and similar rules see the
+        // correct parent chain: TSModuleBlock → TSModuleDeclaration{global:true} → Program.
+        const prog = result; // resolved parent is root = Program
+        const body = this;
+        const moduleDecl = {
+          type: 'TSModuleDeclaration',
+          global: true,
+          declare: true,
+          body,
+          start: body.start,
+          end: body.end,
+          range: body.range,
+          loc: body.loc,
+          parent: prog,
+        };
+        this._parent = moduleDecl;
+        return moduleDecl;
       }
       default: {
         this._parent = result;
@@ -1631,8 +1700,10 @@ const NodeProto = {
           // Fast path: no backslash → no escapes to process
           v = inner;
         } else {
-          // Slow path: process escape sequences
-          v = inner.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[0-7]{1,3}|.)/g, (_, esc) => {
+          // Slow path: process escape sequences.
+          // The s flag makes . match \r/\n too, so bare line continuations
+          // (\<CR>, \<LF>, \<CR><LF>, \<LS>, \<PS>) are captured and removed.
+          v = inner.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[0-7]{1,3}|\r\n|.)/gs, (_, esc) => {
             switch (esc[0]) {
               case 'n': return '\n';
               case 'r': return '\r';
@@ -1640,6 +1711,10 @@ const NodeProto = {
               case 'b': return '\b';
               case 'f': return '\f';
               case 'v': return '\v';
+              case '\r': return ''; // line continuation \r or \r\n
+              case '\n': return ''; // line continuation \n
+              case ' ': return ''; // line continuation LS
+              case ' ': return ''; // line continuation PS
               case '0': return esc.length === 1 ? '\0' : String.fromCharCode(parseInt(esc, 8));
               case 'x': return String.fromCharCode(parseInt(esc.slice(1), 16));
               case 'u':
@@ -1798,6 +1873,16 @@ const NodeProto = {
       // JSXAttribute: value is the rhs (string literal, expression container, or null)
       const rhs = ast.nodeRhs(this._i);
       v = rhs === NONE ? null : nodeView(ast, rhs);
+    } else if (t === T.jsx_element || t === T.jsx_fragment || t === T.jsx_self_closing ||
+               t === T.jsx_opening_element || t === T.jsx_closing_element ||
+               t === T.jsx_expression_container || t === T.jsx_identifier ||
+               t === T.jsx_member_expr || t === T.jsx_namespaced_name ||
+               t === T.jsx_spread_attribute) {
+      // JSX nodes do not have a .value property in ESTree — return undefined,
+      // not null, so that `jsxNode.value === null` correctly evaluates to false.
+      // Returning null caused rules like isReturningOnlyNull to misidentify
+      // JSX elements as null return values (since `null === null` is true).
+      v = undefined;
     } else {
       v = null;
     }
@@ -2031,6 +2116,11 @@ const NodeProto = {
     if (t === T.assignment_pattern) {
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
+    // member_expr in type position (TSQualifiedName override): left = lhs or recursive TSQualifiedName
+    if (t === T.member_expr && ast._typeOverrides && ast._typeOverrides[this._i] === 20) {
+      if (lhs === NONE) return null;
+      return ast._nodeTags[lhs] === T.member_expr ? _memberToQualifiedName(ast, lhs) : nodeView(ast, lhs);
+    }
     // Node types without 'left' property (VariableDeclarator, etc.) return undefined
     // so that `node.left !== void 0` correctly distinguishes them from AssignmentExpression.
     return undefined;
@@ -2075,6 +2165,10 @@ const NodeProto = {
     // AssignmentPattern: right may be optional chain (destructuring default)
     if (t === T.assignment_pattern) {
       return rhs === NONE ? null : nodeViewChain(ast, rhs);
+    }
+    // member_expr in type position (TSQualifiedName override): right = rhs (the property identifier)
+    if (t === T.member_expr && ast._typeOverrides && ast._typeOverrides[this._i] === 20) {
+      return rhs === NONE ? null : nodeView(ast, rhs);
     }
     return null;
   },
@@ -2413,7 +2507,38 @@ const NodeProto = {
         const _ls = this._ast._lineStarts();
         const _sL = this._ast._findLineIdx(decStart);
         const _eL = this._ast._findLineIdx(decEnd > decStart ? decEnd - 1 : decStart);
+        // Find the decorator expression AST node: starts right after '@', ends at decEnd.
+        // Multiple nodes may share the same start position (e.g. Identifier inside CallExpression);
+        // matching both start AND end uniquely identifies the outermost expression.
+        let exprNode = undefined;
+        if (i + 1 < ast.tokenCount) {
+          const exprStart = ast._tokStarts[i + 1];
+          const ends = ast._nodeEndPosArr;
+          const sbs = ast._sortedByStart;
+          const starts = ast._nodeStartPosArr;
+          if (sbs && starts && ends) {
+            let lo = 0, hi = sbs.length - 1;
+            // Binary-search for first node with start === exprStart.
+            let first = -1;
+            while (lo <= hi) {
+              const mid = (lo + hi) >> 1;
+              const s = starts[sbs[mid]];
+              if (s === exprStart) { first = mid; hi = mid - 1; }
+              else if (s < exprStart) lo = mid + 1; else hi = mid - 1;
+            }
+            if (first >= 0) {
+              // Scan all nodes at this start position; pick the one ending at decEnd.
+              for (let k = first; k < sbs.length && starts[sbs[k]] === exprStart; k++) {
+                const ni = sbs[k];
+                if (ends[ni] === decEnd) { exprNode = nodeView(ast, ni); break; }
+              }
+              // Fallback: use the last (outermost by scan order) at this start.
+              if (!exprNode) exprNode = nodeView(ast, sbs[first]);
+            }
+          }
+        }
         decorators.push({ type: 'Decorator', start: decStart, end: decEnd, range: [decStart, decEnd],
+          expression: exprNode,
           loc: { start: { line: _sL + 1, column: decStart - _ls[_sL] }, end: { line: _eL + 1, column: decEnd - _ls[_eL] } } });
       } else if (val === ')') {
         // Skip decorator arguments: @dec(args) — walk back to matching '('
@@ -2500,6 +2625,10 @@ const NodeProto = {
         return c === 63 /* ? */;
       }
       return false;
+    }
+    // TSNamedTupleMember: rhs = root (0) means optional, NONE means required
+    if (t === T.ts_named_tuple_member) {
+      return this._ast.nodeRhs(this._i) === 0;
     }
     return t === T.optional_member_expr || t === T.optional_computed_member_expr ||
            t === T.optional_call_expr;
@@ -2727,7 +2856,10 @@ const NodeProto = {
     } else if (c === 96) {             // template literal (strip backticks, ignore interpolation)
       value = text.slice(1, -1);
     } else if (c >= 48 && c <= 57) {   // number or bigint
-      value = text.endsWith('n') ? BigInt(text.slice(0, -1)) : Number(text);
+      const isBigInt = text.endsWith('n');
+      value = isBigInt ? BigInt(text.slice(0, -1)) : Number(text);
+      const props = isBigInt ? { value, raw: text, bigint: text.slice(0, -1) } : { value, raw: text };
+      return _syntheticNode('Literal', start, end, props, ast);
     } else if (text === 'true') {
       value = true;
     } else if (text === 'false') {
@@ -2745,7 +2877,9 @@ const NodeProto = {
       const numText = ast.source.slice(numStart, numEnd);
       const numVal = numText.endsWith('n') ? BigInt(numText.slice(0, -1)) : Number(numText);
       if (typeof numVal !== 'bigint' && isNaN(numVal)) return undefined;
-      const arg = _syntheticNode('Literal', numStart, numEnd, { value: numVal, raw: numText }, ast);
+      const numBigInt = numText.endsWith('n') ? numText.slice(0, -1) : undefined;
+      const numProps = numBigInt !== undefined ? { value: numVal, raw: numText, bigint: numBigInt } : { value: numVal, raw: numText };
+      const arg = _syntheticNode('Literal', numStart, numEnd, numProps, ast);
       const unary = _syntheticNode('UnaryExpression', start, numEnd, { operator: '-', prefix: true, argument: arg }, ast);
       arg.parent = unary;
       unary.parent = nodeView(this._ast, this._i); // the TSLiteralType node
@@ -2762,10 +2896,11 @@ const NodeProto = {
    * or null if no type arguments.
    */
   /**
-   * node.elementType — element type for TSArrayType.
+   * node.elementType — element type for TSArrayType and TSNamedTupleMember.
    */
   get elementType() {
-    if (this._tag !== T.ts_array_type) return undefined;
+    const t = this._tag;
+    if (t !== T.ts_array_type && t !== T.ts_named_tuple_member) return undefined;
     const lhs = this._ast.nodeLhs(this._i);
     return lhs === NONE ? undefined : nodeView(this._ast, lhs);
   },
@@ -3545,15 +3680,27 @@ const NodeProto = {
       if (tag === 74) break; // '{' — class body started without extends
     }
     if (extendsTok < 0) return null;
-    // Find node whose mainToken is the identifier right after 'extends'
+    // Find the outermost node whose mainToken is the identifier right after 'extends'.
+    // Scan backwards: in the Zig parser children always have lower indices than their
+    // parents, so scanning from high-to-low finds the outermost (TSTypeReference /
+    // MemberExpression) before inner Identifier nodes that share the same mainToken.
     const heritageTok = extendsTok + 1;
-    for (let ni = 0; ni < nc; ni++) {
+    for (let ni = nc - 1; ni >= 0; ni--) {
       if (mainTokens[ni] === heritageTok) {
         const nTag = ast._nodeTags[ni];
-        // TSTypeReference wraps the heritage name — return its typeName (lhs)
+        // TSTypeReference wraps the heritage name in TS mode — return its expression (lhs).
+        // The inner node is a MemberExpression in type position, which nodeView exposes as
+        // TSQualifiedName (with .left/.right). The `superClass` field is an expression (not
+        // a type), so convert TSQualifiedName back to MemberExpression-compatible shape.
         if (nTag === T.ts_type_reference) {
           const inner = ast.nodeLhs(ni);
-          return inner === NONE ? null : nodeView(ast, inner);
+          if (inner === NONE) return null;
+          const innerNode = nodeView(ast, inner);
+          if (innerNode.type === 'TSQualifiedName') {
+            return { type: 'MemberExpression', object: innerNode.left, property: innerNode.right, computed: false, optional: false,
+              range: innerNode.range, start: innerNode.start, end: innerNode.end, loc: innerNode.loc };
+          }
+          return innerNode;
         }
         return nodeView(ast, ni);
       }
@@ -3610,10 +3757,15 @@ const NodeProto = {
       // Zig pushes a sentinel NONE after a trailing SpreadElement when there's a trailing comma
       // (e.g. `[...a,]`), to help validatePattern detect the comma. Strip it from the ESTree view:
       // a trailing comma is not an elision and should not add a null element.
+      // Exception: double trailing comma (e.g. `[...a,,]`) creates a real elision — keep the null.
       if (result.length >= 2 && result[result.length - 1] === null) {
         const prev = result[result.length - 2];
         if (prev !== null && prev.type === 'SpreadElement') {
-          result.pop();
+          const mt = ast._maxTokCache?.[this._i] ?? ast._maxTokFromBuffer?.[this._i];
+          const isRealHole = mt != null && mt >= 2 && ast._tokStarts &&
+            ast.source.charCodeAt(ast._tokStarts[mt - 1]) === 44 &&
+            ast.source.charCodeAt(ast._tokStarts[mt - 2]) === 44;
+          if (!isRealHole) result.pop();
         }
       }
     }
@@ -3847,6 +3999,14 @@ const NodeProto = {
       const lhs = ast.nodeLhs(this._i);
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
+    // TSNamedTupleMember: main_token is the label identifier
+    if (t === T.ts_named_tuple_member) {
+      const tok = ast._mainTokens[this._i];
+      const ps = ast._tokStarts[tok];
+      const pe = ast._tokEnds ? ast._tokEnds[tok] : ps + ast._identAt(tok).length;
+      const nameStr = _resolveUnicodeEscapes(ast._identAt(tok));
+      return _syntheticNode('Identifier', ps, pe, { name: nameStr, parent: this }, ast);
+    }
     return null;
   },
 
@@ -4079,6 +4239,26 @@ const NodeProto = {
       const argIdx = ast.nodeLhs(this._i);
       return argIdx === NONE ? null : nodeView(ast, argIdx);
     }
+    // TSImportType: `import("mod")` in type position — the string is a token,
+    // not a child AST node. Synthesize a Literal from mainToken + 2 (`"mod"`).
+    if (t === T.ts_import_type) {
+      const synth = _getSynth(this);
+      if (synth._tsImportSrc !== undefined) return synth._tsImportSrc;
+      const mt = ast._mainTokens[this._i];
+      const strTok = mt + 2;
+      if (strTok < ast.tokenCount) {
+        const ss = ast._tokStarts[strTok];
+        const se = ast._tokEnds ? ast._tokEnds[strTok] : ss + 1;
+        const raw = ast.source.slice(ss, se);
+        const q = raw.charCodeAt(0);
+        if (q === 34 || q === 39) { // " or '
+          const value = raw.slice(1, -1);
+          const lit = _syntheticNode('Literal', ss, se, { value, raw, parent: this }, ast);
+          return (synth._tsImportSrc = lit);
+        }
+      }
+      return (synth._tsImportSrc = null);
+    }
     return undefined;
   },
 
@@ -4098,7 +4278,11 @@ const NodeProto = {
     // Get expression: first argument of require('...') call, or the rhs itself for qualified names
     const args = callNode.arguments;
     const expr = (args && args.length > 0) ? args[0] : callNode;
-    return _syntheticNode('TSExternalModuleReference', callNode.start, callNode.end, { expression: expr }, ast);
+    const synth = _syntheticNode('TSExternalModuleReference', callNode.start, callNode.end, { expression: expr }, ast);
+    // Make the expression's parent point to the synthetic wrapper so that
+    // rules checking `node.parent.type === 'TSExternalModuleReference'` work.
+    if (expr && expr._parent !== undefined) expr._parent = synth;
+    return synth;
   },
 
   /**
@@ -4948,7 +5132,10 @@ function _methodFlags(ast, mainToken) {
   const mainTag = ast._tokTags[mainToken];
   if (mainTag === TOK_STAR) isGenerator = true;
   if (mainTag === TOK_ASYNC) isAsync = true;
-  if (mainTag === TOK_STATIC) isStatic = true;
+  // NOTE: do NOT set isStatic when mainTag === TOK_STATIC. When the main token
+  // IS the `static` keyword, it means `static` is the member NAME (e.g.
+  // `class C { static; }` or `class C { static() {} }`), not the modifier.
+  // The actual static modifier always precedes the name and is found below.
   // For async generators: mainToken=async, * is the next token
   if (mainTag === TOK_ASYNC && mainToken + 1 < ast.tokenCount && ast._tokTags[mainToken + 1] === TOK_STAR) {
     isGenerator = true;

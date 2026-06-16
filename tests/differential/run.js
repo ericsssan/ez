@@ -44,6 +44,10 @@ process.on("unhandledRejection", () => {});
 const fs   = require("fs");
 const path = require("path");
 
+// JSON reviver that reconstructs RegExp objects serialised by extract.js.
+const _regexpReviver = (_, v) =>
+  v && typeof v === "object" && v.__type === "RegExp" ? new RegExp(v.source, v.flags) : v;
+
 // ── Paths ────────────────────────────────────────────────────
 
 const JS_ROOT      = path.resolve(__dirname, "../../js");
@@ -530,19 +534,32 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // defs=[] that make isGlobalReference return true for things like __dirname, breaking
     // unicorn/prefer-module which checks that __dirname is an unresolved global reference.
     const tcGlobals = tcLanguageOptions.globals || null;
+    // Filter out built-ins disabled via 'off' before passing to Zig. If a built-in is
+    // pre-declared in Zig AND later removed on the JS side by _removeGlobal("off"), the
+    // Zig-resolved reference still points to the global scope → isReferenceToGlobalVariable
+    // returns true, causing FP (e.g. no-constant-condition Boolean()/undefined cases).
+    const zigGlobals = (tcGlobals && Object.values(tcGlobals).some(v => v === 'off'))
+      ? globals.filter(g => tcGlobals[g] !== 'off')
+      : globals;
     const _p0 = Date.now();
-    let ast = parse(src, { filename, lang: parseLang, globals, sourceType,
+    let ast = parse(src, { filename, lang: parseLang, globals: zigGlobals, sourceType,
       parserOptions: tcLanguageOptions.parserOptions });
     // If JS parse produced ErrorNodes, retry as TS — the source may be valid TypeScript
     // (custom TS parser in ESLint test) but was incorrectly marked isTypeScript:false.
-    // Only upgrade when TS parse is completely clean (no ErrorNodes), to avoid masking
-    // genuine syntax errors that the oracle also saw via espree.
+    // Upgrade when TS is cleaner (strictly fewer ErrorNodes) than JS — handles both the
+    // fully-clean case and the partially-clean case (TS parses most properties correctly
+    // even when a single unsupported type syntax like `(void)` produces one error).
+    // IMPORTANT: count JS errors BEFORE the TS parse because the NAPI parser shares one
+    // internal buffer — after parse() is called again, ast._nodeTags points to the new
+    // buffer and the JS error count is lost.
     if (parseLang === "js" && ast._nodeTags && ast._nodeTags.includes(193 /* T.error_node */)) {
+      const _jsErrCount = ast._nodeTags.reduce((n, t) => n + (t === 193 ? 1 : 0), 0);
       const _tsFilename = filename.replace(/\.js$/, ".ts") || filename;
       try {
-        const _tsAst = parse(src, { filename: _tsFilename, lang: "ts", globals, sourceType,
+        const _tsAst = parse(src, { filename: _tsFilename, lang: "ts", globals: zigGlobals, sourceType,
           parserOptions: tcLanguageOptions.parserOptions });
-        if (!_tsAst._nodeTags.includes(193)) ast = _tsAst;
+        const _tsErrCount = _tsAst._nodeTags.reduce((n, t) => n + (t === 193 ? 1 : 0), 0);
+        if (_tsErrCount < _jsErrCount) ast = _tsAst;
       } catch { /* keep JS ast */ }
     }
     _runnerParseMs += Date.now() - _p0;
@@ -899,7 +916,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
           let bundleRule = null;
           if (fs.existsSync(bundlePath)) {
             try {
-              const bundle = JSON.parse(fs.readFileSync(bundlePath, "utf8"));
+              const bundle = JSON.parse(fs.readFileSync(bundlePath, "utf8"), _regexpReviver);
               bundleCases = bundle.cases;
               bundleRule  = bundle.rule || null;
             } catch { /* fall through */ }
@@ -950,7 +967,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
               const files = fs.readdirSync(bucketDir).filter(f => f.endsWith(".json"));
               for (const f of files) {
                 let meta;
-                try { meta = JSON.parse(fs.readFileSync(path.join(bucketDir, f), "utf8")); } catch { continue; }
+                try { meta = JSON.parse(fs.readFileSync(path.join(bucketDir, f), "utf8"), _regexpReviver); } catch { continue; }
                 const codeFile = path.join(bucketDir, f.replace(/\.json$/, meta.jsx ? (meta.isTypeScript ? ".tsx" : ".jsx") : (meta.isTypeScript ? ".ts" : ".js")));
                 let code;
                 try { code = fs.readFileSync(codeFile, "utf8"); } catch { continue; }
@@ -1253,7 +1270,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const _skipRunner = nativeOnly || _ruleIsTypeAware || (nativeAvailable && _ruleHasNativeImpl);
       const _rt0 = _skipRunner ? 0 : performance.now();
       const _oracleSev = espreeResult.length > 0 ? (espreeResult[0].severity ?? 2) : 2;
-      const runnerResult = _skipRunner ? [] : runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin, _oracleSev);
+      const runnerResult = _skipRunner ? [] : runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, !!tc.isTypeScript, tc.filename, rulePlugin, _oracleSev);
       const _rtDelta = _skipRunner ? 0 : (performance.now() - _rt0);
       runnerOnlyMs += _rtDelta;
       _ruleRunnerMs += _rtDelta;
@@ -1596,7 +1613,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
         if (!tcr) continue;
         const st = tcr.languageOptions?.sourceType || defaultSourceType;
         const _r2OracleSev = tcr.eslintResult?.length > 0 ? (tcr.eslintResult[0].severity ?? 2) : 2;
-        const r2 = runRunnerForRule(tcr.code, ruleName, ruleModule, tcr.options, st, tcr.languageOptions, isTypeScript || !!tcr.isTypeScript, tcr.filename, rulePlugin, _r2OracleSev);
+        const r2 = runRunnerForRule(tcr.code, ruleName, ruleModule, tcr.options, st, tcr.languageOptions, !!tcr.isTypeScript, tcr.filename, rulePlugin, _r2OracleSev);
         if (!r2) continue;
         const r2Normal = r2.filter(r => !r.crash);
         const r2Keys = new Set(r2Normal.map(r => `${r.rule}:${r.line}`));

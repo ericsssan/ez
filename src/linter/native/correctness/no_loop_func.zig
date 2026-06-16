@@ -43,7 +43,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const is_generator = tag == .generator_fn_expr or tag == .generator_fn_decl or
         tag == .async_generator_fn_expr or tag == .async_generator_fn_decl;
 
-    if (!is_async and !is_generator and isIIFE(node, ctx)) return;
+    if (!is_async and !is_generator and isIIFE(node, ctx)) {
+        // ESLint skips IIFEs unless they are *named* function expressions whose own
+        // name appears in the function scope's `through` (i.e. the IIFE stores itself).
+        // When isFunctionReferenced=true ESLint does NOT skip and still checks for unsafe refs.
+        if (!isNamedIIFEWithSelfRef(node, ctx)) return;
+    }
 
     const loop = getContainingLoop(node, ctx) orelse return;
 
@@ -168,10 +173,24 @@ fn isForInOfBindingVar(
     const decl_node = symbols.getDeclNode(sym_id);
     if (decl_node == .none) return false;
 
-    // Walk: identifier → declarator → var_decl → for_in_stmt/for_of_stmt/for_await_of_stmt
-    const declarator = ctx.parentOf(decl_node);
-    if (declarator == .none) return false;
-    if (ctx.nodeTag(declarator) != .declarator) return false;
+    // Walk up from identifier through destructuring patterns (array_pattern, object_pattern,
+    // property, assignment_pattern, rest_element, etc.) until we reach a declarator.
+    // Handles cases like `for (var [i, j] of ...)` where `j` is inside an array_pattern.
+    var cur = ctx.parentOf(decl_node);
+    var depth: u32 = 0;
+    const declarator = blk: {
+        while (cur != .none and depth < 8) : (depth += 1) {
+            const t = ctx.nodeTag(cur);
+            if (t == .declarator) break :blk cur;
+            switch (t) {
+                .array_pattern, .object_pattern, .property,
+                .assignment_pattern, .rest_element,
+                => { cur = ctx.parentOf(cur); continue; },
+                else => return false,
+            }
+        }
+        return false;
+    };
 
     const var_decl = ctx.parentOf(declarator);
     if (var_decl == .none) return false;
@@ -247,7 +266,11 @@ fn getContainingLoop(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
                 return parent;
             },
 
-            // Function boundary: stop traversal (don't cross into outer functions)
+            // Function boundary: stop traversal, unless it's a transparent IIFE.
+            // ESLint adds skipped IIFEs to SKIPPED_IIFE_NODES and passes through them
+            // when walking up for inner functions. We replicate: a transparent IIFE
+            // (sync, non-generator, not a named IIFE with self-reference) is invisible
+            // to inner functions when they search for their containing loop.
             .fn_expr,
             .async_fn_expr,
             .generator_fn_expr,
@@ -258,7 +281,13 @@ fn getContainingLoop(node: NodeIndex, ctx: *const LintContext) ?NodeIndex {
             .async_generator_fn_decl,
             .arrow_fn,
             .async_arrow_fn,
-            => return null,
+            => {
+                if (isTransparentIIFE(parent, ctx)) {
+                    cur = parent;
+                    continue;
+                }
+                return null;
+            },
 
             else => {},
         }
@@ -301,7 +330,13 @@ fn getContainingLoopForNode(loop_node: NodeIndex, ctx: *const LintContext) ?Node
             .async_generator_fn_decl,
             .arrow_fn,
             .async_arrow_fn,
-            => return null,
+            => {
+                if (isTransparentIIFE(parent, ctx)) {
+                    cur = parent;
+                    continue;
+                }
+                return null;
+            },
 
             else => {},
         }
@@ -309,6 +344,63 @@ fn getContainingLoopForNode(loop_node: NodeIndex, ctx: *const LintContext) ?Node
         cur = parent;
     }
     return null;
+}
+
+/// Returns true if this IIFE is "transparent" — i.e. ESLint would add it to SKIPPED_IIFE_NODES.
+/// Transparent IIFEs are sync, non-generator, non-named (or named without self-reference),
+/// and are treated as invisible boundaries by inner functions searching for their containing loop.
+fn isTransparentIIFE(node: NodeIndex, ctx: *const LintContext) bool {
+    const tag = ctx.nodeTag(node);
+    const is_async = tag == .async_fn_expr or tag == .async_fn_decl or
+        tag == .async_generator_fn_expr or tag == .async_generator_fn_decl or
+        tag == .async_arrow_fn;
+    const is_generator = tag == .generator_fn_expr or tag == .generator_fn_decl or
+        tag == .async_generator_fn_expr or tag == .async_generator_fn_decl;
+    if (is_async or is_generator) return false;
+    if (!isIIFE(node, ctx)) return false;
+    // Named IIFEs that store themselves (isFunctionReferenced=true) are NOT transparent.
+    if (isNamedIIFEWithSelfRef(node, ctx)) return false;
+    return true;
+}
+
+/// Returns true if this is a named IIFE whose own name is referenced inside the body.
+/// ESLint: `isFunctionReferenced = references.some(r => r.identifier.name === node.id.name)`
+/// where `references = sourceCode.getScope(node).through`.
+/// In eslint-scope, fn_expr_name lives in a parent "function-name" scope, so references
+/// to it inside the body appear in `through`.  We replicate by checking if the fn_expr_name
+/// symbol for this function has any read references within the function's own scope subtree.
+fn isNamedIIFEWithSelfRef(node: NodeIndex, ctx: *const LintContext) bool {
+    // Only fn_expr can have an id (arrow functions and async-arrows cannot)
+    const tag = ctx.nodeTag(node);
+    if (tag != .fn_expr) return false;
+
+    const data = ctx.nodeData(node);
+    const fd = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
+    const name_node = fd.name;
+    if (name_node == .none) return false;
+
+    const fn_scope = ctx.smallestEnclosingScope(node);
+    if (fn_scope == .none) return false;
+
+    // Find the fn_expr_name symbol whose decl node is the function's name identifier.
+    const syms = ctx.symbols();
+    const refs = ctx.references();
+    const scopes = ctx.scopes();
+    const sym_count = syms.count();
+    var i: u32 = 0;
+    while (i < sym_count) : (i += 1) {
+        const sym_id = SymbolId.fromInt(i);
+        if (syms.getBindingKind(sym_id) != .fn_expr_name) continue;
+        if (syms.getDeclNode(sym_id) != name_node) continue;
+        // Found the fn_expr_name symbol. Check if it has any read references within fn_scope.
+        const range = syms.getRefRange(sym_id);
+        for (ctx.semantic.ref_by_sym[range.start..range.end]) |rid| {
+            const ref_scope = refs.getScope(rid);
+            if (scopes.isAncestor(ref_scope, fn_scope)) return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 /// Check if a function node is an IIFE (immediately invoked function expression).

@@ -34,6 +34,11 @@ process.on("uncaughtException", (err) => {
 const fs   = require("fs");
 const path = require("path");
 
+// JSON replacer that serialises RegExp objects so they survive round-trips.
+// Stored as {__type:"RegExp",source,flags}; run.js revives them.
+const _regexpReplacer = (_, v) =>
+  v instanceof RegExp ? { __type: "RegExp", source: v.source, flags: v.flags } : v;
+
 // ── Paths ────────────────────────────────────────────────────
 
 const JS_ROOT      = path.resolve(__dirname, "../../js");
@@ -676,6 +681,9 @@ function installCorpusIntercept() {
     }
     if (!fullName) return result;
     const _isTsCase = typeof langOpts.parser?.parseForESLint === "function";
+    // Skip cases using custom fixture parsers (neither espree nor @typescript-eslint/parser) —
+    // ez can't replicate arbitrary parser behavior, so these cases are not meaningful for conformance.
+    if (langOpts.parser && !_isNativeParser(langOpts.parser) && !_isTsParser(langOpts.parser)) return result;
     const filename = typeof options === "string" ? options : options?.filename;
     const eslintResult = result
       .filter(m => !m.fatal && m.ruleId === fullName)
@@ -854,6 +862,9 @@ function installCorpusIntercept() {
       } catch { /* skip if config extraction fails */ }
       // Single pass: detect fatal parse errors, collect fix flag, and build eslintResult.
       const _isTsCase = typeof langOpts.parser?.parseForESLint === "function";
+      // Skip cases using custom fixture parsers (neither espree nor @typescript-eslint/parser) —
+      // ez can't replicate arbitrary parser behavior, so these cases are not meaningful for conformance.
+      if (langOpts.parser && !_isNativeParser(langOpts.parser) && !_isTsParser(langOpts.parser)) return result;
       // Babel parsers (no latestEcmaVersion, no parseForESLint-that-we-trust) — skip.
       // TS parser cases: capture using oracle result (already ran with TS parser).
       let hasFatal = false, hasFix = false;
@@ -1283,7 +1294,7 @@ async function loadRuleCases(testsDir, baseName, { capturePrefix = null, capture
           oracleDiags: tc.eslintResult || [],
           oracleFixes: tc.eslintFixes || null,               // autofix output from ESLint
         };
-        fs.writeFileSync(`${base}.json`, JSON.stringify(meta, null, 2));
+        fs.writeFileSync(`${base}.json`, JSON.stringify(meta, _regexpReplacer, 2));
         // Add to the per-rule bundle (code embedded for runner fast-load)
         ruleBundle.cases.push({ ...meta, code: tc.code, ext });
         const lang = (ext === ".ts" || ext === ".tsx") ? "ts" : "js";
@@ -1292,7 +1303,7 @@ async function loadRuleCases(testsDir, baseName, { capturePrefix = null, capture
       }
     }
     // Write the per-rule bundle alongside the per-case files.
-    fs.writeFileSync(path.join(corpusRoot, safePrefix, safeRule, "_cases.json"), JSON.stringify(ruleBundle));
+    fs.writeFileSync(path.join(corpusRoot, safePrefix, safeRule, "_cases.json"), JSON.stringify(ruleBundle, _regexpReplacer));
   }
 
   const all_js = concat.valid.js + concat.invalid.js;

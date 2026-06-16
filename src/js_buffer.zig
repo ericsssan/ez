@@ -1817,6 +1817,56 @@ pub fn buildNodeSpans(
                 }
                 if (t != min_tok[i]) node_starts[i] = tok_starts[t];
             },
+            // ClassDeclaration/ClassExpression: adjust start to include decorators.
+            // Modifiers like `abstract`/`declare` are consumed by the parser before
+            // calling parseClass, so min_tok already points to `class`; decorators
+            // are NOT AST children so we scan backward for `@` here.
+            .class_decl, .class_expr => {
+                var t = min_tok[i];
+                while (t > 0) {
+                    const pt = tok_tags[t - 1];
+                    // Decorator with args: @Name(...) — walk back past `)…(` then dotted name to `@`.
+                    if (pt == .r_paren) {
+                        var depth: i32 = 1;
+                        var k: i64 = @as(i64, @intCast(t)) - 2;
+                        while (k >= 0 and depth > 0) : (k -= 1) {
+                            const kt = tok_tags[@intCast(k)];
+                            if (kt == .r_paren) depth += 1
+                            else if (kt == .l_paren) depth -= 1;
+                        }
+                        if (depth != 0) break;
+                        var walk: i64 = k;
+                        while (walk >= 0) : (walk -= 1) {
+                            const wt = tok_tags[@intCast(walk)];
+                            if (wt == .identifier or wt == .dot) continue;
+                            break;
+                        }
+                        if (walk < 0 or tok_tags[@intCast(walk)] != .at_sign) break;
+                        t = @intCast(walk);
+                        continue;
+                    }
+                    // Decorator without args: @Name or @ns.Name
+                    if (pt == .identifier) {
+                        var walk: i64 = @as(i64, @intCast(t)) - 1;
+                        while (walk >= 0) : (walk -= 1) {
+                            const wt = tok_tags[@intCast(walk)];
+                            if (wt == .identifier or wt == .dot) continue;
+                            break;
+                        }
+                        if (walk >= 0 and tok_tags[@intCast(walk)] == .at_sign) {
+                            t = @intCast(walk);
+                            continue;
+                        }
+                    }
+                    // `abstract class` / `declare class` — modifiers consumed before `class` keyword.
+                    if (pt == .kw_abstract or pt == .kw_declare) {
+                        t -= 1;
+                        continue;
+                    }
+                    break;
+                }
+                if (t != min_tok[i]) node_starts[i] = tok_starts[t];
+            },
             .jsx_element, .jsx_opening_element, .jsx_self_closing, .jsx_fragment => {
                 const mt = min_tok[i];
                 if (mt > 0 and tok_tags[mt - 1] == .less_than) {

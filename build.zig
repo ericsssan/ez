@@ -22,6 +22,10 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
     const ez_checker_mod = ez_checker_dep.module("ez-checker");
+    // Share the same es_parser module instance so NodeIndex / ast types are
+    // identical between Ez's code and ez-checker (avoids "expected NodeIndex,
+    // found NodeIndex" when both depend on es-parser via different resolution paths).
+    ez_checker_mod.addImport("es_parser", es_parser_mod);
 
     // ── Main executable ──────────────────────────────────────
     const exe_mod = b.createModule(.{

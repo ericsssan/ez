@@ -2,6 +2,7 @@
 // Rule: no-var
 // Source rule: tests/conformance/eslint/lib/rules/no-var.js
 
+const std = @import("std");
 const ast = @import("es_parser").ast;
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -28,6 +29,24 @@ const Messages = enum {
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if ((ctx.nodeTag(node) != .var_decl)) {
         return;
+    }
+    // `declare global { var x }` is TypeScript ambient — exempt from no-var.
+    // ESLint exempts var when parent chain is: var_decl → TSModuleBlock → TSModuleDeclaration{global:true}.
+    // In es-parser, `declare global {}` emits: block_stmt → root (no ts_module_decl wrapper).
+    // Detect by checking tokens before the block's `{`: must be `declare global`.
+    const block = ctx.parentOf(node);
+    if (block != .none and ctx.ast.nodeTag(block) == .block_stmt) {
+        const root = ctx.parentOf(block);
+        if (root != .none and ctx.ast.nodeTag(root) == .root) {
+            const block_tok = ctx.nodeMainToken(block);
+            if (block_tok >= 2) {
+                const tok_global = ctx.tokenText(block_tok - 1);
+                const tok_declare = ctx.tokenText(block_tok - 2);
+                if (std.mem.eql(u8, tok_global, "global") and std.mem.eql(u8, tok_declare, "declare")) {
+                    return;
+                }
+            }
+        }
     }
     ctx.reportWithMessageId(node, "unexpectedVar");
 }
