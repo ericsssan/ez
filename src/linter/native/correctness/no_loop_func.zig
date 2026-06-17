@@ -395,6 +395,7 @@ fn isNamedIIFEWithSelfRef(node: NodeIndex, ctx: *const LintContext) bool {
         // Found the fn_expr_name symbol. Check if it has any read references within fn_scope.
         const range = syms.getRefRange(sym_id);
         for (ctx.semantic.ref_by_sym[range.start..range.end]) |rid| {
+            if (refs.getKind(rid).isWrite()) continue;
             const ref_scope = refs.getScope(rid);
             if (scopes.isAncestor(ref_scope, fn_scope)) return true;
         }

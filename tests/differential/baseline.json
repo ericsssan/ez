@@ -308,7 +308,7 @@
     },
     "n/prefer-node-protocol": {
       "runner": {
-        "fn": 18,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -345,7 +345,7 @@
     "n/no-unsupported-features/es-builtins": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -471,7 +471,7 @@
     "n/no-unsupported-features/node-builtins": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -921,7 +921,7 @@
     "n/no-unsupported-features/es-syntax": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3801,7 +3801,7 @@
     "jsdoc/imports-as-dependencies": {
       "runner": {
         "fn": 0,
-        "fp": 5,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -5911,7 +5911,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -6194,7 +6194,7 @@
     },
     "object-shorthand": {
       "runner": {
-        "fn": 6,
+        "fn": 18,
         "fp": 0,
         "crash": 0
       },
@@ -6217,8 +6217,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 3,
-        "fp": 10,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
@@ -7063,8 +7063,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
-        "fp": 6,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
@@ -7963,7 +7963,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 17,
+        "fn": 19,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9133,7 +9133,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13737,7 +13737,7 @@
     "unicorn/expiring-todo-comments": {
       "runner": {
         "fn": 2,
-        "fp": 4,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16490,7 +16490,7 @@
     },
     "react/destructuring-assignment": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -18200,9 +18200,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 13966,
-    "runnerCasesPerSec": 7724,
-    "nativeCasesPerSec": 67004,
+    "totalElapsedMs": 14120,
+    "runnerCasesPerSec": 7535,
+    "nativeCasesPerSec": 66565,
     "totalCases": 72134
   }
 }

@@ -30,7 +30,7 @@ pub const relevant_tags = [_]Node.Tag{
     .if_stmt,
 };
 
-pub const needs_semantic = false;
+pub const needs_semantic = true;
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     ctx.checkLogicalAssignmentOperators(node);

@@ -559,7 +559,7 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
         const _tsAst = parse(src, { filename: _tsFilename, lang: "ts", globals: zigGlobals, sourceType,
           parserOptions: tcLanguageOptions.parserOptions });
         const _tsErrCount = _tsAst._nodeTags.reduce((n, t) => n + (t === 193 ? 1 : 0), 0);
-        if (_tsErrCount < _jsErrCount) ast = _tsAst;
+        if (_tsErrCount === 0) ast = _tsAst;
       } catch { /* keep JS ast */ }
     }
     _runnerParseMs += Date.now() - _p0;

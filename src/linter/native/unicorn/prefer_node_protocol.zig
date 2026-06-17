@@ -169,6 +169,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // The module string token is at mainToken+2: `import` `(` `"mod"`.
     if (tag == .ts_import_type) {
         const mt = ctx.nodeMainToken(node);
+        if (@as(usize, mt) + 2 >= ctx.ast.tokens.len) return;
         reportTokenModule(mt + 2, ctx);
         return;
     }
@@ -177,6 +178,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Detect by checking token at mt+1 == `import`; string is at mt+3.
     if (tag == .ts_typeof_type) {
         const mt = ctx.nodeMainToken(node);
+        if (@as(usize, mt) + 3 >= ctx.ast.tokens.len) return;
         if (!std.mem.eql(u8, ctx.tokenText(mt + 1), "import")) return;
         reportTokenModule(mt + 3, ctx);
         return;

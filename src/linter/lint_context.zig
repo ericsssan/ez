@@ -4452,7 +4452,6 @@ pub const LintContext = struct {
         if (a == .none or b == .none) return a == b;
         const at = self.nodeTag(a);
         const bt = self.nodeTag(b);
-        // Unwrap chain expressions (a?.b vs a.b)
         const at_mem = at == .member_expr or at == .optional_member_expr
             or at == .computed_member_expr or at == .optional_computed_member_expr;
         const bt_mem = bt == .member_expr or bt == .optional_member_expr
@@ -4465,6 +4464,11 @@ pub const LintContext = struct {
             }
             return self.nodeTokensEqual(a, b);
         }
+        // Optional chaining (`a?.b`) and non-optional (`a.b`) are not the same
+        // reference — ESLint's isSameReference returns false when optionality differs.
+        const a_optional = at == .optional_member_expr or at == .optional_computed_member_expr;
+        const b_optional = bt == .optional_member_expr or bt == .optional_computed_member_expr;
+        if (a_optional != b_optional) return false;
         const ad = self.ast.nodeData(a);
         const bd = self.ast.nodeData(b);
         // Compare objects recursively.
@@ -10282,6 +10286,14 @@ pub const LintContext = struct {
 
     // ── logical-assignment-operators ─────────────────────────────────────────
 
+    /// True when a user binding for `name` is visible at `node` — i.e. the name
+    /// is shadowed and does NOT refer to the global with that name.
+    /// Uses the reference's scope (like nameHasNoUserBinding) for precision;
+    /// falls back to smallestEnclosingScope when no reference is recorded.
+    fn nameIsShadowedAt(self: *const LintContext, node: NodeIndex, name: []const u8) bool {
+        return !self.nameHasNoUserBinding(node, name);
+    }
+
     /// Returns the "truthy reference" from a condition expression:
     /// - bare reference → itself
     /// - Boolean(x) → x
@@ -10298,7 +10310,9 @@ pub const LintContext = struct {
                 const callee = self.nodeSkipGrouping(cd.lhs);
                 if (self.ast.nodeTag(callee) == .identifier) {
                     const name = self.ast.tokenText(self.ast.nodeMainToken(callee));
-                    if (std.mem.eql(u8, name, "Boolean") and cd.rhs != .none) {
+                    if (std.mem.eql(u8, name, "Boolean") and
+                        !self.nameIsShadowedAt(callee, "Boolean") and cd.rhs != .none)
+                    {
                         const sr = self.extraData(SubRange, @intFromEnum(cd.rhs));
                         const args = self.extraSlice(sr);
                         if (args.len == 1)
@@ -10335,7 +10349,7 @@ pub const LintContext = struct {
                 const callee = self.nodeSkipGrouping(cd.lhs);
                 if (self.ast.nodeTag(callee) == .identifier and cd.rhs != .none) {
                     const name = self.ast.tokenText(self.ast.nodeMainToken(callee));
-                    if (std.mem.eql(u8, name, "Boolean")) {
+                    if (std.mem.eql(u8, name, "Boolean") and !self.nameIsShadowedAt(callee, "Boolean")) {
                         const sr = self.extraData(SubRange, @intFromEnum(cd.rhs));
                         const args = self.extraSlice(sr);
                         if (args.len == 1) return self.nodeSkipGrouping(@enumFromInt(args[0]));
@@ -10358,7 +10372,8 @@ pub const LintContext = struct {
         if (node == .none) return false;
         const tag = self.ast.nodeTag(node);
         if (tag == .identifier) {
-            return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(node)), "undefined");
+            return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(node)), "undefined")
+                and !self.nameIsShadowedAt(node, "undefined");
         }
         if (tag == .void_expr) {
             const operand = self.ast.nodeData(node).lhs;
@@ -10369,10 +10384,19 @@ pub const LintContext = struct {
         return false;
     }
 
+    /// True when `node` is an identifier literally named "undefined" (shadowed or not).
+    /// ESLint's isReference() excludes these — they act as nullish values, not references.
+    fn laIsNamedUndefined(self: *const LintContext, node: NodeIndex) bool {
+        if (node == .none) return false;
+        return self.ast.nodeTag(node) == .identifier and
+            std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(node)), "undefined");
+    }
+
     /// True when `node` is `null` or `undefined` (for loose equality: `a == null`).
     fn laIsNullishLoose(self: *const LintContext, node: NodeIndex) bool {
         return self.laIsNull(node) or (node != .none and self.ast.nodeTag(node) == .identifier and
-            std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(node)), "undefined"));
+            std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(node)), "undefined") and
+            !self.nameIsShadowedAt(node, "undefined"));
     }
 
     /// If `cond` is `(X === null)` or `(null === X)`, return X. Otherwise .none.
@@ -10412,8 +10436,12 @@ pub const LintContext = struct {
         if (tag == .equal) {
             const lhs = self.nodeSkipGrouping(cd.lhs);
             const rhs = self.nodeSkipGrouping(cd.rhs);
-            if (self.laIsNullishLoose(rhs) and !self.laIsNullishLoose(lhs)) return lhs;
-            if (self.laIsNullishLoose(lhs) and !self.laIsNullishLoose(rhs)) return rhs;
+            // ESLint's isReference() excludes identifiers named "undefined" — they are
+            // nullish values, not variable references being checked for nullishness.
+            if (self.laIsNullishLoose(rhs) and !self.laIsNullishLoose(lhs) and
+                !self.laIsNamedUndefined(lhs)) return lhs;
+            if (self.laIsNullishLoose(lhs) and !self.laIsNullishLoose(rhs) and
+                !self.laIsNamedUndefined(rhs)) return rhs;
             return .none;
         }
 
@@ -10424,12 +10452,12 @@ pub const LintContext = struct {
             // lhs checks null, rhs checks undefined
             const l_null = self.laStrictNullRef(lhs);
             const r_undef = self.laStrictUndefRef(rhs);
-            if (l_null != .none and r_undef != .none and self.nodeTokensEqualStrict(l_null, r_undef))
+            if (l_null != .none and r_undef != .none and self.nodeSameReference(l_null, r_undef))
                 return l_null;
             // lhs checks undefined, rhs checks null
             const l_undef = self.laStrictUndefRef(lhs);
             const r_null = self.laStrictNullRef(rhs);
-            if (l_undef != .none and r_null != .none and self.nodeTokensEqualStrict(l_undef, r_null))
+            if (l_undef != .none and r_null != .none and self.nodeSameReference(l_undef, r_null))
                 return l_undef;
         }
 
@@ -10499,7 +10527,7 @@ pub const LintContext = struct {
                 const leftmost = self.nodeSkipGrouping(cur_d.lhs);
                 const assign_lhs = self.nodeSkipGrouping(d.lhs);
                 if (assign_lhs == .none or leftmost == .none) return;
-                if (self.nodeTokensEqualStrict(assign_lhs, leftmost))
+                if (self.nodeSameReference(assign_lhs, leftmost))
                     self.reportWithMessageId(node, "assignment");
             },
             // Logical pattern: `a || (a = b)`
@@ -10510,7 +10538,7 @@ pub const LintContext = struct {
                 const assign_lhs = self.nodeSkipGrouping(rhs_d.lhs);
                 const lhs = self.nodeSkipGrouping(d.lhs);
                 if (assign_lhs == .none or lhs == .none) return;
-                if (self.nodeTokensEqualStrict(lhs, assign_lhs))
+                if (self.nodeSameReference(lhs, assign_lhs))
                     self.reportWithMessageId(node, "logical");
             },
             // If-statement pattern (enforceForIfStatements)
@@ -10537,19 +10565,19 @@ pub const LintContext = struct {
 
                 // Truthy (&&=): condition IS the target
                 const truthy_ref = self.laTruthyRef(condition);
-                if (truthy_ref != .none and self.nodeTokensEqualStrict(truthy_ref, assign_lhs)) {
+                if (truthy_ref != .none and self.nodeSameReference(truthy_ref, assign_lhs)) {
                     self.reportWithMessageId(node, "if");
                     return;
                 }
                 // Falsy (||=): condition is `!target`
                 const falsy_ref = self.laFalsyRef(condition);
-                if (falsy_ref != .none and self.nodeTokensEqualStrict(falsy_ref, assign_lhs)) {
+                if (falsy_ref != .none and self.nodeSameReference(falsy_ref, assign_lhs)) {
                     self.reportWithMessageId(node, "if");
                     return;
                 }
                 // Nullish (??=): condition is null/undefined check on target
                 const nullish_ref = self.laNullishRef(condition);
-                if (nullish_ref != .none and self.nodeTokensEqualStrict(nullish_ref, assign_lhs)) {
+                if (nullish_ref != .none and self.nodeSameReference(nullish_ref, assign_lhs)) {
                     self.reportWithMessageId(node, "if");
                     return;
                 }
