@@ -308,118 +308,21 @@ fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
 
 // ── Type cloning ─────────────────────────────────────────────────────────
 
-/// Clone a TypeId from `src_store` into `dst_store`.
+/// Clone a TypeId from `src_store` into `dst_store`, delegating to ez-checker's
+/// canonical `TypeStore.cloneTypeInto`.
 ///
-/// Singleton TypeIds (0..SINGLETON_COUNT) are identical in every TypeStore and
-/// returned as-is.  Composite types are deep-copied; string/name slices borrow
-/// from the source text (must outlive the destination store).
+/// Unlike a hand-rolled copy, `cloneTypeInto` duplicates EVERY name/literal
+/// string into `dst_store`'s allocator, so the result does not alias
+/// `src_store` — required here because the source module's store is freed when
+/// its `ParsedModule` is deinit'd, which would otherwise leave the cloned
+/// signature param names / object-prop names / literals dangling. It also caps
+/// recursion depth, guarding against cyclic types.
 pub fn cloneType(
     src_store: *const TypeStore,
     src_id: TypeId,
     dst_store: *TypeStore,
     gpa: std.mem.Allocator,
 ) std.mem.Allocator.Error!TypeId {
-    if (src_id.toInt() < tymod.SINGLETON_COUNT) return src_id;
-
-    const src_ty = src_store.get(src_id);
-    return switch (src_ty.kind) {
-        .string_literal => dst_store.add(.{
-            .kind = .string_literal,
-            .literal_value = .{ .string = src_ty.literal_value.string },
-        }),
-        .number_literal => dst_store.add(.{
-            .kind = .number_literal,
-            .literal_value = .{ .number = src_ty.literal_value.number },
-        }),
-        .bigint_literal => dst_store.add(.{
-            .kind = .bigint_literal,
-            .literal_value = .{ .bigint = src_ty.literal_value.bigint },
-        }),
-        .boolean_literal => dst_store.add(.{
-            .kind = .boolean_literal,
-            .literal_value = .{ .boolean = src_ty.literal_value.boolean },
-        }),
-        .union_t, .intersection_t => blk: {
-            const members = src_store.idsOf(src_ty.list_data);
-            var cloned: std.ArrayList(TypeId) = .empty;
-            defer cloned.deinit(gpa);
-            for (members) |m| try cloned.append(gpa, try cloneType(src_store, m, dst_store, gpa));
-            const list = try dst_store.appendTypeIds(cloned.items);
-            break :blk dst_store.add(.{ .kind = src_ty.kind, .list_data = list });
-        },
-        .tuple_t => blk: {
-            const elems = src_store.idsOf(src_ty.list_data);
-            var cloned: std.ArrayList(TypeId) = .empty;
-            defer cloned.deinit(gpa);
-            for (elems) |e| try cloned.append(gpa, try cloneType(src_store, e, dst_store, gpa));
-            break :blk dst_store.tupleOf(cloned.items);
-        },
-        .object_t => blk: {
-            const props = src_store.propsOf(src_ty.object_props);
-            var cloned_props: std.ArrayList(tymod.ObjectProp) = .empty;
-            defer cloned_props.deinit(gpa);
-            for (props) |p| {
-                try cloned_props.append(gpa, .{
-                    .name = p.name,
-                    .type_id = try cloneType(src_store, p.type_id, dst_store, gpa),
-                    .optional = p.optional,
-                    .readonly = p.readonly,
-                    .is_method = p.is_method,
-                    .is_fn_property = p.is_fn_property,
-                    .is_static = p.is_static,
-                });
-            }
-            const prop_list = try dst_store.appendObjectProps(cloned_props.items);
-            break :blk dst_store.add(.{ .kind = .object_t, .object_props = prop_list });
-        },
-        .function_t => blk: {
-            const sigs = src_store.signaturesOf(src_ty.signatures);
-            var cloned_sigs: std.ArrayList(tymod.Signature) = .empty;
-            defer cloned_sigs.deinit(gpa);
-            for (sigs) |sig| {
-                const params = src_store.signatureParamsOf(sig);
-                const names = src_store.signatureParamNamesOf(sig);
-                const optionals = src_store.signatureParamOptionalsOf(sig);
-                var cloned_params: std.ArrayList(TypeId) = .empty;
-                defer cloned_params.deinit(gpa);
-                for (params) |p| try cloned_params.append(gpa, try cloneType(src_store, p, dst_store, gpa));
-                const pp = try dst_store.appendSignatureParamsFull(cloned_params.items, names, optionals);
-                const cloned_ret = try cloneType(src_store, sig.return_type, dst_store, gpa);
-                const cloned_pred = if (sig.predicate_param_index != 0xFFFF)
-                    try cloneType(src_store, sig.predicate_target, dst_store, gpa)
-                else
-                    sig.predicate_target;
-                try cloned_sigs.append(gpa, .{
-                    .params_start = pp.start,
-                    .params_end = pp.end,
-                    .return_type = cloned_ret,
-                    .is_async = sig.is_async,
-                    .is_generator = sig.is_generator,
-                    .is_construct = sig.is_construct,
-                    .predicate_param_index = sig.predicate_param_index,
-                    .predicate_target = cloned_pred,
-                    .is_assertion = sig.is_assertion,
-                    .rest_param_index = sig.rest_param_index,
-                    .type_param_fp = sig.type_param_fp,
-                });
-            }
-            const sig_list = try dst_store.appendSignatures(cloned_sigs.items);
-            break :blk dst_store.add(.{ .kind = .function_t, .signatures = sig_list });
-        },
-        .array_t => blk: {
-            const ids = src_store.idsOf(src_ty.list_data);
-            if (ids.len == 0) break :blk tymod.ID_UNKNOWN;
-            break :blk dst_store.arrayOf(try cloneType(src_store, ids[0], dst_store, gpa));
-        },
-        .readonly_array_t => blk: {
-            const ids = src_store.idsOf(src_ty.list_data);
-            if (ids.len == 0) break :blk tymod.ID_UNKNOWN;
-            break :blk dst_store.readonlyArrayOf(try cloneType(src_store, ids[0], dst_store, gpa));
-        },
-        .type_ref, .type_param => dst_store.add(.{
-            .kind = src_ty.kind,
-            .name = src_ty.name,
-        }),
-        else => tymod.ID_UNKNOWN,
-    };
+    _ = gpa;
+    return dst_store.cloneTypeInto(src_store, src_id, 0);
 }
