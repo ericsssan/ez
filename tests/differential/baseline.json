@@ -1712,7 +1712,7 @@
     },
     "@typescript-eslint/no-redeclare": {
       "runner": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0
       },
@@ -2216,8 +2216,8 @@
     },
     "@typescript-eslint/no-shadow": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 2,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -2937,7 +2937,7 @@
     "@typescript-eslint/naming-convention": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -4934,9 +4934,9 @@
     },
     "no-unused-vars": {
       "runner": {
-        "fn": 0,
+        "fn": 5,
         "fp": 0,
-        "crash": 0
+        "crash": 10
       },
       "native": {
         "fn": 314,
@@ -5911,7 +5911,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -6379,7 +6379,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 27,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -6662,7 +6662,7 @@
     },
     "no-func-assign": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -6793,7 +6793,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 19,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -6932,12 +6932,12 @@
     },
     "no-use-before-define": {
       "runner": {
-        "fn": 0,
+        "fn": 9,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 7,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -7567,7 +7567,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -7868,13 +7868,13 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 5,
-        "fp": 3,
+        "fn": 26,
+        "fp": 27,
         "crash": 0
       },
       "native": {
-        "fn": 13,
-        "fp": 8,
+        "fn": 8,
+        "fp": 4,
         "crash": 0,
         "skip": 0
       },
@@ -7963,7 +7963,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 19,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9277,7 +9277,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9399,7 +9399,7 @@
     "prefer-arrow-callback": {
       "runner": {
         "fn": 1,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -9543,7 +9543,7 @@
     "func-names": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -10226,7 +10226,7 @@
     },
     "sonarjs/no-collection-size-mischeck": {
       "runner": {
-        "fn": 0,
+        "fn": 13,
         "fp": 0,
         "crash": 0
       },
@@ -10244,9 +10244,9 @@
     },
     "sonarjs/prefer-immediate-return": {
       "runner": {
-        "fn": 0,
+        "fn": 21,
         "fp": 0,
-        "crash": 0
+        "crash": 24
       },
       "native": {
         "fn": 21,
@@ -10407,7 +10407,7 @@
     "sonarjs/no-incorrect-string-concat": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -10695,7 +10695,7 @@
     "sonarjs/no-try-promise": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -10875,7 +10875,7 @@
     "sonarjs/useless-string-operation": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -10911,7 +10911,7 @@
     "sonarjs/strings-comparison": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -10929,7 +10929,7 @@
     "sonarjs/no-alphabetical-sort": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 7,
         "crash": 0
       },
       "native": {
@@ -11000,7 +11000,7 @@
     },
     "sonarjs/arguments-order": {
       "runner": {
-        "fn": 0,
+        "fn": 30,
         "fp": 0,
         "crash": 0
       },
@@ -11036,7 +11036,7 @@
     },
     "sonarjs/sql-queries": {
       "runner": {
-        "fn": 0,
+        "fn": 14,
         "fp": 0,
         "crash": 0
       },
@@ -11073,7 +11073,7 @@
     "sonarjs/assertions-in-tests": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 7,
         "crash": 0
       },
       "native": {
@@ -11199,7 +11199,7 @@
     "sonarjs/no-require-or-define": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -11667,7 +11667,7 @@
     "sonarjs/different-types-comparison": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -11882,7 +11882,7 @@
     },
     "sonarjs/bitwise-operators": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
@@ -12008,7 +12008,7 @@
     },
     "sonarjs/no-use-of-empty-return-value": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -12152,7 +12152,7 @@
     },
     "sonarjs/reduce-initial-value": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
@@ -12279,7 +12279,7 @@
     "sonarjs/existing-groups": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -12350,7 +12350,7 @@
     },
     "sonarjs/no-inconsistent-returns": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -12387,7 +12387,7 @@
     "sonarjs/new-operator-misuse": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 13,
         "crash": 0
       },
       "native": {
@@ -12422,7 +12422,7 @@
     },
     "sonarjs/class-prototype": {
       "runner": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
@@ -12728,8 +12728,8 @@
     },
     "sonarjs/void-use": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 1,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -12945,7 +12945,7 @@
     "sonarjs/operation-returning-nan": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -13089,7 +13089,7 @@
     "sonarjs/post-message": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 12,
         "crash": 0
       },
       "native": {
@@ -13143,7 +13143,7 @@
     "sonarjs/null-dereference": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -13215,7 +13215,7 @@
     "sonarjs/values-not-convertible-to-numbers": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -13269,7 +13269,7 @@
     "sonarjs/in-operator-type-error": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -13449,7 +13449,7 @@
     "sonarjs/unused-named-groups": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 25,
         "crash": 0
       },
       "native": {
@@ -13485,7 +13485,7 @@
     "sonarjs/non-number-in-arithmetic-expression": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 8,
         "crash": 0
       },
       "native": {
@@ -13701,7 +13701,7 @@
     "sonarjs/no-for-in-iterable": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -13736,7 +13736,7 @@
     },
     "unicorn/expiring-todo-comments": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13791,7 +13791,7 @@
     "unicorn/consistent-function-scoping": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15213,7 +15213,7 @@
     "unicorn/prefer-export-from": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15302,8 +15302,8 @@
     },
     "unicorn/prevent-abbreviations": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 2,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -15842,7 +15842,7 @@
     },
     "unicorn/prefer-dom-node-text-content": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15968,7 +15968,7 @@
     },
     "unicorn/catch-error-name": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -16562,7 +16562,7 @@
     },
     "react/no-unused-prop-types": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -16652,7 +16652,7 @@
     },
     "react/prefer-read-only-props": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -16887,7 +16887,7 @@
     "react/jsx-props-no-multi-spaces": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -18200,9 +18200,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 14120,
-    "runnerCasesPerSec": 7535,
-    "nativeCasesPerSec": 66565,
+    "totalElapsedMs": 18044,
+    "runnerCasesPerSec": 5675,
+    "nativeCasesPerSec": 56052,
     "totalCases": 72134
   }
 }

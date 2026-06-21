@@ -1305,7 +1305,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
         }
       }
 
-      const _isTsCase = isTypeScript || !!tc.isTypeScript;
+      const _isTsCase = !!tc.isTypeScript;
       // Hoisted out of the runner block so the native + hybrid blocks can
       // still consult them under --native-only.
       // Use the location-only key under --native-only so the NAPI path's
