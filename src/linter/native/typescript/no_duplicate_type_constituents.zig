@@ -62,7 +62,22 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
 fn typeNodeIsError(node: NodeIndex, ctx: *const LintContext) bool {
     const tid = ctx.resolveTypeAnnotationNode(node);
-    return ctx.typeIdIsError(tid);
+    if (ctx.typeIdIsError(tid)) return true;
+    // An undeclared type reference (`A` with no declaration) is the TS error
+    // type — TSe treats two such references as distinct, non-equivalent errors,
+    // so they must not be equated as duplicates.  The checker can't distinguish
+    // an undeclared name from a type parameter (both resolve as "unresolved")
+    // and surfaces undeclared names as a named type_ref / any rather than the
+    // error type, so detect it structurally: a type_reference whose name is
+    // neither a known type NOR an in-scope type parameter is undeclared.
+    var n = node;
+    while (ctx.nodeTag(n) == .ts_parenthesized_type) n = ctx.nodeData(n).lhs;
+    if (ctx.nodeTag(n) == .ts_type_reference) {
+        const name = ctx.tokenText(ctx.nodeMainToken(n));
+        if (name.len > 0 and !ctx.typeNameIsKnown(name) and
+            !ctx.typeAnnotationIsTypeParameter(n)) return true;
+    }
+    return false;
 }
 
 fn collectLeaves(node: NodeIndex, buf: *[32]NodeIndex, n: *usize, ctx: *const LintContext) void {
