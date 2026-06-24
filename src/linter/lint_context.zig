@@ -12505,15 +12505,35 @@ pub const LintContext = struct {
         const args = self.extraSlice(range);
         if (args.len == 0) return;
         const first_arg_raw: NodeIndex = @enumFromInt(args[0]);
-        const first_arg = self.nodeSkipGrouping(first_arg_raw);
-        const first_tag = self.ast.nodeTag(first_arg);
+        var first_arg = self.nodeSkipGrouping(first_arg_raw);
+        var first_tag = self.ast.nodeTag(first_arg);
+        // Resolve a const string variable used as the pattern:
+        // `const p = "[…]"; new RegExp(p)`.  ESLint can't map char offsets back
+        // into the original source, so it reports on the whole argument node —
+        // collapse every reported span to the identifier via `report_override`.
+        var report_override: ?Span = null;
+        if (first_tag == .identifier) {
+            const init = self.constInitializerOf(first_arg) orelse return;
+            const init_node = self.nodeSkipGrouping(init);
+            const it = self.ast.nodeTag(init_node);
+            if (it != .string_literal and it != .template_literal) return;
+            report_override = self.nodeSpan(first_arg);
+            first_arg = init_node;
+            first_tag = it;
+        }
         if (first_tag != .string_literal and first_tag != .template_literal and first_tag != .regex_literal) return;
         var flags: []const u8 = "";
         var flags_explicit = false;
         if (args.len >= 2) {
             const flags_arg_raw: NodeIndex = @enumFromInt(args[1]);
-            const flags_arg = self.nodeSkipGrouping(flags_arg_raw);
-            const ftag = self.ast.nodeTag(flags_arg);
+            var flags_arg = self.nodeSkipGrouping(flags_arg_raw);
+            var ftag = self.ast.nodeTag(flags_arg);
+            // Resolve a const string variable used as the flags argument.
+            if (ftag == .identifier) {
+                const finit = self.constInitializerOf(flags_arg) orelse return;
+                flags_arg = self.nodeSkipGrouping(finit);
+                ftag = self.ast.nodeTag(flags_arg);
+            }
             if (ftag != .string_literal and ftag != .template_literal) return; // bail on non-static flags
             const fs = self.nodeStaticStringValue(flags_arg) orelse return;
             flags = fs;
@@ -12547,7 +12567,10 @@ pub const LintContext = struct {
             decodeJsStringLiteralMapped(arena, body) catch return;
         if (regexPatternHasSyntaxError(decoded.bytes, true, flags)) return;
         const flag_set = regex_parser.Flags.fromString(flags);
-        const allow_escape = self.noMisleadingAllowEscape();
+        // When the pattern came from a resolved constant, escape forms in the
+        // variable's literal are not "visible" at the usage site, so allowEscape
+        // does not apply (matches ESLint, which reports on the argument node).
+        const allow_escape = report_override == null and self.noMisleadingAllowEscape();
         const pat = regex_parser.parse(arena, decoded.bytes, .{ .flags = flag_set }) catch return;
         // Source-map base: first byte INSIDE the string literal in source
         // (just past the opening quote).
@@ -12557,6 +12580,7 @@ pub const LintContext = struct {
             .decoded_len = decoded.bytes.len,
             .body_src_start = body_src_start,
             .body = body,
+            .override = report_override,
         };
         self.walkMisleadingCharClassCall(pat.alternatives, decoded.bytes, flag_set, allow_escape, map_ctx);
     }
@@ -12566,13 +12590,20 @@ pub const LintContext = struct {
         decoded_len: usize,
         body_src_start: u32,
         body: []const u8,
+        /// When the pattern came from a resolved constant (`const p = "…"; new
+        /// RegExp(p)`), decoded offsets don't map back to source — ESLint
+        /// reports on the whole argument node instead.  When set, every
+        /// reported span collapses to this fixed range.
+        override: ?Span = null,
 
         fn srcStart(self: CallSourceMap, decoded_off: u32) u32 {
+            if (self.override) |o| return o.start;
             if (decoded_off >= self.map.len) return self.body_src_start + @as(u32, @intCast(self.decoded_len));
             return self.body_src_start + self.map[decoded_off];
         }
 
         fn srcEnd(self: CallSourceMap, decoded_off: u32) u32 {
+            if (self.override) |o| return o.end;
             // Walk forward through duplicate map entries (multi-byte
             // sequences from one escape) to land on the next char's
             // source offset, which is this char's source end.
