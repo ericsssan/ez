@@ -121,15 +121,66 @@ fn specifierIsTypeOnly(sp: NodeIndex, ctx: *const LintContext) bool {
     //   import_specifier:           lhs=imported, rhs=local (rhs may be .none → use lhs)
     //   import_default_specifier:   lhs=local
     //   import_namespace_specifier: lhs=local
+    const tag = ctx.nodeTag(sp);
     const d = ctx.nodeData(sp);
-    const local: NodeIndex = switch (ctx.nodeTag(sp)) {
+    const local: NodeIndex = switch (tag) {
         .import_specifier => if (d.rhs != .none) d.rhs else d.lhs,
         .import_default_specifier, .import_namespace_specifier => d.lhs,
         else => return false,
     };
     if (local == .none) return false;
     const sym = ctx.symbolForDeclNode(local) orelse return false;
-    return ctx.symbolIsTypeOnly(sym);
+    if (ctx.symbolIsTypeOnly(sym)) {
+        // es-parser doesn't emit a `read` ref for the implicit JSX factory
+        // (issue #34): when a file uses intrinsic JSX (`<div/>`), the classic
+        // runtime calls `<pragma>.createElement`, but no reference is recorded
+        // for the pragma binding — so a default import of the factory looks
+        // type-only and would FP.  Suppress ONLY for the actual factory import:
+        // a default import whose name matches the JSX pragma, in a file that
+        // contains JSX elements.  A genuinely type-only default import (or any
+        // import in a JSX-free file) is still reported.  The node scan is gated
+        // behind the cheap name check so it runs only for that rare candidate.
+        if (tag == .import_default_specifier and ctx.language.isJsx() and
+            importIsJsxFactory(local, ctx) and fileHasJsxElement(ctx)) return false;
+        return true;
+    }
+    // es-parser emits `read` (not `type_read`) for specifiers inside
+    // `export type { X }` declarations (issue #33). Check if ALL the
+    // non-type references to this symbol come from type-only export specifiers.
+    return ctx.symbolRefsAllInTypeExports(sym);
+}
+
+/// True when `local` (a default-import binding) names the JSX factory pragma —
+/// the leading identifier of the classic-runtime factory. Defaults to `React`;
+/// honours `settings.react.pragma` when configured.
+fn importIsJsxFactory(local: NodeIndex, ctx: *const LintContext) bool {
+    const name = ctx.tokenText(ctx.nodeMainToken(local));
+    return std.mem.eql(u8, name, jsxFactoryPragma(ctx));
+}
+
+fn jsxFactoryPragma(ctx: *const LintContext) []const u8 {
+    const settings = ctx.getSettings() orelse return "React";
+    if (settings.* != .object) return "React";
+    const react = settings.object.get("react") orelse return "React";
+    if (react != .object) return "React";
+    const pragma = react.object.get("pragma") orelse return "React";
+    if (pragma != .string) return "React";
+    return pragma.string;
+}
+
+/// True when the file contains at least one JSX element / fragment — the
+/// condition under which the implicit JSX-factory reference exists.
+fn fileHasJsxElement(ctx: *const LintContext) bool {
+    const total: u32 = @intCast(ctx.ast.nodes.len);
+    var i: u32 = 0;
+    while (i < total) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        switch (ctx.nodeTag(ni)) {
+            .jsx_element, .jsx_self_closing, .jsx_fragment => return true,
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn extendSemi(sp: *Span, ctx: *const LintContext) void {

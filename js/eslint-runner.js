@@ -257,6 +257,17 @@ function typeFacadeMod() {
   return _typeFacadeMod;
 }
 
+// True when a case's parserOptions requested full type information (a TS
+// project, projectService, or a pre-built program). Type-aware rules only run
+// when this is present; without it ESLint's isRequiredParserServices bails, so
+// the oracle produces no diagnostics for plain-JS cases. We gate the light
+// facade's `program` on this to match.
+function _parserOptionsHaveTypeInfo(po) {
+  if (!po || typeof po !== "object") return false;
+  return !!(po.projectService || po.project || po.program ||
+            po.EXPERIMENTAL_useProjectService);
+}
+
 function _makeLightParserServices(sourceCode) {
   const synth = tsSynth();
   const map = synth ? synth.buildEsTreeNodeToTSNodeMap(sourceCode.text) : null;
@@ -264,6 +275,12 @@ function _makeLightParserServices(sourceCode) {
   let _facade; // undefined = not opened, null = unavailable, object = open
   function openFacade() {
     if (_facade !== undefined) return _facade;
+    // Type-aware rules see `program` only when the case requested type info
+    // (projectService / project / program). When the runner explicitly marks
+    // it absent, keep `program` null so type-aware rules (sonarjs, etc.) bail
+    // exactly like the oracle. `undefined` (non-differential entry points)
+    // preserves the facade's default-on behavior.
+    if (sourceCode._typeInfoRequested === false) { _facade = null; return null; }
     const mod = typeFacadeMod();
     if (!mod || !mod.isAvailable()) { _facade = null; return null; }
     const lang = (sourceCode._ast && sourceCode._ast._lang != null) ? sourceCode._ast._lang : 1 /* ts */;
@@ -281,22 +298,37 @@ function _makeLightParserServices(sourceCode) {
     return _facade;
   }
 
+  const _e2tMap = map || new WeakMap();
+  // Synth TS nodes all carry ._estree pointing back to the originating ESTree
+  // node. Rules that reverse-lookup a synth TS node (e.g. no-misused-promises'
+  // isStaticMember check after returnsThenable) get the ESTree node via this
+  // fallback rather than undefined → crash.
+  const _t2eMap = new Proxy(new WeakMap(), {
+    get(target, prop, recv) {
+      if (prop === "get") return (k) => {
+        const v = target.get(k);
+        return v !== undefined ? v : (k && k._estree);
+      };
+      return Reflect.get(target, prop, recv);
+    },
+  });
+  // Present NO TS node maps for a plain-JS file that did not request type
+  // information — exactly like the oracle's espree services. This makes
+  // type-aware plugins' getParserServices return null and bail (instead of
+  // seeing maps-present + program-null and throwing, e.g. eslint-plugin-n's
+  // no-sync). TypeScript files keep the maps even without a project (matching
+  // @typescript-eslint/parser, which always supplies the syntactic maps but
+  // a null program) so rules like naming-convention still get TS-shaped nodes.
+  // `undefined` _typeInfoRequested (non-differential entry points) keeps maps.
+  const _suppressTSMaps = () => {
+    if (sourceCode._typeInfoRequested !== false) return false;
+    const lang = sourceCode._ast && sourceCode._ast._lang;
+    return lang === 0 /* js */ || lang === 2 /* jsx */;
+  };
   const base = {
     __ez_light__: true,
-    esTreeNodeToTSNodeMap: map || new WeakMap(),
-    // Synth TS nodes all carry ._estree pointing back to the originating ESTree
-    // node. Rules that reverse-lookup a synth TS node (e.g. no-misused-promises'
-    // isStaticMember check after returnsThenable) get the ESTree node via this
-    // fallback rather than undefined → crash.
-    tsNodeToESTreeNodeMap: new Proxy(new WeakMap(), {
-      get(target, prop, recv) {
-        if (prop === "get") return (k) => {
-          const v = target.get(k);
-          return v !== undefined ? v : (k && k._estree);
-        };
-        return Reflect.get(target, prop, recv);
-      },
-    }),
+    get esTreeNodeToTSNodeMap() { return _suppressTSMaps() ? null : _e2tMap; },
+    get tsNodeToESTreeNodeMap() { return _suppressTSMaps() ? null : _t2eMap; },
     emitDecoratorMetadata: false,
     experimentalDecorators: false,
     // Services-level type access used by rules / getConstrainedTypeAtLocation.
@@ -5702,6 +5734,15 @@ class RuleContext {
     this.sourceCode._configGlobals = lo?.globals ?? null;
     this.sourceCode._globalReturn = !!(lo?.parserOptions?.ecmaFeatures?.globalReturn);
     this.sourceCode._impliedStrict = !!(lo?.parserOptions?.ecmaFeatures?.impliedStrict);
+    // Whether the case actually requested full type information (a TS project /
+    // projectService / program). Type-aware rules — @typescript-eslint AND
+    // plugins like sonarjs — only run when this is present; ESLint's
+    // isRequiredParserServices bails otherwise. We mirror that so the light
+    // facade's `program` is exposed ONLY when type info was requested,
+    // matching the oracle (which has no type checker for plain-JS cases).
+    // Left undefined for non-differential entry points (LSP etc.) so they keep
+    // the facade's default-on behavior.
+    this.sourceCode._typeInfoRequested = _parserOptionsHaveTypeInfo(lo?.parserOptions);
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
     // Mirror of `parserServices != null` that the Proxy-wrapped value trips when
     // read via prop access. Lets buildVisitorMap skip empty-recipe rules on JS

@@ -146,7 +146,14 @@ pub const BUILTIN_ES2015_GLOBALS = [_][]const u8{
     "SharedArrayBuffer", "Atomics",
     "BigInt",        "BigInt64Array",  "BigUint64Array",
     "AggregateError", "FinalizationRegistry", "WeakRef",
-    "Intl",          "console",
+    "Intl",
+    // NOTE: `console` is intentionally NOT listed here.  It is a host/env
+    // global (browser/Node), not an ECMAScript builtin — mirroring the JS
+    // side (`_ENV_GLOBALS`, added only when env is enabled).  Pre-declaring
+    // it as an implicit-global symbol shadowed the type-checker's curated
+    // `Console` type, making `console.log(...)` resolve to `any` instead of
+    // `void` (breaking no-confusing-void-expression).  Unresolved `console`
+    // references still report as global refs via isGlobalReference.
     // ES2024+ globals
     "Float16Array",  "Iterator",       "AsyncIterator",
     "AsyncDisposableStack", "DisposableStack", "SuppressedError",
@@ -508,8 +515,14 @@ pub const LintContext = struct {
         const c = self.ensureChecker() orelse return true;
         if (id.eq(tymod.ID_NUMBER) or id.eq(tymod.ID_BIGINT) or
             id.eq(tymod.ID_ANY) or id.eq(tymod.ID_NEVER)) return true;
-        const kind = c.store.get(id).kind;
-        return kind == .number_literal or kind == .bigint_literal;
+        const t = c.store.get(id);
+        if (t.kind == .number_literal or t.kind == .bigint_literal) return true;
+        // Type parameter: follow constraint (`T extends number` → number-like).
+        if (t.kind == .type_param) {
+            const constraint = self.typeParamConstraint(id) orelse return false;
+            return self.typeIdIsNumberLike(constraint);
+        }
+        return false;
     }
 
     /// True when the type id is exactly `boolean` or a boolean literal
@@ -523,6 +536,11 @@ pub const LintContext = struct {
                 if (!self.typeIdIsExactlyBoolean(m)) return false;
             }
             return true;
+        }
+        // Type parameter: follow constraint (`T extends boolean` → boolean-like).
+        if (t.kind == .type_param) {
+            const constraint = self.typeParamConstraint(id) orelse return false;
+            return self.typeIdIsExactlyBoolean(constraint);
         }
         return false;
     }
@@ -588,6 +606,11 @@ pub const LintContext = struct {
                 if (self.typeIdIsStringy(m)) return true;
             }
             return false;
+        }
+        // Type parameter: follow constraint (`T extends string` → stringy).
+        if (t.kind == .type_param) {
+            const constraint = self.typeParamConstraint(id) orelse return false;
+            return self.typeIdIsStringy(constraint);
         }
         return false;
     }
@@ -728,6 +751,14 @@ pub const LintContext = struct {
             for (c.store.idsOf(t.list_data)) |m| {
                 if (self.typeIdObjectPropertyIsMethod(m, name)) return true;
             }
+            return false;
+        }
+        // Resolve named type references (class/interface instances) to their
+        // structural type so property method checks work on `new Foo()` results.
+        if (t.kind == .type_ref and t.name.len > 0) {
+            if (c.resolveDeclaredTypePub(t.name)) |resolved| {
+                if (!resolved.eq(id)) return self.typeIdObjectPropertyIsMethod(resolved, name);
+            }
         }
         return false;
     }
@@ -760,6 +791,13 @@ pub const LintContext = struct {
                 if (!self.typeIdObjectPropertyIsFnProperty(m, name)) return false;
             }
             return saw_any;
+        }
+        // Resolve named type references (class/interface instances) to their
+        // structural type so fn-property checks work on `new Foo()` results.
+        if (t.kind == .type_ref and t.name.len > 0) {
+            if (c.resolveDeclaredTypePub(t.name)) |resolved| {
+                if (!resolved.eq(id)) return self.typeIdObjectPropertyIsFnProperty(resolved, name);
+            }
         }
         return false;
     }
@@ -4464,11 +4502,8 @@ pub const LintContext = struct {
             }
             return self.nodeTokensEqual(a, b);
         }
-        // Optional chaining (`a?.b`) and non-optional (`a.b`) are not the same
-        // reference — ESLint's isSameReference returns false when optionality differs.
-        const a_optional = at == .optional_member_expr or at == .optional_computed_member_expr;
-        const b_optional = bt == .optional_member_expr or bt == .optional_computed_member_expr;
-        if (a_optional != b_optional) return false;
+        // ESLint's isSameReference explicitly treats `a.b` and `a?.b` as the same
+        // reference (it unwraps ChainExpression). Mirror that: ignore optionality.
         const ad = self.ast.nodeData(a);
         const bd = self.ast.nodeData(b);
         // Compare objects recursively.
@@ -4864,8 +4899,21 @@ pub const LintContext = struct {
             if (last == '}') return false;
         }
         return switch (self.nodeTag(prev)) {
-            // Declarations terminate the statement regardless of last token.
-            .var_decl, .let_decl, .const_decl,
+            // For variable declarations, safe only when the last declarator
+            // has no initializer (e.g. `var foo`).  With an initializer the
+            // init expression can end with a subscriptable token, so fall back
+            // to the char-level scan which catches `var x = bar.yield\n[]`.
+            .var_decl, .let_decl, .const_decl => blk: {
+                const vd = self.nodeData(prev);
+                const d_start = @intFromEnum(vd.lhs);
+                const d_end = @intFromEnum(vd.rhs);
+                const ext_len2: u32 = @intCast(self.ast.extra_data.len);
+                if (d_start >= d_end or d_end > ext_len2) break :blk true;
+                const decls = self.ast.extra_data[d_start..d_end];
+                const last_decl: NodeIndex = @enumFromInt(decls[decls.len - 1]);
+                break :blk self.nodeData(last_decl).rhs == .none;
+            },
+            // Other declarations terminate cleanly regardless of last token.
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
             .class_decl,
             .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
@@ -6274,14 +6322,47 @@ pub const LintContext = struct {
     /// Symbols with zero references are NOT considered type-only — they may be
     /// value imports that are simply unused (handled by no-unused-vars instead).
     /// Used by consistent-type-imports to detect imports that could be `import type`.
+    /// True when the symbol has at least one reference entry in the reference table.
+    pub fn symbolHasAnyRef(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
+        return !self.semantic.symbols.getRefRange(sym_id).isEmpty();
+    }
+
     pub fn symbolIsTypeOnly(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
         const range = self.semantic.symbols.getRefRange(sym_id);
         if (range.isEmpty()) return false;
         const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
         for (sym_refs) |rid| {
-            if (!self.semantic.references.getKind(rid).isTypeRef()) return false;
+            if (self.semantic.references.getKind(rid) != .type_read) return false;
         }
         return true;
+    }
+
+    /// True when the symbol has at least one reference entry but ALL non-type references
+    /// come from `export type { }` specifiers. Workaround for es-parser emitting `read`
+    /// (not `type_read`) for specifiers inside type-only export declarations.
+    pub fn symbolRefsAllInTypeExports(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
+        const range = self.semantic.symbols.getRefRange(sym_id);
+        if (range.isEmpty()) return false;
+        const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
+        var found_type_export = false;
+        for (sym_refs) |rid| {
+            if (self.semantic.references.getKind(rid) == .type_read) continue;
+            // Non-type reference: check if it's from an export type { } specifier.
+            const ref_node = self.semantic.references.getNode(rid);
+            if (ref_node == .none) return false;
+            // The reference node is a property_ident in an export_specifier.
+            // Walk up: property_ident → export_specifier → export_named
+            const spec = self.parentOf(ref_node);
+            if (spec == .none or self.ast.nodeTag(spec) != .export_specifier) return false;
+            const export_decl = self.parentOf(spec);
+            if (export_decl == .none or self.ast.nodeTag(export_decl) != .export_named) return false;
+            // Check if the export_named has a `type` token after `export`.
+            const export_tok = self.ast.nodeMainToken(export_decl);
+            if (export_tok + 1 >= self.ast.tokens.len) return false;
+            if (!std.mem.eql(u8, self.tokenText(export_tok + 1), "type")) return false;
+            found_type_export = true;
+        }
+        return found_type_export;
     }
 
     /// True when `import_decl` node has a top-level `type` modifier:
@@ -10538,6 +10619,11 @@ pub const LintContext = struct {
                 const assign_lhs = self.nodeSkipGrouping(rhs_d.lhs);
                 const lhs = self.nodeSkipGrouping(d.lhs);
                 if (assign_lhs == .none or lhs == .none) return;
+                // ESLint's isReference() rejects ChainExpression (which wraps optional
+                // member expressions like `a?.b`). In Ez's AST, optional_member_expr
+                // plays that role — skip to avoid false positives on `a?.b || (a.b = c)`.
+                const lhs_tag = self.ast.nodeTag(lhs);
+                if (lhs_tag == .optional_member_expr or lhs_tag == .optional_computed_member_expr) return;
                 if (self.nodeSameReference(lhs, assign_lhs))
                     self.reportWithMessageId(node, "logical");
             },

@@ -346,7 +346,12 @@ fn typeIsBigIntish(id: @import("ez_checker").types.TypeId, ctx: *const LintConte
     const tymod = @import("ez_checker").types;
     if (id.eq(tymod.ID_BIGINT)) return true;
     const k = ctx.typeIdKind(id) orelse return false;
-    return k == .bigint or k == .bigint_literal;
+    if (k == .bigint or k == .bigint_literal) return true;
+    if (k == .type_param) {
+        const constraint = ctx.typeParamConstraint(id) orelse return false;
+        return typeIsBigIntish(constraint, ctx);
+    }
+    return false;
 }
 
 fn typeIsEnumOrMember(node: NodeIndex, ctx: *const LintContext) bool {
