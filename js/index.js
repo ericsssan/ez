@@ -301,8 +301,11 @@ function _offsetToLineCol(lineStarts, offset, bytes) {
     } else if ((b & 0xF0) === 0xE0) {
       col++; i += 3;
     } else if ((b & 0xF8) === 0xF0) {
-      // 4-byte UTF-8 → surrogate pair in UTF-16.
-      col += 2; i += 4;
+      // 4-byte UTF-8 → surrogate pair (2 UTF-16 units). A span endpoint may
+      // land between the two surrogates — no-misleading-character-class reports
+      // ZWJ sequences at surrogate granularity. Count one unit for the partial.
+      if (i + 4 > end) { col += (end - i >= 2) ? 1 : 0; i = end; }
+      else { col += 2; i += 4; }
     } else {
       col++; i++;
     }

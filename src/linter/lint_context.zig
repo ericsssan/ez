@@ -12769,10 +12769,16 @@ pub const LintContext = struct {
                 const next = seq[i + 1];
                 if (curr.codepoint == 0x200D and prev.codepoint != 0x200D and next.codepoint != 0x200D) {
                     if (allow_escape and map_ctx.isEscapeFormAt(prev.start) and map_ctx.isEscapeFormAt(curr.start) and map_ctx.isEscapeFormAt(next.start)) continue;
+                    // Without u/v a supplementary middle splits into two
+                    // differing surrogates, so its joins stay separate (see the
+                    // literal-path reportZwjSeq).  Source spans stay whole-char:
+                    // the source map collapses the surrogate offsets onto the
+                    // original escape, which is what ESLint reports.
+                    const middle_shares = has_uv or !zwjCharIsSupplementary(seq[i - 1]);
                     if (run_start == null) {
                         run_start = i - 1;
                         run_end = i + 1;
-                    } else if (run_end == i - 1) {
+                    } else if (run_end == i - 1 and middle_shares) {
                         run_end = i + 1;
                     } else {
                         const s = seq[run_start.?];
@@ -12898,7 +12904,7 @@ pub const LintContext = struct {
                 // BMP codepoints (U+0300-range marks, U+200D ZWJ) that
                 // regexpp sees regardless of u/v.
                 self.reportCombiningSeq(buf[0..seq_len], pat_start, pat_text, allow_escape);
-                self.reportZwjSeq(buf[0..seq_len], pat_start, pat_text, allow_escape);
+                self.reportZwjSeq(buf[0..seq_len], pat_start, flags.unicode or flags.unicode_sets, pat_text, allow_escape);
                 // emojiModifier / regionalIndicator codepoints sit in the
                 // supplementary plane.  Without u/v regexpp splits them
                 // into surrogate halves which can't match the predicates,
@@ -12962,11 +12968,17 @@ pub const LintContext = struct {
         }
     }
 
-    fn reportZwjSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, pat_text: []const u8, allow_escape: bool) void {
+    fn reportZwjSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, has_uv: bool, pat_text: []const u8, allow_escape: bool) void {
         if (seq.len < 3) return;
-        // Walk for ZWJ joiners.  ESLint coalesces overlapping ZWJ-joined
-        // sequences into a single diag, so we emit one report covering
-        // the contiguous run rather than one per joiner.
+        // Mirror ESLint's `zwj` generator, which operates on UTF-16 code UNITS.
+        // WITHOUT u/v, a supplementary emoji is two surrogates, so a ZWJ join is
+        // the triple [low-surrogate-of-before, ZWJ, high-surrogate-of-after];
+        // consecutive joins coalesce ONLY when the separating character is a
+        // single BMP unit (a supplementary middle splits into two differing
+        // surrogates, so its joins stay separate).  WITH u/v, every character is
+        // one code point, so consecutive joins always share the middle unit and
+        // coalesce.  We keep emoji as one Character and model the no-u surrogate
+        // boundary by reporting at the emoji's UTF-8 midpoint (start+2).
         var run_start: ?usize = null;
         var run_end: usize = 0;
         var i: usize = 1;
@@ -12976,32 +12988,38 @@ pub const LintContext = struct {
             const next = seq[i + 1];
             if (curr.codepoint == 0x200D and prev.codepoint != 0x200D and next.codepoint != 0x200D) {
                 if (allow_escape and charIsEscapeForm(prev, pat_text) and charIsEscapeForm(curr, pat_text) and charIsEscapeForm(next, pat_text)) continue;
+                const middle_shares = has_uv or !zwjCharIsSupplementary(seq[i - 1]);
                 if (run_start == null) {
                     run_start = i - 1;
                     run_end = i + 1;
-                } else if (run_end == i - 1) {
+                } else if (run_end == i - 1 and middle_shares) {
                     run_end = i + 1;
                 } else {
-                    // Emit previous run.
-                    const s = seq[run_start.?];
-                    const e = seq[run_end];
-                    self.reportSpanWithMessageId(.{
-                        .start = pat_start + s.start,
-                        .end = pat_start + e.end,
-                    }, "zwj");
+                    self.emitZwj(seq[run_start.?], seq[run_end], pat_start, has_uv);
                     run_start = i - 1;
                     run_end = i + 1;
                 }
             }
         }
-        if (run_start) |rs| {
-            const s = seq[rs];
-            const e = seq[run_end];
-            self.reportSpanWithMessageId(.{
-                .start = pat_start + s.start,
-                .end = pat_start + e.end,
-            }, "zwj");
-        }
+        if (run_start) |rs| self.emitZwj(seq[rs], seq[run_end], pat_start, has_uv);
+    }
+
+    /// A supplementary-plane character we keep as a single Character but which
+    /// ESLint (without u/v) sees as a surrogate pair.  Literal 4-byte UTF-8 only.
+    fn zwjCharIsSupplementary(c: regex_parser.Character) bool {
+        return c.codepoint > 0xFFFF and (c.end - c.start) == 4;
+    }
+
+    fn emitZwj(self: *const LintContext, before: regex_parser.Character, after: regex_parser.Character, pat_start: u32, has_uv: bool) void {
+        // Under u/v every char is one code point → whole spans.  Without u/v a
+        // supplementary char is two surrogates: start at the before-char's low
+        // surrogate (UTF-8 midpoint) and end at the after-char's high surrogate
+        // (also the midpoint).  BMP chars always use their whole span.
+        const before_split = !has_uv and zwjCharIsSupplementary(before);
+        const after_split = !has_uv and zwjCharIsSupplementary(after);
+        const start = before.start + @as(u32, if (before_split) 2 else 0);
+        const end = if (after_split) after.start + 2 else after.end;
+        self.reportSpanWithMessageId(.{ .start = pat_start + start, .end = pat_start + end }, "zwj");
     }
 
     /// True for U+1F3FB..U+1F3FF — the Fitzpatrick skin-tone modifiers
