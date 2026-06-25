@@ -555,13 +555,20 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // jsx upgrades to tsx (the oracle for these cases used @typescript-eslint/parser,
     // which accepts TS syntax in a jsx-enabled file; our default jsx parse errors on it).
     if ((parseLang === "js" || parseLang === "jsx") && ast._nodeTags && ast._nodeTags.includes(193 /* T.error_node */)) {
+      // Count JS errors BEFORE the TS parse — the NAPI parser shares one internal
+      // buffer, so after parse() runs again `ast._nodeTags` points at the new buffer.
+      const _jsErrCount = ast._nodeTags.reduce((n, t) => n + (t === 193 ? 1 : 0), 0);
       const _upgradeLang = parseLang === "jsx" ? "tsx" : "ts";
       const _tsFilename = filename.replace(/\.jsx?$/, parseLang === "jsx" ? ".tsx" : ".ts") || filename;
       try {
         const _tsAst = parse(src, { filename: _tsFilename, lang: _upgradeLang, globals: zigGlobals, sourceType,
           parserOptions: tcLanguageOptions.parserOptions });
         const _tsErrCount = _tsAst._nodeTags.reduce((n, t) => n + (t === 193 ? 1 : 0), 0);
-        if (_tsErrCount === 0) ast = _tsAst;
+        // Upgrade when TS is strictly cleaner — covers the fully-clean case and the
+        // partially-clean case (TS parses most properties even when one unsupported
+        // type syntax like `(void)` produces a single ErrorNode). The oracle parsed
+        // these with @typescript-eslint/parser, so the cleaner TS AST matches better.
+        if (_tsErrCount < _jsErrCount) ast = _tsAst;
       } catch { /* keep original ast */ }
     }
     _runnerParseMs += Date.now() - _p0;

@@ -6194,7 +6194,7 @@
     },
     "object-shorthand": {
       "runner": {
-        "fn": 18,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       },
@@ -6205,7 +6205,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 18,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       }
@@ -18200,9 +18200,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 16662,
-    "runnerCasesPerSec": 5065,
-    "nativeCasesPerSec": 47753,
+    "totalElapsedMs": 18925,
+    "runnerCasesPerSec": 4755,
+    "nativeCasesPerSec": 46338,
     "totalCases": 56037
   }
 }
