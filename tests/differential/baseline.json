@@ -4898,8 +4898,8 @@
     },
     "indent": {
       "runner": {
-        "fn": 1,
-        "fp": 45,
+        "fn": 0,
+        "fp": 13,
         "crash": 0
       },
       "native": {
@@ -4909,8 +4909,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 45,
+        "fn": 0,
+        "fp": 13,
         "crash": 0
       }
     },
@@ -18200,9 +18200,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 16502,
-    "runnerCasesPerSec": 4982,
-    "nativeCasesPerSec": 48436,
+    "totalElapsedMs": 16662,
+    "runnerCasesPerSec": 5065,
+    "nativeCasesPerSec": 47753,
     "totalCases": 56037
   }
 }

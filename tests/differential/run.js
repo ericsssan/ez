@@ -552,15 +552,17 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // IMPORTANT: count JS errors BEFORE the TS parse because the NAPI parser shares one
     // internal buffer — after parse() is called again, ast._nodeTags points to the new
     // buffer and the JS error count is lost.
-    if (parseLang === "js" && ast._nodeTags && ast._nodeTags.includes(193 /* T.error_node */)) {
-      const _jsErrCount = ast._nodeTags.reduce((n, t) => n + (t === 193 ? 1 : 0), 0);
-      const _tsFilename = filename.replace(/\.js$/, ".ts") || filename;
+    // jsx upgrades to tsx (the oracle for these cases used @typescript-eslint/parser,
+    // which accepts TS syntax in a jsx-enabled file; our default jsx parse errors on it).
+    if ((parseLang === "js" || parseLang === "jsx") && ast._nodeTags && ast._nodeTags.includes(193 /* T.error_node */)) {
+      const _upgradeLang = parseLang === "jsx" ? "tsx" : "ts";
+      const _tsFilename = filename.replace(/\.jsx?$/, parseLang === "jsx" ? ".tsx" : ".ts") || filename;
       try {
-        const _tsAst = parse(src, { filename: _tsFilename, lang: "ts", globals: zigGlobals, sourceType,
+        const _tsAst = parse(src, { filename: _tsFilename, lang: _upgradeLang, globals: zigGlobals, sourceType,
           parserOptions: tcLanguageOptions.parserOptions });
         const _tsErrCount = _tsAst._nodeTags.reduce((n, t) => n + (t === 193 ? 1 : 0), 0);
         if (_tsErrCount === 0) ast = _tsAst;
-      } catch { /* keep JS ast */ }
+      } catch { /* keep original ast */ }
     }
     _runnerParseMs += Date.now() - _p0;
     // Re-use the caller-provided plugin identity (same object → buildVisitorMap fast path),
