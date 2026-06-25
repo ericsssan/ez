@@ -858,7 +858,14 @@ fn isNullishLiteral(id: tymod.TypeId) bool {
 fn involvesIndeterminateType(id: tymod.TypeId, ctx: *const LintContext) bool {
     const kind = ctx.typeIdKind(id) orelse return true;
     return switch (kind) {
-        .any, .unknown, .error_t, .type_param => true,
+        // A constrained type param (`T extends object`) is determinate via
+        // its constraint — TS-eslint uses getConstrainedTypeAtLocation.
+        // Only unconstrained params are indeterminate.
+        .type_param => blk: {
+            if (ctx.typeParamConstraint(id)) |c| break :blk involvesIndeterminateType(c, ctx);
+            break :blk true;
+        },
+        .any, .unknown, .error_t => true,
         // Type refs to unrecognised names (often unresolved type
         // parameters / generics) are conservatively indeterminate.
         .type_ref => isUnresolvedRef(id, ctx),
@@ -896,7 +903,12 @@ fn typeContainsNullish(id: tymod.TypeId, ctx: *const LintContext) bool {
 
 /// True when types `a` and `b` could share at least one runtime value.
 /// Conservative: returns true when uncertain.
-fn typesCanOverlap(a: tymod.TypeId, b: tymod.TypeId, ctx: *const LintContext) bool {
+fn typesCanOverlap(a_in: tymod.TypeId, b_in: tymod.TypeId, ctx: *const LintContext) bool {
+    // Resolve constrained type params to their constraint (`T extends object`
+    // → object) so overlap is computed on the constraint, matching TS-eslint's
+    // getConstrainedTypeAtLocation.
+    const a = resolveConstraint(a_in, ctx);
+    const b = resolveConstraint(b_in, ctx);
     // Expand unions on both sides; if any pair overlaps, true.
     const ka = ctx.typeIdKind(a) orelse return true;
     const kb = ctx.typeIdKind(b) orelse return true;
@@ -933,6 +945,16 @@ fn typesCanOverlap(a: tymod.TypeId, b: tymod.TypeId, ctx: *const LintContext) bo
         return true;
     }
     return false;
+}
+
+/// Peel a constrained type param to its constraint type (one level).
+/// Unconstrained params and non-type-param ids pass through unchanged.
+fn resolveConstraint(id: tymod.TypeId, ctx: *const LintContext) tymod.TypeId {
+    const kind = ctx.typeIdKind(id) orelse return id;
+    if (kind == .type_param) {
+        if (ctx.typeParamConstraint(id)) |c| return c;
+    }
+    return id;
 }
 
 fn kindFamily(k: tymod.TypeKind) u8 {
@@ -1016,6 +1038,11 @@ fn truthiness(id: TypeId, ctx: *const LintContext) Truthiness {
 fn truthinessDepth(id: TypeId, ctx: *const LintContext, depth: u32) Truthiness {
     if (depth > 6) return .indeterminate;
     const kind = ctx.typeIdKind(id) orelse return .indeterminate;
+    // Generic type parameter: follow constraint (`T extends object` → always_truthy).
+    if (kind == .type_param) {
+        const constraint = ctx.typeParamConstraint(id) orelse return .indeterminate;
+        return truthinessDepth(constraint, ctx, depth + 1);
+    }
     if (kind == .union_t) {
         var saw_truthy = false;
         var saw_falsy = false;
@@ -1126,6 +1153,11 @@ fn nullability(id: TypeId, ctx: *const LintContext) Nullability {
 fn nullabilityDepth(id: TypeId, ctx: *const LintContext, depth: u32) Nullability {
     if (depth > 6) return .possibly_nullish;
     const kind = ctx.typeIdKind(id) orelse return .possibly_nullish;
+    // Generic type parameter: follow constraint (`T extends string` → never_nullish).
+    if (kind == .type_param) {
+        const constraint = ctx.typeParamConstraint(id) orelse return .possibly_nullish;
+        return nullabilityDepth(constraint, ctx, depth + 1);
+    }
     if (kind == .union_t) {
         var saw_null = false;
         var saw_non_null = false;

@@ -3,17 +3,8 @@
 const { nodeView, _nodeViewRaw, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
 const { RuleMetadataIndex, DEFAULT_STRATEGY } = require("./rule-metadata");
 
-// Rules verified to work with the native type facade (js/ts-type-facade.js) at
-// its current surface. ONLY these get a real `parserServices.program`; every
-// other type-aware rule keeps `program: null` and skips gracefully — an
-// incomplete facade would otherwise turn a clean skip into a crash for rules
-// calling checker methods we haven't implemented. Grow this set as the facade
-// gains surface and each rule is verified (tests/ts_facade_runner.js).
-// Only rules whose report fires on a DEFINITE `any` are allowlisted: the native
-// checker is incomplete (some refs resolve to Unknown), so a rule that fires on
-// "type is NOT X" would false-positive on those. "fire on any" rules are robust
-// because Unknown != Any → no spurious report. (Rules needing symbols/signatures/
-// property surface — argument/return/for-in-array — stay out until that's built.)
+// Rules verified to work with the native type facade. Exported for the
+// facade audit harness (ts_facade_runner.js); not used for runtime gating.
 const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/no-unsafe-member-access",
   "@typescript-eslint/no-unsafe-assignment",
@@ -155,47 +146,18 @@ const _TYPE_FACADE_RULES = new Set([
   "@typescript-eslint/require-array-sort-compare",    // 8/16, 50% (PARTIAL: 0 FP; checker user-shadowed-Array guard fixed 2 FP)
   "@typescript-eslint/no-unnecessary-type-constraint", // 18/18, 100% (CLEAN: TSTypeParameterDeclaration via getAncestorsFor; arrow/method type_params materialized in Zig resolved_parents)
   "@typescript-eslint/no-unnecessary-qualifier",      // 5/9, 56% (PARTIAL: 0 FP; ESTree scope-manager namespace resolution; FN on dotted-ns/enum-member/import-alias)
+  // ── Batch: remaining @typescript-eslint corpus rules (not yet audited) ──
+  "@typescript-eslint/no-for-in-array",
+  "@typescript-eslint/no-unnecessary-type-parameters",
+  "@typescript-eslint/no-unsafe-unary-minus",
+  "@typescript-eslint/no-unused-private-class-members",
+  "@typescript-eslint/non-nullable-type-assertion-style",
+  "@typescript-eslint/only-throw-error",
+  "@typescript-eslint/prefer-for-of",
+  "@typescript-eslint/prefer-promise-reject-errors",
+  "@typescript-eslint/prefer-readonly-parameter-types",
+  "@typescript-eslint/prefer-return-this-type",
 ]);
-// Rule id whose create() is currently executing. The `program` getter on the
-// light parserServices consults this: only an allowlisted rule reading
-// `parserServices.program` (the original @typescript-eslint getParserServices
-// reads it in create()) gets the native facade — everyone else gets null and
-// skips, exactly as before. Gating here (not via a getParserServices
-// monkey-patch) is required because that package blocks the deep import the
-// patch needs AND rules capture the function by value, so the patch can't
-// intercept. Set around each rule's create() by the runner.
-//
-// NOTE: this gates program reads during create() only. A rule that reads
-// `parserServices.program` from a VISITOR (during the walk) sees null — some
-// sonarjs rules do exactly that, and handing them the facade crashes them on
-// methods we don't implement. So allowlist only rules whose visitors get types
-// via `services.getTypeAtLocation` (ungated) rather than `services.program`.
-// Visitor-time program access would need per-handler active-rule tracking.
-let _activeRuleId = null;
-
-// Allowlisted type-facade rules may read `parserServices.program` inside their
-// VISITORS (not just create()) — e.g. `checker.getTypeChecker()`,
-// `isBuiltinSymbolLike(services.program, …)`. `_activeRuleId` is set during
-// create() but reset before the walk, so visitor-time program access would see
-// null. Wrap such a rule's handlers to restore `_activeRuleId` for the duration
-// of each visitor call. Only allowlisted rules (rare) are wrapped, so the hot
-// dispatch path and every other rule are untouched (their program stays null).
-function _wrapVisitorsForFacade(visitors, ruleId) {
-  if (!visitors || !_TYPE_FACADE_RULES.has(ruleId)) return visitors;
-  for (const k in visitors) {
-    const h = visitors[k];
-    if (typeof h === "function") {
-      visitors[k] = function _facadeRuleHandler(...a) {
-        const prev = _activeRuleId;
-        _activeRuleId = ruleId;
-        try { return h.apply(this, a); }
-        finally { _activeRuleId = prev; }
-      };
-    }
-  }
-  return visitors;
-}
-
 // Monkey-patch @typescript-eslint/utils' getParserServices so rules that gate
 // on parserServices.esTreeNodeToTSNodeMap (TS-aware rules with the
 // allowWithoutFullTypeInformation=true flag) can run against ez's light
@@ -295,17 +257,30 @@ function typeFacadeMod() {
   return _typeFacadeMod;
 }
 
+// True when a case's parserOptions requested full type information (a TS
+// project, projectService, or a pre-built program). Type-aware rules only run
+// when this is present; without it ESLint's isRequiredParserServices bails, so
+// the oracle produces no diagnostics for plain-JS cases. We gate the light
+// facade's `program` on this to match.
+function _parserOptionsHaveTypeInfo(po) {
+  if (!po || typeof po !== "object") return false;
+  return !!(po.projectService || po.project || po.program ||
+            po.EXPERIMENTAL_useProjectService);
+}
+
 function _makeLightParserServices(sourceCode) {
   const synth = tsSynth();
   const map = synth ? synth.buildEsTreeNodeToTSNodeMap(sourceCode.text) : null;
 
-  // The native facade is surfaced ONLY via the `program` getter below, gated by
-  // `_activeRuleId` so non-allowlisted rules (es-x / sonarjs etc.) see `program`
-  // as null — exactly the prior behavior — and never take a crashing type-aware
-  // path on our incomplete facade.
   let _facade; // undefined = not opened, null = unavailable, object = open
   function openFacade() {
     if (_facade !== undefined) return _facade;
+    // Type-aware rules see `program` only when the case requested type info
+    // (projectService / project / program). When the runner explicitly marks
+    // it absent, keep `program` null so type-aware rules (sonarjs, etc.) bail
+    // exactly like the oracle. `undefined` (non-differential entry points)
+    // preserves the facade's default-on behavior.
+    if (sourceCode._typeInfoRequested === false) { _facade = null; return null; }
     const mod = typeFacadeMod();
     if (!mod || !mod.isAvailable()) { _facade = null; return null; }
     const lang = (sourceCode._ast && sourceCode._ast._lang != null) ? sourceCode._ast._lang : 1 /* ts */;
@@ -323,28 +298,40 @@ function _makeLightParserServices(sourceCode) {
     return _facade;
   }
 
+  const _e2tMap = map || new WeakMap();
+  // Synth TS nodes all carry ._estree pointing back to the originating ESTree
+  // node. Rules that reverse-lookup a synth TS node (e.g. no-misused-promises'
+  // isStaticMember check after returnsThenable) get the ESTree node via this
+  // fallback rather than undefined → crash.
+  const _t2eMap = new Proxy(new WeakMap(), {
+    get(target, prop, recv) {
+      if (prop === "get") return (k) => {
+        const v = target.get(k);
+        return v !== undefined ? v : (k && k._estree);
+      };
+      return Reflect.get(target, prop, recv);
+    },
+  });
+  // Present NO TS node maps for a plain-JS file that did not request type
+  // information — exactly like the oracle's espree services. This makes
+  // type-aware plugins' getParserServices return null and bail (instead of
+  // seeing maps-present + program-null and throwing, e.g. eslint-plugin-n's
+  // no-sync). TypeScript files keep the maps even without a project (matching
+  // @typescript-eslint/parser, which always supplies the syntactic maps but
+  // a null program) so rules like naming-convention still get TS-shaped nodes.
+  // `undefined` _typeInfoRequested (non-differential entry points) keeps maps.
+  const _suppressTSMaps = () => {
+    if (sourceCode._typeInfoRequested !== false) return false;
+    const lang = sourceCode._ast && sourceCode._ast._lang;
+    return lang === 0 /* js */ || lang === 2 /* jsx */;
+  };
   const base = {
     __ez_light__: true,
-    esTreeNodeToTSNodeMap: map || new WeakMap(),
-    // Synth TS nodes all carry ._estree pointing back to the originating ESTree
-    // node. Rules that reverse-lookup a synth TS node (e.g. no-misused-promises'
-    // isStaticMember check after returnsThenable) get the ESTree node via this
-    // fallback rather than undefined → crash.
-    tsNodeToESTreeNodeMap: new Proxy(new WeakMap(), {
-      get(target, prop, recv) {
-        if (prop === "get") return (k) => {
-          const v = target.get(k);
-          return v !== undefined ? v : (k && k._estree);
-        };
-        return Reflect.get(target, prop, recv);
-      },
-    }),
+    get esTreeNodeToTSNodeMap() { return _suppressTSMaps() ? null : _e2tMap; },
+    get tsNodeToESTreeNodeMap() { return _suppressTSMaps() ? null : _t2eMap; },
     emitDecoratorMetadata: false,
     experimentalDecorators: false,
     // Services-level type access used by rules / getConstrainedTypeAtLocation.
-    // Only an allowlisted rule ever holds this services object (a non-allowlisted
-    // rule's getParserServices throws on the null program below), so this can
-    // open the facade unconditionally.
     getTypeAtLocation(node) {
       const f = openFacade();
       const t = f ? f.getTypeAtLocation(node) : undefined;
@@ -425,16 +412,8 @@ function _makeLightParserServices(sourceCode) {
     // Close hook used by the runner after each file's walk.
     __ez_closeFacade() { if (_facade) { try { _facade.close(); } catch {} } _facade = undefined; },
   };
-  // `program` is null for everyone EXCEPT an allowlisted rule whose create() is
-  // currently running. That rule's original getParserServices sees a non-null
-  // program (the facade) and returns these services; every other rule sees null
-  // and skips — identical to the prior behavior, so no new crashes.
   Object.defineProperty(base, "program", {
-    get() {
-      if (!_TYPE_FACADE_RULES.has(_activeRuleId)) return null;
-      const f = openFacade();
-      return f ? f.program : null;
-    },
+    get() { const f = openFacade(); return f ? f.program : null; },
     enumerable: true, configurable: true,
   });
   return base;
@@ -1660,6 +1639,7 @@ class SourceCode {
     // baked; only the lighter var-scope-name Map is still rebuilt here.)
     this._declSymIndex = null;
     this._varScopeNameIndex = null;
+    this._allNameScopeIndex = null;
     // _declVarsCache: per-lintSource memo for getDeclaredVariables(node) results.
     // Cleared every reset so eslintUsed mutations on cached Variables don't
     // leak across runs (Variables themselves are cached separately via _varCache).
@@ -2880,6 +2860,7 @@ class SourceCode {
     const _shared = this._sharedCaches;
     if (_shared && _shared.varScopeNameIndex) {
       this._varScopeNameIndex = _shared.varScopeNameIndex;
+      this._allNameScopeIndex = _shared.allNameScopeIndex;
       return;
     }
     const ast = this._ast;
@@ -2887,7 +2868,10 @@ class SourceCode {
     // needed — `_declSymsForNode` reads the typed-array slice directly.
     // We still build `_varScopeNameIndex` (small, var-only, used by the
     // duplicate-var-merge fallback in `_computeDeclaredVariables`).
+    // We also build `_allNameScopeIndex` (scopeId:name → symIds for ALL
+    // symbols) to support merging duplicate imports / type-alias + import.
     const varScopeNameIndex = new Map();
+    const allNameScopeIndex = new Map();
     if (ast._symDeclNodes && ast._symFlags && ast._symScopeIds) {
       const symFlags = ast._symFlags;
       const symScopeIds = ast._symScopeIds;
@@ -2896,21 +2880,27 @@ class SourceCode {
         // Match `_ensureDeclSymIndex` legacy path: var-only symbols are
         // those with the var bit set and neither let nor const.
         const is_var_only = (flags & 0x01) !== 0 && (flags & 0x02) === 0 && (flags & 0x04) === 0;
-        if (!is_var_only) continue;
         const scopeId = symScopeIds[i];
         const name = ast._symName(i);
         const key = scopeId + ':' + name;
-        let arr2 = varScopeNameIndex.get(key);
-        if (!arr2) { arr2 = []; varScopeNameIndex.set(key, arr2); }
-        arr2.push(i);
+        if (is_var_only) {
+          let arr2 = varScopeNameIndex.get(key);
+          if (!arr2) { arr2 = []; varScopeNameIndex.set(key, arr2); }
+          arr2.push(i);
+        }
+        let arr3 = allNameScopeIndex.get(key);
+        if (!arr3) { arr3 = []; allNameScopeIndex.set(key, arr3); }
+        arr3.push(i);
       }
     }
     this._varScopeNameIndex = varScopeNameIndex;
+    this._allNameScopeIndex = allNameScopeIndex;
     // Legacy field — kept as truthy sentinel so callers that check for it
     // pre-Phase B still see "index is built".
     this._declSymIndex = varScopeNameIndex;
     if (_shared) {
       _shared.varScopeNameIndex = varScopeNameIndex;
+      _shared.allNameScopeIndex = allNameScopeIndex;
       _shared.declSymIndex = varScopeNameIndex;
     }
   }
@@ -2991,15 +2981,14 @@ class SourceCode {
       block = upper.block;
     }
 
-    // Detect `declare global { ... }` — Zig parses this as a bare BlockStatement with no
-    // TSModuleDeclaration wrapper, so scope.block.kind is undefined. The no-shadow rule's
-    // isGlobalAugmentation() checks scope.block.kind === "global"; synthesize it here.
-    if (block !== null && block.type === 'BlockStatement' && block.range) {
-      const pre = this.text.slice(Math.max(0, block.range[0] - 30), block.range[0]);
-      if (/\bdeclare\s+global\s*$/.test(pre.trimEnd())) {
-        const wrapped = Object.create(block);
-        Object.defineProperty(wrapped, 'kind', { value: 'global', writable: true, enumerable: true, configurable: true });
-        block = wrapped;
+    // For TSModuleBlock scopes (TypeScript namespace/declare global bodies), ESLint's
+    // @typescript-eslint/scope-manager sets scope.block = TSModuleDeclaration (not TSModuleBlock).
+    // isGlobalAugmentation() checks scope.type === 'tsModule' && scope.block.kind === 'global'.
+    // Promote these scopes: set block = block.parent (TSModuleDeclaration) so block.kind is correct.
+    if (block !== null && block.type === 'TSModuleBlock') {
+      const parentDecl = block.parent;
+      if (parentDecl && parentDecl.type === 'TSModuleDeclaration') {
+        block = parentDecl;
       }
     }
 
@@ -3023,6 +3012,7 @@ class SourceCode {
     // relabel scope 0 as "function" anymore. The kind-1-in-script-mode
     // relabel below preserves the legacy single-scope behavior.
     const scopeTypeName = (kind === 1 && this._sourceType !== 'module') ? 'global'
+      : (block !== null && (block.type === 'TSModuleDeclaration' || block.type === 'TSModuleBlock')) ? 'tsModule'
       : (_SCOPE_KIND_NAMES[kind] || 'block');
 
     // Allocate via shared prototype so V8 sees one hidden class for every scope.
@@ -4502,10 +4492,14 @@ class SourceCode {
     if (ast._symDeclNodes && node._i !== undefined && node._i !== null) {
       const symIds = this._declSymsForNode(node._i);
       if (symIds && symIds.length > 0) {
-        // Fast path: single symbol AND no var-sibling extension applies (the common
+        // For ImportDeclaration, we must extend with same-scope, same-name siblings
+        // (handles duplicate `import X from ...` and `type X = ...; import X from ...`
+        // combinations — ESLint scope merges them into one variable with multiple defs).
+        const isImportDecl = node.type === 'ImportDeclaration';
+        // Fast path: single symbol AND no var/import-sibling extension applies (the common
         // case — most decl-nodes own exactly one binding, and only `var` decls need
         // sibling extension). Skip the Map/Set/array allocations entirely.
-        if (symIds.length === 1) {
+        if (symIds.length === 1 && !isImportDecl) {
           const i = symIds[0];
           const flags = ast._symFlags ? ast._symFlags[i] : 0;
           const is_var_only = (flags & 0x01) !== 0 && (flags & 0x02) === 0 && (flags & 0x04) === 0;
@@ -4549,6 +4543,22 @@ class SourceCode {
             }
           }
         }
+        // For ImportDeclaration: extend with ALL same-scope, same-name symbols to capture
+        // duplicate import declarations and type-alias + import combinations. ESLint scope
+        // merges these into one Variable with multiple defs; rules like prefer-export-from
+        // check `defs.length !== 1` to detect ambiguous bindings and bail out.
+        if (isImportDecl && this._allNameScopeIndex && ast._symScopeIds) {
+          for (const i of symIds) {
+            const scopeId = ast._symScopeIds[i];
+            const name = ast._symName(i);
+            const siblings = this._allNameScopeIndex.get(scopeId + ':' + name);
+            if (siblings) {
+              for (const sib of siblings) {
+                if (!seen.has(sib)) { seen.add(sib); extendedIds.push(sib); }
+              }
+            }
+          }
+        }
         // Compute merge key from buffer-direct flag lookup so we don't trigger
         // the lazy `defs` getter just to read defType (which would allocate
         // a Definition object even though most variables never need merging).
@@ -4568,7 +4578,12 @@ class SourceCode {
           // `defs.length > 1` for legit non-shadowing locals and tripping
           // no-redeclare/no-dupe-args false positives across the file.
           const scopeId = symScopeIds ? symScopeIds[i] : 0;
-          const key = scopeId + '\0' + v.name + '\0' + defType;
+          // For ImportDeclaration merges: omit defType from key so that
+          // `type Foo` + `import Foo` (different defTypes) still merge into
+          // one variable with multiple defs, matching ESLint scope behavior.
+          const key = isImportDecl
+            ? (scopeId + '\0' + v.name)
+            : (scopeId + '\0' + v.name + '\0' + defType);
           const ex = mergeSet.get(key);
           if (ex) {
             // After Zig's sym_to_canonical routing, the sym_id with the
@@ -5141,6 +5156,24 @@ class SourceCode {
         // function body blocks (causing the rule to skip those cases).
         if (!node) return null;
         if (!_SCOPE_CREATING_TYPES.has(node.type)) return null;
+        // Synthetic FunctionExpression (method/getter/setter .value) has no _i when the
+        // rule has no FunctionExpression visitor (invokeMethodFnHandlers only sets _i when
+        // a handler fires). getScope(synth FE) falls back to scope 0 (global). Instead,
+        // look up via the parent MethodDefinition/Property which has a real buffer index,
+        // then verify by identity that the scope's block IS this synthetic node.
+        if (node.type === 'FunctionExpression' && node._i === undefined && node.parent && node.parent._i !== undefined) {
+          const parentScope = sc.getScope(node.parent);
+          if (parentScope && parentScope.block === node) {
+            const bodyBlock = node.body;
+            if (bodyBlock && bodyBlock._i !== undefined) {
+              const bodyBlockScope = sc.getScope(bodyBlock);
+              if (bodyBlockScope && bodyBlockScope !== parentScope) {
+                return sc._wrapFunctionWithBodyLocals(parentScope, bodyBlockScope);
+              }
+            }
+            return parentScope;
+          }
+        }
         const scope = sc.getScope(node);
         if (!scope || !scope.block) return null;
         // Verify this scope was directly created by this node (scope.block === node).
@@ -5157,23 +5190,12 @@ class SourceCode {
           }
           return scope;
         }
-        // After body-block fix: body_block_scope.block = fn_node (FunctionDeclaration/Expression/
-        // ArrowFunctionExpression). Rules like classScopeAnalyzer call findNearestScope() which
-        // walks up via acquire() until it finds a scope. acquire(BlockStatement of fn body) must
-        // return body_block_scope so findVariableInScope starts from the right scope.
-        // After body-block fix: body_block_scope.block = fn_node. acquire(BlockStatement of fn body)
-        // must return body_block_scope so rules like classScopeAnalyzer.findNearestScope() can find
-        // variables declared as const/let in the fn body. Match by scope identity instead of _i
-        // (fn nodes from getter/setter dispatch are synthetic and lack _i).
-        if (node.type === 'BlockStatement' && scope.type === 'block' &&
-            scope.upper && (scope.upper._kind === 2 || scope.upper._kind === 11)) {
-          const blockNode = scope.block;
-          if (blockNode && (blockNode.type === 'FunctionDeclaration' || blockNode.type === 'FunctionExpression' ||
-               blockNode.type === 'ArrowFunctionExpression') &&
-              (blockNode.body === node || blockNode.body?._i === node._i)) {
-            return scope;
-          }
-        }
+        // NOTE: function body BlockStatements are intentionally NOT returned here.
+        // ESLint's eslint-scope sets scope.block = FunctionDeclaration (not the body BlockStatement),
+        // so acquire(fnBodyBlock) returns null in real eslint-scope. Rules like
+        // consistent-function-scoping rely on this null to skip checking (parentScope check).
+        // classScopeAnalyzer.findNearestScope() works correctly too — the synth FE path above
+        // intercepts acquire(method FE) before it reaches this point.
         // Special case: Zig attaches the for-loop block scope to the ForStatement, not
         // its body BlockStatement. Rules like unicorn/no-for-loop call acquire(node.body)
         // expecting to get the body scope — return a filtered view when the scope's block
@@ -5712,6 +5734,15 @@ class RuleContext {
     this.sourceCode._configGlobals = lo?.globals ?? null;
     this.sourceCode._globalReturn = !!(lo?.parserOptions?.ecmaFeatures?.globalReturn);
     this.sourceCode._impliedStrict = !!(lo?.parserOptions?.ecmaFeatures?.impliedStrict);
+    // Whether the case actually requested full type information (a TS project /
+    // projectService / program). Type-aware rules — @typescript-eslint AND
+    // plugins like sonarjs — only run when this is present; ESLint's
+    // isRequiredParserServices bails otherwise. We mirror that so the light
+    // facade's `program` is exposed ONLY when type info was requested,
+    // matching the oracle (which has no type checker for plain-JS cases).
+    // Left undefined for non-differential entry points (LSP etc.) so they keep
+    // the facade's default-on behavior.
+    this.sourceCode._typeInfoRequested = _parserOptionsHaveTypeInfo(lo?.parserOptions);
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
     // Mirror of `parserServices != null` that the Proxy-wrapped value trips when
     // read via prop access. Lets buildVisitorMap skip empty-recipe rules on JS
@@ -5996,16 +6027,13 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       const fileCtx = Object.create(perRuleCtxs[pi]);
       fileCtx._onListeners = null; // own property — context.on() appends here, not to perRuleCtxs[pi]
       let visitors = null;
-      _activeRuleId = pluginRuleIds[pi]; // gate parserServices.program to this rule during create()
       try {
         if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(pluginRuleIds[pi]);
         visitors = plugins[pi].create(fileCtx);
       } catch { /* empty-recipe match */ }
-      _activeRuleId = null;
       if (!visitors || typeof visitors !== 'object') visitors = {};
       // Merge context.on() listeners into visitors (used by unicorn / ESLint 9 rules).
       if (fileCtx._onListeners) Object.assign(visitors, fileCtx._onListeners);
-      _wrapVisitorsForFacade(visitors, pluginRuleIds[pi]);
       if (Object.keys(visitors).length === 0) {
         if (recipe.length !== 0) { mismatch = true; break; }
         continue;
@@ -6122,16 +6150,13 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     const recipe = [];
     let visitors;
     perRuleCtx._onListeners = null; // reset before create() so context.on() accumulates fresh
-    _activeRuleId = ruleId; // gate parserServices.program to this rule during create()
     try {
       if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(ruleId);
       visitors = plugin.create(perRuleCtx);
-    } catch { _activeRuleId = null; perPluginRecipe.push(recipe); pluginTagBitsets.push(null); continue; }
-    _activeRuleId = null;
+    } catch { perPluginRecipe.push(recipe); pluginTagBitsets.push(null); continue; }
     if (!visitors || typeof visitors !== 'object') visitors = {};
     // Merge context.on() listeners (used by unicorn and ESLint 9 rules) into visitors.
     if (perRuleCtx._onListeners) Object.assign(visitors, perRuleCtx._onListeners);
-    _wrapVisitorsForFacade(visitors, ruleId);
     if (Object.keys(visitors).length === 0) {
       perPluginRecipe.push(recipe);
       pluginTagBitsets.push(null); // empty visitors — no tags, but we don't skip empty rules
@@ -9439,6 +9464,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (_needsShorthandSynth && T.shorthand_property < _synthTagArr.length) {
       _synthTagArr[T.shorthand_property] = 1;
     }
+    // Assignment destructuring KEY synthesis: assignment_pattern inside object_pattern must
+    // not be skipped when Identifier visitors exist (synthesizes KEY Identifier visit).
+    if (_needsShorthandSynth && T.assignment_pattern < _synthTagArr.length) {
+      _synthTagArr[T.assignment_pattern] = 1;
+    }
     // JSXFragment synthesis needs jsx_fragment tag
     if (hasFragSynth && T.jsx_fragment < _synthTagArr.length) {
       _synthTagArr[T.jsx_fragment] = 1;
@@ -9722,6 +9752,39 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               _keyShadow = Object.create(_keyNode);
               Object.defineProperty(_keyShadow, 'parent', { get() { return _propNode; }, configurable: true });
               _propNode._shorthandKeyDefaultShadow = _keyShadow;
+            }
+            const _identEnterH = visitorMap.get('Identifier');
+            if (_identEnterH) _invokeFused(_identEnterH, _keyShadow, _apLhs, context);
+          }
+        }
+      }
+      // Synthesize KEY Identifier visit for assignment_pattern directly inside object_pattern
+      // (assignment destructuring: `({a=expr}=x)` — ObjectPattern.properties wraps these in
+      // synthetic Properties via estree-adapter.js). The synthetic Property is cached on the
+      // AssignmentPattern node as `_objectPatternSynthProp` so properties.includes(parent) works.
+      if (_needsShorthandSynth && tag === T.assignment_pattern) {
+        const _parentIdxAP = ast._parentData ? ast._parentData[idx] : NONE;
+        if (_parentIdxAP !== NONE && nodeTags[_parentIdxAP] === T.object_pattern) {
+          const _apLhs = ast.nodeLhs(idx); // assignment_pattern.left = key Identifier
+          if (_apLhs !== undefined && _apLhs !== NONE && _apLhs < ast.nodeCount && _identTagBits[nodeTags[_apLhs]]) {
+            const _apNode = nodeView(ast, idx);
+            const _keyNode = nodeView(ast, _apLhs);
+            let _keyShadow = _apNode._assignTargetSynthKey;
+            if (_keyShadow === undefined) {
+              // Create the synthetic Property if not yet cached by the properties getter
+              let _synthProp = _apNode._objectPatternSynthProp;
+              if (!_synthProp) {
+                const _opNode = nodeView(ast, _parentIdxAP);
+                _synthProp = { type: 'Property', key: null, value: _apNode, kind: 'init',
+                               method: false, shorthand: true, computed: false,
+                               start: _apNode.start, end: _apNode.end,
+                               range: _apNode.range, loc: _apNode.loc, parent: _opNode };
+                _apNode._objectPatternSynthProp = _synthProp;
+              }
+              _keyShadow = Object.create(_keyNode);
+              Object.defineProperty(_keyShadow, 'parent', { get() { return _synthProp; }, configurable: true });
+              _synthProp.key = _keyShadow;
+              _apNode._assignTargetSynthKey = _keyShadow;
             }
             const _identEnterH = visitorMap.get('Identifier');
             if (_identEnterH) _invokeFused(_identEnterH, _keyShadow, _apLhs, context);

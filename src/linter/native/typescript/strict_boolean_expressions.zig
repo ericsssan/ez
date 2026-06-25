@@ -826,7 +826,17 @@ fn walkType(id: TypeId, fam: *Family, ctx: *const LintContext, depth: u32) void 
                 fam.has_object = true;
             }
         },
-        .type_param => fam.has_any = true,
+        .type_param => {
+            // TS-eslint uses getConstrainedTypeAtLocation: a constrained
+            // type param (`T extends boolean`) is classified by its
+            // constraint.  An unconstrained `T` has no constraint → treat
+            // as `any` (allowAny applies), matching the old behavior.
+            if (ctx.typeParamConstraint(id)) |constraint| {
+                walkType(constraint, fam, ctx, depth + 1);
+            } else {
+                fam.has_any = true;
+            }
+        },
         else => fam.has_other = true,
     }
 }

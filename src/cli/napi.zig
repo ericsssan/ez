@@ -117,11 +117,6 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         ctx.ast_view.scope_events,
         .{
             .globals = ctx.globals,
-            .streaming = .{
-                .events_published = ctx.events_pub,
-                .parse_done = ctx.parse_done,
-                .node_count_hint = ctx.cap_hint,
-            },
             // Allocate CFG adjacency pools from the worker's bump partition so
             // writeCfgGraph can publish them in-place without a rebuild copy.
             .cfg_pool_alloc = ctx.worker_backing.allocator(),
@@ -395,8 +390,6 @@ fn parseImpl(
     var tokens = lex_result.tokens;
 
     // Streaming atomics (only used when use_stream_sem == true).
-    var s_published_len: std.atomic.Value(usize) = .init(tokens.len);
-    var s_lex_done: std.atomic.Value(bool) = .init(true);
     var s_events_pub: std.atomic.Value(usize) = .init(0);
     var s_parse_done: std.atomic.Value(bool) = .init(false);
     var s_ast_ready: std.atomic.Value(bool) = .init(false);
@@ -445,21 +438,15 @@ fn parseImpl(
                 .is_module = is_module,
                 .global_return = global_return,
                 .emit_events = true,
-                .streaming = .{
-                    .published_len = &s_published_len,
-                    .lex_done = &s_lex_done,
-                    .capacity_hint = s_cap_hint,
-                    .events_publish_to = &s_events_pub,
-                    .ast_view_out = &s_ast_view,
-                    .ast_ready = &s_ast_ready,
-                },
             }) catch |e| {
                 s_parse_done.store(true, .release);
                 s_parents_ready.store(true, .release);
                 if (stream_sem_thread) |th| th.join();
                 return e;
             };
-            // Final publish; worker walks events bounded by this.
+            // Signal worker: full AST and all events are now available.
+            s_ast_view = t;
+            s_ast_ready.store(true, .release);
             s_events_pub.store(t.scope_events.len, .release);
             s_parse_done.store(true, .release);
             break :blk t;
@@ -622,7 +609,14 @@ fn parseImpl(
     // can't leave the previous file's stash live for a later openReuse. The
     // actual stash happens at the end (stashLastParse); token starts are kept
     // in byte form (the UTF-16 conversion writes a separate array), so no clone.
-    if (stash_for_types) type_ffi.invalidateReuseStash();
+    //
+    // Always invalidate — not just for TS/TSX/DTS. JS parses never call
+    // stashLastParse below, so if we skip the invalidate, the previous TS
+    // parse's stash stays live with tl_last_ast pointing at its (old) AST.
+    // A subsequent openReuseImpl then finds tl_tagged_gen matching the new
+    // JS gen but returns the wrong (TS) AST → Checker.init() on the wrong
+    // parents → infinite loop in enclosingScopeIdx.
+    type_ffi.invalidateReuseStash();
     // Worker was already given parents + signaled (above). Don't join yet —
     // main does UTF-16/spans/header next, then joins.
 
@@ -660,48 +654,20 @@ fn parseImpl(
     const parallel_sem = !env_disabled and ev_count >= parallel_threshold and !stream_sem_handled;
 
     if (parallel_sem) {
-        const cfg_arena_ptr = getCfgArena();
-        _ = cfg_arena_ptr.reset(.retain_capacity);
         const er_opts = event_resolver.Options{ .globals = globals };
-        // Spawn cfg worker first so it runs concurrently with scope on this thread.
-        if (event_resolver.ScopeCfgParallel.start(
-            cfg_arena_ptr.allocator(), &tree, tree.scope_events, er_opts,
-        )) |cfg_worker| {
-            if (event_resolver.resolveFullScope(
-                sem_arena_ptr.allocator(), &tree, tree.scope_events, er_opts,
-            )) |scope_part| {
-                if (cfg_worker.join(cfg_arena_ptr.allocator())) |cfg_part| {
-                    if (event_resolver.combineParts(sem_arena_ptr.allocator(), scope_part, cfg_part)) |sem_result| {
-                        var sem = sem_result;
-                        // computeLoopBodyExitability lives in semantic.zig; replicate the
-                        // single call here (previously inside analyzeWithOptions).
-                        semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
-                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
-                            semantic_data_offset = off;
-                        } else |_| {}
-                        if (stash_for_types) {
-                            if (sem.parent_indices.len == 0) {
-                                sem.parent_indices = parent_builder.buildParentsOnly(&tree, sem_arena_ptr.allocator()) catch &.{};
-                            }
-                            type_ffi.stashLastParse(&tree, &sem);
-                        }
-                    } else |_| {}
-                } else |_| {}
-            } else |_| {
-                // Scope failed — drain the worker so we don't leak its thread.
-                if (cfg_worker.join(cfg_arena_ptr.allocator())) |dropped| {
-                    var d = dropped; d.deinit(cfg_arena_ptr.allocator());
-                } else |_| {}
-            }
-        } else |_| {
-            // Worker spawn failed — fall back to sequential.
-            if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
-                var sem = sem_result;
-                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
-                    semantic_data_offset = off;
-                } else |_| {}
+        if (event_resolver.resolveFull(sem_arena_ptr.allocator(), &tree, tree.scope_events, er_opts)) |sem_result| {
+            var sem = sem_result;
+            semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
+            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
+                semantic_data_offset = off;
             } else |_| {}
-        }
+            if (stash_for_types) {
+                if (sem.parent_indices.len == 0) {
+                    sem.parent_indices = parent_builder.buildParentsOnly(&tree, sem_arena_ptr.allocator()) catch &.{};
+                }
+                type_ffi.stashLastParse(&tree, &sem);
+            }
+        } else |_| {}
     } else if (!stream_sem_handled) {
         if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
             var sem = sem_result;

@@ -146,7 +146,14 @@ pub const BUILTIN_ES2015_GLOBALS = [_][]const u8{
     "SharedArrayBuffer", "Atomics",
     "BigInt",        "BigInt64Array",  "BigUint64Array",
     "AggregateError", "FinalizationRegistry", "WeakRef",
-    "Intl",          "console",
+    "Intl",
+    // NOTE: `console` is intentionally NOT listed here.  It is a host/env
+    // global (browser/Node), not an ECMAScript builtin — mirroring the JS
+    // side (`_ENV_GLOBALS`, added only when env is enabled).  Pre-declaring
+    // it as an implicit-global symbol shadowed the type-checker's curated
+    // `Console` type, making `console.log(...)` resolve to `any` instead of
+    // `void` (breaking no-confusing-void-expression).  Unresolved `console`
+    // references still report as global refs via isGlobalReference.
     // ES2024+ globals
     "Float16Array",  "Iterator",       "AsyncIterator",
     "AsyncDisposableStack", "DisposableStack", "SuppressedError",
@@ -508,8 +515,14 @@ pub const LintContext = struct {
         const c = self.ensureChecker() orelse return true;
         if (id.eq(tymod.ID_NUMBER) or id.eq(tymod.ID_BIGINT) or
             id.eq(tymod.ID_ANY) or id.eq(tymod.ID_NEVER)) return true;
-        const kind = c.store.get(id).kind;
-        return kind == .number_literal or kind == .bigint_literal;
+        const t = c.store.get(id);
+        if (t.kind == .number_literal or t.kind == .bigint_literal) return true;
+        // Type parameter: follow constraint (`T extends number` → number-like).
+        if (t.kind == .type_param) {
+            const constraint = self.typeParamConstraint(id) orelse return false;
+            return self.typeIdIsNumberLike(constraint);
+        }
+        return false;
     }
 
     /// True when the type id is exactly `boolean` or a boolean literal
@@ -523,6 +536,11 @@ pub const LintContext = struct {
                 if (!self.typeIdIsExactlyBoolean(m)) return false;
             }
             return true;
+        }
+        // Type parameter: follow constraint (`T extends boolean` → boolean-like).
+        if (t.kind == .type_param) {
+            const constraint = self.typeParamConstraint(id) orelse return false;
+            return self.typeIdIsExactlyBoolean(constraint);
         }
         return false;
     }
@@ -588,6 +606,11 @@ pub const LintContext = struct {
                 if (self.typeIdIsStringy(m)) return true;
             }
             return false;
+        }
+        // Type parameter: follow constraint (`T extends string` → stringy).
+        if (t.kind == .type_param) {
+            const constraint = self.typeParamConstraint(id) orelse return false;
+            return self.typeIdIsStringy(constraint);
         }
         return false;
     }
@@ -728,6 +751,14 @@ pub const LintContext = struct {
             for (c.store.idsOf(t.list_data)) |m| {
                 if (self.typeIdObjectPropertyIsMethod(m, name)) return true;
             }
+            return false;
+        }
+        // Resolve named type references (class/interface instances) to their
+        // structural type so property method checks work on `new Foo()` results.
+        if (t.kind == .type_ref and t.name.len > 0) {
+            if (c.resolveDeclaredTypePub(t.name)) |resolved| {
+                if (!resolved.eq(id)) return self.typeIdObjectPropertyIsMethod(resolved, name);
+            }
         }
         return false;
     }
@@ -760,6 +791,13 @@ pub const LintContext = struct {
                 if (!self.typeIdObjectPropertyIsFnProperty(m, name)) return false;
             }
             return saw_any;
+        }
+        // Resolve named type references (class/interface instances) to their
+        // structural type so fn-property checks work on `new Foo()` results.
+        if (t.kind == .type_ref and t.name.len > 0) {
+            if (c.resolveDeclaredTypePub(t.name)) |resolved| {
+                if (!resolved.eq(id)) return self.typeIdObjectPropertyIsFnProperty(resolved, name);
+            }
         }
         return false;
     }
@@ -4464,11 +4502,8 @@ pub const LintContext = struct {
             }
             return self.nodeTokensEqual(a, b);
         }
-        // Optional chaining (`a?.b`) and non-optional (`a.b`) are not the same
-        // reference — ESLint's isSameReference returns false when optionality differs.
-        const a_optional = at == .optional_member_expr or at == .optional_computed_member_expr;
-        const b_optional = bt == .optional_member_expr or bt == .optional_computed_member_expr;
-        if (a_optional != b_optional) return false;
+        // ESLint's isSameReference explicitly treats `a.b` and `a?.b` as the same
+        // reference (it unwraps ChainExpression). Mirror that: ignore optionality.
         const ad = self.ast.nodeData(a);
         const bd = self.ast.nodeData(b);
         // Compare objects recursively.
@@ -4864,8 +4899,21 @@ pub const LintContext = struct {
             if (last == '}') return false;
         }
         return switch (self.nodeTag(prev)) {
-            // Declarations terminate the statement regardless of last token.
-            .var_decl, .let_decl, .const_decl,
+            // For variable declarations, safe only when the last declarator
+            // has no initializer (e.g. `var foo`).  With an initializer the
+            // init expression can end with a subscriptable token, so fall back
+            // to the char-level scan which catches `var x = bar.yield\n[]`.
+            .var_decl, .let_decl, .const_decl => blk: {
+                const vd = self.nodeData(prev);
+                const d_start = @intFromEnum(vd.lhs);
+                const d_end = @intFromEnum(vd.rhs);
+                const ext_len2: u32 = @intCast(self.ast.extra_data.len);
+                if (d_start >= d_end or d_end > ext_len2) break :blk true;
+                const decls = self.ast.extra_data[d_start..d_end];
+                const last_decl: NodeIndex = @enumFromInt(decls[decls.len - 1]);
+                break :blk self.nodeData(last_decl).rhs == .none;
+            },
+            // Other declarations terminate cleanly regardless of last token.
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
             .class_decl,
             .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
@@ -6274,14 +6322,47 @@ pub const LintContext = struct {
     /// Symbols with zero references are NOT considered type-only — they may be
     /// value imports that are simply unused (handled by no-unused-vars instead).
     /// Used by consistent-type-imports to detect imports that could be `import type`.
+    /// True when the symbol has at least one reference entry in the reference table.
+    pub fn symbolHasAnyRef(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
+        return !self.semantic.symbols.getRefRange(sym_id).isEmpty();
+    }
+
     pub fn symbolIsTypeOnly(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
         const range = self.semantic.symbols.getRefRange(sym_id);
         if (range.isEmpty()) return false;
         const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
         for (sym_refs) |rid| {
-            if (!self.semantic.references.getKind(rid).isTypeRef()) return false;
+            if (self.semantic.references.getKind(rid) != .type_read) return false;
         }
         return true;
+    }
+
+    /// True when the symbol has at least one reference entry but ALL non-type references
+    /// come from `export type { }` specifiers. Workaround for es-parser emitting `read`
+    /// (not `type_read`) for specifiers inside type-only export declarations.
+    pub fn symbolRefsAllInTypeExports(self: *const LintContext, sym_id: symbol_mod.SymbolId) bool {
+        const range = self.semantic.symbols.getRefRange(sym_id);
+        if (range.isEmpty()) return false;
+        const sym_refs = self.semantic.ref_by_sym[range.start..range.end];
+        var found_type_export = false;
+        for (sym_refs) |rid| {
+            if (self.semantic.references.getKind(rid) == .type_read) continue;
+            // Non-type reference: check if it's from an export type { } specifier.
+            const ref_node = self.semantic.references.getNode(rid);
+            if (ref_node == .none) return false;
+            // The reference node is a property_ident in an export_specifier.
+            // Walk up: property_ident → export_specifier → export_named
+            const spec = self.parentOf(ref_node);
+            if (spec == .none or self.ast.nodeTag(spec) != .export_specifier) return false;
+            const export_decl = self.parentOf(spec);
+            if (export_decl == .none or self.ast.nodeTag(export_decl) != .export_named) return false;
+            // Check if the export_named has a `type` token after `export`.
+            const export_tok = self.ast.nodeMainToken(export_decl);
+            if (export_tok + 1 >= self.ast.tokens.len) return false;
+            if (!std.mem.eql(u8, self.tokenText(export_tok + 1), "type")) return false;
+            found_type_export = true;
+        }
+        return found_type_export;
     }
 
     /// True when `import_decl` node has a top-level `type` modifier:
@@ -10538,6 +10619,11 @@ pub const LintContext = struct {
                 const assign_lhs = self.nodeSkipGrouping(rhs_d.lhs);
                 const lhs = self.nodeSkipGrouping(d.lhs);
                 if (assign_lhs == .none or lhs == .none) return;
+                // ESLint's isReference() rejects ChainExpression (which wraps optional
+                // member expressions like `a?.b`). In Ez's AST, optional_member_expr
+                // plays that role — skip to avoid false positives on `a?.b || (a.b = c)`.
+                const lhs_tag = self.ast.nodeTag(lhs);
+                if (lhs_tag == .optional_member_expr or lhs_tag == .optional_computed_member_expr) return;
                 if (self.nodeSameReference(lhs, assign_lhs))
                     self.reportWithMessageId(node, "logical");
             },
@@ -12419,15 +12505,35 @@ pub const LintContext = struct {
         const args = self.extraSlice(range);
         if (args.len == 0) return;
         const first_arg_raw: NodeIndex = @enumFromInt(args[0]);
-        const first_arg = self.nodeSkipGrouping(first_arg_raw);
-        const first_tag = self.ast.nodeTag(first_arg);
+        var first_arg = self.nodeSkipGrouping(first_arg_raw);
+        var first_tag = self.ast.nodeTag(first_arg);
+        // Resolve a const string variable used as the pattern:
+        // `const p = "[…]"; new RegExp(p)`.  ESLint can't map char offsets back
+        // into the original source, so it reports on the whole argument node —
+        // collapse every reported span to the identifier via `report_override`.
+        var report_override: ?Span = null;
+        if (first_tag == .identifier) {
+            const init = self.constInitializerOf(first_arg) orelse return;
+            const init_node = self.nodeSkipGrouping(init);
+            const it = self.ast.nodeTag(init_node);
+            if (it != .string_literal and it != .template_literal) return;
+            report_override = self.nodeSpan(first_arg);
+            first_arg = init_node;
+            first_tag = it;
+        }
         if (first_tag != .string_literal and first_tag != .template_literal and first_tag != .regex_literal) return;
         var flags: []const u8 = "";
         var flags_explicit = false;
         if (args.len >= 2) {
             const flags_arg_raw: NodeIndex = @enumFromInt(args[1]);
-            const flags_arg = self.nodeSkipGrouping(flags_arg_raw);
-            const ftag = self.ast.nodeTag(flags_arg);
+            var flags_arg = self.nodeSkipGrouping(flags_arg_raw);
+            var ftag = self.ast.nodeTag(flags_arg);
+            // Resolve a const string variable used as the flags argument.
+            if (ftag == .identifier) {
+                const finit = self.constInitializerOf(flags_arg) orelse return;
+                flags_arg = self.nodeSkipGrouping(finit);
+                ftag = self.ast.nodeTag(flags_arg);
+            }
             if (ftag != .string_literal and ftag != .template_literal) return; // bail on non-static flags
             const fs = self.nodeStaticStringValue(flags_arg) orelse return;
             flags = fs;
@@ -12461,7 +12567,10 @@ pub const LintContext = struct {
             decodeJsStringLiteralMapped(arena, body) catch return;
         if (regexPatternHasSyntaxError(decoded.bytes, true, flags)) return;
         const flag_set = regex_parser.Flags.fromString(flags);
-        const allow_escape = self.noMisleadingAllowEscape();
+        // When the pattern came from a resolved constant, escape forms in the
+        // variable's literal are not "visible" at the usage site, so allowEscape
+        // does not apply (matches ESLint, which reports on the argument node).
+        const allow_escape = report_override == null and self.noMisleadingAllowEscape();
         const pat = regex_parser.parse(arena, decoded.bytes, .{ .flags = flag_set }) catch return;
         // Source-map base: first byte INSIDE the string literal in source
         // (just past the opening quote).
@@ -12471,6 +12580,7 @@ pub const LintContext = struct {
             .decoded_len = decoded.bytes.len,
             .body_src_start = body_src_start,
             .body = body,
+            .override = report_override,
         };
         self.walkMisleadingCharClassCall(pat.alternatives, decoded.bytes, flag_set, allow_escape, map_ctx);
     }
@@ -12480,13 +12590,20 @@ pub const LintContext = struct {
         decoded_len: usize,
         body_src_start: u32,
         body: []const u8,
+        /// When the pattern came from a resolved constant (`const p = "…"; new
+        /// RegExp(p)`), decoded offsets don't map back to source — ESLint
+        /// reports on the whole argument node instead.  When set, every
+        /// reported span collapses to this fixed range.
+        override: ?Span = null,
 
         fn srcStart(self: CallSourceMap, decoded_off: u32) u32 {
+            if (self.override) |o| return o.start;
             if (decoded_off >= self.map.len) return self.body_src_start + @as(u32, @intCast(self.decoded_len));
             return self.body_src_start + self.map[decoded_off];
         }
 
         fn srcEnd(self: CallSourceMap, decoded_off: u32) u32 {
+            if (self.override) |o| return o.end;
             // Walk forward through duplicate map entries (multi-byte
             // sequences from one escape) to land on the next char's
             // source offset, which is this char's source end.
@@ -12652,10 +12769,16 @@ pub const LintContext = struct {
                 const next = seq[i + 1];
                 if (curr.codepoint == 0x200D and prev.codepoint != 0x200D and next.codepoint != 0x200D) {
                     if (allow_escape and map_ctx.isEscapeFormAt(prev.start) and map_ctx.isEscapeFormAt(curr.start) and map_ctx.isEscapeFormAt(next.start)) continue;
+                    // Without u/v a supplementary middle splits into two
+                    // differing surrogates, so its joins stay separate (see the
+                    // literal-path reportZwjSeq).  Source spans stay whole-char:
+                    // the source map collapses the surrogate offsets onto the
+                    // original escape, which is what ESLint reports.
+                    const middle_shares = has_uv or !zwjCharIsSupplementary(seq[i - 1]);
                     if (run_start == null) {
                         run_start = i - 1;
                         run_end = i + 1;
-                    } else if (run_end == i - 1) {
+                    } else if (run_end == i - 1 and middle_shares) {
                         run_end = i + 1;
                     } else {
                         const s = seq[run_start.?];
@@ -12781,7 +12904,7 @@ pub const LintContext = struct {
                 // BMP codepoints (U+0300-range marks, U+200D ZWJ) that
                 // regexpp sees regardless of u/v.
                 self.reportCombiningSeq(buf[0..seq_len], pat_start, pat_text, allow_escape);
-                self.reportZwjSeq(buf[0..seq_len], pat_start, pat_text, allow_escape);
+                self.reportZwjSeq(buf[0..seq_len], pat_start, flags.unicode or flags.unicode_sets, pat_text, allow_escape);
                 // emojiModifier / regionalIndicator codepoints sit in the
                 // supplementary plane.  Without u/v regexpp splits them
                 // into surrogate halves which can't match the predicates,
@@ -12845,11 +12968,17 @@ pub const LintContext = struct {
         }
     }
 
-    fn reportZwjSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, pat_text: []const u8, allow_escape: bool) void {
+    fn reportZwjSeq(self: *const LintContext, seq: []const regex_parser.Character, pat_start: u32, has_uv: bool, pat_text: []const u8, allow_escape: bool) void {
         if (seq.len < 3) return;
-        // Walk for ZWJ joiners.  ESLint coalesces overlapping ZWJ-joined
-        // sequences into a single diag, so we emit one report covering
-        // the contiguous run rather than one per joiner.
+        // Mirror ESLint's `zwj` generator, which operates on UTF-16 code UNITS.
+        // WITHOUT u/v, a supplementary emoji is two surrogates, so a ZWJ join is
+        // the triple [low-surrogate-of-before, ZWJ, high-surrogate-of-after];
+        // consecutive joins coalesce ONLY when the separating character is a
+        // single BMP unit (a supplementary middle splits into two differing
+        // surrogates, so its joins stay separate).  WITH u/v, every character is
+        // one code point, so consecutive joins always share the middle unit and
+        // coalesce.  We keep emoji as one Character and model the no-u surrogate
+        // boundary by reporting at the emoji's UTF-8 midpoint (start+2).
         var run_start: ?usize = null;
         var run_end: usize = 0;
         var i: usize = 1;
@@ -12859,32 +12988,38 @@ pub const LintContext = struct {
             const next = seq[i + 1];
             if (curr.codepoint == 0x200D and prev.codepoint != 0x200D and next.codepoint != 0x200D) {
                 if (allow_escape and charIsEscapeForm(prev, pat_text) and charIsEscapeForm(curr, pat_text) and charIsEscapeForm(next, pat_text)) continue;
+                const middle_shares = has_uv or !zwjCharIsSupplementary(seq[i - 1]);
                 if (run_start == null) {
                     run_start = i - 1;
                     run_end = i + 1;
-                } else if (run_end == i - 1) {
+                } else if (run_end == i - 1 and middle_shares) {
                     run_end = i + 1;
                 } else {
-                    // Emit previous run.
-                    const s = seq[run_start.?];
-                    const e = seq[run_end];
-                    self.reportSpanWithMessageId(.{
-                        .start = pat_start + s.start,
-                        .end = pat_start + e.end,
-                    }, "zwj");
+                    self.emitZwj(seq[run_start.?], seq[run_end], pat_start, has_uv);
                     run_start = i - 1;
                     run_end = i + 1;
                 }
             }
         }
-        if (run_start) |rs| {
-            const s = seq[rs];
-            const e = seq[run_end];
-            self.reportSpanWithMessageId(.{
-                .start = pat_start + s.start,
-                .end = pat_start + e.end,
-            }, "zwj");
-        }
+        if (run_start) |rs| self.emitZwj(seq[rs], seq[run_end], pat_start, has_uv);
+    }
+
+    /// A supplementary-plane character we keep as a single Character but which
+    /// ESLint (without u/v) sees as a surrogate pair.  Literal 4-byte UTF-8 only.
+    fn zwjCharIsSupplementary(c: regex_parser.Character) bool {
+        return c.codepoint > 0xFFFF and (c.end - c.start) == 4;
+    }
+
+    fn emitZwj(self: *const LintContext, before: regex_parser.Character, after: regex_parser.Character, pat_start: u32, has_uv: bool) void {
+        // Under u/v every char is one code point → whole spans.  Without u/v a
+        // supplementary char is two surrogates: start at the before-char's low
+        // surrogate (UTF-8 midpoint) and end at the after-char's high surrogate
+        // (also the midpoint).  BMP chars always use their whole span.
+        const before_split = !has_uv and zwjCharIsSupplementary(before);
+        const after_split = !has_uv and zwjCharIsSupplementary(after);
+        const start = before.start + @as(u32, if (before_split) 2 else 0);
+        const end = if (after_split) after.start + 2 else after.end;
+        self.reportSpanWithMessageId(.{ .start = pat_start + start, .end = pat_start + end }, "zwj");
     }
 
     /// True for U+1F3FB..U+1F3FF — the Fitzpatrick skin-tone modifiers
